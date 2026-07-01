@@ -54,6 +54,7 @@ Enoch must require human direction before changing identity, mission, secrets, p
 - `/evolve candidates`
 - `/evolve candidates all`
 - `/evolve select <id>`
+- `/evolve run <id>`
 - `/evolve reject <id>`
 - `/evolve schedule <text>`
 - `/evolve schedule once a day`

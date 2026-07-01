@@ -20,7 +20,7 @@ from enoch.backlog import add_backlog_item, backlog_status
 from enoch.config import read_section
 from enoch.command_surface import checktree as _checktree
 from enoch.cron import add_cron_job, cron_status
-from enoch.evolve import MODE_AUTO_EVOLVE, set_evolve_mode, set_evolve_schedule
+from enoch.evolve import MODE_AUTO_EVOLVE, evolve_report, set_evolve_mode, set_evolve_schedule
 from enoch.git_tools import GitError
 from enoch.github.workflow import (
     LocalPublishResult,
@@ -609,6 +609,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("/evolve theme <text> - set the current self-evolution theme", client.sent[0][1])
         self.assertIn("/evolve candidates - show current self-evolution candidates", client.sent[0][1])
         self.assertIn("/evolve select <id> - select a self-evolution candidate", client.sent[0][1])
+        self.assertIn("/evolve run <id> - queue a self-evolution candidate as a task", client.sent[0][1])
         self.assertIn("/evolve reject <id> - reject a self-evolution candidate", client.sent[0][1])
         self.assertIn("/evolve schedule <text> - let Enoch interpret common schedule text", client.sent[0][1])
         self.assertNotIn("/evolve schedule off - stop scheduled evolve checks", client.sent[0][1])
@@ -674,6 +675,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("/evolve theme <text>", reply)
         self.assertIn("/evolve candidates", reply)
         self.assertIn("/evolve select <id>", reply)
+        self.assertIn("/evolve run <id>", reply)
         self.assertIn("/evolve reject <id>", reply)
         self.assertIn("/evolve schedule <text>", reply)
         self.assertNotIn("/evolve schedule off - stop scheduled evolve checks", reply)
@@ -1243,6 +1245,23 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertNotIn("backlog-1", client.sent[4][1])
         self.assertIn("backlog-1 [rejected backlog] low value cleanup", client.sent[5][1])
 
+    def test_evolve_run_queues_candidate_as_task(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            add_backlog_item(42, "ship evolve run", root, priority="p1")
+            client = FakeTelegramClient(allowed_chat_id=42)
+            bot = EnochTelegramBot(load_identity(), root, client)
+
+            bot.handle_update(_message_update(chat_id=42, text="/evolve run backlog-1"))
+            queued = task_queue_status(root)
+
+        self.assertEqual(queued.pending_count, 1)
+        self.assertIn("Queued evolve candidate backlog-1 as task #1.", client.sent[0][1])
+        self.assertIn("backlog-1 [running backlog] ship evolve run", client.sent[0][1])
+        self.assertIn("Evolve selected candidate backlog-1", queued.pending[0].text)
+        self.assertEqual(queued.pending[0].context_source, "evolve-run")
+        self.assertIn("Scheduled evolve candidate context:", queued.pending[0].context)
+
     def test_evolve_can_set_theme_and_mode(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
@@ -1381,11 +1400,13 @@ class EnochTelegramTests(unittest.TestCase):
 
             job = bot._run_due_evolve_schedule()
             queued = task_queue_status(root)
+            report = evolve_report(root)
 
         self.assertIsNotNone(job)
         self.assertEqual(queued.pending_count, 1)
         self.assertIn("Evolve selected candidate backlog-1", queued.pending[0].text)
         self.assertEqual(queued.pending[0].context_source, "evolve-scheduler")
+        self.assertEqual(report.top_candidate.status, "running")
         self.assertIn("Latest update: Scheduled by evolve auto-evolve.", client.sent[0][1])
 
     @patch("enoch.telegram.bot.ensure_long_term_memory")
