@@ -52,6 +52,9 @@ from enoch.evolve import (
     claim_due_evolve_schedule,
     disable_evolve_schedule,
     evolve_report,
+    load_evolve_candidates,
+    reject_evolve_candidate,
+    select_evolve_candidate,
     set_evolve_cron_schedule,
     set_evolve_daily_schedule,
     set_evolve_schedule,
@@ -1052,7 +1055,7 @@ class EnochTelegramBot:
             return _format_evolve_report(evolve_report(self.root))
         if subcommand == "mode":
             if not rest.strip():
-                return "Use /evolve mode disabled|co-evolve|auto-evolve to set self-evolution behavior."
+                return "Use /evolve mode <mode> to set self-evolution behavior. Modes: disabled, co-evolve, auto-evolve."
             try:
                 set_evolve_mode(rest, self.root)
             except ValueError as error:
@@ -1063,6 +1066,33 @@ class EnochTelegramBot:
                 return "Use /evolve theme <text> to set Enoch's current evolution theme."
             set_evolve_theme(rest, self.root)
             return _format_evolve_report(evolve_report(self.root))
+        if subcommand in {"candidate", "candidates"}:
+            report = evolve_report(self.root)
+            include_inactive = rest.strip().lower() in {"all", "inactive"}
+            candidates = (
+                load_evolve_candidates(self.root, include_inactive=True, theme=report.state.theme)
+                if include_inactive
+                else report.candidates
+            )
+            return _format_evolve_candidates(candidates, include_inactive=include_inactive)
+        if subcommand == "select":
+            if not rest.strip():
+                return "Use /evolve select <id> to select a self-evolution candidate."
+            state = evolve_report(self.root).state
+            try:
+                candidate = select_evolve_candidate(rest, self.root, theme=state.theme)
+            except ValueError as error:
+                return str(error)
+            return "Selected evolve candidate.\n\n" + "\n".join(_format_evolve_candidate(candidate))
+        if subcommand == "reject":
+            if not rest.strip():
+                return "Use /evolve reject <id> to reject a self-evolution candidate."
+            state = evolve_report(self.root).state
+            try:
+                candidate = reject_evolve_candidate(rest, self.root, theme=state.theme)
+            except ValueError as error:
+                return str(error)
+            return "Rejected evolve candidate.\n\n" + "\n".join(_format_evolve_candidate(candidate))
         if subcommand == "schedule":
             return self._evolve_schedule(rest)
         return _evolve_usage()
@@ -2108,12 +2138,27 @@ def _format_evolve_schedule(state: EvolveState) -> str:
 
 def _format_evolve_candidate(candidate: EvolveCandidate) -> list[str]:
     return [
-        f"- {candidate.id} [{candidate.source}] {_clip_activity_text(candidate.title, limit=100)}",
+        f"- {candidate.id} [{candidate.status} {candidate.source}] {_clip_activity_text(candidate.title, limit=100)}",
         f"  Score: {candidate.score}",
         f"  Rationale: {_clip_activity_text(candidate.rationale, limit=180)}",
         f"  Proposed change: {_clip_activity_text(candidate.proposed_change, limit=180)}",
         f"  Test plan: {_clip_activity_text(candidate.test_plan, limit=180)}",
     ]
+
+
+def _format_evolve_candidates(candidates: tuple[EvolveCandidate, ...], *, include_inactive: bool = False) -> str:
+    title = "Evolve candidates"
+    if include_inactive:
+        title += " (all)"
+    lines = [f"{title}:"]
+    if not candidates:
+        lines.append("- none")
+        return "\n".join(lines)
+    for candidate in candidates[:10]:
+        lines.extend(_format_evolve_candidate(candidate))
+    if len(candidates) > 10:
+        lines.append(f"- {len(candidates) - 10} more")
+    return "\n".join(lines)
 
 
 def _evolve_next_action(report: EvolveReport) -> str:
@@ -2257,6 +2302,9 @@ def _evolve_usage() -> str:
             "Use /evolve mode <mode> to set self-evolution behavior.",
             "Modes: disabled, co-evolve, auto-evolve.",
             "Use /evolve theme <text> to set the current evolution theme.",
+            "Use /evolve candidates to show current candidates.",
+            "Use /evolve select <id> to select a candidate.",
+            "Use /evolve reject <id> to reject a candidate.",
             "Use /evolve schedule <text> to let Enoch interpret common schedule text.",
         ]
     )
