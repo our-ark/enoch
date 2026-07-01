@@ -27,6 +27,7 @@ class EvolveState:
     updated_at: str = ""
     schedule_enabled: bool = False
     schedule_interval_seconds: int = 0
+    schedule_daily_time: str = ""
     schedule_next_run_at: str = ""
     schedule_last_run_at: str = ""
 
@@ -76,6 +77,7 @@ def load_evolve_state(root: Path | None = None) -> EvolveState:
         updated_at=updated_at,
         schedule_enabled=bool(raw.get("schedule_enabled", False)),
         schedule_interval_seconds=max(0, _int(raw.get("schedule_interval_seconds"), default=0)),
+        schedule_daily_time=_normalize_daily_time(str(raw.get("schedule_daily_time") or ""), allow_empty=True),
         schedule_next_run_at=str(raw.get("schedule_next_run_at") or ""),
         schedule_last_run_at=str(raw.get("schedule_last_run_at") or ""),
     )
@@ -86,8 +88,10 @@ def save_evolve_state(state: EvolveState, root: Path | None = None) -> EvolveSta
         mode=normalize_evolve_mode(state.mode),
         theme=clean_text(state.theme),
         updated_at=state.updated_at or current_time(),
-        schedule_enabled=state.schedule_enabled and state.schedule_interval_seconds > 0,
+        schedule_enabled=state.schedule_enabled
+        and (state.schedule_interval_seconds > 0 or bool(_normalize_daily_time(state.schedule_daily_time, allow_empty=True))),
         schedule_interval_seconds=max(0, int(state.schedule_interval_seconds)),
+        schedule_daily_time=_normalize_daily_time(state.schedule_daily_time, allow_empty=True),
         schedule_next_run_at=state.schedule_next_run_at,
         schedule_last_run_at=state.schedule_last_run_at,
     )
@@ -98,6 +102,7 @@ def save_evolve_state(state: EvolveState, root: Path | None = None) -> EvolveSta
         "updated_at": normalized.updated_at,
         "schedule_enabled": normalized.schedule_enabled,
         "schedule_interval_seconds": normalized.schedule_interval_seconds,
+        "schedule_daily_time": normalized.schedule_daily_time,
         "schedule_next_run_at": normalized.schedule_next_run_at,
         "schedule_last_run_at": normalized.schedule_last_run_at,
     }
@@ -113,6 +118,7 @@ def set_evolve_mode(mode: str, root: Path | None = None) -> EvolveState:
             theme=current.theme,
             schedule_enabled=current.schedule_enabled,
             schedule_interval_seconds=current.schedule_interval_seconds,
+            schedule_daily_time=current.schedule_daily_time,
             schedule_next_run_at=current.schedule_next_run_at,
             schedule_last_run_at=current.schedule_last_run_at,
         ),
@@ -128,6 +134,7 @@ def set_evolve_theme(theme: str, root: Path | None = None) -> EvolveState:
             theme=clean_text(theme),
             schedule_enabled=current.schedule_enabled,
             schedule_interval_seconds=current.schedule_interval_seconds,
+            schedule_daily_time=current.schedule_daily_time,
             schedule_next_run_at=current.schedule_next_run_at,
             schedule_last_run_at=current.schedule_last_run_at,
         ),
@@ -151,7 +158,31 @@ def set_evolve_schedule(
             theme=current.theme,
             schedule_enabled=True,
             schedule_interval_seconds=interval_seconds,
+            schedule_daily_time="",
             schedule_next_run_at=_iso(current_time + timedelta(seconds=interval_seconds)),
+            schedule_last_run_at=current.schedule_last_run_at,
+        ),
+        root,
+    )
+
+
+def set_evolve_daily_schedule(
+    daily_time: str,
+    root: Path | None = None,
+    *,
+    now: datetime | None = None,
+) -> EvolveState:
+    normalized_time = _normalize_daily_time(daily_time)
+    current = load_evolve_state(root)
+    current_time = _coerce_local(now) if now is not None else _local_now()
+    return save_evolve_state(
+        EvolveState(
+            mode=current.mode,
+            theme=current.theme,
+            schedule_enabled=True,
+            schedule_interval_seconds=24 * 60 * 60,
+            schedule_daily_time=normalized_time,
+            schedule_next_run_at=_iso(_next_daily_run(normalized_time, current_time)),
             schedule_last_run_at=current.schedule_last_run_at,
         ),
         root,
@@ -167,18 +198,21 @@ def claim_due_evolve_schedule(root: Path | None = None, *, now: datetime | None 
     state = load_evolve_state(root)
     if not state.schedule_enabled or state.schedule_interval_seconds <= 0:
         return None
-    current = _coerce_utc(now) if now is not None else _utc_now()
+    current_source = now if now is not None else _local_now()
+    current = _coerce_utc(current_source)
     next_run_at = _parse_time(state.schedule_next_run_at)
     if next_run_at is None or next_run_at > current:
         return None
     claimed = state
+    next_run_at = _next_scheduled_run(state, current_source)
     save_evolve_state(
         EvolveState(
             mode=state.mode,
             theme=state.theme,
             schedule_enabled=True,
             schedule_interval_seconds=state.schedule_interval_seconds,
-            schedule_next_run_at=_iso(current + timedelta(seconds=state.schedule_interval_seconds)),
+            schedule_daily_time=state.schedule_daily_time,
+            schedule_next_run_at=_iso(next_run_at),
             schedule_last_run_at=_iso(current),
         ),
         root,
@@ -286,10 +320,20 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc).replace(microsecond=0)
 
 
+def _local_now() -> datetime:
+    return datetime.now().astimezone().replace(microsecond=0)
+
+
 def _coerce_utc(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc, microsecond=0)
     return value.astimezone(timezone.utc).replace(microsecond=0)
+
+
+def _coerce_local(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.astimezone().replace(microsecond=0)
+    return value.replace(microsecond=0)
 
 
 def _iso(value: datetime) -> str:
@@ -311,3 +355,40 @@ def _int(value: object, *, default: int) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _next_scheduled_run(state: EvolveState, current: datetime) -> datetime:
+    if state.schedule_daily_time:
+        return _next_daily_run(state.schedule_daily_time, current)
+    return current + timedelta(seconds=state.schedule_interval_seconds)
+
+
+def _next_daily_run(daily_time: str, current: datetime) -> datetime:
+    hour, minute = _daily_time_parts(daily_time)
+    local_current = _coerce_local(current)
+    candidate = local_current.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if candidate <= local_current:
+        candidate += timedelta(days=1)
+    return candidate
+
+
+def _normalize_daily_time(value: str, *, allow_empty: bool = False) -> str:
+    cleaned = value.strip()
+    if not cleaned and allow_empty:
+        return ""
+    hour, minute = _daily_time_parts(cleaned)
+    return f"{hour:02d}:{minute:02d}"
+
+
+def _daily_time_parts(value: str) -> tuple[int, int]:
+    parts = value.strip().split(":")
+    if len(parts) != 2:
+        raise ValueError("Evolve daily schedule time must look like HH:MM.")
+    try:
+        hour = int(parts[0])
+        minute = int(parts[1])
+    except ValueError as error:
+        raise ValueError("Evolve daily schedule time must look like HH:MM.") from error
+    if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+        raise ValueError("Evolve daily schedule time must use 00:00 through 23:59.")
+    return hour, minute

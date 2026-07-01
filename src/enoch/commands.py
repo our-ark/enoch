@@ -295,6 +295,7 @@ def help_message(topic: str = "") -> str:
             "/evolve - show self-evolution mode, theme, and top candidate",
             "/evolve theme <text> - set the current self-evolution theme",
             "/evolve schedule every <interval> - run periodic evolve checks",
+            "/evolve schedule daily HH:MM - run evolve once per day at local time",
             "/evolve schedule off - disable scheduled evolve checks",
             "",
             "Operations:",
@@ -359,6 +360,7 @@ def _help_topic_message(topic: str) -> str:
                 "/evolve auto-evolve - select bounded candidates under guardrails",
                 "/evolve theme <text> - set the current self-evolution theme",
                 "/evolve schedule every <interval> - run periodic evolve checks",
+                "/evolve schedule daily HH:MM - run evolve once per day at local time",
                 "/evolve schedule off - disable scheduled evolve checks",
             ]
         )

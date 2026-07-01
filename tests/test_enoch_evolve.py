@@ -18,6 +18,7 @@ from enoch.evolve import (
     evolve_report,
     load_evolve_state,
     rank_evolve_candidates,
+    set_evolve_daily_schedule,
     set_evolve_schedule,
     set_evolve_mode,
     set_evolve_theme,
@@ -89,6 +90,27 @@ class EnochEvolveTests(unittest.TestCase):
         self.assertEqual(claimed.schedule_next_run_at, "2020-01-02T00:00:00+00:00")
         self.assertIsNone(claimed_again)
         self.assertFalse(disabled.schedule_enabled)
+
+    def test_daily_schedule_uses_next_local_time(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            start = datetime(2020, 1, 1, 8, 30, tzinfo=timezone.utc)
+            due = datetime(2020, 1, 1, 9, 0, tzinfo=timezone.utc)
+
+            scheduled = set_evolve_daily_schedule("9:00", root, now=start)
+            claimed = claim_due_evolve_schedule(root, now=due)
+            state_after_claim = load_evolve_state(root)
+
+        self.assertEqual(scheduled.schedule_daily_time, "09:00")
+        self.assertEqual(scheduled.schedule_interval_seconds, 86400)
+        self.assertEqual(scheduled.schedule_next_run_at, "2020-01-01T09:00:00+00:00")
+        self.assertIsNotNone(claimed)
+        self.assertEqual(state_after_claim.schedule_next_run_at, "2020-01-02T09:00:00+00:00")
+
+    def test_daily_schedule_rejects_invalid_time(self) -> None:
+        with TemporaryDirectory() as temp:
+            with self.assertRaisesRegex(ValueError, "HH:MM"):
+                set_evolve_daily_schedule("tomorrow morning", Path(temp))
 
 
 def _write_lineage_candidate(root: Path, candidate: LineageCandidate) -> None:
