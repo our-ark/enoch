@@ -605,6 +605,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("/cron - show scheduled jobs", client.sent[0][1])
         self.assertIn("/evolve - show self-evolution mode, theme, and top candidate", client.sent[0][1])
         self.assertIn("/evolve theme <text> - set the current self-evolution theme", client.sent[0][1])
+        self.assertIn("/evolve schedule once a day - run evolve once per day", client.sent[0][1])
         self.assertIn("/evolve schedule every <interval> - run periodic evolve checks", client.sent[0][1])
         self.assertIn("/evolve schedule daily HH:MM - run evolve once per day at local time", client.sent[0][1])
         self.assertIn("/evolve schedule cron '30 9 * * *' - run evolve with a cron-style daily schedule", client.sent[0][1])
@@ -660,6 +661,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("Evolve commands:", reply)
         self.assertIn("/evolve co-evolve", reply)
         self.assertIn("/evolve theme <text>", reply)
+        self.assertIn("/evolve schedule once a day", reply)
         self.assertIn("/evolve schedule every <interval>", reply)
         self.assertIn("/evolve schedule daily HH:MM", reply)
         self.assertIn("/evolve schedule cron '30 9 * * *'", reply)
@@ -1226,6 +1228,26 @@ class EnochTelegramTests(unittest.TestCase):
 
         self.assertIn("Schedule: every 1d; next", client.sent[0][1])
         self.assertIn("Schedule: off", client.sent[1][1])
+
+    def test_evolve_once_a_day_alias_sets_daily_interval(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            client = FakeTelegramClient(allowed_chat_id=42)
+            bot = EnochTelegramBot(load_identity(), root, client)
+
+            bot.handle_update(_message_update(chat_id=42, text="/evolve schedule once a day"))
+
+        self.assertIn("Schedule: every 1d; next", client.sent[0][1])
+
+    def test_evolve_once_a_day_alias_accepts_time(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            client = FakeTelegramClient(allowed_chat_id=42)
+            bot = EnochTelegramBot(load_identity(), root, client)
+
+            bot.handle_update(_message_update(chat_id=42, text="/evolve schedule once a day at 09:30"))
+
+        self.assertIn("Schedule: daily 09:30; next", client.sent[0][1])
 
     def test_evolve_can_set_daily_schedule(self) -> None:
         with TemporaryDirectory() as temp:

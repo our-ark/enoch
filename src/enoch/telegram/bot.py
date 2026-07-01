@@ -1068,6 +1068,8 @@ class EnochTelegramBot:
         if subcommand in {"off", "disable", "disabled"}:
             disable_evolve_schedule(self.root)
             return _format_evolve_report(evolve_report(self.root))
+        if subcommand == "once":
+            return self._evolve_schedule_once(rest)
         if subcommand == "daily":
             if not rest.strip():
                 return "Use /evolve schedule daily HH:MM to run evolve once per day at local time."
@@ -1094,6 +1096,21 @@ class EnochTelegramBot:
         except ValueError as error:
             return str(error)
         return _format_evolve_report(evolve_report(self.root))
+
+    def _evolve_schedule_once(self, argument: str) -> str:
+        normalized = argument.strip().lower()
+        if normalized in {"a day", "per day", "daily"}:
+            set_evolve_schedule(24 * 60 * 60, self.root)
+            return _format_evolve_report(evolve_report(self.root))
+        prefix = "a day at "
+        if normalized.startswith(prefix):
+            daily_time = argument.strip()[len(prefix) :].strip()
+            try:
+                set_evolve_daily_schedule(daily_time, self.root)
+            except ValueError as error:
+                return str(error)
+            return _format_evolve_report(evolve_report(self.root))
+        return _evolve_usage()
 
     def _cron(self, chat_id: int, text: str) -> str:
         command, argument = _parse_telegram_command(text)
@@ -2202,6 +2219,7 @@ def _evolve_usage() -> str:
             "Use /evolve to show Enoch's self-evolution status.",
             "Use /evolve disabled|co-evolve|auto-evolve to set the mode.",
             "Use /evolve theme <text> to set the current evolution theme.",
+            "Use /evolve schedule once a day to run evolve once per day.",
             "Use /evolve schedule every <interval> to run periodic evolve checks.",
             "Use /evolve schedule daily HH:MM to run evolve once per day at local time.",
             "Use /evolve schedule cron '30 9 * * *' for a cron-style daily schedule.",
