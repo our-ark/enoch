@@ -1044,9 +1044,17 @@ class EnochTelegramBot:
             return _format_evolve_report(evolve_report(self.root))
         subcommand = parts[0].lower()
         rest = parts[1] if len(parts) > 1 else ""
-        if subcommand in {MODE_DISABLED, MODE_CO_EVOLVE, MODE_AUTO_EVOLVE, "co", "auto"}:
+        if subcommand in {MODE_DISABLED, MODE_CO_EVOLVE, MODE_AUTO_EVOLVE, "co", "auto", "auto-evovle"}:
             try:
                 set_evolve_mode(subcommand, self.root)
+            except ValueError as error:
+                return str(error)
+            return _format_evolve_report(evolve_report(self.root))
+        if subcommand == "mode":
+            if not rest.strip():
+                return "Use /evolve mode disabled|co-evolve|auto-evolve to set self-evolution behavior."
+            try:
+                set_evolve_mode(rest, self.root)
             except ValueError as error:
                 return str(error)
             return _format_evolve_report(evolve_report(self.root))
@@ -2246,14 +2254,10 @@ def _evolve_usage() -> str:
     return "\n".join(
         [
             "Use /evolve to show Enoch's self-evolution status.",
-            "Use /evolve disabled|co-evolve|auto-evolve to set the mode.",
+            "Use /evolve mode disabled|co-evolve|auto-evolve to set self-evolution behavior.",
             "Use /evolve theme <text> to set the current evolution theme.",
             "Use /evolve schedule <text> to let Enoch interpret common schedule text.",
-            "Use /evolve schedule once a day to run evolve once per day.",
-            "Use /evolve schedule every <interval> to run periodic evolve checks.",
-            "Use /evolve schedule daily HH:MM to run evolve once per day at local time.",
-            "Use /evolve schedule cron '30 9 * * *' for a cron-style daily schedule.",
-            "Use /evolve schedule off to disable scheduled evolve checks.",
+            "Use /evolve schedule off to stop scheduled evolve checks.",
         ]
     )
 

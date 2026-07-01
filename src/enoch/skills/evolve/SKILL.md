@@ -44,9 +44,7 @@ Enoch must require human direction before changing identity, mission, secrets, p
 ## Commands
 
 - `/evolve`
-- `/evolve disabled`
-- `/evolve co-evolve`
-- `/evolve auto-evolve`
+- `/evolve mode disabled|co-evolve|auto-evolve`
 - `/evolve theme <text>`
 - `/evolve schedule <text>`
 - `/evolve schedule once a day`

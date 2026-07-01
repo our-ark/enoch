@@ -265,7 +265,7 @@ def normalize_evolve_mode(mode: str) -> str:
     normalized = mode.strip().lower()
     if normalized in {"co", "coevolve", "co_evolve"}:
         normalized = MODE_CO_EVOLVE
-    if normalized in {"auto", "autoevolve", "auto_evolve"}:
+    if normalized in {"auto", "autoevolve", "auto_evolve", "auto-evovle", "auto_evovle", "autoevovle"}:
         normalized = MODE_AUTO_EVOLVE
     if normalized not in MODES:
         raise ValueError("Evolve mode must be disabled, co-evolve, or auto-evolve.")
