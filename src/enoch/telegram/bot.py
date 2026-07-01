@@ -1060,14 +1060,17 @@ class EnochTelegramBot:
         return _evolve_usage()
 
     def _evolve_schedule(self, argument: str) -> str:
-        parts = argument.strip().split(maxsplit=1)
-        if not parts:
+        text = _unquote_schedule_text(argument)
+        if not text:
             return _format_evolve_report(evolve_report(self.root))
+        parts = text.split(maxsplit=1)
         subcommand = parts[0].lower()
         rest = parts[1] if len(parts) > 1 else ""
         if subcommand in {"off", "disable", "disabled"}:
             disable_evolve_schedule(self.root)
             return _format_evolve_report(evolve_report(self.root))
+        if subcommand == "once":
+            return self._evolve_schedule_once(rest)
         if subcommand == "daily":
             if not rest.strip():
                 return "Use /evolve schedule daily HH:MM to run evolve once per day at local time."
@@ -1085,15 +1088,58 @@ class EnochTelegramBot:
                 return str(error)
             return _format_evolve_report(evolve_report(self.root))
         if subcommand != "every":
-            return _evolve_usage()
+            return self._apply_evolve_schedule_text(text)
         if not rest.strip():
             return "Use /evolve schedule every <interval> to set the scheduler frequency."
         try:
             interval_seconds = parse_cron_interval(rest)
             set_evolve_schedule(interval_seconds, self.root)
         except ValueError as error:
+            interpreted = self._apply_evolve_schedule_text(text)
+            if "could not understand" not in interpreted:
+                return interpreted
             return str(error)
         return _format_evolve_report(evolve_report(self.root))
+
+    def _evolve_schedule_once(self, argument: str) -> str:
+        normalized = argument.strip().lower()
+        if normalized in {"a day", "per day", "daily"}:
+            set_evolve_schedule(24 * 60 * 60, self.root)
+            return _format_evolve_report(evolve_report(self.root))
+        prefix = "a day at "
+        if normalized.startswith(prefix):
+            daily_time = argument.strip()[len(prefix) :].strip()
+            try:
+                set_evolve_daily_schedule(daily_time, self.root)
+            except ValueError as error:
+                return str(error)
+            return _format_evolve_report(evolve_report(self.root))
+        return _evolve_usage()
+
+    def _apply_evolve_schedule_text(self, text: str) -> str:
+        normalized = text.strip().lower()
+        if normalized in {"once a day", "once daily", "daily", "every day"}:
+            set_evolve_schedule(24 * 60 * 60, self.root)
+            return _format_evolve_report(evolve_report(self.root))
+        for prefix in ("once a day at ", "daily at ", "every day at "):
+            if normalized.startswith(prefix):
+                daily_time = text.strip()[len(prefix) :].strip()
+                try:
+                    set_evolve_daily_schedule(daily_time, self.root)
+                except ValueError as error:
+                    return str(error)
+                return _format_evolve_report(evolve_report(self.root))
+        try:
+            set_evolve_cron_schedule(text, self.root)
+            return _format_evolve_report(evolve_report(self.root))
+        except ValueError:
+            pass
+        try:
+            interval_seconds = parse_cron_interval(text)
+            set_evolve_schedule(interval_seconds, self.root)
+            return _format_evolve_report(evolve_report(self.root))
+        except ValueError:
+            return "Enoch could not understand that schedule. Try once a day, once a day at 09:30, every 1d, or 30 9 * * *."
 
     def _cron(self, chat_id: int, text: str) -> str:
         command, argument = _parse_telegram_command(text)
@@ -2202,12 +2248,21 @@ def _evolve_usage() -> str:
             "Use /evolve to show Enoch's self-evolution status.",
             "Use /evolve disabled|co-evolve|auto-evolve to set the mode.",
             "Use /evolve theme <text> to set the current evolution theme.",
+            "Use /evolve schedule <text> to let Enoch interpret common schedule text.",
+            "Use /evolve schedule once a day to run evolve once per day.",
             "Use /evolve schedule every <interval> to run periodic evolve checks.",
             "Use /evolve schedule daily HH:MM to run evolve once per day at local time.",
             "Use /evolve schedule cron '30 9 * * *' for a cron-style daily schedule.",
             "Use /evolve schedule off to disable scheduled evolve checks.",
         ]
     )
+
+
+def _unquote_schedule_text(text: str) -> str:
+    stripped = text.strip()
+    if len(stripped) >= 2 and stripped[0] == stripped[-1] and stripped[0] in {"'", '"'}:
+        return stripped[1:-1].strip()
+    return stripped
 
 
 def _backlog_priority_and_request(argument: str) -> tuple[str, str]:
