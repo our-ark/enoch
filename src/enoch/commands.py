@@ -293,7 +293,7 @@ def help_message(topic: str = "") -> str:
             "",
             "Evolve:",
             "/evolve - show self-evolution mode, theme, and top candidate",
-            "/evolve mode disabled|co-evolve|auto-evolve - set self-evolution behavior",
+            "/evolve mode <mode> - set self-evolution behavior",
             "/evolve theme <text> - set the current self-evolution theme",
             "/evolve schedule <text> - let Enoch interpret common schedule text",
             "",
@@ -354,7 +354,8 @@ def _help_topic_message(topic: str) -> str:
             [
                 "Evolve commands:",
                 "/evolve - show self-evolution mode, theme, and top candidate",
-                "/evolve mode disabled|co-evolve|auto-evolve - set self-evolution behavior",
+                "/evolve mode <mode> - set self-evolution behavior",
+                "Modes: disabled, co-evolve, auto-evolve.",
                 "/evolve theme <text> - set the current self-evolution theme",
                 "/evolve schedule <text> - let Enoch interpret common schedule text",
             ]
