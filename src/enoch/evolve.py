@@ -7,9 +7,12 @@ from pathlib import Path
 from typing import Iterable
 
 from enoch.backlog import BacklogItem, backlog_status
+from enoch.automatic_learning import LearningArtifact, learning_index_path
+from enoch.cron import CronJob, cron_status, format_cron_interval
 from enoch.lineage.core import LineageCandidate, load_parent_inbox_candidates
 from enoch.memory.paths import atomic_write, clean_text, now as current_time
 from enoch.paths import enoch_home
+from enoch.task_queue import TaskJob, task_queue_status
 
 
 SCHEMA_VERSION = 1
@@ -299,6 +302,9 @@ def collect_evolve_candidates(root: Path | None = None) -> tuple[EvolveCandidate
     candidates: list[EvolveCandidate] = []
     candidates.extend(_backlog_candidates(backlog_status(root).pending))
     candidates.extend(_inheritance_candidates(load_parent_inbox_candidates(root)))
+    candidates.extend(_task_history_candidates(task_queue_status(root).history))
+    candidates.extend(_cron_candidates(cron_status(root).active))
+    candidates.extend(_learning_candidates(_load_learning_artifacts(root)))
     return tuple(candidates)
 
 
@@ -488,6 +494,131 @@ def _inheritance_candidates(items: Iterable[LineageCandidate]) -> list[EvolveCan
     return candidates
 
 
+def _task_history_candidates(items: Iterable[TaskJob]) -> list[EvolveCandidate]:
+    candidates = []
+    for item in items:
+        if item.status not in {"failed", "cancelled"}:
+            continue
+        result = clean_text(item.result)
+        is_failed = item.status == "failed"
+        candidates.append(
+            EvolveCandidate(
+                id=f"task-{item.id}",
+                source="task-history",
+                title=f"Improve reliability after {item.status} task #{item.id}: {item.text}",
+                rationale=(
+                    f"Task #{item.id} ended as {item.status}."
+                    + (f" Result: {result}" if result else "")
+                ),
+                proposed_change=(
+                    "Inspect the task request, result, and surrounding workflow; add a small fix or guardrail that "
+                    "prevents similar work from failing again."
+                ),
+                expected_benefit="Turns recent operational friction into a concrete reliability improvement.",
+                risk="The original task may have failed for transient reasons, so avoid broad changes without evidence.",
+                test_plan="Reproduce the failed or cancelled path if possible, then run focused tests around the changed workflow.",
+                score=30 if is_failed else 18,
+            )
+        )
+    return candidates
+
+
+def _cron_candidates(items: Iterable[CronJob]) -> list[EvolveCandidate]:
+    candidates = []
+    for item in items:
+        cadence = format_cron_interval(item.interval_seconds)
+        candidates.append(
+            EvolveCandidate(
+                id=f"cron-{item.id}",
+                source="cron",
+                title=f"Review recurring workflow #{item.id}: {item.text}",
+                rationale=(
+                    f"Active cron job runs every {cadence}; next run {item.next_run_at or 'unknown'}."
+                    + (f" Last task #{item.last_task_id}." if item.last_task_id is not None else "")
+                ),
+                proposed_change=(
+                    "Inspect whether the recurring request is still useful, has enough context, and should be made "
+                    "safer or more observable."
+                ),
+                expected_benefit="Keeps scheduled automation aligned with current needs instead of letting stale jobs drift.",
+                risk="Recurring jobs are user-facing automation; changes should not silently disable or broaden their behavior.",
+                test_plan="Run cron parsing/status tests and verify the scheduled request still renders clearly in Telegram.",
+                score=12,
+            )
+        )
+    return candidates
+
+
+def _learning_candidates(items: Iterable[LearningArtifact]) -> list[EvolveCandidate]:
+    candidates = []
+    for item in items:
+        skills = ", ".join(item.skill_names) or "unknown"
+        candidates.append(
+            EvolveCandidate(
+                id=f"learning-{item.id}",
+                source="learning",
+                title=f"Turn learned skill work into reusable behavior: {skills}",
+                rationale=f"Learning artifact from task {item.task_id or 'unknown'} recorded skill work for {skills}.",
+                proposed_change=(
+                    "Inspect the learning artifact and decide whether Enoch should adapt docs, tests, or command behavior "
+                    "from that successful skill change."
+                ),
+                expected_benefit="Promotes successful skill work into deliberate self-improvement instead of passive archive data.",
+                risk="The artifact may be too context-specific to generalize; adapt only reusable pieces.",
+                test_plan="Run skill discovery tests and focused tests for any adapted skill behavior.",
+                score=20,
+            )
+        )
+    return candidates
+
+
+def _load_learning_artifacts(root: Path | None = None, *, limit: int = 10) -> tuple[LearningArtifact, ...]:
+    path = learning_index_path(root)
+    if not path.exists():
+        return ()
+    artifacts = []
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return ()
+    for line in reversed(lines):
+        if not line.strip():
+            continue
+        try:
+            raw = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        artifact = _learning_artifact_from_json(raw)
+        if artifact is not None:
+            artifacts.append(artifact)
+        if len(artifacts) >= limit:
+            break
+    return tuple(artifacts)
+
+
+def _learning_artifact_from_json(raw: object) -> LearningArtifact | None:
+    if not isinstance(raw, dict):
+        return None
+    artifact_id = clean_text(str(raw.get("id") or ""))
+    request = clean_text(str(raw.get("request") or ""))
+    if not artifact_id or not request:
+        return None
+    return LearningArtifact(
+        id=artifact_id,
+        artifact_type=clean_text(str(raw.get("artifact_type") or "skill")) or "skill",
+        source_agent=clean_text(str(raw.get("source_agent") or "")),
+        created_at=str(raw.get("created_at") or ""),
+        task_id=_optional_int(raw.get("task_id")),
+        command=clean_text(str(raw.get("command") or "")),
+        request=request,
+        result_summary=clean_text(str(raw.get("result_summary") or "")),
+        pr_urls=_string_tuple(raw.get("pr_urls")),
+        changed_files=_string_tuple(raw.get("changed_files")),
+        skill_names=_string_tuple(raw.get("skill_names")),
+        context_source=clean_text(str(raw.get("context_source") or "")),
+    )
+
+
 def _score_candidate(candidate: EvolveCandidate, *, theme: str) -> EvolveCandidate:
     score = candidate.score + 25
     text = " ".join([candidate.title, candidate.rationale, candidate.proposed_change]).lower()
@@ -498,7 +629,27 @@ def _score_candidate(candidate: EvolveCandidate, *, theme: str) -> EvolveCandida
         score += 10
     if candidate.source == "inheritance":
         score += 8
+    if candidate.source == "task-history":
+        score += 12
+    if candidate.source == "learning":
+        score += 6
     return EvolveCandidate(**{**candidate.__dict__, "score": score})
+
+
+def _optional_int(value: object) -> int | None:
+    parsed = _int(value, default=0)
+    return parsed if parsed > 0 else None
+
+
+def _string_tuple(value: object) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        return ()
+    output = []
+    for item in value:
+        cleaned = clean_text(str(item or ""))
+        if cleaned:
+            output.append(cleaned)
+    return tuple(output)
 
 
 def _utc_now() -> datetime:

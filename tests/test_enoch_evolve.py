@@ -10,6 +10,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from enoch.backlog import add_backlog_item
+from enoch.automatic_learning import record_learning_artifact
+from enoch.cron import add_cron_job
 from enoch.evolve import (
     MODE_DISABLED,
     claim_due_evolve_schedule,
@@ -27,7 +29,9 @@ from enoch.evolve import (
     set_evolve_mode,
     set_evolve_theme,
 )
+from enoch.identity import load_identity
 from enoch.lineage.core import LineageCandidate
+from enoch.task_queue import begin_next_task, enqueue_task, fail_task
 
 
 class EnochEvolveTests(unittest.TestCase):
@@ -50,6 +54,34 @@ class EnochEvolveTests(unittest.TestCase):
         self.assertEqual({candidate.source for candidate in candidates}, {"backlog", "inheritance"})
         self.assertEqual(ranked[0].source, "backlog")
         self.assertIn("Telegram", ranked[0].title)
+
+    def test_collects_operational_and_learning_candidates(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            queued = enqueue_task(42, "ship flaky workflow", root)
+            running = begin_next_task(root)
+            assert running is not None
+            fail_task(queued.id, root, result="Tests failed in Telegram workflow.")
+            add_cron_job(42, "summarize health", 24 * 60 * 60, root)
+            record_learning_artifact(
+                load_identity(),
+                request="add a notes skill",
+                result="\n".join(["Files:", "- src/enoch/skills/notes/SKILL.md"]),
+                root=root,
+                task_id=7,
+                command="/task",
+            )
+
+            candidates = collect_evolve_candidates(root)
+            report = evolve_report(root)
+
+        sources = {candidate.source for candidate in candidates}
+        self.assertIn("task-history", sources)
+        self.assertIn("cron", sources)
+        self.assertIn("learning", sources)
+        self.assertEqual(report.counts_by_source["task-history"], 1)
+        self.assertEqual(report.counts_by_source["cron"], 1)
+        self.assertEqual(report.counts_by_source["learning"], 1)
 
     def test_disabled_mode_does_not_collect_candidates(self) -> None:
         with TemporaryDirectory() as temp:
