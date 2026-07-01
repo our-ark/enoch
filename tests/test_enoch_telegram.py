@@ -599,6 +599,8 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("/cron every <interval> <request> - schedule recurring work", client.sent[0][1])
         self.assertIn("/cron cancel <id> - cancel a scheduled job", client.sent[0][1])
         self.assertIn("/cron - show scheduled jobs", client.sent[0][1])
+        self.assertIn("/evolve - show self-evolution mode, theme, and top candidate", client.sent[0][1])
+        self.assertIn("/evolve theme <text> - set the current self-evolution theme", client.sent[0][1])
         self.assertIn("/update", client.sent[0][1])
         self.assertIn("/restart - restart Enoch's Telegram daemon from the locked chat", client.sent[0][1])
         self.assertLess(client.sent[0][1].index("Operations:"), client.sent[0][1].index("/shutdown"))
@@ -639,6 +641,18 @@ class EnochTelegramTests(unittest.TestCase):
         reply = client.sent[0][1]
         self.assertIn("Cron commands:", reply)
         self.assertIn("/cron every <interval> <request>", reply)
+
+    def test_help_evolve_shows_evolve_usage(self) -> None:
+        client = FakeTelegramClient(allowed_chat_id=42)
+        bot = EnochTelegramBot(load_identity(), ROOT, client)
+
+        bot.handle_update(_message_update(chat_id=42, text="/help evolve"))
+
+        reply = client.sent[0][1]
+        self.assertIn("Evolve commands:", reply)
+        self.assertIn("/evolve co-evolve", reply)
+        self.assertIn("/evolve theme <text>", reply)
+        self.assertNotIn("Enoch Telegram commands:", reply)
 
     def test_help_debug_reports_unknown_command(self) -> None:
         client = FakeTelegramClient(allowed_chat_id=42)
@@ -1159,6 +1173,35 @@ class EnochTelegramTests(unittest.TestCase):
 
         self.assertIn("Backlog:", client.sent[1][1])
         self.assertIn("#1 [p0 pending] first", client.sent[1][1])
+
+    def test_evolve_reports_top_candidate_from_backlog(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            add_backlog_item(42, "improve Telegram work UX", root, priority="p0")
+            client = FakeTelegramClient(allowed_chat_id=42)
+            bot = EnochTelegramBot(load_identity(), root, client)
+
+            bot.handle_update(_message_update(chat_id=42, text="/evolve"))
+
+        reply = client.sent[0][1]
+        self.assertIn("Evolve:", reply)
+        self.assertIn("Mode: co-evolve", reply)
+        self.assertIn("- backlog: 1", reply)
+        self.assertIn("backlog-1 [backlog] improve Telegram work UX", reply)
+        self.assertIn("wait for human approval", reply)
+
+    def test_evolve_can_set_theme_and_mode(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            client = FakeTelegramClient(allowed_chat_id=42)
+            bot = EnochTelegramBot(load_identity(), root, client)
+
+            bot.handle_update(_message_update(chat_id=42, text="/evolve theme improve recovery"))
+            bot.handle_update(_message_update(update_id=2, chat_id=42, text="/evolve disabled"))
+
+        self.assertIn("Theme: improve recovery", client.sent[0][1])
+        self.assertIn("Mode: disabled", client.sent[1][1])
+        self.assertIn("Candidate counts:\n- none", client.sent[1][1])
 
     @patch("enoch.telegram.bot.ensure_long_term_memory")
     @patch("enoch.telegram.bot.log_conversation_turn")
