@@ -43,6 +43,9 @@ skills:
   - name: learn
     version: 0.1.0
     path: src/enoch/skills/learn
+  - name: evolve
+    version: 0.1.0
+    path: src/enoch/skills/evolve
   - name: teach
     version: 0.1.0
     exposure: hidden

@@ -118,12 +118,13 @@ class EnochLineageTests(unittest.TestCase):
         self.assertIn("2. Enoch", formatted)
         self.assertIn("   Relation: parent", formatted)
         self.assertIn("   Repo: our-ark/enoch@main", formatted)
-        self.assertIn("   New skills: telegram-talk, inherit, work, teach (hidden)", formatted)
+        self.assertIn("   New skills: telegram-talk, inherit, work", formatted)
+        self.assertNotIn("teach (hidden)", formatted)
         self.assertIn("   Pending: 1 change", formatted)
         self.assertIn("3. Enoch (current)", formatted)
         self.assertIn("   Relation: current agent", formatted)
         self.assertIn("   Source: src/enoch/identity.yaml", formatted)
-        self.assertIn("   New skills: github", formatted)
+        self.assertIn("   New skills: github, evolve", formatted)
 
     def test_load_current_agent_profile_from_identity_yaml(self) -> None:
         current_agent = load_current_agent_profile(ROOT)
@@ -132,6 +133,7 @@ class EnochLineageTests(unittest.TestCase):
         assert current_agent is not None
         self.assertEqual(current_agent.name, "Enoch")
         self.assertIn("github", current_agent.skills)
+        self.assertIn("evolve", current_agent.skills)
 
     def test_parse_declared_skills_from_identity_yaml(self) -> None:
         self.assertEqual(
@@ -148,7 +150,7 @@ class EnochLineageTests(unittest.TestCase):
                     ]
                 )
             ),
-            ("code", "work", "teach (hidden)"),
+            ("code", "work"),
         )
 
     def test_parse_identity_name_from_identity_yaml(self) -> None:
@@ -344,7 +346,7 @@ class FakeLineageClient:
 
     def declared_skills(self, repo: str, branch: str) -> tuple[str, ...]:
         return {
-            "our-ark/enoch": ("telegram-talk", "code", "inherit", "work", "learn", "teach (hidden)"),
+            "our-ark/enoch": ("telegram-talk", "code", "inherit", "work", "learn"),
             "our-ark/lucy": ("itu-talk", "code", "teach", "learn"),
         }.get(repo, ())
 
