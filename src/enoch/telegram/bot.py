@@ -48,7 +48,11 @@ from enoch.evolve import (
     MODE_DISABLED,
     EvolveCandidate,
     EvolveReport,
+    EvolveState,
+    claim_due_evolve_schedule,
+    disable_evolve_schedule,
     evolve_report,
+    set_evolve_schedule,
     set_evolve_mode,
     set_evolve_theme,
 )
@@ -251,6 +255,7 @@ class EnochTelegramBot:
         for update in self.client.get_updates(self.offset):
             self.handle_update(update)
         self._enqueue_due_cron_jobs()
+        self._run_due_evolve_schedule()
         self._maybe_start_task_worker()
 
     def handle_update(self, update: dict[str, Any]) -> None:
@@ -1048,7 +1053,29 @@ class EnochTelegramBot:
                 return "Use /evolve theme <text> to set Enoch's current evolution theme."
             set_evolve_theme(rest, self.root)
             return _format_evolve_report(evolve_report(self.root))
+        if subcommand == "schedule":
+            return self._evolve_schedule(rest)
         return _evolve_usage()
+
+    def _evolve_schedule(self, argument: str) -> str:
+        parts = argument.strip().split(maxsplit=1)
+        if not parts:
+            return _format_evolve_report(evolve_report(self.root))
+        subcommand = parts[0].lower()
+        rest = parts[1] if len(parts) > 1 else ""
+        if subcommand in {"off", "disable", "disabled"}:
+            disable_evolve_schedule(self.root)
+            return _format_evolve_report(evolve_report(self.root))
+        if subcommand != "every":
+            return _evolve_usage()
+        if not rest.strip():
+            return "Use /evolve schedule every <interval> to set the scheduler frequency."
+        try:
+            interval_seconds = parse_cron_interval(rest)
+            set_evolve_schedule(interval_seconds, self.root)
+        except ValueError as error:
+            return str(error)
+        return _format_evolve_report(evolve_report(self.root))
 
     def _cron(self, chat_id: int, text: str) -> str:
         command, argument = _parse_telegram_command(text)
@@ -1204,6 +1231,49 @@ class EnochTelegramBot:
                 self._work_status_messages[job.id] = message_id
                 record_task_status_message(job.id, message_id, self.root)
         return tuple(jobs)
+
+    def _run_due_evolve_schedule(self) -> TaskJob | None:
+        claimed = claim_due_evolve_schedule(self.root)
+        if claimed is None:
+            return None
+        chat_id = self.client.config.allowed_chat_id
+        if chat_id is None or claimed.mode == MODE_DISABLED:
+            return None
+        report = evolve_report(self.root)
+        if claimed.mode == MODE_CO_EVOLVE:
+            self._safe_send_message(chat_id, "Scheduled evolve check\n\n" + _format_evolve_report(report))
+            return None
+        if claimed.mode != MODE_AUTO_EVOLVE or report.top_candidate is None:
+            return None
+        request = _evolve_task_request(report.top_candidate, report.state.theme)
+        context = _evolve_task_context(report.top_candidate)
+        try:
+            job = enqueue_task(
+                chat_id,
+                request,
+                self.root,
+                context=context,
+                context_source="evolve-scheduler",
+            )
+        except (OSError, ValueError):
+            return None
+        message = _format_work_status_message(
+            WorkStatusMessage(
+                chat_id=chat_id,
+                message_id=0,
+                request=job.text,
+                started_at=time.monotonic(),
+                task_id=job.id,
+                status="queued",
+                latest_update=f"Scheduled by evolve {claimed.mode}.",
+                context=job.context,
+            )
+        )
+        message_id = self._safe_send_message_id(chat_id, message)
+        if message_id is not None:
+            self._work_status_messages[job.id] = message_id
+            record_task_status_message(job.id, message_id, self.root)
+        return job
 
     def _run_task_job(self, job: TaskJob) -> None:
         self._run_action_job(
@@ -1934,6 +2004,7 @@ def _format_evolve_report(report: EvolveReport) -> str:
         "Evolve:",
         f"Mode: {state.mode}",
         f"Theme: {state.theme or 'not set'}",
+        f"Schedule: {_format_evolve_schedule(state)}",
         "",
         "Candidate counts:",
     ]
@@ -1949,6 +2020,14 @@ def _format_evolve_report(report: EvolveReport) -> str:
         lines.extend(_format_evolve_candidate(report.top_candidate))
     lines.extend(["", f"Next action: {_evolve_next_action(report)}"])
     return "\n".join(lines)
+
+
+def _format_evolve_schedule(state: EvolveState) -> str:
+    if not state.schedule_enabled or state.schedule_interval_seconds <= 0:
+        return "off"
+    next_run = state.schedule_next_run_at or "unknown"
+    last_run = f"; last {state.schedule_last_run_at}" if state.schedule_last_run_at else ""
+    return f"every {format_cron_interval(state.schedule_interval_seconds)}; next {next_run}{last_run}"
 
 
 def _format_evolve_candidate(candidate: EvolveCandidate) -> list[str]:
@@ -1969,6 +2048,38 @@ def _evolve_next_action(report: EvolveReport) -> str:
     if report.state.mode == MODE_AUTO_EVOLVE:
         return "select this bounded candidate, then queue or run work only after guardrails pass."
     return "propose this candidate and wait for human approval before changing code."
+
+
+def _evolve_task_request(candidate: EvolveCandidate, theme: str) -> str:
+    lines = [
+        f"Evolve selected candidate {candidate.id}: {candidate.title}",
+        "",
+        f"Source: {candidate.source}",
+        f"Theme: {theme or 'not set'}",
+        f"Proposed change: {candidate.proposed_change}",
+        f"Expected benefit: {candidate.expected_benefit}",
+        f"Risk: {candidate.risk}",
+        f"Test plan: {candidate.test_plan}",
+        "",
+        "Keep the change small, reversible, and covered by focused tests. Open a PR for human review; do not merge it.",
+    ]
+    return "\n".join(lines)
+
+
+def _evolve_task_context(candidate: EvolveCandidate) -> str:
+    return "\n".join(
+        [
+            "Scheduled evolve candidate context:",
+            f"ID: {candidate.id}",
+            f"Source: {candidate.source}",
+            f"Score: {candidate.score}",
+            f"Rationale: {candidate.rationale}",
+            f"Proposed change: {candidate.proposed_change}",
+            f"Expected benefit: {candidate.expected_benefit}",
+            f"Risk: {candidate.risk}",
+            f"Test plan: {candidate.test_plan}",
+        ]
+    )
 
 
 def _history_task(task_id: int, root: Path) -> TaskJob | None:
@@ -2069,6 +2180,8 @@ def _evolve_usage() -> str:
             "Use /evolve to show Enoch's self-evolution status.",
             "Use /evolve disabled|co-evolve|auto-evolve to set the mode.",
             "Use /evolve theme <text> to set the current evolution theme.",
+            "Use /evolve schedule every <interval> to run periodic evolve checks.",
+            "Use /evolve schedule off to disable scheduled evolve checks.",
         ]
     )
 
