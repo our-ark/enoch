@@ -42,6 +42,16 @@ from enoch.cron import (
     parse_cron_interval,
     record_cron_task,
 )
+from enoch.evolve import (
+    MODE_AUTO_EVOLVE,
+    MODE_CO_EVOLVE,
+    MODE_DISABLED,
+    EvolveCandidate,
+    EvolveReport,
+    evolve_report,
+    set_evolve_mode,
+    set_evolve_theme,
+)
 from enoch.git_tools import (
     GitError,
     changed_files,
@@ -287,6 +297,8 @@ class EnochTelegramBot:
             reply = self._backlog(chat_id, work_text)
         elif command in {"/cron", "/crons"}:
             reply = self._cron(chat_id, work_text)
+        elif command == "/evolve":
+            reply = self._evolve(argument)
         elif command == "/mode":
             reply = self._mode(text)
         elif command == "/shutdown":
@@ -1018,6 +1030,25 @@ class EnochTelegramBot:
         except (OSError, ValueError):
             return "Enoch could not add that backlog item."
         return f"Backlog #{item.id} [{item.priority}] saved. Enoch will promote it when the task queue is idle."
+
+    def _evolve(self, argument: str) -> str:
+        parts = argument.strip().split(maxsplit=1)
+        if not parts:
+            return _format_evolve_report(evolve_report(self.root))
+        subcommand = parts[0].lower()
+        rest = parts[1] if len(parts) > 1 else ""
+        if subcommand in {MODE_DISABLED, MODE_CO_EVOLVE, MODE_AUTO_EVOLVE, "co", "auto"}:
+            try:
+                set_evolve_mode(subcommand, self.root)
+            except ValueError as error:
+                return str(error)
+            return _format_evolve_report(evolve_report(self.root))
+        if subcommand == "theme":
+            if not rest.strip():
+                return "Use /evolve theme <text> to set Enoch's current evolution theme."
+            set_evolve_theme(rest, self.root)
+            return _format_evolve_report(evolve_report(self.root))
+        return _evolve_usage()
 
     def _cron(self, chat_id: int, text: str) -> str:
         command, argument = _parse_telegram_command(text)
@@ -1897,6 +1928,49 @@ def _format_cron_list_item(job: CronJob) -> str:
     return f"{label} (last task #{job.last_task_id})"
 
 
+def _format_evolve_report(report: EvolveReport) -> str:
+    state = report.state
+    lines = [
+        "Evolve:",
+        f"Mode: {state.mode}",
+        f"Theme: {state.theme or 'not set'}",
+        "",
+        "Candidate counts:",
+    ]
+    if report.counts_by_source:
+        for source in sorted(report.counts_by_source):
+            lines.append(f"- {source}: {report.counts_by_source[source]}")
+    else:
+        lines.append("- none")
+    lines.extend(["", "Top candidate:"])
+    if report.top_candidate is None:
+        lines.append("- none")
+    else:
+        lines.extend(_format_evolve_candidate(report.top_candidate))
+    lines.extend(["", f"Next action: {_evolve_next_action(report)}"])
+    return "\n".join(lines)
+
+
+def _format_evolve_candidate(candidate: EvolveCandidate) -> list[str]:
+    return [
+        f"- {candidate.id} [{candidate.source}] {_clip_activity_text(candidate.title, limit=100)}",
+        f"  Score: {candidate.score}",
+        f"  Rationale: {_clip_activity_text(candidate.rationale, limit=180)}",
+        f"  Proposed change: {_clip_activity_text(candidate.proposed_change, limit=180)}",
+        f"  Test plan: {_clip_activity_text(candidate.test_plan, limit=180)}",
+    ]
+
+
+def _evolve_next_action(report: EvolveReport) -> str:
+    if report.state.mode == MODE_DISABLED:
+        return "disabled; Enoch will not collect or rank self-evolution candidates."
+    if report.top_candidate is None:
+        return "no candidate yet."
+    if report.state.mode == MODE_AUTO_EVOLVE:
+        return "select this bounded candidate, then queue or run work only after guardrails pass."
+    return "propose this candidate and wait for human approval before changing code."
+
+
 def _history_task(task_id: int, root: Path) -> TaskJob | None:
     for job in reversed(task_queue_status(root).history):
         if job.id == task_id:
@@ -1985,6 +2059,16 @@ def _cron_usage() -> str:
             "Intervals can be like 10m, 2h, or 1d.",
             "Use /cron cancel <id> to cancel a scheduled job.",
             "Use /cron to show scheduled jobs.",
+        ]
+    )
+
+
+def _evolve_usage() -> str:
+    return "\n".join(
+        [
+            "Use /evolve to show Enoch's self-evolution status.",
+            "Use /evolve disabled|co-evolve|auto-evolve to set the mode.",
+            "Use /evolve theme <text> to set the current evolution theme.",
         ]
     )
 

@@ -282,6 +282,8 @@ def help_message(topic: str = "") -> str:
             "/cron every <interval> <request> - schedule recurring work",
             "/cron cancel <id> - cancel a scheduled job",
             "/cron - show scheduled jobs",
+            "/evolve - show self-evolution mode, theme, and top candidate",
+            "/evolve theme <text> - set the current self-evolution theme",
             "",
             "Inherit:",
             "/ancestors - show ancestor chain and ancestor skills",
@@ -343,6 +345,17 @@ def _help_topic_message(topic: str) -> str:
                 "/cron - show scheduled jobs",
             ]
         )
+    if topic == "evolve":
+        return "\n".join(
+            [
+                "Evolve commands:",
+                "/evolve - show self-evolution mode, theme, and top candidate",
+                "/evolve disabled - stop collecting and ranking self-evolution candidates",
+                "/evolve co-evolve - propose candidates and wait for human approval",
+                "/evolve auto-evolve - select bounded candidates under guardrails",
+                "/evolve theme <text> - set the current self-evolution theme",
+            ]
+        )
     topics = {
         "start": "/start - start Enoch and point to /help",
         "self": "/self - show Enoch's identity, role, ancestor, and mission",
@@ -358,6 +371,7 @@ def _help_topic_message(topic: str) -> str:
         ),
         "tasks": "/tasks - show running, queued, and recent task history",
         "stop": "/stop - stop the currently running /do or /task job",
+        "evolve": "/evolve - show self-evolution mode, theme, and top candidate",
         "skills": "/skills [agent-or-path] - show declared skills",
         "learn": "/learn <skill> from <agent> - adapt a published skill from another Our-Ark agent",
         "mode": "/mode [chat|work] - show or set whether Enoch only chats or can work on repo changes",
