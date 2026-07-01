@@ -332,12 +332,25 @@ def load_evolve_candidates(
     return tuple(candidate for candidate in candidates if candidate.status in VISIBLE_CANDIDATE_STATUSES)
 
 
+def get_evolve_candidate(candidate_id: str, root: Path | None = None, *, theme: str = "") -> EvolveCandidate:
+    candidates = list(sync_evolve_candidates(root, theme=theme))
+    candidates.extend(candidate for candidate in _load_all_evolve_candidates(root) if candidate.status not in VISIBLE_CANDIDATE_STATUSES)
+    for candidate in candidates:
+        if _candidate_matches_id(candidate, candidate_id):
+            return _score_candidate(candidate, theme=theme)
+    raise ValueError(f"No evolve candidate found for {candidate_id}.")
+
+
 def select_evolve_candidate(candidate_id: str, root: Path | None = None, *, theme: str = "") -> EvolveCandidate:
     return _set_candidate_status(candidate_id, "selected", root, theme=theme)
 
 
 def reject_evolve_candidate(candidate_id: str, root: Path | None = None, *, theme: str = "") -> EvolveCandidate:
     return _set_candidate_status(candidate_id, "rejected", root, theme=theme)
+
+
+def run_evolve_candidate(candidate_id: str, root: Path | None = None, *, theme: str = "") -> EvolveCandidate:
+    return _set_candidate_status(candidate_id, "running", root, theme=theme)
 
 
 def rank_evolve_candidates(

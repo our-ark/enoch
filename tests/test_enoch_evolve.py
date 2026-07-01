@@ -22,6 +22,7 @@ from enoch.evolve import (
     load_evolve_state,
     rank_evolve_candidates,
     reject_evolve_candidate,
+    run_evolve_candidate,
     select_evolve_candidate,
     set_evolve_cron_schedule,
     set_evolve_daily_schedule,
@@ -123,6 +124,18 @@ class EnochEvolveTests(unittest.TestCase):
         self.assertEqual(rejected.status, "rejected")
         self.assertNotIn("backlog-1", {candidate.id for candidate in visible})
         self.assertIn("backlog-1", {candidate.id for candidate in all_candidates})
+
+    def test_run_candidate_marks_it_running(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            add_backlog_item(1, "ship evolve run", root, priority="p1")
+
+            running = run_evolve_candidate("backlog-1", root)
+            visible = load_evolve_candidates(root)
+
+        self.assertEqual(running.status, "running")
+        self.assertEqual(visible[0].id, "backlog-1")
+        self.assertEqual(visible[0].status, "running")
 
     def test_schedule_can_be_set_claimed_and_disabled(self) -> None:
         with TemporaryDirectory() as temp:

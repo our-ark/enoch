@@ -52,8 +52,10 @@ from enoch.evolve import (
     claim_due_evolve_schedule,
     disable_evolve_schedule,
     evolve_report,
+    get_evolve_candidate,
     load_evolve_candidates,
     reject_evolve_candidate,
+    run_evolve_candidate,
     select_evolve_candidate,
     set_evolve_cron_schedule,
     set_evolve_daily_schedule,
@@ -1093,9 +1095,37 @@ class EnochTelegramBot:
             except ValueError as error:
                 return str(error)
             return "Rejected evolve candidate.\n\n" + "\n".join(_format_evolve_candidate(candidate))
+        if subcommand == "run":
+            if not rest.strip():
+                return "Use /evolve run <id> to queue a self-evolution candidate."
+            return self._evolve_run(rest)
         if subcommand == "schedule":
             return self._evolve_schedule(rest)
         return _evolve_usage()
+
+    def _evolve_run(self, candidate_id: str) -> str:
+        chat_id = self.client.config.allowed_chat_id
+        if chat_id is None:
+            return "Enoch needs a locked Telegram chat before queueing evolve work."
+        state = evolve_report(self.root).state
+        try:
+            candidate = get_evolve_candidate(candidate_id, self.root, theme=state.theme)
+        except ValueError as error:
+            return str(error)
+        try:
+            job = enqueue_task(
+                chat_id,
+                _evolve_task_request(candidate, state.theme),
+                self.root,
+                context=_evolve_task_context(candidate),
+                context_source="evolve-run",
+            )
+        except (OSError, ValueError):
+            return "Enoch could not queue that evolve candidate."
+        candidate = run_evolve_candidate(candidate.id, self.root, theme=state.theme)
+        return f"Queued evolve candidate {candidate.id} as task #{job.id}.\n\n" + "\n".join(
+            _format_evolve_candidate(candidate)
+        )
 
     def _evolve_schedule(self, argument: str) -> str:
         text = _unquote_schedule_text(argument)
@@ -1347,8 +1377,9 @@ class EnochTelegramBot:
             return None
         if claimed.mode != MODE_AUTO_EVOLVE or report.top_candidate is None:
             return None
-        request = _evolve_task_request(report.top_candidate, report.state.theme)
-        context = _evolve_task_context(report.top_candidate)
+        candidate = report.top_candidate
+        request = _evolve_task_request(candidate, report.state.theme)
+        context = _evolve_task_context(candidate)
         try:
             job = enqueue_task(
                 chat_id,
@@ -1359,6 +1390,7 @@ class EnochTelegramBot:
             )
         except (OSError, ValueError):
             return None
+        run_evolve_candidate(candidate.id, self.root, theme=report.state.theme)
         message = _format_work_status_message(
             WorkStatusMessage(
                 chat_id=chat_id,
@@ -2304,6 +2336,7 @@ def _evolve_usage() -> str:
             "Use /evolve theme <text> to set the current evolution theme.",
             "Use /evolve candidates to show current candidates.",
             "Use /evolve select <id> to select a candidate.",
+            "Use /evolve run <id> to queue a candidate as a task.",
             "Use /evolve reject <id> to reject a candidate.",
             "Use /evolve schedule <text> to let Enoch interpret common schedule text.",
         ]

@@ -297,6 +297,7 @@ def help_message(topic: str = "") -> str:
             "/evolve theme <text> - set the current self-evolution theme",
             "/evolve candidates - show current self-evolution candidates",
             "/evolve select <id> - select a self-evolution candidate",
+            "/evolve run <id> - queue a self-evolution candidate as a task",
             "/evolve reject <id> - reject a self-evolution candidate",
             "/evolve schedule <text> - let Enoch interpret common schedule text",
             "",
@@ -362,6 +363,7 @@ def _help_topic_message(topic: str) -> str:
                 "/evolve theme <text> - set the current self-evolution theme",
                 "/evolve candidates - show current self-evolution candidates",
                 "/evolve select <id> - select a self-evolution candidate",
+                "/evolve run <id> - queue a self-evolution candidate as a task",
                 "/evolve reject <id> - reject a self-evolution candidate",
                 "/evolve schedule <text> - let Enoch interpret common schedule text",
             ]
