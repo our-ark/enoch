@@ -2257,7 +2257,6 @@ def _evolve_usage() -> str:
             "Use /evolve mode disabled|co-evolve|auto-evolve to set self-evolution behavior.",
             "Use /evolve theme <text> to set the current evolution theme.",
             "Use /evolve schedule <text> to let Enoch interpret common schedule text.",
-            "Use /evolve schedule off to stop scheduled evolve checks.",
         ]
     )
 

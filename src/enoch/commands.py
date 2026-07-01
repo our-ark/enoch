@@ -296,7 +296,6 @@ def help_message(topic: str = "") -> str:
             "/evolve mode disabled|co-evolve|auto-evolve - set self-evolution behavior",
             "/evolve theme <text> - set the current self-evolution theme",
             "/evolve schedule <text> - let Enoch interpret common schedule text",
-            "/evolve schedule off - stop scheduled evolve checks",
             "",
             "Operations:",
             "/doctor - run local health checks",
@@ -358,7 +357,6 @@ def _help_topic_message(topic: str) -> str:
                 "/evolve mode disabled|co-evolve|auto-evolve - set self-evolution behavior",
                 "/evolve theme <text> - set the current self-evolution theme",
                 "/evolve schedule <text> - let Enoch interpret common schedule text",
-                "/evolve schedule off - stop scheduled evolve checks",
             ]
         )
     topics = {
