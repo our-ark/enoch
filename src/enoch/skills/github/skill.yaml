@@ -1,0 +1,19 @@
+name: github
+version: 0.1.0
+summary: Coordinate remote collaboration through GitHub, including branches, pull requests, issues, and review workflows.
+owner: Enoch
+status: active
+mode: external-tool
+entrypoint: src/enoch/github/workflow.py
+permissions:
+  github:
+    read_repo: true
+    create_branch: human_approval_required
+    push_branch: human_approval_required
+    create_pr: human_approval_required
+    comment: human_approval_required
+    merge_pr: human_approval_required
+  git:
+    push: human_approval_required
+validation:
+  command: python3 -m unittest discover -s tests

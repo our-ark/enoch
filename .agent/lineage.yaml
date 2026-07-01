@@ -1,0 +1,4 @@
+parent:
+  name: Seth
+  repo: https://github.com/our-ark/seth
+  branch: main

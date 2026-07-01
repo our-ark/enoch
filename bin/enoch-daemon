@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ENOCH_ROOT="$ROOT"
+
+source "$ROOT/bin/_enoch-env"
+enoch_run_module enoch.daemon "$@"

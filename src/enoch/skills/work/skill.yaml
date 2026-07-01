@@ -1,0 +1,24 @@
+name: work
+version: 0.1.0
+summary: Run persistent work through task queues, backlog, cron scheduling, and skill-only automatic learning.
+owner: Enoch
+status: active
+mode: background-work
+entrypoint: src/enoch/telegram/bot.py
+capabilities:
+  task_queue: src/enoch/task_queue.py
+  backlog: src/enoch/backlog.py
+  cron: src/enoch/cron.py
+  automatic_learning: src/enoch/automatic_learning.py
+permissions:
+  filesystem:
+    read: true
+    write:
+      - .enoch/task_queue.json
+      - .enoch/backlog.json
+      - .enoch/cron.json
+      - .enoch/learning
+  telegram:
+    send_status_updates: true
+validation:
+  command: python3 -m unittest discover -s tests

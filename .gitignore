@@ -1,0 +1,8 @@
+.enoch/
+.agent/instance.yaml
+.agent/lineage_inbox.json
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/

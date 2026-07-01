@@ -1,0 +1,23 @@
+name: inherit
+version: 0.1.0
+summary: Discover ancestor skills and candidate lineage changes for selective inheritance.
+owner: Enoch
+status: active
+mode: lineage-awareness
+entrypoint: src/enoch/lineage/core.py
+capabilities:
+  resolve_lineage: src/enoch/lineage/core.py
+  refresh_inbox: src/enoch/lineage/core.py
+  inspect_candidates: src/enoch/lineage/core.py
+  mark_candidates: src/enoch/lineage/core.py
+permissions:
+  filesystem:
+    read:
+      - .agent/lineage.yaml
+      - .agent/lineage_inbox.json
+    write:
+      - .agent/lineage_inbox.json
+  github:
+    read_repo: true
+validation:
+  command: python3 -m unittest discover -s tests

@@ -1,0 +1,22 @@
+name: learn
+version: 0.1.0
+summary: Adapt a published skill from another trusted Our-Ark agent into Enoch's own body.
+owner: Enoch
+status: active
+mode: workspace-write
+entrypoint: src/enoch/learn.py
+permissions:
+  filesystem:
+    read:
+      - published_agent_skills
+    write:
+      - approved_actions
+  git:
+    status: true
+    diff: true
+    branch: approved_action
+    commit: approved_action
+    push: approved_action
+    merge: false
+validation:
+  command: python3 -m unittest discover -s tests

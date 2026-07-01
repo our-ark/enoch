@@ -1,0 +1,10 @@
+name: teach
+version: 0.1.0
+summary: Hidden skill for making Enoch's useful skill-level changes inheritable by descendants without exposing a /teach command.
+owner: Enoch
+status: active
+exposure: hidden
+mode: implicit
+entrypoint: none
+validation:
+  command: python3 -m unittest discover -s tests

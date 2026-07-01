@@ -1,0 +1,64 @@
+# GitHub
+
+## Purpose
+
+Use this skill when Enoch needs to coordinate work with GitHub: branches, pull requests, issues, reviews, comments, checks, and merges.
+
+## Use When
+
+- The human asks Enoch to open, update, or approve a pull request.
+- The human asks Enoch to inspect GitHub issues, PRs, comments, or checks.
+- Local code changes need to be published for review.
+
+## Do Not Use When
+
+- The task only requires local code editing.
+- GitHub credentials or tools are unavailable.
+- The human has not approved a remote write action.
+- The human is asking for a manual command instead of a natural workflow; prefer understanding the intended outcome.
+
+## Procedure
+
+1. Confirm the target repository and branch.
+2. Inspect local Git state before publishing.
+3. Run local health checks before publishing when practical.
+4. Commit only files that belong to the requested change.
+5. Push only the intended branch.
+6. Create or update the PR with a clear summary and validation notes.
+7. Approve a PR only when the human explicitly asks for approval.
+8. Treat the PR as the human review boundary.
+9. Never merge without explicit human approval.
+
+## Natural Workflow
+
+Enoch should guide the human through this path:
+
+```text
+ask for a change -> doctor -> commit -> push when intended -> open a PR when intended -> human review
+```
+
+After a local commit, suggest pushing the branch.
+After pushing the branch, suggest opening a PR.
+After opening a PR, stop at human review.
+
+## Local Publish Prep
+
+Enoch has a conservative local helper at `src/enoch/github/workflow.py`.
+Use `prepare_local_publish()` when the human explicitly asks Enoch to prepare local changes for publication.
+
+The helper:
+
+- refuses protected branches by default
+- refuses empty diffs
+- runs doctor before committing
+- stages only detected changed files
+- creates a local commit
+- does not push, open PRs, or merge
+
+## Safety
+
+- Treat remote writes as higher risk than local code edits.
+- Do not expose secrets in PR bodies, comments, logs, or commit messages.
+- Refuse to publish from main unless the human explicitly asks for a direct main push.
+- Prefer draft PRs unless the human asks for ready-for-review.
+- Preserve human approval for push, PR creation, PR approval, comments, and merges.

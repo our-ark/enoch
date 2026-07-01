@@ -1,0 +1,381 @@
+from pathlib import Path
+import sys
+import unittest
+from unittest.mock import MagicMock, patch
+
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+
+from enoch.github.workflow import (
+    PublishError,
+    close_pull_request,
+    create_pull_request,
+    prepare_local_publish,
+    push_current_branch,
+)
+from enoch.immune import DoctorDiagnosis
+
+
+class EnochGithubWorkflowTests(unittest.TestCase):
+    @patch("enoch.github.workflow.current_branch", return_value="main")
+    def test_refuses_protected_branch_by_default(self, _current_branch: MagicMock) -> None:
+        with self.assertRaisesRegex(PublishError, "Refusing to publish from main"):
+            prepare_local_publish("Test commit", root=ROOT)
+
+    @patch("enoch.github.workflow.changed_files", return_value=[])
+    @patch("enoch.github.workflow.current_branch", return_value="feature/enoch")
+    def test_refuses_empty_diff(
+        self, _current_branch: MagicMock, _changed_files: MagicMock
+    ) -> None:
+        with self.assertRaisesRegex(PublishError, "No local changes"):
+            prepare_local_publish("Test commit", root=ROOT)
+
+    @patch("enoch.github.workflow.run_immune_system")
+    @patch("enoch.github.workflow.diff_summary", return_value="README.md | 1 +")
+    @patch("enoch.github.workflow.changed_files", return_value=["README.md"])
+    @patch("enoch.github.workflow.current_branch", return_value="feature/enoch")
+    def test_refuses_when_doctor_fails(
+        self,
+        _current_branch: MagicMock,
+        _changed_files: MagicMock,
+        _diff_summary: MagicMock,
+        run_immune_system: MagicMock,
+    ) -> None:
+        run_immune_system.return_value = _doctor_result(passed=False, summary="1 test(s) failed.")
+
+        with self.assertRaisesRegex(PublishError, "Doctor failed"):
+            prepare_local_publish("Test commit", root=ROOT)
+
+    @patch("enoch.github.workflow.read_section")
+    @patch("enoch.github.workflow.run_git")
+    @patch("enoch.github.workflow.run_immune_system")
+    @patch("enoch.github.workflow.diff_summary", return_value="README.md | 1 +")
+    @patch("enoch.github.workflow.changed_files", return_value=["README.md"])
+    @patch("enoch.github.workflow.current_branch", return_value="feature/enoch")
+    def test_stages_and_commits_after_doctor_passes(
+        self,
+        _current_branch: MagicMock,
+        _changed_files: MagicMock,
+        _diff_summary: MagicMock,
+        run_immune_system: MagicMock,
+        run_git: MagicMock,
+        read_section: MagicMock,
+    ) -> None:
+        doctor = _doctor_result(passed=True, summary="All configured health checks passed.")
+        run_immune_system.return_value = doctor
+        read_section.return_value = {
+            "author_name": "Gary Zhao",
+            "author_email": "3261777+peking2@users.noreply.github.com",
+        }
+        run_git.side_effect = [
+            _git_result(returncode=0),
+            _git_result(returncode=0),
+            _git_result(returncode=0, stdout="abc123"),
+        ]
+
+        result = prepare_local_publish("Test commit", root=ROOT)
+
+        self.assertEqual(result.branch, "feature/enoch")
+        self.assertEqual(result.changed_files, ["README.md"])
+        self.assertEqual(result.doctor, doctor)
+        self.assertEqual(result.commit_sha, "abc123")
+        run_git.assert_any_call(["add", "--", "README.md"], ROOT)
+        run_git.assert_any_call(
+            [
+                "-c",
+                "user.email=3261777+peking2@users.noreply.github.com",
+                "-c",
+                "user.name=Gary Zhao",
+                "commit",
+                "-m",
+                "Test commit",
+            ],
+            ROOT,
+        )
+
+    @patch("enoch.github.workflow.read_section", return_value={})
+    @patch("enoch.github.workflow.run_git")
+    @patch("enoch.github.workflow.run_immune_system")
+    @patch("enoch.github.workflow.diff_summary", return_value="README.md | 1 +")
+    @patch("enoch.github.workflow.changed_files", return_value=["README.md"])
+    @patch("enoch.github.workflow.current_branch", return_value="feature/enoch")
+    def test_commit_author_falls_back_to_latest_noreply_email(
+        self,
+        _current_branch: MagicMock,
+        _changed_files: MagicMock,
+        _diff_summary: MagicMock,
+        run_immune_system: MagicMock,
+        run_git: MagicMock,
+        _read_section: MagicMock,
+    ) -> None:
+        run_immune_system.return_value = _doctor_result(passed=True, summary="All configured health checks passed.")
+        run_git.side_effect = [
+            _git_result(returncode=0),
+            _git_result(returncode=0, stdout="Gary Zhao"),
+            _git_result(returncode=0, stdout="3261777+peking2@users.noreply.github.com"),
+            _git_result(returncode=0),
+            _git_result(returncode=0, stdout="abc123"),
+        ]
+
+        prepare_local_publish("Test commit", root=ROOT)
+
+        run_git.assert_any_call(
+            [
+                "-c",
+                "user.email=3261777+peking2@users.noreply.github.com",
+                "-c",
+                "user.name=Gary Zhao",
+                "commit",
+                "-m",
+                "Test commit",
+            ],
+            ROOT,
+        )
+
+    @patch("enoch.github.workflow.run_immune_system")
+    @patch("enoch.github.workflow.diff_summary", return_value="README.md | 1 +\nscratch.txt | 1 +")
+    @patch("enoch.github.workflow.changed_files", return_value=["README.md", "scratch.txt"])
+    @patch("enoch.github.workflow.current_branch", return_value="feature/enoch")
+    def test_publish_refuses_unexpected_files(
+        self,
+        _current_branch: MagicMock,
+        _changed_files: MagicMock,
+        _diff_summary: MagicMock,
+        run_immune_system: MagicMock,
+    ) -> None:
+        run_immune_system.return_value = _doctor_result(passed=True, summary="All configured health checks passed.")
+
+        with self.assertRaisesRegex(PublishError, "unexpected files"):
+            prepare_local_publish("Test commit", root=ROOT, allowed_files=("README.md",))
+
+    @patch("enoch.github.workflow.current_branch", return_value="main")
+    def test_push_refuses_protected_branch_by_default(self, _current_branch: MagicMock) -> None:
+        with self.assertRaisesRegex(PublishError, "Refusing to push main"):
+            push_current_branch(root=ROOT)
+
+    @patch("enoch.github.workflow.ensure_clean_worktree")
+    @patch("enoch.github.workflow.run_git")
+    @patch("enoch.github.workflow.current_branch", return_value="feature/enoch")
+    def test_push_refuses_when_branch_has_no_ahead_commits(
+        self,
+        _current_branch: MagicMock,
+        run_git: MagicMock,
+        _ensure_clean_worktree: MagicMock,
+    ) -> None:
+        run_git.return_value = _git_result(returncode=0, stdout="0")
+
+        with self.assertRaisesRegex(PublishError, "no local commits ahead"):
+            push_current_branch(root=ROOT)
+
+    @patch("enoch.github.workflow.ensure_clean_worktree")
+    @patch("enoch.github.workflow.run_git")
+    @patch("enoch.github.workflow.current_branch", return_value="feature/enoch")
+    def test_pushes_current_branch_and_returns_compare_url(
+        self,
+        _current_branch: MagicMock,
+        run_git: MagicMock,
+        ensure_clean_worktree: MagicMock,
+    ) -> None:
+        run_git.side_effect = [
+            _git_result(returncode=0, stdout="2"),
+            _git_result(returncode=0, stdout=""),
+            _git_result(returncode=0, stdout="https://github.com/our-ark/genesis.git"),
+        ]
+
+        result = push_current_branch(root=ROOT)
+
+        ensure_clean_worktree.assert_called_once_with(ROOT)
+        self.assertTrue(result.pushed)
+        self.assertEqual(result.branch, "feature/enoch")
+        self.assertEqual(result.ahead_count, 2)
+        self.assertEqual(
+            result.compare_url,
+            "https://github.com/our-ark/genesis/compare/main...feature/enoch?expand=1",
+        )
+        run_git.assert_any_call(["push", "-u", "origin", "feature/enoch"], ROOT)
+
+    @patch("enoch.github.workflow.ensure_clean_worktree")
+    @patch("enoch.github.workflow.run_git")
+    @patch("enoch.github.workflow.current_branch", return_value="feature/enoch")
+    def test_push_count_for_new_branch_uses_base_branch(
+        self,
+        _current_branch: MagicMock,
+        run_git: MagicMock,
+        _ensure_clean_worktree: MagicMock,
+    ) -> None:
+        run_git.side_effect = [
+            _git_result(returncode=1, stderr="unknown revision"),
+            _git_result(returncode=0, stdout="2"),
+            _git_result(returncode=0, stdout=""),
+            _git_result(returncode=0, stdout="https://github.com/our-ark/genesis.git"),
+        ]
+
+        result = push_current_branch(root=ROOT)
+
+        self.assertEqual(result.ahead_count, 2)
+        run_git.assert_any_call(["rev-list", "--count", "origin/main..HEAD"], ROOT)
+
+    @patch("enoch.github.workflow.ensure_clean_worktree")
+    @patch("enoch.github.workflow.run_git")
+    @patch("enoch.github.workflow.current_branch", return_value="feature/enoch")
+    def test_push_compare_url_allows_dots_in_repo_name(
+        self,
+        _current_branch: MagicMock,
+        run_git: MagicMock,
+        _ensure_clean_worktree: MagicMock,
+    ) -> None:
+        run_git.side_effect = [
+            _git_result(returncode=0, stdout="1"),
+            _git_result(returncode=0, stdout=""),
+            _git_result(returncode=0, stdout="https://github.com/our-ark/enoch.agent.git"),
+        ]
+
+        result = push_current_branch(root=ROOT)
+
+        self.assertEqual(
+            result.compare_url,
+            "https://github.com/our-ark/enoch.agent/compare/main...feature/enoch?expand=1",
+        )
+
+    @patch("enoch.github.workflow.current_branch", return_value="main")
+    def test_pr_refuses_protected_branch_by_default(self, _current_branch: MagicMock) -> None:
+        with self.assertRaisesRegex(PublishError, "Refusing to open a PR from main"):
+            create_pull_request(root=ROOT)
+
+    @patch("enoch.github.workflow.ensure_clean_worktree")
+    @patch("enoch.github.workflow.run_git")
+    @patch("enoch.github.workflow.current_branch", return_value="feature/enoch")
+    def test_pr_requires_pushed_branch(
+        self,
+        _current_branch: MagicMock,
+        run_git: MagicMock,
+        _ensure_clean_worktree: MagicMock,
+    ) -> None:
+        run_git.return_value = _git_result(returncode=1, stderr="missing")
+
+        with self.assertRaisesRegex(PublishError, "Push this branch first"):
+            create_pull_request(root=ROOT)
+
+    @patch("enoch.github.workflow.shutil.which", return_value=None)
+    @patch("enoch.github.workflow.ensure_clean_worktree")
+    @patch("enoch.github.workflow.run_git")
+    @patch("enoch.github.workflow.current_branch", return_value="feature/enoch")
+    def test_pr_returns_fallback_url_when_gh_is_missing(
+        self,
+        _current_branch: MagicMock,
+        run_git: MagicMock,
+        _ensure_clean_worktree: MagicMock,
+        _which: MagicMock,
+    ) -> None:
+        run_git.side_effect = [
+            _git_result(returncode=0, stdout="abc123"),
+            _git_result(returncode=0, stdout="Add Enoch feature"),
+            _git_result(returncode=0, stdout="Add Enoch feature"),
+            _git_result(returncode=0, stdout="https://github.com/our-ark/genesis.git"),
+        ]
+
+        result = create_pull_request(root=ROOT)
+
+        self.assertFalse(result.created)
+        self.assertEqual(result.title, "Add Enoch feature")
+        self.assertEqual(result.note, "GitHub CLI is not available.")
+        self.assertEqual(
+            result.fallback_url,
+            "https://github.com/our-ark/genesis/compare/main...feature/enoch?expand=1",
+        )
+
+    @patch("enoch.github.workflow.subprocess.run")
+    @patch("enoch.github.workflow.shutil.which", return_value="/usr/local/bin/gh")
+    @patch("enoch.github.workflow.ensure_clean_worktree")
+    @patch("enoch.github.workflow.run_git")
+    @patch("enoch.github.workflow.current_branch", return_value="feature/enoch")
+    def test_pr_creates_with_gh(
+        self,
+        _current_branch: MagicMock,
+        run_git: MagicMock,
+        _ensure_clean_worktree: MagicMock,
+        _which: MagicMock,
+        run: MagicMock,
+    ) -> None:
+        run_git.side_effect = [
+            _git_result(returncode=0, stdout="abc123"),
+            _git_result(returncode=0, stdout="Add Enoch feature"),
+            _git_result(returncode=0, stdout="Add Enoch feature"),
+            _git_result(returncode=0, stdout="https://github.com/our-ark/genesis.git"),
+        ]
+        run.return_value.returncode = 0
+        run.return_value.stdout = "https://github.com/our-ark/genesis/pull/12\n"
+        run.return_value.stderr = ""
+
+        result = create_pull_request(root=ROOT)
+
+        self.assertTrue(result.created)
+        self.assertEqual(result.url, "https://github.com/our-ark/genesis/pull/12")
+        args = run.call_args.args[0]
+        self.assertEqual(args[:3], ["/usr/local/bin/gh", "pr", "create"])
+        self.assertIn("--head", args)
+        self.assertIn("feature/enoch", args)
+
+    @patch("enoch.github.workflow.subprocess.run")
+    @patch("enoch.github.workflow.shutil.which", return_value="/usr/local/bin/gh")
+    @patch("enoch.github.workflow.run_git")
+    def test_closes_pull_request_with_comment(
+        self,
+        run_git: MagicMock,
+        _which: MagicMock,
+        run: MagicMock,
+    ) -> None:
+        run_git.return_value = _git_result(returncode=0, stdout="https://github.com/our-ark/enoch.git")
+        run.return_value.returncode = 0
+        run.return_value.stdout = ""
+        run.return_value.stderr = ""
+
+        result = close_pull_request(2, root=ROOT, comment="duplicate")
+
+        self.assertTrue(result.closed)
+        self.assertEqual(result.url, "https://github.com/our-ark/enoch/pull/2")
+        self.assertEqual(
+            run.call_args.args[0],
+            ["/usr/local/bin/gh", "pr", "close", "2", "--comment", "duplicate"],
+        )
+
+    @patch("enoch.github.workflow.shutil.which", return_value=None)
+    @patch("enoch.github.workflow.run_git")
+    def test_close_pull_request_reports_missing_gh(
+        self,
+        run_git: MagicMock,
+        _which: MagicMock,
+    ) -> None:
+        run_git.return_value = _git_result(returncode=0, stdout="https://github.com/our-ark/enoch.git")
+
+        result = close_pull_request(2, root=ROOT)
+
+        self.assertFalse(result.closed)
+        self.assertEqual(result.note, "GitHub CLI is not available.")
+        self.assertEqual(result.url, "https://github.com/our-ark/enoch/pull/2")
+
+def _doctor_result(passed: bool, summary: str) -> MagicMock:
+    result = MagicMock()
+    result.passed = passed
+    result.command = "python3 -m unittest discover -s tests"
+    result.output = "OK" if passed else "FAILED"
+    result.diagnosis = DoctorDiagnosis(
+        summary=summary,
+        failing_tests=[],
+        likely_files=[],
+        suggested_action="No repair needed." if passed else "Inspect failing tests.",
+    )
+    return result
+
+
+def _git_result(returncode: int, stdout: str = "", stderr: str = "") -> MagicMock:
+    result = MagicMock()
+    result.returncode = returncode
+    result.stdout = stdout
+    result.stderr = stderr
+    return result
+
+
+if __name__ == "__main__":
+    unittest.main()

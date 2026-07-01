@@ -1,0 +1,19 @@
+name: code
+version: 0.1.0
+summary: Inspect, modify, test, and explain changes to Enoch's local code body.
+owner: Enoch
+status: active
+mode: workspace-write
+entrypoint: src/enoch/brain.py
+permissions:
+  filesystem: workspace-write
+  git:
+    status: true
+    diff: true
+    log: true
+    branch: true
+    commit: false
+    push: false
+    merge: false
+validation:
+  command: python3 -m unittest discover -s tests

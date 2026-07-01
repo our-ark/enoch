@@ -1,0 +1,39 @@
+enoch_python_supported() {
+  "$1" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' >/dev/null 2>&1
+}
+
+enoch_find_python() {
+  local candidate
+
+  if [[ -n "${ENOCH_PYTHON:-}" ]]; then
+    if enoch_python_supported "$ENOCH_PYTHON"; then
+      printf '%s\n' "$ENOCH_PYTHON"
+      return 0
+    fi
+
+    printf 'enoch: ENOCH_PYTHON points to an unsupported interpreter: %s\n' "$ENOCH_PYTHON" >&2
+    printf 'enoch: Python >= 3.11 is required.\n' >&2
+    return 1
+  fi
+
+  for candidate in python3.13 python3.12 python3.11 python3 python; do
+    if command -v "$candidate" >/dev/null 2>&1 && enoch_python_supported "$candidate"; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+
+  printf 'enoch: Python >= 3.11 is required.\n' >&2
+  printf 'enoch: Install a supported Python or set ENOCH_PYTHON to its executable path.\n' >&2
+  return 1
+}
+
+enoch_run_module() {
+  local module="$1"
+  local python
+  shift
+
+  cd "$ENOCH_ROOT"
+  python="$(enoch_find_python)" || return 1
+  PYTHONPATH="$ENOCH_ROOT/src${PYTHONPATH:+:$PYTHONPATH}" "$python" -m "$module" "$@"
+}
