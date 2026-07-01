@@ -16,8 +16,11 @@ from enoch.evolve import (
     collect_evolve_candidates,
     disable_evolve_schedule,
     evolve_report,
+    load_evolve_candidates,
     load_evolve_state,
     rank_evolve_candidates,
+    reject_evolve_candidate,
+    select_evolve_candidate,
     set_evolve_cron_schedule,
     set_evolve_daily_schedule,
     set_evolve_schedule,
@@ -69,6 +72,25 @@ class EnochEvolveTests(unittest.TestCase):
 
         self.assertEqual(state.theme, "improve Telegram work UX")
         self.assertEqual(loaded.theme, "improve Telegram work UX")
+
+    def test_candidate_status_is_persisted_across_reports(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            add_backlog_item(1, "low value cleanup", root, priority="p2")
+            add_backlog_item(2, "important Telegram recovery", root, priority="p0")
+
+            selected = select_evolve_candidate("backlog-1", root)
+            report = evolve_report(root)
+            rejected = reject_evolve_candidate("backlog-1", root)
+            visible = load_evolve_candidates(root)
+            all_candidates = load_evolve_candidates(root, include_inactive=True)
+
+        self.assertEqual(selected.status, "selected")
+        self.assertEqual(report.top_candidate.id, "backlog-1")
+        self.assertEqual(report.top_candidate.status, "selected")
+        self.assertEqual(rejected.status, "rejected")
+        self.assertNotIn("backlog-1", {candidate.id for candidate in visible})
+        self.assertIn("backlog-1", {candidate.id for candidate in all_candidates})
 
     def test_schedule_can_be_set_claimed_and_disabled(self) -> None:
         with TemporaryDirectory() as temp:

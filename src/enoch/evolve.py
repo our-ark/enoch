@@ -13,11 +13,14 @@ from enoch.paths import enoch_home
 
 
 SCHEMA_VERSION = 1
+CANDIDATE_SCHEMA_VERSION = 1
 MODE_DISABLED = "disabled"
 MODE_CO_EVOLVE = "co-evolve"
 MODE_AUTO_EVOLVE = "auto-evolve"
 MODES = {MODE_DISABLED, MODE_CO_EVOLVE, MODE_AUTO_EVOLVE}
 DEFAULT_MODE = MODE_CO_EVOLVE
+CANDIDATE_STATUSES = {"candidate", "selected", "running", "done", "rejected"}
+VISIBLE_CANDIDATE_STATUSES = {"candidate", "selected", "running"}
 
 
 @dataclass(frozen=True)
@@ -57,6 +60,10 @@ class EvolveReport:
 
 def evolve_state_path(root: Path | None = None) -> Path:
     return enoch_home(root) / "evolve.json"
+
+
+def evolve_candidates_path(root: Path | None = None) -> Path:
+    return enoch_home(root) / "evolve_candidates.json"
 
 
 def load_evolve_state(root: Path | None = None) -> EvolveState:
@@ -276,7 +283,7 @@ def evolve_report(root: Path | None = None) -> EvolveReport:
     state = load_evolve_state(root)
     candidates = ()
     if state.mode != MODE_DISABLED:
-        candidates = rank_evolve_candidates(collect_evolve_candidates(root), theme=state.theme)
+        candidates = sync_evolve_candidates(root, theme=state.theme)
     counts: dict[str, int] = {}
     for candidate in candidates:
         counts[candidate.source] = counts.get(candidate.source, 0) + 1
@@ -295,13 +302,150 @@ def collect_evolve_candidates(root: Path | None = None) -> tuple[EvolveCandidate
     return tuple(candidates)
 
 
+def sync_evolve_candidates(root: Path | None = None, *, theme: str = "") -> tuple[EvolveCandidate, ...]:
+    stored = {candidate.id: candidate for candidate in _load_all_evolve_candidates(root)}
+    merged: dict[str, EvolveCandidate] = dict(stored)
+    for candidate in collect_evolve_candidates(root):
+        previous = stored.get(candidate.id)
+        status = previous.status if previous is not None else candidate.status
+        merged[candidate.id] = EvolveCandidate(**{**candidate.__dict__, "status": status})
+    ranked = rank_evolve_candidates(merged.values(), theme=theme)
+    _write_evolve_candidates(ranked, root)
+    return tuple(candidate for candidate in ranked if candidate.status in VISIBLE_CANDIDATE_STATUSES)
+
+
+def load_evolve_candidates(
+    root: Path | None = None,
+    *,
+    include_inactive: bool = False,
+    theme: str = "",
+) -> tuple[EvolveCandidate, ...]:
+    candidates = rank_evolve_candidates(_load_all_evolve_candidates(root), theme=theme)
+    if include_inactive:
+        return candidates
+    return tuple(candidate for candidate in candidates if candidate.status in VISIBLE_CANDIDATE_STATUSES)
+
+
+def select_evolve_candidate(candidate_id: str, root: Path | None = None, *, theme: str = "") -> EvolveCandidate:
+    return _set_candidate_status(candidate_id, "selected", root, theme=theme)
+
+
+def reject_evolve_candidate(candidate_id: str, root: Path | None = None, *, theme: str = "") -> EvolveCandidate:
+    return _set_candidate_status(candidate_id, "rejected", root, theme=theme)
+
+
 def rank_evolve_candidates(
     candidates: Iterable[EvolveCandidate],
     *,
     theme: str = "",
 ) -> tuple[EvolveCandidate, ...]:
     scored = [_score_candidate(candidate, theme=theme) for candidate in candidates]
-    return tuple(sorted(scored, key=lambda item: (-item.score, item.source, item.id)))
+    return tuple(sorted(scored, key=lambda item: (_candidate_status_order(item.status), -item.score, item.source, item.id)))
+
+
+def _load_all_evolve_candidates(root: Path | None = None) -> tuple[EvolveCandidate, ...]:
+    path = evolve_candidates_path(root)
+    if not path.exists():
+        return ()
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return ()
+    if not isinstance(raw, dict):
+        return ()
+    raw_candidates = raw.get("candidates")
+    if not isinstance(raw_candidates, list):
+        return ()
+    candidates = []
+    for raw_candidate in raw_candidates:
+        if isinstance(raw_candidate, dict):
+            candidate = _candidate_from_json(raw_candidate)
+            if candidate is not None:
+                candidates.append(candidate)
+    return tuple(candidates)
+
+
+def _write_evolve_candidates(candidates: Iterable[EvolveCandidate], root: Path | None = None) -> None:
+    payload = {
+        "schema_version": CANDIDATE_SCHEMA_VERSION,
+        "updated_at": current_time(),
+        "candidates": [_candidate_to_json(candidate) for candidate in candidates],
+    }
+    atomic_write(evolve_candidates_path(root), json.dumps(payload, indent=2, sort_keys=True) + "\n")
+
+
+def _set_candidate_status(
+    candidate_id: str,
+    status: str,
+    root: Path | None = None,
+    *,
+    theme: str = "",
+) -> EvolveCandidate:
+    if status not in CANDIDATE_STATUSES:
+        raise ValueError(f"Evolve candidate status must be one of: {', '.join(sorted(CANDIDATE_STATUSES))}.")
+    candidates = list(sync_evolve_candidates(root, theme=theme))
+    inactive = [candidate for candidate in _load_all_evolve_candidates(root) if candidate.status not in VISIBLE_CANDIDATE_STATUSES]
+    candidates.extend(inactive)
+    for index, candidate in enumerate(candidates):
+        if _candidate_matches_id(candidate, candidate_id):
+            updated = EvolveCandidate(**{**candidate.__dict__, "status": status})
+            candidates[index] = updated
+            ranked = rank_evolve_candidates(candidates, theme=theme)
+            _write_evolve_candidates(ranked, root)
+            return _score_candidate(updated, theme=theme)
+    raise ValueError(f"No evolve candidate found for {candidate_id}.")
+
+
+def _candidate_to_json(candidate: EvolveCandidate) -> dict[str, object]:
+    return {
+        "id": candidate.id,
+        "source": candidate.source,
+        "title": candidate.title,
+        "rationale": candidate.rationale,
+        "proposed_change": candidate.proposed_change,
+        "expected_benefit": candidate.expected_benefit,
+        "risk": candidate.risk,
+        "test_plan": candidate.test_plan,
+        "status": candidate.status if candidate.status in CANDIDATE_STATUSES else "candidate",
+        "score": int(candidate.score),
+    }
+
+
+def _candidate_from_json(raw: dict[str, object]) -> EvolveCandidate | None:
+    candidate_id = clean_text(str(raw.get("id") or ""))
+    title = clean_text(str(raw.get("title") or ""))
+    if not candidate_id or not title:
+        return None
+    status = clean_text(str(raw.get("status") or "candidate")).lower()
+    if status not in CANDIDATE_STATUSES:
+        status = "candidate"
+    return EvolveCandidate(
+        id=candidate_id,
+        source=clean_text(str(raw.get("source") or "unknown")) or "unknown",
+        title=title,
+        rationale=clean_text(str(raw.get("rationale") or "")),
+        proposed_change=clean_text(str(raw.get("proposed_change") or "")),
+        expected_benefit=clean_text(str(raw.get("expected_benefit") or "")),
+        risk=clean_text(str(raw.get("risk") or "")),
+        test_plan=clean_text(str(raw.get("test_plan") or "")),
+        status=status,
+        score=_int(raw.get("score"), default=0),
+    )
+
+
+def _candidate_matches_id(candidate: EvolveCandidate, candidate_id: str) -> bool:
+    normalized = candidate_id.strip().lower().lstrip("#")
+    return candidate.id.lower() == normalized or candidate.id.lower().split("-", 1)[-1] == normalized
+
+
+def _candidate_status_order(status: str) -> int:
+    return {
+        "selected": 0,
+        "running": 1,
+        "candidate": 2,
+        "done": 3,
+        "rejected": 4,
+    }.get(status, 2)
 
 
 def _backlog_candidates(items: Iterable[BacklogItem]) -> list[EvolveCandidate]:

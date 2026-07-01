@@ -21,6 +21,8 @@ The MVP candidate sources are:
 - backlog items from `.enoch/backlog.json`;
 - direct-parent inheritance candidates from `.agent/lineage_inbox.json`.
 
+Candidates are persisted in `.enoch/evolve_candidates.json` so Enoch can remember whether a candidate has been selected, is running, is done, or has been rejected. Normal candidate views hide rejected and done candidates.
+
 Future sources may include feedback, experience, brainstorming, and learning from non-parent agents.
 
 ## Scheduler
@@ -44,8 +46,12 @@ Enoch must require human direction before changing identity, mission, secrets, p
 ## Commands
 
 - `/evolve`
-- `/evolve mode disabled|co-evolve|auto-evolve`
+- `/evolve mode <mode>`
 - `/evolve theme <text>`
+- `/evolve candidates`
+- `/evolve candidates all`
+- `/evolve select <id>`
+- `/evolve reject <id>`
 - `/evolve schedule <text>`
 - `/evolve schedule once a day`
 - `/evolve schedule every <interval>`
