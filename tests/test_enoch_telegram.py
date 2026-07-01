@@ -604,7 +604,8 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("/cron cancel <id> - cancel a scheduled job", client.sent[0][1])
         self.assertIn("/cron - show scheduled jobs", client.sent[0][1])
         self.assertIn("/evolve - show self-evolution mode, theme, and top candidate", client.sent[0][1])
-        self.assertIn("/evolve mode disabled|co-evolve|auto-evolve - set self-evolution behavior", client.sent[0][1])
+        self.assertIn("/evolve mode <mode> - set self-evolution behavior", client.sent[0][1])
+        self.assertNotIn("/evolve mode disabled|co-evolve|auto-evolve", client.sent[0][1])
         self.assertIn("/evolve theme <text> - set the current self-evolution theme", client.sent[0][1])
         self.assertIn("/evolve schedule <text> - let Enoch interpret common schedule text", client.sent[0][1])
         self.assertNotIn("/evolve schedule off - stop scheduled evolve checks", client.sent[0][1])
@@ -661,7 +662,9 @@ class EnochTelegramTests(unittest.TestCase):
 
         reply = client.sent[0][1]
         self.assertIn("Evolve commands:", reply)
-        self.assertIn("/evolve mode disabled|co-evolve|auto-evolve", reply)
+        self.assertIn("/evolve mode <mode>", reply)
+        self.assertIn("Modes: disabled, co-evolve, auto-evolve.", reply)
+        self.assertNotIn("/evolve mode disabled|co-evolve|auto-evolve", reply)
         self.assertNotIn("/evolve co-evolve - propose candidates", reply)
         self.assertNotIn("/evolve disabled - stop collecting", reply)
         self.assertNotIn("/evolve auto-evolve - select bounded", reply)

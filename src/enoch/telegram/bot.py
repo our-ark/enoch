@@ -2254,7 +2254,8 @@ def _evolve_usage() -> str:
     return "\n".join(
         [
             "Use /evolve to show Enoch's self-evolution status.",
-            "Use /evolve mode disabled|co-evolve|auto-evolve to set self-evolution behavior.",
+            "Use /evolve mode <mode> to set self-evolution behavior.",
+            "Modes: disabled, co-evolve, auto-evolve.",
             "Use /evolve theme <text> to set the current evolution theme.",
             "Use /evolve schedule <text> to let Enoch interpret common schedule text.",
         ]
