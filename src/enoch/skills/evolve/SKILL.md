@@ -20,10 +20,13 @@ The MVP candidate sources are:
 
 - backlog items from `.enoch/backlog.json`;
 - direct-parent inheritance candidates from `.agent/lineage_inbox.json`.
+- recent failed or cancelled task history from `.enoch/task_queue.json`;
+- active recurring work from `.enoch/cron.json`;
+- recent automatic learning artifacts from `.enoch/learning/artifacts.jsonl`.
 
 Candidates are persisted in `.enoch/evolve_candidates.json` so Enoch can remember whether a candidate has been selected, is running, is done, or has been rejected. Normal candidate views hide rejected and done candidates.
 
-Future sources may include feedback, experience, brainstorming, and learning from non-parent agents.
+Future sources may include explicit feedback, conversation patterns, brainstorming, and learning from non-parent agents.
 
 ## Scheduler
 
