@@ -52,6 +52,7 @@ from enoch.evolve import (
     claim_due_evolve_schedule,
     disable_evolve_schedule,
     evolve_report,
+    set_evolve_cron_schedule,
     set_evolve_daily_schedule,
     set_evolve_schedule,
     set_evolve_mode,
@@ -1075,6 +1076,14 @@ class EnochTelegramBot:
             except ValueError as error:
                 return str(error)
             return _format_evolve_report(evolve_report(self.root))
+        if subcommand == "cron":
+            if not rest.strip():
+                return "Use /evolve schedule cron '30 9 * * *' to run evolve with a cron-style schedule."
+            try:
+                set_evolve_cron_schedule(rest, self.root)
+            except ValueError as error:
+                return str(error)
+            return _format_evolve_report(evolve_report(self.root))
         if subcommand != "every":
             return _evolve_usage()
         if not rest.strip():
@@ -2038,6 +2047,8 @@ def _format_evolve_schedule(state: EvolveState) -> str:
     last_run = f"; last {state.schedule_last_run_at}" if state.schedule_last_run_at else ""
     if state.schedule_daily_time:
         return f"daily {state.schedule_daily_time}; next {next_run}{last_run}"
+    if state.schedule_cron_expression:
+        return f"cron {state.schedule_cron_expression}; next {next_run}{last_run}"
     return f"every {format_cron_interval(state.schedule_interval_seconds)}; next {next_run}{last_run}"
 
 
@@ -2193,6 +2204,7 @@ def _evolve_usage() -> str:
             "Use /evolve theme <text> to set the current evolution theme.",
             "Use /evolve schedule every <interval> to run periodic evolve checks.",
             "Use /evolve schedule daily HH:MM to run evolve once per day at local time.",
+            "Use /evolve schedule cron '30 9 * * *' for a cron-style daily schedule.",
             "Use /evolve schedule off to disable scheduled evolve checks.",
         ]
     )

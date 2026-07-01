@@ -27,7 +27,7 @@ Future sources may include feedback, experience, brainstorming, and learning fro
 
 The evolve scheduler stores its frequency and next run time in `.enoch/evolve.json`.
 
-It can run on a fixed interval or once per day at a local HH:MM time.
+It can run on a fixed interval, once per day at a local HH:MM time, or a cron-style daily expression like `30 9 * * *`.
 
 When the scheduler is due:
 
@@ -50,4 +50,5 @@ Enoch must require human direction before changing identity, mission, secrets, p
 - `/evolve theme <text>`
 - `/evolve schedule every <interval>`
 - `/evolve schedule daily HH:MM`
+- `/evolve schedule cron '30 9 * * *'`
 - `/evolve schedule off`

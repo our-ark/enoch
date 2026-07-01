@@ -607,6 +607,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("/evolve theme <text> - set the current self-evolution theme", client.sent[0][1])
         self.assertIn("/evolve schedule every <interval> - run periodic evolve checks", client.sent[0][1])
         self.assertIn("/evolve schedule daily HH:MM - run evolve once per day at local time", client.sent[0][1])
+        self.assertIn("/evolve schedule cron '30 9 * * *' - run evolve with a cron-style daily schedule", client.sent[0][1])
         self.assertIn("/evolve schedule off - disable scheduled evolve checks", client.sent[0][1])
         self.assertIn("/update", client.sent[0][1])
         self.assertIn("/restart - restart Enoch's Telegram daemon from the locked chat", client.sent[0][1])
@@ -661,6 +662,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("/evolve theme <text>", reply)
         self.assertIn("/evolve schedule every <interval>", reply)
         self.assertIn("/evolve schedule daily HH:MM", reply)
+        self.assertIn("/evolve schedule cron '30 9 * * *'", reply)
         self.assertIn("/evolve schedule off", reply)
         self.assertNotIn("Enoch Telegram commands:", reply)
 
@@ -1234,6 +1236,16 @@ class EnochTelegramTests(unittest.TestCase):
             bot.handle_update(_message_update(chat_id=42, text="/evolve schedule daily 09:30"))
 
         self.assertIn("Schedule: daily 09:30; next", client.sent[0][1])
+
+    def test_evolve_can_set_cron_schedule(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            client = FakeTelegramClient(allowed_chat_id=42)
+            bot = EnochTelegramBot(load_identity(), root, client)
+
+            bot.handle_update(_message_update(chat_id=42, text="/evolve schedule cron 30 9 * * *"))
+
+        self.assertIn("Schedule: cron 30 9 * * *; next", client.sent[0][1])
 
     def test_due_evolve_schedule_reports_in_co_evolve_mode(self) -> None:
         with TemporaryDirectory() as temp:

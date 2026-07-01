@@ -18,6 +18,7 @@ from enoch.evolve import (
     evolve_report,
     load_evolve_state,
     rank_evolve_candidates,
+    set_evolve_cron_schedule,
     set_evolve_daily_schedule,
     set_evolve_schedule,
     set_evolve_mode,
@@ -111,6 +112,26 @@ class EnochEvolveTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             with self.assertRaisesRegex(ValueError, "HH:MM"):
                 set_evolve_daily_schedule("tomorrow morning", Path(temp))
+
+    def test_cron_schedule_uses_daily_cron_expression(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            start = datetime(2020, 1, 1, 8, 30, tzinfo=timezone.utc)
+            due = datetime(2020, 1, 1, 9, 30, tzinfo=timezone.utc)
+
+            scheduled = set_evolve_cron_schedule("30 9 * * *", root, now=start)
+            claimed = claim_due_evolve_schedule(root, now=due)
+            state_after_claim = load_evolve_state(root)
+
+        self.assertEqual(scheduled.schedule_cron_expression, "30 9 * * *")
+        self.assertEqual(scheduled.schedule_next_run_at, "2020-01-01T09:30:00+00:00")
+        self.assertIsNotNone(claimed)
+        self.assertEqual(state_after_claim.schedule_next_run_at, "2020-01-02T09:30:00+00:00")
+
+    def test_cron_schedule_rejects_non_daily_expression(self) -> None:
+        with TemporaryDirectory() as temp:
+            with self.assertRaisesRegex(ValueError, "daily expressions"):
+                set_evolve_cron_schedule("30 9 * * 1", Path(temp))
 
 
 def _write_lineage_candidate(root: Path, candidate: LineageCandidate) -> None:
