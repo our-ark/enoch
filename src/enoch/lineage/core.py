@@ -294,9 +294,9 @@ def parse_declared_skills(text: str) -> tuple[str, ...]:
         if current_skill is None:
             return
         name = current_skill.get("name", "").strip()
-        if name:
-            exposure = current_skill.get("exposure", "").strip()
-            skills.append(f"{name} ({exposure})" if exposure else name)
+        exposure = current_skill.get("exposure", "").strip().lower()
+        if name and exposure != "hidden":
+            skills.append(name)
         current_skill = None
 
     for raw_line in text.splitlines():

@@ -1,0 +1,24 @@
+name: evolve
+version: 0.1.0
+summary: Collect, rank, and propose bounded self-evolution candidates under human-visible guardrails.
+owner: Enoch
+status: active
+mode: co-evolution
+entrypoint: src/enoch/evolve.py
+capabilities:
+  state: src/enoch/evolve.py
+  candidate_collection:
+    - src/enoch/backlog.py
+    - src/enoch/lineage/core.py
+  command_surface: src/enoch/telegram/bot.py
+permissions:
+  filesystem:
+    read:
+      - .enoch/backlog.json
+      - .agent/lineage_inbox.json
+    write:
+      - .enoch/evolve.json
+  git:
+    merge: false
+validation:
+  command: python3 -m unittest discover -s tests
