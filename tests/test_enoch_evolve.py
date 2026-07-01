@@ -1,4 +1,5 @@
 from pathlib import Path
+from datetime import datetime, timezone
 import json
 import sys
 from tempfile import TemporaryDirectory
@@ -11,10 +12,15 @@ sys.path.insert(0, str(ROOT / "src"))
 from enoch.backlog import add_backlog_item
 from enoch.evolve import (
     MODE_DISABLED,
+    claim_due_evolve_schedule,
     collect_evolve_candidates,
+    disable_evolve_schedule,
     evolve_report,
     load_evolve_state,
     rank_evolve_candidates,
+    set_evolve_cron_schedule,
+    set_evolve_daily_schedule,
+    set_evolve_schedule,
     set_evolve_mode,
     set_evolve_theme,
 )
@@ -63,6 +69,69 @@ class EnochEvolveTests(unittest.TestCase):
 
         self.assertEqual(state.theme, "improve Telegram work UX")
         self.assertEqual(loaded.theme, "improve Telegram work UX")
+
+    def test_schedule_can_be_set_claimed_and_disabled(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            start = datetime(2020, 1, 1, tzinfo=timezone.utc)
+            due = datetime(2020, 1, 2, tzinfo=timezone.utc)
+
+            scheduled = set_evolve_schedule(86400, root, now=start)
+            before_due = claim_due_evolve_schedule(root, now=datetime(2020, 1, 1, 23, tzinfo=timezone.utc))
+            claimed = claim_due_evolve_schedule(root, now=due)
+            claimed_again = claim_due_evolve_schedule(root, now=due)
+            disabled = disable_evolve_schedule(root)
+
+        self.assertTrue(scheduled.schedule_enabled)
+        self.assertEqual(scheduled.schedule_interval_seconds, 86400)
+        self.assertEqual(scheduled.schedule_next_run_at, "2020-01-02T00:00:00+00:00")
+        self.assertIsNone(before_due)
+        self.assertIsNotNone(claimed)
+        assert claimed is not None
+        self.assertEqual(claimed.schedule_next_run_at, "2020-01-02T00:00:00+00:00")
+        self.assertIsNone(claimed_again)
+        self.assertFalse(disabled.schedule_enabled)
+
+    def test_daily_schedule_uses_next_local_time(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            start = datetime(2020, 1, 1, 8, 30, tzinfo=timezone.utc)
+            due = datetime(2020, 1, 1, 9, 0, tzinfo=timezone.utc)
+
+            scheduled = set_evolve_daily_schedule("9:00", root, now=start)
+            claimed = claim_due_evolve_schedule(root, now=due)
+            state_after_claim = load_evolve_state(root)
+
+        self.assertEqual(scheduled.schedule_daily_time, "09:00")
+        self.assertEqual(scheduled.schedule_interval_seconds, 86400)
+        self.assertEqual(scheduled.schedule_next_run_at, "2020-01-01T09:00:00+00:00")
+        self.assertIsNotNone(claimed)
+        self.assertEqual(state_after_claim.schedule_next_run_at, "2020-01-02T09:00:00+00:00")
+
+    def test_daily_schedule_rejects_invalid_time(self) -> None:
+        with TemporaryDirectory() as temp:
+            with self.assertRaisesRegex(ValueError, "HH:MM"):
+                set_evolve_daily_schedule("tomorrow morning", Path(temp))
+
+    def test_cron_schedule_uses_daily_cron_expression(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            start = datetime(2020, 1, 1, 8, 30, tzinfo=timezone.utc)
+            due = datetime(2020, 1, 1, 9, 30, tzinfo=timezone.utc)
+
+            scheduled = set_evolve_cron_schedule("30 9 * * *", root, now=start)
+            claimed = claim_due_evolve_schedule(root, now=due)
+            state_after_claim = load_evolve_state(root)
+
+        self.assertEqual(scheduled.schedule_cron_expression, "30 9 * * *")
+        self.assertEqual(scheduled.schedule_next_run_at, "2020-01-01T09:30:00+00:00")
+        self.assertIsNotNone(claimed)
+        self.assertEqual(state_after_claim.schedule_next_run_at, "2020-01-02T09:30:00+00:00")
+
+    def test_cron_schedule_rejects_non_daily_expression(self) -> None:
+        with TemporaryDirectory() as temp:
+            with self.assertRaisesRegex(ValueError, "daily expressions"):
+                set_evolve_cron_schedule("30 9 * * 1", Path(temp))
 
 
 def _write_lineage_candidate(root: Path, candidate: LineageCandidate) -> None:

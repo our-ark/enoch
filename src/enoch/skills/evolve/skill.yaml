@@ -7,6 +7,7 @@ mode: co-evolution
 entrypoint: src/enoch/evolve.py
 capabilities:
   state: src/enoch/evolve.py
+  scheduler: src/enoch/evolve.py
   candidate_collection:
     - src/enoch/backlog.py
     - src/enoch/lineage/core.py

@@ -23,6 +23,18 @@ The MVP candidate sources are:
 
 Future sources may include feedback, experience, brainstorming, and learning from non-parent agents.
 
+## Scheduler
+
+The evolve scheduler stores its frequency and next run time in `.enoch/evolve.json`.
+
+It can run on a fixed interval, once per day at a local HH:MM time, or a cron-style daily expression like `30 9 * * *`.
+
+When the scheduler is due:
+
+- `disabled` mode advances the schedule and takes no action.
+- `co-evolve` mode sends the ranked evolve report to the locked Telegram chat.
+- `auto-evolve` mode turns the top bounded candidate into a queued task for review-oriented implementation.
+
 ## Guardrails
 
 Evolve candidates should be small, testable, reversible, and aligned with Enoch's mission and current theme.
@@ -36,3 +48,7 @@ Enoch must require human direction before changing identity, mission, secrets, p
 - `/evolve co-evolve`
 - `/evolve auto-evolve`
 - `/evolve theme <text>`
+- `/evolve schedule every <interval>`
+- `/evolve schedule daily HH:MM`
+- `/evolve schedule cron '30 9 * * *'`
+- `/evolve schedule off`
