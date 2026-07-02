@@ -22,7 +22,7 @@ MODE_CO_EVOLVE = "co-evolve"
 MODE_AUTO_EVOLVE = "auto-evolve"
 MODES = {MODE_DISABLED, MODE_CO_EVOLVE, MODE_AUTO_EVOLVE}
 DEFAULT_MODE = MODE_CO_EVOLVE
-CANDIDATE_STATUSES = {"candidate", "selected", "running", "done", "rejected"}
+CANDIDATE_STATUSES = {"candidate", "selected", "running", "done", "failed", "cancelled", "rejected"}
 VISIBLE_CANDIDATE_STATUSES = {"candidate", "selected", "running"}
 
 
@@ -357,6 +357,14 @@ def complete_evolve_candidate(candidate_id: str, root: Path | None = None, *, th
     return _set_candidate_status(candidate_id, "done", root, theme=theme)
 
 
+def fail_evolve_candidate(candidate_id: str, root: Path | None = None, *, theme: str = "") -> EvolveCandidate:
+    return _set_candidate_status(candidate_id, "failed", root, theme=theme)
+
+
+def cancel_evolve_candidate(candidate_id: str, root: Path | None = None, *, theme: str = "") -> EvolveCandidate:
+    return _set_candidate_status(candidate_id, "cancelled", root, theme=theme)
+
+
 def complete_evolve_candidate_for_task(
     job: TaskJob,
     root: Path | None = None,
@@ -368,6 +376,36 @@ def complete_evolve_candidate_for_task(
         return None
     try:
         return complete_evolve_candidate(candidate_id, root, theme=theme)
+    except ValueError:
+        return None
+
+
+def fail_evolve_candidate_for_task(
+    job: TaskJob,
+    root: Path | None = None,
+    *,
+    theme: str = "",
+) -> EvolveCandidate | None:
+    candidate_id = _evolve_candidate_id_from_task(job)
+    if not candidate_id:
+        return None
+    try:
+        return fail_evolve_candidate(candidate_id, root, theme=theme)
+    except ValueError:
+        return None
+
+
+def cancel_evolve_candidate_for_task(
+    job: TaskJob,
+    root: Path | None = None,
+    *,
+    theme: str = "",
+) -> EvolveCandidate | None:
+    candidate_id = _evolve_candidate_id_from_task(job)
+    if not candidate_id:
+        return None
+    try:
+        return cancel_evolve_candidate(candidate_id, root, theme=theme)
     except ValueError:
         return None
 
@@ -492,7 +530,9 @@ def _candidate_status_order(status: str) -> int:
         "running": 1,
         "candidate": 2,
         "done": 3,
-        "rejected": 4,
+        "failed": 4,
+        "cancelled": 5,
+        "rejected": 6,
     }.get(status, 2)
 
 
