@@ -14,11 +14,13 @@ from enoch.automatic_learning import record_learning_artifact
 from enoch.cron import add_cron_job
 from enoch.evolve import (
     MODE_DISABLED,
+    cancel_evolve_candidate_for_task,
     claim_due_evolve_schedule,
     collect_evolve_candidates,
     disable_evolve_schedule,
     evolve_report,
     complete_evolve_candidate_for_task,
+    fail_evolve_candidate_for_task,
     load_evolve_candidates,
     load_evolve_state,
     rank_evolve_candidates,
@@ -160,6 +162,42 @@ class EnochEvolveTests(unittest.TestCase):
         self.assertNotIn("backlog-1", {candidate.id for candidate in visible})
         self.assertEqual(all_candidates[0].id, "backlog-1")
         self.assertEqual(all_candidates[0].status, "done")
+
+    def test_failed_and_cancelled_evolve_tasks_mark_candidates_inactive(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            add_backlog_item(1, "ship failing evolve", root, priority="p1")
+            add_backlog_item(2, "ship cancelled evolve", root, priority="p1")
+            run_evolve_candidate("backlog-1", root)
+            run_evolve_candidate("backlog-2", root)
+            failed_job = enqueue_task(
+                42,
+                "Evolve selected candidate backlog-1",
+                root,
+                context="\n".join(["Scheduled evolve candidate context:", "ID: backlog-1"]),
+                context_source="evolve-run",
+            )
+            cancelled_job = enqueue_task(
+                42,
+                "Evolve selected candidate backlog-2",
+                root,
+                context="\n".join(["Scheduled evolve candidate context:", "ID: backlog-2"]),
+                context_source="evolve-run",
+            )
+
+            failed = fail_evolve_candidate_for_task(failed_job, root)
+            cancelled = cancel_evolve_candidate_for_task(cancelled_job, root)
+            visible = load_evolve_candidates(root)
+            all_candidates = load_evolve_candidates(root, include_inactive=True)
+
+        assert failed is not None
+        assert cancelled is not None
+        self.assertEqual(failed.status, "failed")
+        self.assertEqual(cancelled.status, "cancelled")
+        self.assertEqual(visible, ())
+        statuses = {candidate.id: candidate.status for candidate in all_candidates}
+        self.assertEqual(statuses["backlog-1"], "failed")
+        self.assertEqual(statuses["backlog-2"], "cancelled")
 
     def test_schedule_can_be_set_claimed_and_disabled(self) -> None:
         with TemporaryDirectory() as temp:

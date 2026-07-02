@@ -49,10 +49,12 @@ from enoch.evolve import (
     EvolveCandidate,
     EvolveReport,
     EvolveState,
+    cancel_evolve_candidate_for_task,
     claim_due_evolve_schedule,
     complete_evolve_candidate_for_task,
     disable_evolve_schedule,
     evolve_report,
+    fail_evolve_candidate_for_task,
     get_evolve_candidate,
     load_evolve_candidates,
     reject_evolve_candidate,
@@ -1474,8 +1476,10 @@ class EnochTelegramBot:
             self._task_cancellations.pop(job.id, None)
             if completed_status == "cancelled":
                 cancel_running_task(self.root, result=reply)
+                cancel_evolve_candidate_for_task(job, self.root)
             elif completed_status == "failed":
                 fail_task(job.id, self.root, result=reply)
+                fail_evolve_candidate_for_task(job, self.root)
             else:
                 complete_task(job.id, self.root, result=reply)
                 complete_evolve_candidate_for_task(job, self.root)
@@ -1989,6 +1993,7 @@ def _recover_running_task_from_direct_action_log(root: Path) -> None:
         return
     if _work_reply_failed(result):
         fail_task(running.id, root, result=result)
+        fail_evolve_candidate_for_task(running, root)
     else:
         complete_task(running.id, root, result=result)
         complete_evolve_candidate_for_task(running, root)

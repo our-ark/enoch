@@ -24,7 +24,7 @@ The MVP candidate sources are:
 - active recurring work from `.enoch/cron.json`;
 - recent automatic learning artifacts from `.enoch/learning/artifacts.jsonl`.
 
-Candidates are persisted in `.enoch/evolve_candidates.json` so Enoch can remember whether a candidate has been selected, is running, is done, or has been rejected. Normal candidate views hide rejected and done candidates.
+Candidates are persisted in `.enoch/evolve_candidates.json` so Enoch can remember whether a candidate has been selected, is running, is done, failed, cancelled, or has been rejected. Normal candidate views hide done, failed, cancelled, and rejected candidates.
 
 Future sources may include explicit feedback, conversation patterns, brainstorming, and learning from non-parent agents.
 
