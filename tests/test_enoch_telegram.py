@@ -20,7 +20,7 @@ from enoch.backlog import add_backlog_item, backlog_status
 from enoch.config import read_section
 from enoch.command_surface import checktree as _checktree
 from enoch.cron import add_cron_job, cron_status
-from enoch.evolve import MODE_AUTO_EVOLVE, evolve_report, set_evolve_mode, set_evolve_schedule
+from enoch.evolve import MODE_AUTO_EVOLVE, evolve_report, load_evolve_candidates, set_evolve_mode, set_evolve_schedule
 from enoch.git_tools import GitError
 from enoch.github.workflow import (
     LocalPublishResult,
@@ -1261,6 +1261,32 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("Evolve selected candidate backlog-1", queued.pending[0].text)
         self.assertEqual(queued.pending[0].context_source, "evolve-run")
         self.assertIn("Scheduled evolve candidate context:", queued.pending[0].context)
+
+    @patch("enoch.telegram.bot.ensure_long_term_memory")
+    @patch("enoch.telegram.bot.log_conversation_turn")
+    def test_evolve_run_candidate_is_marked_done_after_task_completion(
+        self,
+        _log_conversation_turn: MagicMock,
+        _update_memory: MagicMock,
+    ) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            add_backlog_item(42, "ship evolve completion", root, priority="p1")
+            client = FakeTelegramClient(allowed_chat_id=42)
+            bot = EnochTelegramBot(load_identity(), root, client)
+
+            bot.handle_update(_message_update(chat_id=42, text="/evolve run backlog-1"))
+            job = begin_next_task(root)
+            assert job is not None
+            with patch.object(bot, "_run_direct_work", return_value="Done with evolve work."):
+                bot._run_task_job(job)
+            visible = load_evolve_candidates(root)
+            all_candidates = load_evolve_candidates(root, include_inactive=True)
+
+        self.assertNotIn("backlog-1", {candidate.id for candidate in visible})
+        self.assertEqual(all_candidates[0].id, "backlog-1")
+        self.assertEqual(all_candidates[0].status, "done")
+        self.assertIn("Final status: completed", client.sent[-1][1])
 
     def test_evolve_can_set_theme_and_mode(self) -> None:
         with TemporaryDirectory() as temp:

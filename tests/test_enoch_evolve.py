@@ -18,6 +18,7 @@ from enoch.evolve import (
     collect_evolve_candidates,
     disable_evolve_schedule,
     evolve_report,
+    complete_evolve_candidate_for_task,
     load_evolve_candidates,
     load_evolve_state,
     rank_evolve_candidates,
@@ -136,6 +137,29 @@ class EnochEvolveTests(unittest.TestCase):
         self.assertEqual(running.status, "running")
         self.assertEqual(visible[0].id, "backlog-1")
         self.assertEqual(visible[0].status, "running")
+
+    def test_completed_evolve_task_marks_candidate_done(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            add_backlog_item(1, "ship evolve completion", root, priority="p1")
+            run_evolve_candidate("backlog-1", root)
+            job = enqueue_task(
+                42,
+                "Evolve selected candidate backlog-1",
+                root,
+                context="\n".join(["Scheduled evolve candidate context:", "ID: backlog-1"]),
+                context_source="evolve-run",
+            )
+
+            completed = complete_evolve_candidate_for_task(job, root)
+            visible = load_evolve_candidates(root)
+            all_candidates = load_evolve_candidates(root, include_inactive=True)
+
+        assert completed is not None
+        self.assertEqual(completed.status, "done")
+        self.assertNotIn("backlog-1", {candidate.id for candidate in visible})
+        self.assertEqual(all_candidates[0].id, "backlog-1")
+        self.assertEqual(all_candidates[0].status, "done")
 
     def test_schedule_can_be_set_claimed_and_disabled(self) -> None:
         with TemporaryDirectory() as temp:
