@@ -353,6 +353,25 @@ def run_evolve_candidate(candidate_id: str, root: Path | None = None, *, theme: 
     return _set_candidate_status(candidate_id, "running", root, theme=theme)
 
 
+def complete_evolve_candidate(candidate_id: str, root: Path | None = None, *, theme: str = "") -> EvolveCandidate:
+    return _set_candidate_status(candidate_id, "done", root, theme=theme)
+
+
+def complete_evolve_candidate_for_task(
+    job: TaskJob,
+    root: Path | None = None,
+    *,
+    theme: str = "",
+) -> EvolveCandidate | None:
+    candidate_id = _evolve_candidate_id_from_task(job)
+    if not candidate_id:
+        return None
+    try:
+        return complete_evolve_candidate(candidate_id, root, theme=theme)
+    except ValueError:
+        return None
+
+
 def rank_evolve_candidates(
     candidates: Iterable[EvolveCandidate],
     *,
@@ -455,6 +474,16 @@ def _candidate_from_json(raw: dict[str, object]) -> EvolveCandidate | None:
 def _candidate_matches_id(candidate: EvolveCandidate, candidate_id: str) -> bool:
     normalized = candidate_id.strip().lower().lstrip("#")
     return candidate.id.lower() == normalized or candidate.id.lower().split("-", 1)[-1] == normalized
+
+
+def _evolve_candidate_id_from_task(job: TaskJob) -> str:
+    if job.context_source not in {"evolve-run", "evolve-scheduler"}:
+        return ""
+    for raw_line in job.context.splitlines():
+        label, separator, value = raw_line.partition(":")
+        if separator and label.strip().lower() == "id":
+            return clean_text(value)
+    return ""
 
 
 def _candidate_status_order(status: str) -> int:

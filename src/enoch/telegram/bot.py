@@ -50,6 +50,7 @@ from enoch.evolve import (
     EvolveReport,
     EvolveState,
     claim_due_evolve_schedule,
+    complete_evolve_candidate_for_task,
     disable_evolve_schedule,
     evolve_report,
     get_evolve_candidate,
@@ -1477,6 +1478,7 @@ class EnochTelegramBot:
                 fail_task(job.id, self.root, result=reply)
             else:
                 complete_task(job.id, self.root, result=reply)
+                complete_evolve_candidate_for_task(job, self.root)
         completed_job = _history_task(job.id, self.root)
         summary_job = completed_job or job
         if completed_status == "completed":
@@ -1989,6 +1991,7 @@ def _recover_running_task_from_direct_action_log(root: Path) -> None:
         fail_task(running.id, root, result=result)
     else:
         complete_task(running.id, root, result=result)
+        complete_evolve_candidate_for_task(running, root)
 
 
 def _latest_direct_action_result_for_task(job: TaskJob, root: Path) -> str:
