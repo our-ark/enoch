@@ -35,7 +35,7 @@ class EnochSkillsTests(unittest.TestCase):
         self.assertEqual(learn.version, "0.1.0")
         self.assertIn("Adapt a published skill", learn.summary)
         evolve = next(skill for skill in agent.skills if skill.name == "evolve")
-        self.assertEqual(evolve.version, "0.1.0")
+        self.assertEqual(evolve.version, "0.2.0")
         self.assertIn("self-evolution", evolve.summary)
         teach = next(skill for skill in agent.skills if skill.name == "teach")
         self.assertEqual(teach.exposure, "hidden")

@@ -23,6 +23,7 @@ from enoch.backlog import (
 )
 from enoch.automatic_learning import record_learning_artifact
 from enoch.brain import BrainCancelled, BrainError, act_in_session, model_summary, reset_token_usage, respond
+from enoch.brainstorming import generate_brainstorm_ideas
 from enoch.command_surface import (
     ACTION_MODE_CONVERSATION,
     ACTION_MODE_FULL_ACCESS,
@@ -101,7 +102,14 @@ from enoch.github.workflow import (
 )
 from enoch.identity import Identity, identity_file_path, load_identity
 from enoch.immune import ImmuneResult, run_immune_system
-from enoch.learn import LearnError, learn_command, learn_skill_prompt, parse_learn_request
+from enoch.learn import (
+    LearnError,
+    explore_peer_skills,
+    learn_command,
+    learn_skill_prompt,
+    parse_learn_request,
+    record_peer_learning_observation,
+)
 from enoch.lineage.core import (
     find_parent_inbox_candidate,
     LineageError,
@@ -129,6 +137,7 @@ from enoch.runtime import (
     PROTECTED_BRANCHES,
     WORKSPACE_WRITE_SANDBOX,
 )
+from enoch.skills import SkillsError
 from enoch.task_queue import (
     TaskJob,
     begin_direct_task,
@@ -313,7 +322,7 @@ class EnochTelegramBot:
         elif command in {"/cron", "/crons"}:
             reply = self._cron(chat_id, work_text)
         elif command == "/evolve":
-            reply = self._evolve(argument)
+            reply = self._evolve(chat_id, argument)
         elif command == "/mode":
             reply = self._mode(text)
         elif command == "/shutdown":
@@ -871,6 +880,10 @@ class EnochTelegramBot:
             prompt = learn_skill_prompt(text, root=self.root)
         except LearnError as error:
             return f"Enoch could not inspect that skill: {error}"
+        try:
+            record_peer_learning_observation(request, self.root)
+        except (OSError, ValueError):
+            pass
 
         reply = self._respond_read_only_turn(chat_id, prompt)
         memory_result = extract_memory_requests(reply)
@@ -1046,7 +1059,7 @@ class EnochTelegramBot:
             return "Enoch could not add that backlog item."
         return f"Backlog #{item.id} [{item.priority}] saved. Enoch will promote it when the task queue is idle."
 
-    def _evolve(self, argument: str) -> str:
+    def _evolve(self, chat_id: int, argument: str) -> str:
         parts = argument.strip().split(maxsplit=1)
         if not parts:
             return _format_evolve_report(evolve_report(self.root))
@@ -1071,6 +1084,33 @@ class EnochTelegramBot:
                 return "Use /evolve theme <text> to set Enoch's current evolution theme."
             set_evolve_theme(rest, self.root)
             return _format_evolve_report(evolve_report(self.root))
+        if subcommand == "brainstorm":
+            state = evolve_report(self.root).state
+            if state.mode == MODE_DISABLED:
+                return "Enable co-evolve or auto-evolve mode before brainstorming."
+            if not state.theme:
+                return "Set a theme with /evolve theme <text> before brainstorming."
+            try:
+                ideas = generate_brainstorm_ideas(
+                    state.theme,
+                    self.root,
+                    mission=self.identity.mission,
+                    generator=lambda prompt: self._respond_read_only_turn(chat_id, prompt),
+                )
+            except (BrainError, OSError, ValueError) as error:
+                return f"Enoch could not brainstorm evolution candidates: {error}"
+            report = evolve_report(self.root)
+            return f"Added {len(ideas)} theme-guided brainstorming candidate(s).\n\n" + _format_evolve_report(report)
+        if subcommand == "explore":
+            agent = rest.strip()
+            if not agent:
+                return "Use /evolve explore <agent> to inspect a non-parent agent's published skills."
+            try:
+                observations = explore_peer_skills(agent, self.root)
+            except (OSError, SkillsError, ValueError) as error:
+                return f"Enoch could not explore that peer agent: {error}"
+            report = evolve_report(self.root)
+            return f"Added {len(observations)} peer-learning candidate(s) from {agent}.\n\n" + _format_evolve_report(report)
         if subcommand in {"candidate", "candidates"}:
             report = evolve_report(self.root)
             include_inactive = rest.strip().lower() in {"all", "inactive"}
@@ -2342,6 +2382,8 @@ def _evolve_usage() -> str:
             "Use /evolve mode <mode> to set self-evolution behavior.",
             "Modes: disabled, co-evolve, auto-evolve.",
             "Use /evolve theme <text> to set the current evolution theme.",
+            "Use /evolve brainstorm to generate bounded candidates under the current theme.",
+            "Use /evolve explore <agent> to discover skills from a non-parent agent.",
             "Use /evolve candidates to show current candidates.",
             "Use /evolve select <id> to select a candidate.",
             "Use /evolve run <id> to queue a candidate as a task.",

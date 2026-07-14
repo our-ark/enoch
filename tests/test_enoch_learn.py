@@ -1,6 +1,7 @@
 import sys
 import unittest
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 
@@ -9,11 +10,15 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from enoch.learn import (
     LearnError,
+    explore_peer_skills,
     learn_command,
     learn_skill_prompt,
+    load_peer_learning_observations,
     load_published_skill,
     parse_learn_request,
+    record_peer_learning_observation,
 )
+from enoch.skills import AgentSkills, SkillInfo
 
 
 class EnochLearnTests(unittest.TestCase):
@@ -51,6 +56,54 @@ class EnochLearnTests(unittest.TestCase):
         with patch("enoch.learn._github_text", side_effect=_github_text):
             with self.assertRaisesRegex(LearnError, "does not declare skill work"):
                 load_published_skill("work", "lucy")
+
+    def test_records_peer_learning_as_a_distinct_source(self) -> None:
+        request = parse_learn_request("/learn teach from lucy")
+        assert request is not None
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            first = record_peer_learning_observation(request, root)
+            record_peer_learning_observation(request, root)
+            loaded = load_peer_learning_observations(root)
+
+        self.assertEqual(len(loaded), 1)
+        self.assertEqual(loaded[0].id, first.id)
+        self.assertEqual(loaded[0].agent, "lucy")
+        self.assertEqual(loaded[0].skill, "teach")
+
+    def test_explores_visible_skills_from_peer_agent(self) -> None:
+        peer = AgentSkills(
+            name="Enosh",
+            root=Path("github.com/our-ark/enosh@main"),
+            skills=(
+                SkillInfo(name="research", path="src/enosh/skills/research"),
+                SkillInfo(name="private", path="src/enosh/skills/private", exposure="hidden"),
+            ),
+        )
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            observations = explore_peer_skills(
+                "enosh",
+                root,
+                loader=lambda _agent, root=None: peer,
+            )
+
+        self.assertEqual(len(observations), 1)
+        self.assertEqual(observations[0].skill, "research")
+        self.assertEqual(observations[0].agent, "enosh")
+
+    def test_peer_exploration_rejects_direct_parent(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            lineage = root / ".agent" / "lineage.yaml"
+            lineage.parent.mkdir(parents=True)
+            lineage.write_text(
+                "parent:\n  name: Seth\n  repo: https://github.com/our-ark/seth\n  branch: main\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "inheritance"):
+                explore_peer_skills("seth", root, loader=lambda _agent, root=None: None)
 
 
 def _github_text(agent: str, path: str) -> str:

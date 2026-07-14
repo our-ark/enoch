@@ -11,6 +11,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from enoch.backlog import add_backlog_item
 from enoch.automatic_learning import record_learning_artifact
+from enoch.brainstorming import generate_brainstorm_ideas
 from enoch.cron import add_cron_job
 from enoch.evolve import (
     MODE_DISABLED,
@@ -32,9 +33,12 @@ from enoch.evolve import (
     set_evolve_schedule,
     set_evolve_mode,
     set_evolve_theme,
+    sync_evolve_candidates,
 )
 from enoch.identity import load_identity
+from enoch.learn import LearnRequest, record_peer_learning_observation
 from enoch.lineage.core import LineageCandidate
+from enoch.logs import log_conversation_turn
 from enoch.task_queue import begin_next_task, enqueue_task, fail_task
 
 
@@ -80,12 +84,76 @@ class EnochEvolveTests(unittest.TestCase):
             report = evolve_report(root)
 
         sources = {candidate.source for candidate in candidates}
-        self.assertIn("task-history", sources)
-        self.assertIn("cron", sources)
-        self.assertIn("learning", sources)
-        self.assertEqual(report.counts_by_source["task-history"], 1)
-        self.assertEqual(report.counts_by_source["cron"], 1)
-        self.assertEqual(report.counts_by_source["learning"], 1)
+        self.assertEqual(sources, {"experience"})
+        self.assertEqual(report.counts_by_source["experience"], 3)
+
+    def test_collects_exactly_the_six_declared_evolution_sources(self) -> None:
+        brainstorm_response = json.dumps(
+            [
+                {
+                    "title": "Make provenance visible",
+                    "rationale": "The theme emphasizes accountability.",
+                    "proposed_change": "Show source details in candidate reports.",
+                    "expected_benefit": "Improves review quality.",
+                    "risk": "Adds output.",
+                    "test_plan": "Add report tests.",
+                }
+            ]
+        )
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            add_backlog_item(42, "improve Telegram work UX", root, priority="p0")
+            log_conversation_turn(
+                chat_id=42,
+                message="No, keep candidate provenance in the report.",
+                reply="Understood.",
+                root=root,
+            )
+            _write_lineage_candidate(root, _lineage_candidate())
+            queued = enqueue_task(42, "ship flaky workflow", root)
+            begin_next_task(root)
+            fail_task(queued.id, root, result="Tests failed.")
+            record_peer_learning_observation(LearnRequest(skill="research", agent="enosh"), root)
+            generate_brainstorm_ideas(
+                "accountable evolution",
+                root,
+                mission="Evolve safely",
+                generator=lambda _prompt: brainstorm_response,
+            )
+
+            candidates = collect_evolve_candidates(root, theme="accountable evolution")
+
+        self.assertEqual(
+            {candidate.source for candidate in candidates},
+            {"backlog", "feedback", "experience", "inheritance", "learning", "brainstorming"},
+        )
+
+    def test_brainstorm_candidates_are_scoped_to_current_theme(self) -> None:
+        response = json.dumps(
+            [
+                {
+                    "title": "Improve audit trail",
+                    "rationale": "Useful for theme A.",
+                    "proposed_change": "Show provenance.",
+                    "expected_benefit": "Better review.",
+                    "risk": "More output.",
+                    "test_plan": "Add formatting tests.",
+                }
+            ]
+        )
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            generate_brainstorm_ideas(
+                "theme A",
+                root,
+                mission="Evolve safely",
+                generator=lambda _prompt: response,
+            )
+            first = sync_evolve_candidates(root, theme="theme A")
+            second = sync_evolve_candidates(root, theme="theme B")
+
+        self.assertEqual({candidate.source for candidate in first}, {"brainstorming"})
+        self.assertEqual(second, ())
 
     def test_disabled_mode_does_not_collect_candidates(self) -> None:
         with TemporaryDirectory() as temp:

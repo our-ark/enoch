@@ -1,9 +1,15 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+import hashlib
+import json
 from pathlib import Path
+from typing import Callable
 
-from enoch.skills import SkillsError, _github_text, _parse_simple_yaml
+from enoch.memory.paths import clean_text, now as current_time
+from enoch.paths import enoch_home
+from enoch.lineage.core import lineage_file, parse_lineage_parent
+from enoch.skills import AgentSkills, SkillsError, _github_text, _parse_simple_yaml, load_agent_skills
 
 
 MAX_SKILL_DOC_CHARS = 12000
@@ -29,6 +35,107 @@ class PublishedSkill:
 class LearnRequest:
     skill: str
     agent: str
+
+
+@dataclass(frozen=True)
+class PeerLearningObservation:
+    id: str
+    skill: str
+    agent: str
+    created_at: str
+
+
+def peer_learning_path(root: Path | None = None) -> Path:
+    return enoch_home(root) / "learning" / "peers.jsonl"
+
+
+def record_peer_learning_observation(
+    request: LearnRequest,
+    root: Path | None = None,
+) -> PeerLearningObservation:
+    skill = clean_text(request.skill)
+    agent = clean_text(request.agent).lower()
+    if not skill or not agent:
+        raise ValueError("Peer learning requires a skill and source agent.")
+    digest = hashlib.sha256(f"{agent}\0{skill.lower()}".encode("utf-8")).hexdigest()[:12]
+    observation = PeerLearningObservation(
+        id=f"peer-{digest}",
+        skill=skill,
+        agent=agent,
+        created_at=current_time(),
+    )
+    path = peer_learning_path(root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(asdict(observation), sort_keys=True) + "\n")
+    return observation
+
+
+def load_peer_learning_observations(
+    root: Path | None = None,
+    *,
+    limit: int = 20,
+) -> tuple[PeerLearningObservation, ...]:
+    path = peer_learning_path(root)
+    if not path.exists():
+        return ()
+    observations: list[PeerLearningObservation] = []
+    seen: set[str] = set()
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return ()
+    for line in reversed(lines):
+        try:
+            raw = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(raw, dict):
+            continue
+        observation = PeerLearningObservation(
+            id=clean_text(str(raw.get("id") or "")),
+            skill=clean_text(str(raw.get("skill") or "")),
+            agent=clean_text(str(raw.get("agent") or "")).lower(),
+            created_at=str(raw.get("created_at") or ""),
+        )
+        if not observation.id or not observation.skill or not observation.agent or observation.id in seen:
+            continue
+        seen.add(observation.id)
+        observations.append(observation)
+        if len(observations) >= limit:
+            break
+    return tuple(observations)
+
+
+def explore_peer_skills(
+    agent: str,
+    root: Path | None = None,
+    *,
+    loader: Callable[..., AgentSkills] = load_agent_skills,
+) -> tuple[PeerLearningObservation, ...]:
+    agent_name = clean_text(agent).lower()
+    if not agent_name or agent_name in {"enoch", "self", "me"}:
+        raise ValueError("Choose a non-parent peer agent to explore.")
+    parent_path = lineage_file(root)
+    if parent_path.exists():
+        try:
+            parent = parse_lineage_parent(parent_path.read_text(encoding="utf-8"))
+        except OSError:
+            parent = None
+        if parent is not None:
+            parent_repo_name = parent.repo.rstrip("/").removesuffix(".git").rsplit("/", 1)[-1].lower()
+            if agent_name in {parent.name.lower(), parent_repo_name}:
+                raise ValueError("Use inheritance, not peer learning, for the direct parent.")
+    published = loader(agent_name, root=root)
+    observations = [
+        record_peer_learning_observation(
+            LearnRequest(skill=skill.name, agent=agent_name),
+            root,
+        )
+        for skill in published.skills
+        if skill.name and skill.exposure != "hidden"
+    ]
+    return tuple(observations)
 
 
 def load_published_skill(skill: str, agent: str) -> PublishedSkill:

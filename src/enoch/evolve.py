@@ -8,7 +8,10 @@ from typing import Iterable
 
 from enoch.backlog import BacklogItem, backlog_status
 from enoch.automatic_learning import LearningArtifact, learning_index_path
+from enoch.brainstorming import BrainstormIdea, load_brainstorm_ideas
 from enoch.cron import CronJob, cron_status, format_cron_interval
+from enoch.feedback import FeedbackSignal, extract_feedback_signals
+from enoch.learn import PeerLearningObservation, load_peer_learning_observations
 from enoch.lineage.core import LineageCandidate, load_parent_inbox_candidates
 from enoch.memory.paths import atomic_write, clean_text, now as current_time
 from enoch.paths import enoch_home
@@ -298,20 +301,37 @@ def evolve_report(root: Path | None = None) -> EvolveReport:
     )
 
 
-def collect_evolve_candidates(root: Path | None = None) -> tuple[EvolveCandidate, ...]:
+def collect_evolve_candidates(
+    root: Path | None = None,
+    *,
+    theme: str = "",
+) -> tuple[EvolveCandidate, ...]:
     candidates: list[EvolveCandidate] = []
     candidates.extend(_backlog_candidates(backlog_status(root).pending))
+    candidates.extend(_feedback_candidates(extract_feedback_signals(root)))
     candidates.extend(_inheritance_candidates(load_parent_inbox_candidates(root)))
     candidates.extend(_task_history_candidates(task_queue_status(root).history))
     candidates.extend(_cron_candidates(cron_status(root).active))
     candidates.extend(_learning_candidates(_load_learning_artifacts(root)))
+    candidates.extend(_peer_learning_candidates(load_peer_learning_observations(root)))
+    candidates.extend(_brainstorm_candidates(load_brainstorm_ideas(root, theme=theme)))
     return tuple(candidates)
 
 
 def sync_evolve_candidates(root: Path | None = None, *, theme: str = "") -> tuple[EvolveCandidate, ...]:
     stored = {candidate.id: candidate for candidate in _load_all_evolve_candidates(root)}
-    merged: dict[str, EvolveCandidate] = dict(stored)
-    for candidate in collect_evolve_candidates(root):
+    collected = collect_evolve_candidates(root, theme=theme)
+    collected_ids = {candidate.id for candidate in collected}
+    merged: dict[str, EvolveCandidate] = {
+        candidate_id: candidate
+        for candidate_id, candidate in stored.items()
+        if not (
+            candidate.source == "brainstorming"
+            and candidate.status in VISIBLE_CANDIDATE_STATUSES
+            and candidate_id not in collected_ids
+        )
+    }
+    for candidate in collected:
         previous = stored.get(candidate.id)
         status = previous.status if previous is not None else candidate.status
         merged[candidate.id] = EvolveCandidate(**{**candidate.__dict__, "status": status})
@@ -495,9 +515,14 @@ def _candidate_from_json(raw: dict[str, object]) -> EvolveCandidate | None:
     status = clean_text(str(raw.get("status") or "candidate")).lower()
     if status not in CANDIDATE_STATUSES:
         status = "candidate"
+    source = clean_text(str(raw.get("source") or "unknown")) or "unknown"
+    if source in {"task-history", "cron"}:
+        source = "experience"
+    if source == "learning" and not candidate_id.startswith("learning-peer-"):
+        source = "experience"
     return EvolveCandidate(
         id=candidate_id,
-        source=clean_text(str(raw.get("source") or "unknown")) or "unknown",
+        source=source,
         title=title,
         rationale=clean_text(str(raw.get("rationale") or "")),
         proposed_change=clean_text(str(raw.get("proposed_change") or "")),
@@ -576,6 +601,32 @@ def _inheritance_candidates(items: Iterable[LineageCandidate]) -> list[EvolveCan
     return candidates
 
 
+def _feedback_candidates(items: Iterable[FeedbackSignal]) -> list[EvolveCandidate]:
+    kind_score = {"complaint": 34, "correction": 32, "repeated-request": 28, "preference": 24}
+    candidates = []
+    for item in items:
+        title = item.message if len(item.message) <= 120 else f"{item.message[:117].rstrip()}..."
+        candidates.append(
+            EvolveCandidate(
+                id=f"feedback-{item.id}",
+                source="feedback",
+                title=f"Respond to {item.kind}: {title}",
+                rationale=(
+                    f"Conversation feedback classified as {item.kind}; observed {item.occurrences} time(s)."
+                ),
+                proposed_change=(
+                    "Inspect the conversation context and make the smallest durable body or workflow change that "
+                    "addresses this feedback without encoding private conversation content."
+                ),
+                expected_benefit="Turns explicit human feedback into an accountable, testable improvement candidate.",
+                risk="Heuristic feedback extraction can misclassify ordinary conversation; confirm intent before editing.",
+                test_plan="Add or update focused tests for the affected behavior and verify the feedback is addressed.",
+                score=kind_score.get(item.kind, 20) + min(item.occurrences, 3) * 2,
+            )
+        )
+    return candidates
+
+
 def _task_history_candidates(items: Iterable[TaskJob]) -> list[EvolveCandidate]:
     candidates = []
     for item in items:
@@ -586,7 +637,7 @@ def _task_history_candidates(items: Iterable[TaskJob]) -> list[EvolveCandidate]:
         candidates.append(
             EvolveCandidate(
                 id=f"task-{item.id}",
-                source="task-history",
+                source="experience",
                 title=f"Improve reliability after {item.status} task #{item.id}: {item.text}",
                 rationale=(
                     f"Task #{item.id} ended as {item.status}."
@@ -612,7 +663,7 @@ def _cron_candidates(items: Iterable[CronJob]) -> list[EvolveCandidate]:
         candidates.append(
             EvolveCandidate(
                 id=f"cron-{item.id}",
-                source="cron",
+                source="experience",
                 title=f"Review recurring workflow #{item.id}: {item.text}",
                 rationale=(
                     f"Active cron job runs every {cadence}; next run {item.next_run_at or 'unknown'}."
@@ -638,7 +689,7 @@ def _learning_candidates(items: Iterable[LearningArtifact]) -> list[EvolveCandid
         candidates.append(
             EvolveCandidate(
                 id=f"learning-{item.id}",
-                source="learning",
+                source="experience",
                 title=f"Turn learned skill work into reusable behavior: {skills}",
                 rationale=f"Learning artifact from task {item.task_id or 'unknown'} recorded skill work for {skills}.",
                 proposed_change=(
@@ -652,6 +703,45 @@ def _learning_candidates(items: Iterable[LearningArtifact]) -> list[EvolveCandid
             )
         )
     return candidates
+
+
+def _peer_learning_candidates(items: Iterable[PeerLearningObservation]) -> list[EvolveCandidate]:
+    candidates = []
+    for item in items:
+        candidates.append(
+            EvolveCandidate(
+                id=f"learning-{item.id}",
+                source="learning",
+                title=f"Explore and adapt {item.agent}'s {item.skill} skill",
+                rationale=f"A non-parent agent skill was inspected from {item.agent} at {item.created_at or 'unknown time'}.",
+                proposed_change=(
+                    f"Re-inspect {item.agent}'s published {item.skill} skill, adapt only mission-relevant ideas, "
+                    "and preserve Enoch-specific behavior."
+                ),
+                expected_benefit="Allows horizontal capability learning without treating a peer as an ancestor.",
+                risk="The peer skill may be incompatible, stale, or too specific to the source agent.",
+                test_plan="Verify skill discovery and run focused tests for every adapted behavior.",
+                score=22,
+            )
+        )
+    return candidates
+
+
+def _brainstorm_candidates(items: Iterable[BrainstormIdea]) -> list[EvolveCandidate]:
+    return [
+        EvolveCandidate(
+            id=item.id,
+            source="brainstorming",
+            title=item.title,
+            rationale=f"Theme-guided LLM idea for '{item.theme}'. {item.rationale}",
+            proposed_change=item.proposed_change,
+            expected_benefit=item.expected_benefit,
+            risk=item.risk,
+            test_plan=item.test_plan,
+            score=16,
+        )
+        for item in items
+    ]
 
 
 def _load_learning_artifacts(root: Path | None = None, *, limit: int = 10) -> tuple[LearningArtifact, ...]:
@@ -711,10 +801,14 @@ def _score_candidate(candidate: EvolveCandidate, *, theme: str) -> EvolveCandida
         score += 10
     if candidate.source == "inheritance":
         score += 8
-    if candidate.source == "task-history":
+    if candidate.source == "experience":
         score += 12
     if candidate.source == "learning":
         score += 6
+    if candidate.source == "feedback":
+        score += 10
+    if candidate.source == "brainstorming":
+        score += 4
     return EvolveCandidate(**{**candidate.__dict__, "score": score})
 
 

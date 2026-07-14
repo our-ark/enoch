@@ -1313,7 +1313,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertNotIn("backlog-1", {candidate.id for candidate in visible})
         statuses = {candidate.id: candidate.status for candidate in all_candidates}
         self.assertEqual(statuses["backlog-1"], "failed")
-        self.assertIn("task-history", report.counts_by_source)
+        self.assertIn("experience", report.counts_by_source)
         self.assertIn("Final status: failed", client.sent[-1][1])
 
     def test_evolve_can_set_theme_and_mode(self) -> None:
@@ -1328,6 +1328,58 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("Theme: improve recovery", client.sent[0][1])
         self.assertIn("Mode: disabled", client.sent[1][1])
         self.assertIn("Candidate counts:\n- none", client.sent[1][1])
+
+    @patch(
+        "enoch.telegram.bot.respond",
+        return_value=json.dumps(
+            [
+                {
+                    "title": "Expose candidate provenance",
+                    "rationale": "The theme calls for auditability.",
+                    "proposed_change": "Add provenance to evolve reports.",
+                    "expected_benefit": "Improves review.",
+                    "risk": "Adds output.",
+                    "test_plan": "Add report tests.",
+                }
+            ]
+        ),
+    )
+    def test_evolve_brainstorm_generates_candidate_under_theme(self, respond: MagicMock) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            client = FakeTelegramClient(allowed_chat_id=42)
+            bot = EnochTelegramBot(load_identity(), root, client)
+
+            bot.handle_update(_message_update(chat_id=42, text="/evolve theme auditable evolution"))
+            bot.handle_update(_message_update(update_id=2, chat_id=42, text="/evolve brainstorm"))
+
+        self.assertIn("Added 1 theme-guided brainstorming candidate", client.sent[1][1])
+        self.assertIn("brainstorming: 1", client.sent[1][1])
+        self.assertIn("Current evolution theme: auditable evolution", respond.call_args.args[1])
+
+    @patch("enoch.telegram.bot.respond")
+    def test_evolve_brainstorm_requires_theme(self, respond: MagicMock) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            client = FakeTelegramClient(allowed_chat_id=42)
+            bot = EnochTelegramBot(load_identity(), root, client)
+
+            bot.handle_update(_message_update(chat_id=42, text="/evolve brainstorm"))
+
+        self.assertIn("Set a theme", client.sent[0][1])
+        respond.assert_not_called()
+
+    @patch("enoch.telegram.bot.explore_peer_skills", return_value=(MagicMock(), MagicMock()))
+    def test_evolve_explore_discovers_peer_skills(self, explore_peer_skills: MagicMock) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            client = FakeTelegramClient(allowed_chat_id=42)
+            bot = EnochTelegramBot(load_identity(), root, client)
+
+            bot.handle_update(_message_update(chat_id=42, text="/evolve explore enosh"))
+
+        explore_peer_skills.assert_called_once_with("enosh", root)
+        self.assertIn("Added 2 peer-learning candidate(s) from enosh", client.sent[0][1])
 
     def test_evolve_keeps_direct_mode_aliases(self) -> None:
         with TemporaryDirectory() as temp:
@@ -1814,12 +1866,14 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("Teaching is automatic now.", client.sent[0][1])
         self.assertNotIn("Input tokens:", client.sent[0][1])
 
+    @patch("enoch.telegram.bot.record_peer_learning_observation")
     @patch("enoch.telegram.bot.learn_skill_prompt", return_value="learn prompt")
     @patch("enoch.telegram.bot.respond", return_value="This skill does not fit Enoch yet.")
     def test_learn_skill_uses_read_only_session(
         self,
         respond: MagicMock,
         learn_skill_prompt: MagicMock,
+        record_peer_learning_observation: MagicMock,
     ) -> None:
         client = FakeTelegramClient(allowed_chat_id=42)
         bot = EnochTelegramBot(load_identity(), ROOT, client)
@@ -1827,6 +1881,7 @@ class EnochTelegramTests(unittest.TestCase):
         bot.handle_update(_message_update(chat_id=42, text="/learn teach from lucy"))
 
         learn_skill_prompt.assert_called_once_with("/learn teach from lucy", root=ROOT)
+        record_peer_learning_observation.assert_called_once()
         respond.assert_called_once()
         self.assertEqual(respond.call_args.kwargs["session_key"], "telegram:42")
         self.assertIn("learn prompt", respond.call_args.args[1])

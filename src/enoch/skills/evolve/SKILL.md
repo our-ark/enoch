@@ -16,17 +16,18 @@ The default mode is `co-evolve`.
 
 ## Candidate Sources
 
-The MVP candidate sources are:
+Enoch collects exactly six semantic candidate sources:
 
-- backlog items from `.enoch/backlog.json`;
-- direct-parent inheritance candidates from `.agent/lineage_inbox.json`.
-- recent failed or cancelled task history from `.enoch/task_queue.json`;
-- active recurring work from `.enoch/cron.json`;
-- recent automatic learning artifacts from `.enoch/learning/artifacts.jsonl`.
+- **backlog** from `.enoch/backlog.json`;
+- **feedback** extracted conservatively from local conversation logs, including corrections, preferences, complaints, and repeated requests;
+- **experience** from failed or cancelled tasks, recurring workflows, and successful skill-work artifacts;
+- **inheritance** from direct-parent changes in `.agent/lineage_inbox.json`;
+- **learning** from skills discovered with `/evolve explore <agent>` or inspected with `/learn`, recorded in `.enoch/learning/peers.jsonl`; and
+- **brainstorming** from bounded, structured LLM ideas generated under the current mission and evolution theme.
+
+The theme is ranking pressure, not a seventh source. `/evolve brainstorm` requires a non-empty theme, asks the reasoning engine for a small JSON list, validates the result, and persists only structured candidates in `.enoch/evolve_brainstorms.jsonl`.
 
 Candidates are persisted in `.enoch/evolve_candidates.json` so Enoch can remember whether a candidate has been selected, is running, is done, failed, cancelled, or has been rejected. Normal candidate views hide done, failed, cancelled, and rejected candidates.
-
-Future sources may include explicit feedback, conversation patterns, brainstorming, and learning from non-parent agents.
 
 ## Scheduler
 
@@ -51,6 +52,8 @@ Enoch must require human direction before changing identity, mission, secrets, p
 - `/evolve`
 - `/evolve mode <mode>`
 - `/evolve theme <text>`
+- `/evolve brainstorm`
+- `/evolve explore <agent>`
 - `/evolve candidates`
 - `/evolve candidates all`
 - `/evolve select <id>`
