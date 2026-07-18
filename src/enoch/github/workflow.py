@@ -61,6 +61,15 @@ class PullRequestResult:
     url: str | None
     fallback_url: str | None
     note: str | None = None
+    draft: bool = False
+
+
+@dataclass(frozen=True)
+class EvolutionProvenance:
+    candidate_id: str
+    source: str
+    task_id: int
+    retry_of_task_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -151,6 +160,8 @@ def create_pull_request(
     remote: str = DEFAULT_REMOTE,
     base_branch: str = DEFAULT_BRANCH,
     allow_protected_branch: bool = False,
+    draft: bool = False,
+    evolution_provenance: EvolutionProvenance | None = None,
 ) -> PullRequestResult:
     branch = current_branch(root)
     if branch in DEFAULT_PROTECTED_BRANCHES and not allow_protected_branch:
@@ -162,6 +173,8 @@ def create_pull_request(
     _ensure_upstream(remote, branch, root)
     pr_title = title or _latest_commit_subject(root)
     pr_body = body or _default_pr_body(branch, root)
+    if evolution_provenance is not None:
+        pr_body = _append_evolution_provenance(pr_body, evolution_provenance)
     fallback_url = _compare_url(remote, base_branch, branch, root)
     gh = shutil.which("gh")
     if gh is None:
@@ -173,6 +186,7 @@ def create_pull_request(
             url=None,
             fallback_url=fallback_url,
             note="GitHub CLI is not available.",
+            draft=draft,
         )
 
     command = [
@@ -188,6 +202,8 @@ def create_pull_request(
         "--body",
         pr_body,
     ]
+    if draft:
+        command.append("--draft")
     result = subprocess.run(
         command,
         cwd=root,
@@ -205,6 +221,7 @@ def create_pull_request(
             url=None,
             fallback_url=fallback_url,
             note=note,
+            draft=draft,
         )
 
     return PullRequestResult(
@@ -214,6 +231,7 @@ def create_pull_request(
         created=True,
         url=result.stdout.strip() or None,
         fallback_url=fallback_url,
+        draft=draft,
     )
 
 
@@ -351,6 +369,25 @@ def _default_pr_body(branch: str, root: Path | None) -> str:
             "- PR created for review.",
         ]
     )
+
+
+def format_evolution_provenance(provenance: EvolutionProvenance) -> str:
+    lines = [
+        "## Evolution provenance",
+        "",
+        f"- Candidate: `{provenance.candidate_id}`",
+        f"- Source: {provenance.source}",
+        f"- Task: #{provenance.task_id}",
+    ]
+    if provenance.retry_of_task_id is not None:
+        lines.append(f"- Retry of task: #{provenance.retry_of_task_id}")
+    return "\n".join(lines)
+
+
+def _append_evolution_provenance(body: str, provenance: EvolutionProvenance) -> str:
+    if "## Evolution provenance" in body:
+        return body
+    return "\n\n".join([body.rstrip(), format_evolution_provenance(provenance)])
 
 
 def _compare_url(remote: str, base_branch: str, branch: str, root: Path | None) -> str | None:

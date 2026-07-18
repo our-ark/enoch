@@ -170,6 +170,9 @@ def _work_request_wrapper_block() -> str:
             "Complete the requested work directly.",
             "You may edit files, inspect the repository, run checks, and use available tools as needed.",
             "When the requested work requires publishing an existing branch or creating a pull request, do it directly.",
+            "When implementation is complete and validation passes, publish the pull request as ready for review, not draft.",
+            "Use a draft pull request only when work is intentionally incomplete or the human explicitly requests a draft.",
+            "When the task supplies an Evolution provenance section, preserve it verbatim in the pull request body.",
             "Keep changes scoped to the request.",
         ]
     )

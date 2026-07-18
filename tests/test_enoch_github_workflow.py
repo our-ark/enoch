@@ -8,6 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from enoch.github.workflow import (
+    EvolutionProvenance,
     PublishError,
     close_pull_request,
     create_pull_request,
@@ -316,6 +317,78 @@ class EnochGithubWorkflowTests(unittest.TestCase):
         self.assertEqual(args[:3], ["/usr/local/bin/gh", "pr", "create"])
         self.assertIn("--head", args)
         self.assertIn("feature/enoch", args)
+        self.assertNotIn("--draft", args)
+        self.assertFalse(result.draft)
+
+    @patch("enoch.github.workflow.subprocess.run")
+    @patch("enoch.github.workflow.shutil.which", return_value="/usr/local/bin/gh")
+    @patch("enoch.github.workflow.ensure_clean_worktree")
+    @patch("enoch.github.workflow.run_git")
+    @patch("enoch.github.workflow.current_branch", return_value="feature/enoch")
+    def test_pr_appends_evolution_provenance(
+        self,
+        _current_branch: MagicMock,
+        run_git: MagicMock,
+        _ensure_clean_worktree: MagicMock,
+        _which: MagicMock,
+        run: MagicMock,
+    ) -> None:
+        run_git.side_effect = [
+            _git_result(returncode=0, stdout="abc123"),
+            _git_result(returncode=0, stdout="Trace evolve candidate"),
+            _git_result(returncode=0, stdout="https://github.com/our-ark/enoch.git"),
+        ]
+        run.return_value.returncode = 0
+        run.return_value.stdout = "https://github.com/our-ark/enoch/pull/12\n"
+        run.return_value.stderr = ""
+
+        result = create_pull_request(
+            body="## Summary\n- Preserve traceability.",
+            root=ROOT,
+            evolution_provenance=EvolutionProvenance(
+                candidate_id="feedback-c3ed71fd1d2d",
+                source="feedback",
+                task_id=3,
+                retry_of_task_id=1,
+            ),
+        )
+
+        self.assertIn("## Evolution provenance", result.body)
+        self.assertIn("- Candidate: `feedback-c3ed71fd1d2d`", result.body)
+        self.assertIn("- Source: feedback", result.body)
+        self.assertIn("- Task: #3", result.body)
+        self.assertIn("- Retry of task: #1", result.body)
+        args = run.call_args.args[0]
+        self.assertEqual(args[args.index("--body") + 1], result.body)
+
+    @patch("enoch.github.workflow.subprocess.run")
+    @patch("enoch.github.workflow.shutil.which", return_value="/usr/local/bin/gh")
+    @patch("enoch.github.workflow.ensure_clean_worktree")
+    @patch("enoch.github.workflow.run_git")
+    @patch("enoch.github.workflow.current_branch", return_value="feature/enoch")
+    def test_pr_uses_draft_only_when_explicitly_requested(
+        self,
+        _current_branch: MagicMock,
+        run_git: MagicMock,
+        _ensure_clean_worktree: MagicMock,
+        _which: MagicMock,
+        run: MagicMock,
+    ) -> None:
+        run_git.side_effect = [
+            _git_result(returncode=0, stdout="abc123"),
+            _git_result(returncode=0, stdout="Add unfinished experiment"),
+            _git_result(returncode=0, stdout="Add unfinished experiment"),
+            _git_result(returncode=0, stdout="https://github.com/our-ark/genesis.git"),
+        ]
+        run.return_value.returncode = 0
+        run.return_value.stdout = "https://github.com/our-ark/genesis/pull/13\n"
+        run.return_value.stderr = ""
+
+        result = create_pull_request(root=ROOT, draft=True)
+
+        self.assertTrue(result.created)
+        self.assertTrue(result.draft)
+        self.assertIn("--draft", run.call_args.args[0])
 
     @patch("enoch.github.workflow.subprocess.run")
     @patch("enoch.github.workflow.shutil.which", return_value="/usr/local/bin/gh")

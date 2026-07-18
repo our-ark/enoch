@@ -1932,14 +1932,56 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("Approved evolve candidate backlog-1 and queued task #1.", client.sent[0][1])
         self.assertIn("backlog-1 [running backlog] ship evolve approval", client.sent[0][1])
         self.assertIn("Evolve candidate backlog-1", queued.pending[0].text)
+        self.assertIn("open a ready-for-review PR", queued.pending[0].text)
+        self.assertNotIn("Open a PR for human review", queued.pending[0].text)
         self.assertEqual(queued.pending[0].context_source, "evolve-approve")
         self.assertEqual(queued.pending[0].source, "backlog")
         self.assertEqual(queued.pending[0].initiated_by, "human")
         self.assertEqual(queued.pending[0].candidate_id, "backlog-1")
         self.assertIn("Evolve candidate context:", queued.pending[0].context)
+        worker_context = telegram._task_worker_context(queued.pending[0])
+        self.assertIn("## Evolution provenance", worker_context)
+        self.assertIn("- Candidate: `backlog-1`", worker_context)
+        self.assertIn("- Source: backlog", worker_context)
+        self.assertIn("- Task: #1", worker_context)
+        self.assertNotIn("Retry of task", worker_context)
         self.assertEqual([event.event for event in events], ["selected", "queued"])
         self.assertEqual([event.event_actor for event in events], ["human", "human"])
         self.assertEqual(events[-1].task_id, queued.pending[0].id)
+
+    @patch("enoch.telegram.bot.create_pull_request")
+    def test_evolve_pr_helper_passes_current_task_provenance(
+        self,
+        create_pull_request: MagicMock,
+    ) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            original = enqueue_task(
+                42,
+                "original evolve attempt",
+                root,
+                source="feedback",
+                candidate_id="feedback-c3ed71fd1d2d",
+            )
+            retry = enqueue_task(
+                42,
+                "retry evolve attempt",
+                root,
+                source="feedback",
+                candidate_id="feedback-c3ed71fd1d2d",
+                parent_task_id=original.id,
+            )
+            token = telegram._CURRENT_TASK_ID.set(retry.id)
+            try:
+                telegram._create_pull_request_for_current_task(root)
+            finally:
+                telegram._CURRENT_TASK_ID.reset(token)
+
+        provenance = create_pull_request.call_args.kwargs["evolution_provenance"]
+        self.assertEqual(provenance.candidate_id, "feedback-c3ed71fd1d2d")
+        self.assertEqual(provenance.source, "feedback")
+        self.assertEqual(provenance.task_id, retry.id)
+        self.assertEqual(provenance.retry_of_task_id, original.id)
 
     def test_evolve_cannot_approve_removed_candidate(self) -> None:
         with TemporaryDirectory() as temp:
@@ -2117,6 +2159,11 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual(queued.pending[0].candidate_id, "backlog-1")
         self.assertEqual(queued.pending[0].parent_task_id, failed_job.id)
         self.assertEqual(queued.pending[0].context_source, "evolve-retry")
+        worker_context = telegram._task_worker_context(queued.pending[0])
+        self.assertIn("- Candidate: `backlog-1`", worker_context)
+        self.assertIn("- Source: backlog", worker_context)
+        self.assertIn("- Task: #2", worker_context)
+        self.assertIn("- Retry of task: #1", worker_context)
         self.assertEqual(candidates[0].status, "running")
         self.assertEqual([event.parent_task_id for event in task_events], [1, 1])
         self.assertEqual([event.trigger for event in task_events], ["/evolve retry", "/evolve retry"])

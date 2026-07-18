@@ -60,5 +60,7 @@ The helper:
 - Treat remote writes as higher risk than local code edits.
 - Do not expose secrets in PR bodies, comments, logs, or commit messages.
 - Refuse to publish from main unless the human explicitly asks for a direct main push.
-- Prefer draft PRs unless the human asks for ready-for-review.
+- Publish completed, validated work as ready for review by default.
+- Use a draft PR only when work is intentionally incomplete or the human explicitly requests a draft.
+- When an evolve task supplies an `## Evolution provenance` section, include it verbatim in the PR body.
 - Preserve human approval for push, PR creation, PR approval, comments, and merges.

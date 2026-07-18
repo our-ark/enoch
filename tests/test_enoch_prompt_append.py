@@ -45,6 +45,9 @@ class EnochPromptAppendTests(unittest.TestCase):
         self.assertIn("Update README.", prompt)
         self.assertIn("Complete the requested work directly.", prompt)
         self.assertIn("creating a pull request", prompt)
+        self.assertIn("ready for review, not draft", prompt)
+        self.assertIn("intentionally incomplete", prompt)
+        self.assertIn("Evolution provenance", prompt)
         self.assertIn("forward-fixed", prompt)
 
     def test_extract_edit_request_strips_marker_from_visible_reply(self) -> None:

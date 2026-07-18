@@ -110,6 +110,7 @@ from enoch.formatting import (
     summarize_for_log,
 )
 from enoch.github.workflow import (
+    EvolutionProvenance,
     LocalPublishResult,
     PublishError,
     PullRequestCloseResult,
@@ -118,6 +119,7 @@ from enoch.github.workflow import (
     close_pull_request,
     create_pull_request,
     feature_title,
+    format_evolution_provenance,
     prepare_local_publish,
     push_current_branch,
 )
@@ -846,7 +848,7 @@ class EnochTelegramBot:
             self._send_step_update(chat_id, f"Pushed branch {pushed.branch}.")
 
             self._send_step_update(chat_id, "Opening a pull request.")
-            pr = create_pull_request(root=self.root)
+            pr = _create_pull_request_for_current_task(self.root)
             outputs.append(_format_pr_result(pr))
             if pr.url:
                 self._update_work_status(_pr_step_update(pr), pr_url=pr.url)
@@ -919,7 +921,7 @@ class EnochTelegramBot:
             self._send_step_update(chat_id, f"Pushed branch {pushed.branch}.")
 
             self._send_step_update(chat_id, "Opening a pull request.")
-            pr = create_pull_request(root=self.root)
+            pr = _create_pull_request_for_current_task(self.root)
             outputs.append(_format_pr_result(pr))
             summaries.append(_pr_summary(pr))
             if pr.url:
@@ -2170,7 +2172,12 @@ class EnochTelegramBot:
                 reply = _action_lock_message()
                 completed_status = "failed"
             else:
-                reply = self._run_direct_work(job.chat_id, job.text, context=job.context, session_key=session_key)
+                reply = self._run_direct_work(
+                    job.chat_id,
+                    job.text,
+                    context=_task_worker_context(job),
+                    session_key=session_key,
+                )
             reply = self._capture_task_regression_signals(reply)
             if deadline.expired.is_set():
                 reply = _task_timeout_message(deadline.timeout_seconds)
@@ -3328,7 +3335,10 @@ def _evolve_task_request(candidate: EvolveCandidate, theme: str) -> str:
         f"Risk: {candidate.risk}",
         f"Test plan: {candidate.test_plan}",
         "",
-        "Keep the change small, reversible, and covered by focused tests. Open a PR for human review; do not merge it.",
+        "Keep the change small, reversible, and covered by focused tests. "
+        "When implementation is complete and tests pass, open a ready-for-review PR for human review; do not merge it.",
+        "The worker task context contains an Evolution provenance section. "
+        "Include that section verbatim in the pull request body.",
     ]
     return "\n".join(lines)
 
@@ -3347,6 +3357,40 @@ def _evolve_task_context(candidate: EvolveCandidate) -> str:
             f"Test plan: {candidate.test_plan}",
         ]
     )
+
+
+def _task_worker_context(job: TaskJob) -> str:
+    parts = [job.context.strip()]
+    provenance = _evolution_provenance_for_job(job)
+    if provenance is not None:
+        parts.extend(
+            [
+                "Required pull request metadata:",
+                format_evolution_provenance(provenance),
+                "If this task opens or updates a pull request, include the Evolution provenance section verbatim in its body.",
+            ]
+        )
+    return "\n\n".join(part for part in parts if part)
+
+
+def _evolution_provenance_for_job(job: TaskJob) -> EvolutionProvenance | None:
+    if not job.candidate_id:
+        return None
+    return EvolutionProvenance(
+        candidate_id=job.candidate_id,
+        source=job.source,
+        task_id=job.id,
+        retry_of_task_id=job.parent_task_id,
+    )
+
+
+def _create_pull_request_for_current_task(root: Path) -> PullRequestResult:
+    task_id = _CURRENT_TASK_ID.get()
+    job = _task_by_id(task_id, root) if task_id is not None else None
+    provenance = _evolution_provenance_for_job(job) if job is not None else None
+    if provenance is None:
+        return create_pull_request(root=root)
+    return create_pull_request(root=root, evolution_provenance=provenance)
 
 
 def _history_task(task_id: int, root: Path) -> TaskJob | None:
