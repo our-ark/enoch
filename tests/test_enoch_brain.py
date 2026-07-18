@@ -22,6 +22,7 @@ from enoch import brain
 from enoch.codex_sessions import CodexSessionState, codex_sessions_path, load_codex_session, save_codex_session
 from enoch.identity import load_identity
 from enoch.last_codex_input import last_codex_input_message
+from enoch.memory.store import remember_memory
 
 
 class EnochBrainTests(unittest.TestCase):
@@ -522,6 +523,57 @@ class EnochBrainTests(unittest.TestCase):
         self.assertIsNotNone(state)
         assert state is not None
         self.assertEqual(state.turn_count, 2)
+
+    @patch.dict("os.environ", {}, clear=True)
+    @patch("enoch.brain.shutil.which", return_value="/usr/local/bin/codex")
+    @patch("enoch.brain.subprocess.run")
+    def test_act_in_session_separates_working_directory_from_agent_state(
+        self,
+        run: MagicMock,
+        _which: MagicMock,
+    ) -> None:
+        run.return_value.returncode = 0
+        run.return_value.stdout = "\n".join(
+            [
+                '{"type":"thread.started","thread_id":"session-task"}',
+                '{"type":"item.completed","item":{"type":"agent_message","text":"Edited task worktree"}}',
+            ]
+        )
+        run.return_value.stderr = ""
+        with TemporaryDirectory() as temp:
+            base = Path(temp)
+            state_root = base / "resident"
+            work_root = base / "task-worktree"
+            state_root.mkdir()
+            work_root.mkdir()
+            config = state_root / ".enoch" / "config.yaml"
+            config.parent.mkdir()
+            config.write_text(
+                'codex:\n  model: "gpt-5.6-sol"\n  reasoning_effort: "high"\n',
+                encoding="utf-8",
+            )
+            remember_memory("Keep task state in the resident worktree.", root=state_root)
+
+            answer = act_in_session(
+                load_identity(),
+                "Implement isolated work.",
+                cwd=work_root,
+                state_root=state_root,
+                sandbox="danger-full-access",
+                session_key="telegram:42:task:1",
+            )
+
+            state = load_codex_session("telegram:42:task:1", state_root)
+            args = run.call_args.args[0]
+            prompt = run.call_args.kwargs["input"]
+
+        self.assertEqual(answer, "Edited task worktree")
+        self.assertEqual(args[args.index("--cd") + 1], str(work_root))
+        self.assertEqual(args[args.index("--model") + 1], "gpt-5.6-sol")
+        self.assertIn('model_reasoning_effort="high"', args)
+        self.assertIn("Keep task state in the resident worktree.", prompt)
+        self.assertIsNotNone(state)
+        self.assertFalse((work_root / ".enoch").exists())
 
     @patch(
         "enoch.brain._run_codex_result",

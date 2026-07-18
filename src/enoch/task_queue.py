@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 import json
+import os
 from pathlib import Path
 import re
 import threading
@@ -17,7 +19,8 @@ from enoch.paths import enoch_home
 from enoch.task_events import normalize_task_initiator, normalize_task_source, record_task_event
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 5
+DEFAULT_MAX_ATTEMPTS = 3
 PULL_REQUEST_URL_PATTERN = re.compile(r"https://github\.com/[^/\s]+/[^/\s]+/pull/\d+")
 _QUEUE_THREAD_LOCK = threading.RLock()
 
@@ -47,6 +50,16 @@ class TaskJob:
     approval_actor: str = ""
     parent_candidate_id: str = ""
     source_task_id: int | None = None
+    worker_id: str = ""
+    worker_pid: int | None = None
+    worktree_path: str = ""
+    branch_name: str = ""
+    attempt: int = 0
+    max_attempts: int = DEFAULT_MAX_ATTEMPTS
+    next_attempt_at: str = ""
+    failure_code: str = ""
+    failure_class: str = ""
+    retryable: bool = False
 
 
 @dataclass(frozen=True)
@@ -313,6 +326,7 @@ def begin_direct_task(
             approval_actor=_normalize_provenance_actor(approval_actor),
             parent_candidate_id=parent_candidate_id.strip(),
             source_task_id=_positive_int(source_task_id),
+            attempt=1,
         )
         data["running"] = _job_to_dict(job)
         data["next_id"] = job.id + 1
@@ -358,32 +372,29 @@ def begin_next_task(root: Path | None = None) -> TaskJob | None:
         pending = _pending_jobs(data)
         if not pending:
             return None
-        job = pending[0]
-        running = TaskJob(
-            id=job.id,
-            chat_id=job.chat_id,
-            text=job.text,
-            created_at=job.created_at,
-            started_at=current_time(),
-            status="running",
-            status_message_id=job.status_message_id,
-            result=job.result,
-            pr_urls=job.pr_urls,
-            context=job.context,
-            context_source=job.context_source,
-            source=job.source,
-            initiated_by=job.initiated_by,
-            trigger=job.trigger,
-            candidate_id=job.candidate_id,
-            parent_task_id=job.parent_task_id,
-            evidence_source=job.evidence_source,
-            signal_actor=job.signal_actor,
-            candidate_actor=job.candidate_actor,
-            approval_actor=job.approval_actor,
-            parent_candidate_id=job.parent_candidate_id,
-            source_task_id=job.source_task_id,
+        ready_index = next(
+            (index for index, candidate in enumerate(pending) if _task_is_due(candidate)),
+            None,
         )
-        data["pending"] = [_job_to_dict(item) for item in pending[1:]]
+        if ready_index is None:
+            return None
+        job = pending[ready_index]
+        running = _replace_job(
+            job,
+            started_at=current_time(),
+            completed_at="",
+            status="running",
+            attempt=job.attempt + 1,
+            next_attempt_at="",
+            failure_code="",
+            failure_class="",
+            retryable=False,
+        )
+        data["pending"] = [
+            _job_to_dict(item)
+            for index, item in enumerate(pending)
+            if index != ready_index
+        ]
         data["running"] = _job_to_dict(running)
         _write_queue(data, root)
         _record_task_event_safely(running, "started", root, event_actor="system", trigger="task-runner")
@@ -397,14 +408,16 @@ def complete_task(
     *,
     event_actor: str = "agent",
     trigger: str = "task-runner",
-) -> None:
-    _finish_running_task(
+    worker_id: str = "",
+) -> TaskJob | None:
+    return _finish_running_task(
         task_id,
         "completed",
         root,
         result=result,
         event_actor=event_actor,
         trigger=trigger,
+        worker_id=worker_id,
     )
 
 
@@ -415,15 +428,154 @@ def fail_task(
     *,
     event_actor: str = "agent",
     trigger: str = "task-runner",
-) -> None:
-    _finish_running_task(
+    worker_id: str = "",
+    failure_code: str = "",
+    failure_class: str = "",
+    retryable: bool = False,
+) -> TaskJob | None:
+    return _finish_running_task(
         task_id,
         "failed",
         root,
         result=result,
         event_actor=event_actor,
         trigger=trigger,
+        worker_id=worker_id,
+        failure_code=failure_code,
+        failure_class=failure_class,
+        retryable=retryable,
     )
+
+
+def retry_running_task(
+    task_id: int,
+    root: Path | None = None,
+    result: str = "",
+    *,
+    failure_code: str,
+    failure_class: str,
+    worker_id: str = "",
+    delay_seconds: int = 0,
+    event_actor: str = "agent",
+    trigger: str = "task-runner",
+) -> TaskJob | None:
+    with _queue_transaction(root):
+        data = _load_queue(root)
+        running = _parse_job(data.get("running"))
+        if (
+            running is None
+            or running.id != task_id
+            or (worker_id and running.worker_id != worker_id)
+            or running.attempt >= running.max_attempts
+        ):
+            return None
+        retry_at = _retry_at(delay_seconds)
+        recovered = _replace_job(
+            running,
+            status="pending",
+            started_at="",
+            completed_at="",
+            result=result,
+            pr_urls=_merge_pr_urls(running.pr_urls, _pull_request_urls(result)),
+            worker_id="",
+            worker_pid=None,
+            next_attempt_at=retry_at,
+            failure_code=failure_code.strip(),
+            failure_class=failure_class.strip(),
+            retryable=True,
+        )
+        data["running"] = None
+        data["pending"] = [
+            _job_to_dict(recovered),
+            *[_job_to_dict(job) for job in _pending_jobs(data)],
+        ]
+        _write_queue(data, root)
+        _record_task_event_safely(
+            recovered,
+            "retrying",
+            root,
+            event_actor=event_actor,
+            trigger=trigger,
+            result=result,
+        )
+        _record_task_event_safely(
+            recovered,
+            "queued",
+            root,
+            event_actor=event_actor,
+            trigger=trigger,
+            result=result,
+        )
+        return recovered
+
+
+def claim_running_task(
+    task_id: int,
+    worker_id: str,
+    worker_pid: int,
+    root: Path | None = None,
+) -> TaskJob | None:
+    cleaned_worker_id = worker_id.strip()
+    if not cleaned_worker_id or worker_pid <= 0:
+        raise ValueError("A worker id and process id are required.")
+    with _queue_transaction(root):
+        data = _load_queue(root)
+        running = _parse_job(data.get("running"))
+        if running is None or running.id != task_id:
+            return None
+        if (
+            running.worker_id
+            and running.worker_id != cleaned_worker_id
+            and task_worker_is_active(running)
+        ):
+            return None
+        claimed = _replace_job(
+            running,
+            worker_id=cleaned_worker_id,
+            worker_pid=worker_pid,
+        )
+        data["running"] = _job_to_dict(claimed)
+        _write_queue(data, root)
+        return claimed
+
+
+def record_task_worktree(
+    task_id: int,
+    worker_id: str,
+    worktree_path: Path,
+    branch_name: str,
+    root: Path | None = None,
+) -> TaskJob | None:
+    with _queue_transaction(root):
+        data = _load_queue(root)
+        running = _parse_job(data.get("running"))
+        if (
+            running is None
+            or running.id != task_id
+            or not worker_id
+            or running.worker_id != worker_id
+        ):
+            return None
+        updated = _replace_job(
+            running,
+            worktree_path=str(worktree_path.resolve()),
+            branch_name=branch_name.strip(),
+        )
+        data["running"] = _job_to_dict(updated)
+        _write_queue(data, root)
+        return updated
+
+
+def task_worker_is_active(job: TaskJob) -> bool:
+    if not job.worker_id or job.worker_pid is None:
+        return False
+    try:
+        os.kill(job.worker_pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
 
 
 def pause_task(
@@ -433,6 +585,7 @@ def pause_task(
     *,
     event_actor: str = "system",
     trigger: str = "codex-unavailable",
+    worker_id: str = "",
 ) -> TaskJob | None:
     with _queue_transaction(root):
         data = _load_queue(root)
@@ -446,6 +599,8 @@ def pause_task(
             else:
                 kept.append(job)
         if running is not None and running.id == task_id:
+            if worker_id and running.worker_id != worker_id:
+                return None
             paused_job = running
             running = None
         if paused_job is None:
@@ -455,6 +610,8 @@ def pause_task(
             status="paused",
             completed_at="",
             result=result or paused_job.result,
+            worker_id="",
+            worker_pid=None,
         )
         paused = [job for job in _paused_jobs(data) if job.id != task_id]
         paused.append(paused_job)
@@ -490,6 +647,8 @@ def resume_paused_tasks(
                 status="pending",
                 started_at="",
                 completed_at="",
+                worker_id="",
+                worker_pid=None,
             )
             for job in paused
         )
@@ -678,31 +837,45 @@ def _finish_running_task(
     *,
     event_actor: str,
     trigger: str,
-) -> None:
+    worker_id: str = "",
+    failure_code: str = "",
+    failure_class: str = "",
+    retryable: bool = False,
+) -> TaskJob | None:
     with _queue_transaction(root):
         data = _load_queue(root)
         running = _parse_job(data.get("running"))
-        if running is not None and running.id == task_id:
-            history = _history_jobs(data)
-            finished = _replace_job(
-                running,
-                status=status,
-                completed_at=current_time(),
-                result=result,
-                pr_urls=_merge_pr_urls(running.pr_urls, _pull_request_urls(result)),
-            )
-            history.append(finished)
-            data["running"] = None
-            data["history"] = [_job_to_dict(job) for job in history[-20:]]
-            _write_queue(data, root)
-            _record_task_event_safely(
-                finished,
-                status,
-                root,
-                event_actor=event_actor,
-                trigger=trigger,
-                result=result,
-            )
+        if running is None or running.id != task_id:
+            return None
+        if worker_id and running.worker_id != worker_id:
+            return None
+        history = _history_jobs(data)
+        finished = _replace_job(
+            running,
+            status=status,
+            completed_at=current_time(),
+            result=result,
+            pr_urls=_merge_pr_urls(running.pr_urls, _pull_request_urls(result)),
+            worker_id="",
+            worker_pid=None,
+            failure_code=failure_code.strip(),
+            failure_class=failure_class.strip(),
+            retryable=retryable,
+            next_attempt_at="",
+        )
+        history.append(finished)
+        data["running"] = None
+        data["history"] = [_job_to_dict(job) for job in history[-20:]]
+        _write_queue(data, root)
+        _record_task_event_safely(
+            finished,
+            status,
+            root,
+            event_actor=event_actor,
+            trigger=trigger,
+            result=result,
+        )
+        return finished
 
 
 def cancel_task(
@@ -752,11 +925,17 @@ def cancel_running_task(
     *,
     event_actor: str = "human",
     trigger: str = "/stop",
+    expected_task_id: int | None = None,
+    worker_id: str = "",
 ) -> TaskJob | None:
     with _queue_transaction(root):
         data = _load_queue(root)
         running = _parse_job(data.get("running"))
         if running is None:
+            return None
+        if expected_task_id is not None and running.id != expected_task_id:
+            return None
+        if worker_id and running.worker_id != worker_id:
             return None
         cancelled = _replace_job(
             running,
@@ -764,6 +943,8 @@ def cancel_running_task(
             completed_at=current_time(),
             result=result,
             pr_urls=_merge_pr_urls(running.pr_urls, _pull_request_urls(result)),
+            worker_id="",
+            worker_pid=None,
         )
         history = _history_jobs(data)
         history.append(cancelled)
@@ -787,8 +968,16 @@ def recover_interrupted_task(root: Path | None = None) -> TaskJob | None:
         running = _parse_job(data.get("running"))
         if running is None:
             return None
+        if task_worker_is_active(running):
+            return None
         if _job_has_pull_request(running):
-            completed = _replace_job(running, status="completed", completed_at=current_time())
+            completed = _replace_job(
+                running,
+                status="completed",
+                completed_at=current_time(),
+                worker_id="",
+                worker_pid=None,
+            )
             history = _history_jobs(data)
             history.append(completed)
             data["running"] = None
@@ -803,11 +992,66 @@ def recover_interrupted_task(root: Path | None = None) -> TaskJob | None:
                 result=completed.result,
             )
             return completed
-        recovered = _replace_job(running, status="pending", started_at="")
+        if running.attempt >= running.max_attempts:
+            failed = _replace_job(
+                running,
+                status="failed",
+                completed_at=current_time(),
+                result=(
+                    f"Task worker was interrupted and automatic recovery exhausted "
+                    f"{running.max_attempts} attempts."
+                ),
+                worker_id="",
+                worker_pid=None,
+                failure_code="worker_interrupted",
+                failure_class="transient",
+                retryable=False,
+                next_attempt_at="",
+            )
+            history = _history_jobs(data)
+            history.append(failed)
+            data["running"] = None
+            data["history"] = [_job_to_dict(job) for job in history[-20:]]
+            _write_queue(data, root)
+            _record_task_event_safely(
+                failed,
+                "failed",
+                root,
+                event_actor="system",
+                trigger="recovery-exhausted",
+                result=failed.result,
+            )
+            return failed
+        recovered = _replace_job(
+            running,
+            status="pending",
+            started_at="",
+            worker_id="",
+            worker_pid=None,
+            next_attempt_at=_retry_at(0),
+            failure_code="worker_interrupted",
+            failure_class="transient",
+            retryable=True,
+        )
         data["running"] = None
         data["pending"] = [_job_to_dict(recovered), *[_job_to_dict(job) for job in _pending_jobs(data)]]
         _write_queue(data, root)
-        _record_task_event_safely(recovered, "queued", root, event_actor="system", trigger="recovery")
+        _record_task_event_safely(
+            recovered,
+            "retrying",
+            root,
+            event_actor="system",
+            trigger="recovery",
+            result="Task worker was interrupted.",
+        )
+        _record_task_event_safely(
+            recovered,
+            "queued",
+            root,
+            event_actor="system",
+            trigger="recovery",
+            result="Task worker was interrupted.",
+        )
         return recovered
 
 
@@ -971,6 +1215,17 @@ def _parse_job(raw: object) -> TaskJob | None:
     approval_actor = _normalize_provenance_actor(str(raw.get("approval_actor") or ""))
     parent_candidate_id = str(raw.get("parent_candidate_id") or "").strip()
     source_task_id = _positive_int(raw.get("source_task_id"))
+    worker_id = str(raw.get("worker_id") or "").strip()
+    worker_pid = _optional_int(raw.get("worker_pid"))
+    worktree_path = str(raw.get("worktree_path") or "").strip()
+    branch_name = str(raw.get("branch_name") or "").strip()
+    attempt_default = 1 if status in {"running", "paused"} else 0
+    attempt = max(0, _int(raw.get("attempt"), default=attempt_default))
+    max_attempts = max(1, _int(raw.get("max_attempts"), default=DEFAULT_MAX_ATTEMPTS))
+    next_attempt_at = str(raw.get("next_attempt_at") or "").strip()
+    failure_code = str(raw.get("failure_code") or "").strip()
+    failure_class = str(raw.get("failure_class") or "").strip()
+    retryable = bool(raw.get("retryable", False))
     if candidate_id:
         evidence_source = evidence_source or source
         signal_actor = signal_actor or _legacy_signal_actor(evidence_source)
@@ -1002,6 +1257,16 @@ def _parse_job(raw: object) -> TaskJob | None:
         approval_actor=approval_actor,
         parent_candidate_id=parent_candidate_id,
         source_task_id=source_task_id,
+        worker_id=worker_id,
+        worker_pid=worker_pid,
+        worktree_path=worktree_path,
+        branch_name=branch_name,
+        attempt=attempt,
+        max_attempts=max_attempts,
+        next_attempt_at=next_attempt_at,
+        failure_code=failure_code,
+        failure_class=failure_class,
+        retryable=retryable,
     )
 
 
@@ -1032,6 +1297,16 @@ def _job_to_dict(job: TaskJob | None) -> dict:
         "approval_actor": job.approval_actor,
         "parent_candidate_id": job.parent_candidate_id,
         "source_task_id": job.source_task_id,
+        "worker_id": job.worker_id,
+        "worker_pid": job.worker_pid,
+        "worktree_path": job.worktree_path,
+        "branch_name": job.branch_name,
+        "attempt": job.attempt,
+        "max_attempts": job.max_attempts,
+        "next_attempt_at": job.next_attempt_at,
+        "failure_code": job.failure_code,
+        "failure_class": job.failure_class,
+        "retryable": job.retryable,
     }
 
 
@@ -1060,6 +1335,16 @@ def _replace_job(job: TaskJob, **changes: object) -> TaskJob:
         "approval_actor": job.approval_actor,
         "parent_candidate_id": job.parent_candidate_id,
         "source_task_id": job.source_task_id,
+        "worker_id": job.worker_id,
+        "worker_pid": job.worker_pid,
+        "worktree_path": job.worktree_path,
+        "branch_name": job.branch_name,
+        "attempt": job.attempt,
+        "max_attempts": job.max_attempts,
+        "next_attempt_at": job.next_attempt_at,
+        "failure_code": job.failure_code,
+        "failure_class": job.failure_class,
+        "retryable": job.retryable,
     }
     values.update(changes)
     return TaskJob(**values)
@@ -1106,6 +1391,26 @@ def _legacy_approval_actor(trigger: str, context_source: str, initiated_by: str)
 def _positive_int(value: object) -> int | None:
     parsed = _int(value)
     return parsed if parsed > 0 else None
+
+
+def _retry_at(delay_seconds: int) -> str:
+    return (
+        datetime.now(timezone.utc)
+        .replace(microsecond=0)
+        + timedelta(seconds=max(0, delay_seconds))
+    ).isoformat()
+
+
+def _task_is_due(job: TaskJob) -> bool:
+    if not job.next_attempt_at:
+        return True
+    try:
+        due = datetime.fromisoformat(job.next_attempt_at.replace("Z", "+00:00"))
+    except ValueError:
+        return True
+    if due.tzinfo is None:
+        due = due.replace(tzinfo=timezone.utc)
+    return due <= datetime.now(timezone.utc)
 
 
 def _pull_request_urls(result: str) -> tuple[str, ...]:

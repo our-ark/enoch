@@ -66,6 +66,7 @@ from enoch.task_queue import (
     task_queue_status,
 )
 from enoch.task_events import load_task_events
+from enoch.task_worktree import TaskWorktree
 from enoch.telegram.bot import (
     EnochTelegramBot,
     ShutdownRequested,
@@ -1125,7 +1126,7 @@ class EnochTelegramTests(unittest.TestCase):
             with patch.object(
                 bot,
                 "_run_direct_work",
-                return_value="Enoch could not complete evolve work: temporary failure",
+                return_value="Enoch could not complete evolve work: invalid request",
             ):
                 bot._run_task_job(original)
             self.assertEqual(
@@ -2863,6 +2864,88 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("GH007", client.sent[-1][1])
         log_conversation_turn.assert_called()
 
+    def test_dirty_worktree_failure_is_not_automatically_retried(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            client = FakeTelegramClient(allowed_chat_id=42)
+            bot = EnochTelegramBot(load_identity(), root, client)
+            queued = enqueue_task(42, "edit from a dirty worktree", root)
+            job = begin_next_task(root)
+
+            with patch.object(
+                bot,
+                "_run_direct_work",
+                return_value=(
+                    "Enoch could not complete the requested work yet: "
+                    "Worktree is not clean. Commit, stash, or discard changes before evolving."
+                ),
+            ):
+                bot._run_task_job(job)
+            status = task_queue_status(root)
+            events = load_task_events(root, task_id=queued.id)
+
+        failed = status.history[-1]
+        self.assertEqual(failed.status, "failed")
+        self.assertEqual(failed.attempt, 1)
+        self.assertEqual(failed.failure_code, "dirty_worktree")
+        self.assertEqual(failed.failure_class, "permanent")
+        self.assertFalse(failed.retryable)
+        self.assertNotIn("retrying", [event.event for event in events])
+        self.assertIn("Failure: dirty_worktree", client.sent[-1][1])
+        self.assertIn("Attempts: 1/3", client.sent[-1][1])
+
+    def test_transient_task_failure_retries_then_completes(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            client = FakeTelegramClient(allowed_chat_id=42)
+            bot = EnochTelegramBot(load_identity(), root, client)
+            queued = enqueue_task(42, "survive a network interruption", root)
+            first = begin_next_task(root)
+
+            with patch(
+                "enoch.telegram.bot.automatic_retry_delay_seconds",
+                return_value=0,
+            ):
+                with patch.object(
+                    bot,
+                    "_run_direct_work",
+                    side_effect=[
+                        "Enoch could not continue: connection reset by peer.",
+                        "Completed after reconnecting.",
+                    ],
+                ):
+                    bot._run_task_job(first)
+                    retry_status = task_queue_status(root)
+                    second = begin_next_task(root)
+                    bot._run_task_job(second)
+            status = task_queue_status(root)
+            events = load_task_events(root, task_id=queued.id)
+
+        self.assertEqual(retry_status.pending[0].attempt, 1)
+        self.assertEqual(retry_status.pending[0].failure_code, "network_error")
+        self.assertEqual(second.attempt, 2)
+        self.assertEqual(status.history[-1].status, "completed")
+        self.assertEqual(status.history[-1].attempt, 2)
+        self.assertEqual(
+            [event.event for event in events],
+            [
+                "created",
+                "queued",
+                "started",
+                "retrying",
+                "queued",
+                "started",
+                "completed",
+            ],
+        )
+        self.assertTrue(
+            any("Status: retrying" in message for _, _, message in client.edited)
+        )
+        self.assertEqual(
+            sum("Final status:" in message for _, message in client.sent),
+            1,
+        )
+
     def test_task_worker_timeout_is_logged_as_system_failure(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
@@ -3117,7 +3200,15 @@ class EnochTelegramTests(unittest.TestCase):
             job = begin_next_task(root)
             assert job is not None
 
-            bot._run_task_job(job)
+            with patch(
+                "enoch.telegram.bot.prepare_existing_branch_worktree",
+                return_value=TaskWorktree(job.id, root, "enoch/existing", True),
+            ):
+                with patch(
+                    "enoch.telegram.bot.remove_task_worktree",
+                    return_value="Removed task worktree.",
+                ):
+                    bot._run_task_job(job)
 
         respond.assert_not_called()
         act_in_session.assert_not_called()
@@ -3683,22 +3774,29 @@ class EnochTelegramTests(unittest.TestCase):
             bot = EnochTelegramBot(load_identity(), root, client)
 
             started, start_worker = self._capture_direct_work_worker(bot)
-            with start_worker:
-                bot.handle_update(
-                    _message_update(
-                        chat_id=42,
-                        text="/do publish existing local branch `enoch/existing` as a PR against `main`",
-                    )
-                )
-            self.assertEqual(len(started), 1)
-            bot._run_direct_task_job(started[0][0], session_key=started[0][1])
+            with patch(
+                "enoch.telegram.bot.prepare_existing_branch_worktree",
+                return_value=TaskWorktree(1, root, "enoch/existing", True),
+            ):
+                with patch(
+                    "enoch.telegram.bot.remove_task_worktree",
+                    return_value="Removed task worktree.",
+                ):
+                    with start_worker:
+                        bot.handle_update(
+                            _message_update(
+                                chat_id=42,
+                                text="/do publish existing local branch `enoch/existing` as a PR against `main`",
+                            )
+                        )
+                    self.assertEqual(len(started), 1)
+                    bot._run_direct_task_job(started[0][0], session_key=started[0][1])
 
         respond.assert_not_called()
         act_in_session.assert_not_called()
-        current_branch.assert_called_once_with(root)
         ensure_clean_worktree.assert_called_once_with(root)
-        switch_branch.assert_any_call("enoch/existing", root)
-        switch_branch.assert_any_call("agent/enoch-gary", root)
+        current_branch.assert_not_called()
+        switch_branch.assert_not_called()
         push_current_branch.assert_called_once_with(root=root)
         create_pull_request.assert_called_once_with(root=root)
         self.assertEqual(len(client.sent), 2)
@@ -3712,7 +3810,6 @@ class EnochTelegramTests(unittest.TestCase):
     @patch("enoch.telegram.bot.run_immune_system")
     @patch("enoch.telegram.bot.delete_branch")
     @patch("enoch.telegram.bot.switch_branch")
-    @patch("enoch.telegram.bot.create_branch")
     @patch("enoch.telegram.bot._task_branch_base", return_value="origin/main")
     @patch("enoch.telegram.bot.ensure_clean_worktree")
     @patch("enoch.telegram.bot.current_branch", side_effect=["main", "enoch/readme", "enoch/readme"])
@@ -3735,7 +3832,6 @@ class EnochTelegramTests(unittest.TestCase):
         _current_branch: MagicMock,
         _ensure_clean_worktree: MagicMock,
         task_branch_base: MagicMock,
-        _create_branch: MagicMock,
         _switch_branch: MagicMock,
         _delete_branch: MagicMock,
         run_immune_system: MagicMock,
@@ -3777,10 +3873,18 @@ class EnochTelegramTests(unittest.TestCase):
             bot = EnochTelegramBot(load_identity(), root, client)
 
             started, start_worker = self._capture_direct_work_worker(bot)
-            with start_worker:
-                bot.handle_update(_message_update(chat_id=42, text="/do Update README directly."))
-            self.assertEqual(len(started), 1)
-            bot._run_direct_task_job(started[0][0], session_key=started[0][1])
+            with patch(
+                "enoch.telegram.bot.prepare_task_worktree",
+                return_value=TaskWorktree(1, root, "enoch/readme", True),
+            ) as prepare_task_worktree:
+                with patch(
+                    "enoch.telegram.bot.remove_task_worktree",
+                    return_value="Removed task #1 worktree.",
+                ):
+                    with start_worker:
+                        bot.handle_update(_message_update(chat_id=42, text="/do Update README directly."))
+                    self.assertEqual(len(started), 1)
+                    bot._run_direct_task_job(started[0][0], session_key=started[0][1])
             status = task_queue_status(root)
             events = load_task_events(root, task_id=1)
 
@@ -3795,8 +3899,7 @@ class EnochTelegramTests(unittest.TestCase):
         push_current_branch.assert_called_once_with(root=root)
         create_pull_request.assert_called_once_with(root=root)
         task_branch_base.assert_called_once_with(root)
-        self.assertEqual(_create_branch.call_args.args[1], root)
-        self.assertEqual(_create_branch.call_args.kwargs, {"start_point": "origin/main"})
+        prepare_task_worktree.assert_called_once()
         self.assertEqual(len(client.sent), 2)
         self.assertIn("Task #1", client.sent[0][1])
         self.assertIn("Use the earlier README scope decision.", client.sent[0][1])
@@ -4005,6 +4108,61 @@ class EnochTelegramTests(unittest.TestCase):
                     bot._run_direct_task_job(started[0][0], session_key=started[0][1])
 
         maybe_start.assert_called_once()
+
+    @patch("enoch.telegram.bot.ensure_long_term_memory")
+    @patch("enoch.telegram.bot.log_conversation_turn")
+    def test_stale_worker_does_not_announce_completed_after_authoritative_failure(
+        self,
+        _log_conversation_turn: MagicMock,
+        _update_memory: MagicMock,
+    ) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            client = FakeTelegramClient(allowed_chat_id=42)
+            bot = EnochTelegramBot(load_identity(), root, client)
+            started, start_worker = self._capture_direct_work_worker(bot)
+
+            with start_worker:
+                bot.handle_update(_message_update(chat_id=42, text="/do isolated work"))
+            job = started[0][0]
+
+            def authoritative_failure(*_args, **_kwargs) -> str:
+                fail_task(job.id, root, result="Recovery marked the task failed.")
+                return "Original worker completed later."
+
+            with patch.object(bot, "_run_direct_work", side_effect=authoritative_failure):
+                bot._run_direct_task_job(job, session_key=started[0][1])
+
+            history = task_queue_status(root).history
+
+        self.assertEqual(history[-1].status, "failed")
+        self.assertFalse(
+            any("Final status: completed" in message for _, message in client.sent)
+        )
+
+    def test_stop_workers_cancels_active_work_and_waits_for_workers(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            bot = EnochTelegramBot(
+                load_identity(),
+                root,
+                FakeTelegramClient(allowed_chat_id=42),
+            )
+            cancellation = threading.Event()
+            direct_worker = MagicMock()
+            direct_worker.is_alive.return_value = True
+            queued_worker = MagicMock()
+            queued_worker.is_alive.return_value = True
+            bot._task_cancellations[1] = cancellation
+            bot._direct_workers[1] = direct_worker
+            bot._task_worker = queued_worker
+
+            bot.stop_workers(timeout_seconds=1)
+
+        self.assertTrue(bot._stopping)
+        self.assertTrue(cancellation.is_set())
+        direct_worker.join.assert_called_once()
+        queued_worker.join.assert_called_once()
 
     @patch("enoch.telegram.bot.create_pull_request")
     @patch("enoch.telegram.bot.push_current_branch")

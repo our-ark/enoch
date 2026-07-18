@@ -1,8 +1,10 @@
 from pathlib import Path
+import os
 import sys
 import threading
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -14,6 +16,7 @@ from enoch.task_queue import (
     begin_next_task,
     cancel_task,
     cancel_running_task,
+    claim_running_task,
     complete_task,
     enqueue_task,
     enqueue_task_front,
@@ -22,9 +25,11 @@ from enoch.task_queue import (
     recover_interrupted_task,
     record_task_result,
     record_task_status_message,
+    record_task_worktree,
     regress_task,
     resolve_regressed_task,
     retry_failed_task,
+    retry_running_task,
     resume_paused_tasks,
     revert_task,
     task_result_has_pull_request,
@@ -133,8 +138,74 @@ class EnochTaskQueueTests(unittest.TestCase):
 
         self.assertEqual(running.id, 1)
         self.assertEqual(running.status, "running")
+        self.assertEqual(running.attempt, 1)
+        self.assertEqual(running.max_attempts, 3)
         self.assertEqual(status.running, running)
         self.assertEqual(status.pending, ())
+
+    def test_transient_failure_requeues_same_task_with_attempt_metadata(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            queued = enqueue_task(42, "retry network work", root)
+            running = begin_next_task(root)
+
+            retried = retry_running_task(
+                running.id,
+                root,
+                result="Connection reset by peer.",
+                failure_code="network_error",
+                failure_class="transient",
+                delay_seconds=0,
+            )
+            second_attempt = begin_next_task(root)
+            events = load_task_events(root, task_id=queued.id)
+
+        self.assertEqual(retried.status, "pending")
+        self.assertEqual(retried.attempt, 1)
+        self.assertTrue(retried.retryable)
+        self.assertEqual(retried.failure_code, "network_error")
+        self.assertEqual(second_attempt.id, queued.id)
+        self.assertEqual(second_attempt.attempt, 2)
+        self.assertFalse(second_attempt.retryable)
+        self.assertEqual(
+            [event.event for event in events],
+            ["created", "queued", "started", "retrying", "queued", "started"],
+        )
+        retry_event = events[3]
+        self.assertEqual(retry_event.attempt, 1)
+        self.assertEqual(retry_event.max_attempts, 3)
+        self.assertEqual(retry_event.failure_code, "network_error")
+        self.assertEqual(retry_event.failure_class, "transient")
+        self.assertTrue(retry_event.retryable)
+
+    def test_interrupted_worker_fails_after_three_attempts(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            queued = enqueue_task(42, "bounded recovery", root)
+
+            for expected_attempt in (1, 2):
+                running = begin_next_task(root)
+                self.assertEqual(running.attempt, expected_attempt)
+                recovered = recover_interrupted_task(root)
+                self.assertEqual(recovered.status, "pending")
+
+            running = begin_next_task(root)
+            self.assertEqual(running.attempt, 3)
+            failed = recover_interrupted_task(root)
+            status = task_queue_status(root)
+            events = load_task_events(root, task_id=queued.id)
+
+        self.assertEqual(failed.status, "failed")
+        self.assertEqual(failed.failure_code, "worker_interrupted")
+        self.assertEqual(failed.failure_class, "transient")
+        self.assertFalse(failed.retryable)
+        self.assertEqual(status.history[-1], failed)
+        self.assertEqual(
+            [event.event for event in events].count("retrying"),
+            2,
+        )
+        self.assertEqual(events[-1].event, "failed")
+        self.assertEqual(events[-1].trigger, "recovery-exhausted")
 
     def test_legacy_evolve_task_infers_split_provenance(self) -> None:
         with TemporaryDirectory() as temp:
@@ -560,6 +631,62 @@ class EnochTaskQueueTests(unittest.TestCase):
 
         self.assertIsNone(unresolved)
         self.assertEqual(status.history[-1].status, "regressed")
+
+    def test_active_worker_lease_prevents_recovery_and_stale_finalization(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            running = begin_direct_task(42, "owned work", root)
+            claimed = claim_running_task(running.id, "worker-one", os.getpid(), root)
+
+            recovered = recover_interrupted_task(root)
+            stale = complete_task(
+                running.id,
+                root,
+                result="stale completion",
+                worker_id="worker-two",
+            )
+            status = task_queue_status(root)
+
+            self.assertIsNotNone(claimed)
+            self.assertIsNone(recovered)
+            self.assertIsNone(stale)
+            self.assertEqual(status.running.worker_id, "worker-one")
+
+            completed = complete_task(
+                running.id,
+                root,
+                result="authoritative completion",
+                worker_id="worker-one",
+            )
+
+        self.assertEqual(completed.status, "completed")
+        self.assertEqual(completed.result, "authoritative completion")
+
+    def test_dead_worker_recovery_preserves_task_worktree_metadata(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            worktree = root / "task-worktree"
+            running = begin_direct_task(42, "recover work", root)
+            claim_running_task(running.id, "dead-worker", 999999, root)
+            record_task_worktree(
+                running.id,
+                "dead-worker",
+                worktree,
+                "enoch/task-1",
+                root,
+            )
+
+            with patch("enoch.task_queue.os.kill", side_effect=ProcessLookupError):
+                recovered = recover_interrupted_task(root)
+
+            status = task_queue_status(root)
+
+        self.assertEqual(recovered.status, "pending")
+        self.assertEqual(recovered.worktree_path, str(worktree.resolve()))
+        self.assertEqual(recovered.branch_name, "enoch/task-1")
+        self.assertEqual(recovered.worker_id, "")
+        self.assertIsNone(recovered.worker_pid)
+        self.assertEqual(status.pending[0], recovered)
 
 
 if __name__ == "__main__":

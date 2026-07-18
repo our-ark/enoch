@@ -17,8 +17,14 @@ token.
 The suite verifies:
 
 - approved evolution publishes a ready-for-review PR with full provenance;
-- task branches start at the latest `origin/main` without checking out `main`;
-- the agent returns to its resident branch after publishing;
+- each task runs in an isolated linked worktree based on the latest
+  `origin/main`, even when the resident checkout is dirty;
+- successful task worktrees are removed while the resident branch remains
+  untouched, and failed task worktrees remain available for inspection;
+- active worker leases prevent startup recovery from launching a duplicate
+  worker or accepting a stale final status;
+- permanent failures such as a dirty worktree fail immediately, while only
+  classified transient failures retry with a three-attempt ceiling;
 - a failed candidate can be retried without rewriting failed task history;
 - Codex authentication failure pauses a task and `/resume` completes that same
   task after access returns;

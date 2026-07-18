@@ -42,7 +42,6 @@ class EnochEvolutionEndToEndTests(unittest.TestCase):
         self.codex_log = self.base / "codex.jsonl"
         self.gh_log = self.base / "gh.jsonl"
         self._update_id = 0
-        self._branch_number = 0
 
         self._create_git_worktrees()
         self._create_fake_codex()
@@ -70,16 +69,10 @@ class EnochEvolutionEndToEndTests(unittest.TestCase):
             "enoch.github.workflow.run_immune_system",
             side_effect=lambda _root=None: _passing_doctor(),
         )
-        branch_names = patch(
-            "enoch.telegram.bot._branch_name",
-            side_effect=self._next_branch_name,
-        )
         bot_doctor.start()
         publish_doctor.start()
-        branch_names.start()
         self.addCleanup(bot_doctor.stop)
         self.addCleanup(publish_doctor.stop)
-        self.addCleanup(branch_names.stop)
 
         self.client = _RecordingTelegramClient(CHAT_ID)
         self.bot = EnochTelegramBot(load_identity(), self.instance, self.client)
@@ -108,6 +101,9 @@ class EnochEvolutionEndToEndTests(unittest.TestCase):
         self.assertIn("- Task: #1", body)
 
         branch = _argument_value(call, "--head")
+        self.assertEqual(completed.branch_name, branch)
+        self.assertTrue(completed.worktree_path)
+        self.assertFalse(Path(completed.worktree_path).exists())
         remote_head = _git(self.instance, "rev-parse", f"origin/{branch}").stdout.strip()
         remote_parent = _git(self.instance, "rev-parse", f"{remote_head}^").stdout.strip()
         self.assertEqual(remote_parent, self.latest_main_head)
@@ -139,6 +135,7 @@ class EnochEvolutionEndToEndTests(unittest.TestCase):
         failed = self._run_next_task()
 
         self.assertEqual(failed.status, "failed")
+        self.assertTrue(Path(failed.worktree_path).is_dir())
         self.assertEqual(get_evolve_candidate(candidate_id, self.instance).status, "failed")
 
         self._set_codex_mode("success")
@@ -151,6 +148,9 @@ class EnochEvolutionEndToEndTests(unittest.TestCase):
         history = task_queue_status(self.instance).history
         self.assertEqual([(job.id, job.status) for job in history], [(1, "failed"), (2, "completed")])
         self.assertEqual(completed.parent_task_id, 1)
+        self.assertNotEqual(completed.worktree_path, failed.worktree_path)
+        self.assertTrue(Path(failed.worktree_path).is_dir())
+        self.assertFalse(Path(completed.worktree_path).exists())
         self.assertEqual(get_evolve_candidate(candidate_id, self.instance).status, "done")
         body = _argument_value(self._latest_gh_call(), "--body")
         self.assertIn("- Task: #2", body)
@@ -355,10 +355,6 @@ class EnochEvolutionEndToEndTests(unittest.TestCase):
             item for item in reversed(task_queue_status(self.instance).history) if item.id == job.id
         )
         return completed
-
-    def _next_branch_name(self, _text: str) -> str:
-        self._branch_number += 1
-        return f"enoch/e2e-{self._branch_number}"
 
     def _set_codex_mode(self, mode: str) -> None:
         self.codex_mode.write_text(f"{mode}\n", encoding="utf-8")

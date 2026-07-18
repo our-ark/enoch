@@ -17,7 +17,7 @@ from enoch.memory.paths import clean_text, now as current_time
 from enoch.paths import enoch_home
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 SUMMARY_LIMIT = 4000
 TASK_SOURCES = {
     "backlog",
@@ -34,6 +34,7 @@ TASK_EVENT_ACTORS = {"human", "agent", "system"}
 TASK_EVENT_TYPES = {
     "created",
     "queued",
+    "retrying",
     "started",
     "completed",
     "failed",
@@ -67,6 +68,12 @@ class TaskLike(Protocol):
     approval_actor: str
     parent_candidate_id: str
     source_task_id: int | None
+    attempt: int
+    max_attempts: int
+    next_attempt_at: str
+    failure_code: str
+    failure_class: str
+    retryable: bool
 
 
 @dataclass(frozen=True)
@@ -93,6 +100,12 @@ class TaskEvent:
     related_task_id: int | None = None
     pr_urls: tuple[str, ...] = ()
     changed_files: tuple[str, ...] = ()
+    attempt: int = 0
+    max_attempts: int = 3
+    next_attempt_at: str = ""
+    failure_code: str = ""
+    failure_class: str = ""
+    retryable: bool = False
 
 
 def task_event_path(root: Path | None = None) -> Path:
@@ -146,6 +159,12 @@ def record_task_event(
         related_task_id=_positive_int(related_task_id),
         pr_urls=_dedupe(tuple(getattr(job, "pr_urls", ()) or ())),
         changed_files=_changed_files(summary),
+        attempt=max(0, _int(getattr(job, "attempt", 0))),
+        max_attempts=max(1, _int(getattr(job, "max_attempts", 3), default=3)),
+        next_attempt_at=str(getattr(job, "next_attempt_at", "") or "").strip(),
+        failure_code=clean_text(str(getattr(job, "failure_code", "") or "")).lower(),
+        failure_class=clean_text(str(getattr(job, "failure_class", "") or "")).lower(),
+        retryable=bool(getattr(job, "retryable", False)),
     )
     with _task_event_transaction(root):
         path = task_event_path(root)
@@ -259,6 +278,12 @@ def _event_from_line(line: str) -> TaskEvent | None:
         related_task_id=_positive_int(raw.get("related_task_id")),
         pr_urls=_string_tuple(raw.get("pr_urls")),
         changed_files=_string_tuple(raw.get("changed_files")),
+        attempt=max(0, _int(raw.get("attempt"))),
+        max_attempts=max(1, _int(raw.get("max_attempts"), default=3)),
+        next_attempt_at=str(raw.get("next_attempt_at") or "").strip(),
+        failure_code=clean_text(str(raw.get("failure_code") or "")).lower(),
+        failure_class=clean_text(str(raw.get("failure_class") or "")).lower(),
+        retryable=raw.get("retryable") is True,
     )
 
 
@@ -321,6 +346,13 @@ def _positive_int(value: object) -> int | None:
     except (TypeError, ValueError):
         return None
     return parsed if parsed > 0 else None
+
+
+def _int(value: object, *, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def _provenance_actor(value: object) -> str:

@@ -41,14 +41,26 @@ When work is queued:
    active task to `paused`, stop the worker before it consumes later tasks, and
    warn the human. `/resume` moves paused tasks back to the front with the same
    ids and context after access is available again.
-8. In an agent-instance worktree, keep the instance branch as the resident
-   branch. Create each task branch directly from the latest available
-   `origin/main` or local `main` commit without checking out `main`, then return
-   to the resident branch after publishing or cleanup.
+8. Keep the agent-instance branch as the resident control worktree. Give every
+   code task its own linked worktree and branch from the latest available
+   `origin/main` or local `main`, and run Codex, tests, commits, pushes, and PR
+   creation there. Keep `.enoch` queue, memory, and event state in the resident
+   worktree. Remove successful task worktrees after handoff; preserve failed or
+   paused worktrees for inspection and recovery.
 9. `/task retry <id>` retries only a failed task by creating a new task with a
    new id and `parent_task_id`; never rewrite the original failure. Preserve the
    request, context, source, and provenance. If a retry fails, retry that latest
    failed task so the causal chain remains linear.
+10. Give each running task a worker lease. Recovery must not requeue a task while
+    its owner process is alive, and only the lease owner may publish a terminal
+    task transition or final status message.
+11. Classify failures before deciding whether to retry. Automatically retry only
+    explicit transient failures such as network interruption, rate limiting, or
+    temporary upstream unavailability, with bounded backoff and at most three
+    attempts. Treat dirty worktrees, validation failures, task timeouts,
+    permission or configuration errors, and unknown failures as non-retryable.
+    Record attempt, failure code, failure class, and retry disposition in task
+    events. Keep `/task retry <id>` as the explicit human override.
 
 ## Inheritance
 

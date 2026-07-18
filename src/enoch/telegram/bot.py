@@ -4,12 +4,14 @@ from collections import Counter
 from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 import json
+import os
 from pathlib import Path
 import re
 import signal
 import threading
 import time
 from typing import Any
+from uuid import uuid4
 
 from enoch.backlog import (
     BacklogItem,
@@ -97,7 +99,6 @@ from enoch.feedback import FeedbackSignal, extract_feedback_signals
 from enoch.git_tools import (
     GitError,
     changed_files,
-    create_branch,
     delete_branch,
     current_branch,
     diff_summary,
@@ -173,6 +174,7 @@ from enoch.task_queue import (
     begin_next_task,
     cancel_task,
     cancel_running_task,
+    claim_running_task,
     complete_task,
     enqueue_task,
     enqueue_task_front,
@@ -182,11 +184,14 @@ from enoch.task_queue import (
     recover_interrupted_task,
     record_task_result,
     record_task_status_message,
+    record_task_worktree,
     resolve_regressed_task,
     retry_failed_task,
+    retry_running_task,
     resume_paused_tasks,
     task_result_has_pull_request,
     task_queue_status,
+    task_worker_is_active,
 )
 from enoch.task_events import TASK_SOURCES
 from enoch.telegram.client import TelegramClient, TelegramError, load_config
@@ -203,6 +208,17 @@ from enoch.commands import (
     status_message,
 )
 from enoch.task_config import format_task_timeout, task_timeout_seconds
+from enoch.task_failures import (
+    TaskFailure,
+    automatic_retry_delay_seconds,
+    classify_task_failure,
+)
+from enoch.task_worktree import (
+    TaskWorktree,
+    prepare_existing_branch_worktree,
+    prepare_task_worktree,
+    remove_task_worktree,
+)
 from enoch.telegram.lifecycle import (
     begin_lifecycle_run as _begin_lifecycle_run,
     load_telegram_offset as _load_telegram_offset,
@@ -279,6 +295,7 @@ NEEDS_CLARIFICATION_PREFIX = "NEEDS_CLARIFICATION:"
 NO_EXTRA_TASK_CONTEXT = "No extra context needed."
 _CURRENT_WORK_STATUS: ContextVar[WorkStatusMessage | None] = ContextVar("enoch_work_status", default=None)
 _CURRENT_TASK_ID: ContextVar[int | None] = ContextVar("enoch_task_id", default=None)
+_CURRENT_TASK_WORKER_ID: ContextVar[str] = ContextVar("enoch_task_worker_id", default="")
 _CURRENT_REGRESSION_SIGNALS: ContextVar[tuple[TaskRegressionSignal, ...]] = ContextVar(
     "enoch_regression_signals",
     default=(),
@@ -301,10 +318,14 @@ class EnochTelegramBot:
         self._restart_after_reply = False
         self._pending_session_syncs: list[tuple[int, str]] = []
         self._task_worker: threading.Thread | None = None
+        self._direct_workers: dict[int, threading.Thread] = {}
         self._task_cancellations: dict[int, threading.Event] = {}
+        self._stopping = False
         self._resident_branch = instance_branch(root)
-        _recover_running_task_from_direct_action_log(root)
-        recover_interrupted_task(root)
+        recovered = _recover_running_task_from_direct_action_log(root)
+        if recovered is None:
+            recovered = recover_interrupted_task(root)
+        _cleanup_recovered_task_worktree(recovered, root)
         self._work_status_messages: dict[int, int] = _load_task_status_messages(root)
 
     def run_forever(self) -> None:
@@ -333,6 +354,10 @@ class EnochTelegramBot:
         self.client.send_message(chat_id, _shutdown_message(self.identity, self.root, reason))
 
     def run_once(self) -> None:
+        recovered = _recover_running_task_from_direct_action_log(self.root)
+        if recovered is None:
+            recovered = recover_interrupted_task(self.root)
+        _cleanup_recovered_task_worktree(recovered, self.root)
         for update in self.client.get_updates(self.offset):
             self.handle_update(update)
         self._enqueue_due_cron_jobs()
@@ -600,12 +625,20 @@ class EnochTelegramBot:
             return "Enoch cannot start that work while another task is running."
         except (OSError, ValueError):
             return "Enoch could not create a tracked task for that work."
+        worker_id = f"{os.getpid()}-{uuid4().hex}"
+        claimed = claim_running_task(job.id, worker_id, os.getpid(), self.root)
+        if claimed is None:
+            return f"Enoch could not claim tracked task #{job.id}."
+        job = claimed
         task_token = _CURRENT_TASK_ID.set(job.id)
+        worker_token = _CURRENT_TASK_WORKER_ID.set(worker_id)
         regression_token = _CURRENT_REGRESSION_SIGNALS.set(())
         cancellation_event = threading.Event()
         self._task_cancellations[job.id] = cancellation_event
         deadline = _start_task_deadline(self.root, cancellation_event)
         completed_status = "completed"
+        finished_job: TaskJob | None = None
+        failure: TaskFailure | None = None
         regression_signals: tuple[TaskRegressionSignal, ...] = ()
         try:
             reply = self._run_direct_work(chat_id, request, session_key=session_key)
@@ -613,8 +646,10 @@ class EnochTelegramBot:
             if deadline.expired.is_set():
                 reply = _task_timeout_message(deadline.timeout_seconds)
                 completed_status = "failed"
+                failure = classify_task_failure(reply)
             elif _work_reply_failed(reply):
                 completed_status = "failed"
+                failure = classify_task_failure(reply)
         except CodexAccessUnavailable as error:
             reply = _codex_pause_warning(job.id, str(error))
             completed_status = "paused"
@@ -622,57 +657,78 @@ class EnochTelegramBot:
             if deadline.expired.is_set():
                 reply = _task_timeout_message(deadline.timeout_seconds)
                 completed_status = "failed"
+                failure = classify_task_failure(reply)
             else:
                 reply = str(error)
                 completed_status = "cancelled"
         except Exception as error:
             reply = f"Enoch could not complete task #{job.id}: {error}"
             completed_status = "failed"
+            failure = classify_task_failure(reply)
         finally:
             deadline.cancel()
             regression_signals = _CURRENT_REGRESSION_SIGNALS.get()
             _CURRENT_REGRESSION_SIGNALS.reset(regression_token)
             _CURRENT_TASK_ID.reset(task_token)
+            _CURRENT_TASK_WORKER_ID.reset(worker_token)
             self._task_cancellations.pop(job.id, None)
             if completed_status == "cancelled":
-                cancel_running_task(
+                finished_job = cancel_running_task(
                     self.root,
                     result=reply,
                     event_actor="agent",
                     trigger=trigger,
+                    expected_task_id=job.id,
+                    worker_id=worker_id,
                 )
             elif completed_status == "failed":
-                fail_task(
+                failure = failure or classify_task_failure(reply)
+                finished_job = fail_task(
                     job.id,
                     self.root,
                     result=reply,
                     event_actor="system" if deadline.expired.is_set() else "agent",
                     trigger="task-timeout" if deadline.expired.is_set() else trigger,
+                    worker_id=worker_id,
+                    failure_code=failure.code,
+                    failure_class=failure.failure_class,
+                    retryable=False,
                 )
             elif completed_status == "paused":
-                paused = pause_task(
+                finished_job = pause_task(
                     job.id,
                     self.root,
                     result=reply,
                     event_actor="system",
                     trigger="codex-unavailable",
+                    worker_id=worker_id,
                 )
-                if paused is not None:
+                if finished_job is not None:
                     pause_evolve_candidate_for_task(
-                        paused,
+                        finished_job,
                         self.root,
                         event_actor="system",
                         trigger="codex-unavailable",
                         reason=reply,
                     )
             else:
-                complete_task(job.id, self.root, result=reply, event_actor="agent", trigger=trigger)
+                finished_job = complete_task(
+                    job.id,
+                    self.root,
+                    result=reply,
+                    event_actor="agent",
+                    trigger=trigger,
+                    worker_id=worker_id,
+                )
+        authoritative_job = finished_job or _task_by_id(job.id, self.root)
+        if authoritative_job is None or authoritative_job.status != completed_status:
+            return authoritative_job.result if authoritative_job is not None else reply
         self._apply_task_regression_signals(
             regression_signals,
             current_task_id=job.id if completed_status == "completed" else None,
             allow_resolution=completed_status == "completed",
         )
-        completed = _task_by_id(job.id, self.root) or job
+        completed = authoritative_job
         if completed_status == "completed":
             self._record_automatic_learning(completed, command=trigger, result=reply)
         return reply
@@ -717,12 +773,19 @@ class EnochTelegramBot:
 
     def _start_direct_work_worker(self, job: TaskJob, *, session_key: str) -> None:
         worker = threading.Thread(
-            target=self._run_direct_task_job,
+            target=self._run_direct_task_worker,
             kwargs={"job": job, "session_key": session_key},
             name=f"enoch-direct-task-{job.id}",
             daemon=True,
         )
+        self._direct_workers[job.id] = worker
         worker.start()
+
+    def _run_direct_task_worker(self, job: TaskJob, *, session_key: str) -> None:
+        try:
+            self._run_direct_task_job(job, session_key=session_key)
+        finally:
+            self._direct_workers.pop(job.id, None)
 
     def _run_direct_task_job(self, job: TaskJob, *, session_key: str = "") -> None:
         self._run_action_job(
@@ -732,6 +795,20 @@ class EnochTelegramBot:
             start_update=f"Starting direct task #{job.id}.",
             failure_prefix=f"Enoch could not complete direct task #{job.id}",
         )
+
+    def stop_workers(self, timeout_seconds: float = 7.0) -> None:
+        self._stopping = True
+        for cancellation in tuple(self._task_cancellations.values()):
+            cancellation.set()
+        current = threading.current_thread()
+        workers = [*self._direct_workers.values()]
+        if self._task_worker is not None:
+            workers.append(self._task_worker)
+        deadline = time.monotonic() + max(0.0, timeout_seconds)
+        for worker in workers:
+            if worker is current or not worker.is_alive():
+                continue
+            worker.join(timeout=max(0.0, deadline - time.monotonic()))
 
     def _run_direct_work(self, chat_id: int, request: str, *, context: str = "", session_key: str) -> str:
         self._raise_if_current_task_cancelled()
@@ -749,19 +826,24 @@ class EnochTelegramBot:
 
         try:
             sandbox = _action_sandbox(self.root)
-            self._send_step_update(chat_id, "Preparing a fresh branch.")
-            branch_note = self._ensure_action_branch(request)
-            branch = current_branch(self.root)
-            before_action = _worktree_snapshot(self.root)
+            self._send_step_update(chat_id, "Preparing an isolated task worktree.")
+            task_worktree = self._prepare_task_worktree(request)
+            work_root = task_worktree.path
+            branch_note = (
+                f"Enoch prepared isolated worktree {work_root} on branch "
+                f"{task_worktree.branch} from the latest task base."
+            )
+            before_action = _worktree_snapshot(work_root)
             self._send_step_update(chat_id, "Working.")
             result = act_in_session(
                 self.identity,
                 work_request_prompt(_work_request_with_context(request, context)),
-                cwd=self.root,
+                cwd=work_root,
                 sandbox=sandbox,
                 session_key=session_key,
                 progress_callback=lambda elapsed, sandbox: self._send_progress(chat_id, elapsed, sandbox),
                 cancellation_event=self._current_task_cancellation_event(),
+                state_root=self.root,
             )
             self._raise_if_current_task_cancelled()
             result = self._capture_task_regression_signals(result)
@@ -769,8 +851,8 @@ class EnochTelegramBot:
             result = memory_result.visible_reply
             memory_note = self._save_memory_requests(memory_result.requests)
             _record_direct_action(request, result, self.root)
-            action_files = tuple(sorted(_changed_files_or_empty(self.root)))
-            after_action = _worktree_snapshot(self.root)
+            action_files = tuple(sorted(_changed_files_or_empty(work_root)))
+            after_action = _worktree_snapshot(work_root)
         except BrainCancelled:
             raise
         except CodexAccessUnavailable:
@@ -781,27 +863,72 @@ class EnochTelegramBot:
         parts = [branch_note, result or "Enoch completed the requested work.", memory_note]
         if before_action == after_action:
             try:
-                cleanup = self._return_to_resident_and_delete_branch(branch)
+                cleanup = remove_task_worktree(
+                    self.root,
+                    task_worktree,
+                    force_delete_branch=True,
+                )
                 parts.append("No files changed.")
                 parts.append(cleanup)
             except GitError as error:
-                parts.append(f"Enoch could not clean up the temporary branch: {error}")
+                parts.append(f"Enoch could not clean up the task worktree: {error}")
             return "\n\n".join(part for part in parts if part)
 
         self._send_step_update(chat_id, "Running doctor.")
         self._raise_if_current_task_cancelled()
-        doctor = run_immune_system(self.root)
+        doctor = run_immune_system(work_root)
         self._raise_if_current_task_cancelled()
         parts.append(_format_doctor_result(doctor))
         self._send_step_update(chat_id, "Doctor passed." if doctor.passed else "Doctor failed.")
         if not doctor.passed:
-            parts.append("I did not open a PR because doctor failed. Enoch is still on the feature branch for inspection.")
+            parts.append(
+                f"I did not open a PR because doctor failed. Task worktree {work_root} "
+                "was preserved for inspection."
+            )
             return "\n\n".join(part for part in parts if part)
 
         self._raise_if_current_task_cancelled()
-        parts.append(self._publish_feature_pr(chat_id, request, action_files))
+        parts.append(
+            self._publish_feature_pr(
+                chat_id,
+                request,
+                action_files,
+                work_root=work_root,
+                task_worktree=task_worktree,
+            )
+        )
         self._raise_if_current_task_cancelled()
         return "\n\n".join(part for part in parts if part)
+
+    def _prepare_task_worktree(self, request: str) -> TaskWorktree:
+        task_id = _CURRENT_TASK_ID.get()
+        worker_id = _CURRENT_TASK_WORKER_ID.get()
+        if task_id is None or not worker_id:
+            raise GitError("Task worktree preparation requires an owned running task.")
+        job = _task_by_id(task_id, self.root)
+        if job is None or job.status != "running" or job.worker_id != worker_id:
+            raise GitError(f"Task #{task_id} no longer owns its execution lease.")
+        base = _task_branch_base(self.root)
+        worktree = prepare_task_worktree(
+            self.root,
+            task_id,
+            request,
+            start_point=base,
+            resident_branch=self._resident_branch_name(),
+            created_at=job.created_at,
+            existing_path=job.worktree_path,
+            existing_branch=job.branch_name,
+        )
+        recorded = record_task_worktree(
+            task_id,
+            worker_id,
+            worktree.path,
+            worktree.branch,
+            self.root,
+        )
+        if recorded is None:
+            raise GitError(f"Task #{task_id} lost its execution lease while preparing its worktree.")
+        return worktree
 
     def _run_github_maintenance(self, request: "GithubMaintenanceRequest") -> str:
         self._update_work_status("Updating GitHub pull requests.")
@@ -842,31 +969,36 @@ class EnochTelegramBot:
                 _CURRENT_WORK_STATUS.reset(token)
 
     def _publish_existing_branch(self, chat_id: int, branch: str) -> str:
-        original_branch = current_branch(self.root)
-        resident_branch = self._remember_resident_branch(original_branch)
+        resident_branch = self._resident_branch_name()
         outputs: list[str] = []
         try:
-            ensure_clean_worktree(self.root)
-            self._send_step_update(chat_id, f"Switching to branch {branch}.")
-            switch_branch(branch, self.root)
+            self._send_step_update(chat_id, f"Preparing an isolated worktree for {branch}.")
+            task_worktree = self._prepare_existing_branch_task_worktree(branch)
+            work_root = task_worktree.path
+            ensure_clean_worktree(work_root)
 
             self._send_step_update(chat_id, f"Pushing branch {branch}.")
-            pushed = push_current_branch(root=self.root)
+            pushed = push_current_branch(root=work_root)
             outputs.append(_format_remote_publish_result(pushed))
             self._send_step_update(chat_id, f"Pushed branch {pushed.branch}.")
 
             self._send_step_update(chat_id, "Opening a pull request.")
-            pr = _create_pull_request_for_current_task(self.root)
+            pr = _create_pull_request_for_current_task(work_root, self.root)
             outputs.append(_format_pr_result(pr))
             if pr.url:
                 self._update_work_status(_pr_step_update(pr), pr_url=pr.url)
                 _record_current_task_result("\n\n".join(outputs), self.root)
             self._send_step_update(chat_id, _pr_step_update(pr))
 
-            self._send_step_update(chat_id, f"Returning local checkout to {resident_branch}.")
-            switch_branch(resident_branch, self.root)
-            outputs.append(f"Enoch switched local checkout back to {resident_branch}.")
-            self._send_step_update(chat_id, f"Local checkout is back on {resident_branch}.")
+            self._send_step_update(chat_id, "Cleaning up the isolated task worktree.")
+            outputs.append(
+                remove_task_worktree(
+                    self.root,
+                    task_worktree,
+                    delete_local_branch=False,
+                )
+            )
+            self._send_step_update(chat_id, f"Resident checkout remains on {resident_branch}.")
             if pr.url:
                 self._queue_session_sync(
                     chat_id,
@@ -875,13 +1007,33 @@ class EnochTelegramBot:
         except (GitError, PublishError) as error:
             failure = f"Enoch could not publish existing branch {branch}: {error}"
             self._send_step_update(chat_id, failure)
-            try:
-                if current_branch(self.root) != original_branch:
-                    switch_branch(original_branch, self.root)
-            except GitError:
-                pass
             return "\n\n".join([*outputs, failure]) if outputs else failure
         return "\n\n".join(outputs)
+
+    def _prepare_existing_branch_task_worktree(self, branch: str) -> TaskWorktree:
+        task_id = _CURRENT_TASK_ID.get()
+        worker_id = _CURRENT_TASK_WORKER_ID.get()
+        if task_id is None or not worker_id:
+            raise GitError("Branch publishing requires an owned running task.")
+        job = _task_by_id(task_id, self.root)
+        if job is None or job.status != "running" or job.worker_id != worker_id:
+            raise GitError(f"Task #{task_id} no longer owns its execution lease.")
+        worktree = prepare_existing_branch_worktree(
+            self.root,
+            task_id,
+            branch,
+            existing_path=job.worktree_path,
+        )
+        recorded = record_task_worktree(
+            task_id,
+            worker_id,
+            worktree.path,
+            worktree.branch,
+            self.root,
+        )
+        if recorded is None:
+            raise GitError(f"Task #{task_id} lost its execution lease while preparing its worktree.")
+        return worktree
 
     def _save_memory_requests(self, requests: tuple[str, ...]) -> str:
         if not requests:
@@ -908,14 +1060,18 @@ class EnochTelegramBot:
         chat_id: int,
         request: str,
         allowed_files: tuple[str, ...],
+        *,
+        work_root: Path | None = None,
+        task_worktree: TaskWorktree | None = None,
     ) -> str:
+        publish_root = work_root or self.root
         outputs: list[str] = []
         summaries: list[str] = []
         try:
             self._send_step_update(chat_id, "Committing the change.")
             commit = prepare_local_publish(
                 feature_title(request),
-                root=self.root,
+                root=publish_root,
                 allowed_files=allowed_files,
             )
             outputs.append(_format_publish_result(commit))
@@ -923,13 +1079,13 @@ class EnochTelegramBot:
             self._send_step_update(chat_id, f"Committed {commit.commit_sha}.")
 
             self._send_step_update(chat_id, "Pushing the branch to GitHub.")
-            pushed = push_current_branch(root=self.root)
+            pushed = push_current_branch(root=publish_root)
             outputs.append(_format_remote_publish_result(pushed))
             summaries.append(_remote_publish_summary(pushed))
             self._send_step_update(chat_id, f"Pushed branch {pushed.branch}.")
 
             self._send_step_update(chat_id, "Opening a pull request.")
-            pr = _create_pull_request_for_current_task(self.root)
+            pr = _create_pull_request_for_current_task(publish_root, self.root)
             outputs.append(_format_pr_result(pr))
             summaries.append(_pr_summary(pr))
             if pr.url:
@@ -938,11 +1094,19 @@ class EnochTelegramBot:
             self._send_step_update(chat_id, _pr_step_update(pr))
 
             resident_branch = self._resident_branch_name()
-            self._send_step_update(chat_id, f"Returning local checkout to {resident_branch}.")
-            handoff = self._return_to_resident_after_handoff()
+            if task_worktree is not None:
+                self._send_step_update(chat_id, "Cleaning up the isolated task worktree.")
+                handoff = remove_task_worktree(
+                    self.root,
+                    task_worktree,
+                    force_delete_branch=True,
+                )
+            else:
+                self._send_step_update(chat_id, f"Returning local checkout to {resident_branch}.")
+                handoff = self._return_to_resident_after_handoff()
             outputs.append(handoff)
             summaries.append(handoff)
-            self._send_step_update(chat_id, f"Local checkout is back on {resident_branch}.")
+            self._send_step_update(chat_id, f"Resident checkout remains on {resident_branch}.")
             if pr.url:
                 self._queue_session_sync(
                     chat_id,
@@ -989,21 +1153,6 @@ class EnochTelegramBot:
             f"Enoch switched local checkout back to {resident_branch}. "
             "The change remains on the pushed GitHub branch."
         )
-
-    def _return_to_resident_and_delete_branch(self, branch: str) -> str:
-        resident_branch = self._resident_branch_name(branch)
-        if branch == resident_branch:
-            return f"Local checkout is already on {resident_branch}."
-        ensure_clean_worktree(self.root)
-        switch_branch(resident_branch, self.root)
-        cleanup = _delete_local_branch_if_enabled(
-            branch,
-            self.root,
-            protected_branch=resident_branch,
-        )
-        if cleanup:
-            return "\n".join([f"Enoch switched local checkout back to {resident_branch}.", cleanup])
-        return f"Enoch switched local checkout back to {resident_branch}."
 
     def _remember_resident_branch(self, fallback: str) -> str:
         if not self._resident_branch:
@@ -2001,6 +2150,8 @@ class EnochTelegramBot:
         )
 
     def _maybe_start_task_worker(self) -> None:
+        if self._stopping:
+            return
         if self._task_worker is not None and self._task_worker.is_alive():
             return
         status = task_queue_status(self.root)
@@ -2016,7 +2167,7 @@ class EnochTelegramBot:
         self._task_worker.start()
 
     def _run_task_worker(self) -> None:
-        while True:
+        while not self._stopping:
             job = begin_next_task(self.root)
             if job is None:
                 if self._promote_next_backlog_if_idle() is None:
@@ -2262,6 +2413,11 @@ class EnochTelegramBot:
         start_update: str,
         failure_prefix: str,
     ) -> None:
+        worker_id = f"{os.getpid()}-{uuid4().hex}"
+        claimed = claim_running_task(job.id, worker_id, os.getpid(), self.root)
+        if claimed is None:
+            return
+        job = claimed
         message_id = self._work_status_messages.get(job.id) or job.status_message_id
         created_status_message = False
         if message_id is None:
@@ -2297,6 +2453,7 @@ class EnochTelegramBot:
         )
         token = _CURRENT_WORK_STATUS.set(task_status)
         task_token = _CURRENT_TASK_ID.set(job.id)
+        worker_token = _CURRENT_TASK_WORKER_ID.set(worker_id)
         regression_token = _CURRENT_REGRESSION_SIGNALS.set(())
         cancellation_event = threading.Event()
         self._task_cancellations[job.id] = cancellation_event
@@ -2304,6 +2461,8 @@ class EnochTelegramBot:
         if not created_status_message:
             self._update_work_status(start_update, status="running")
         completed_status = "completed"
+        finished_job: TaskJob | None = None
+        failure: TaskFailure | None = None
         regression_signals: tuple[TaskRegressionSignal, ...] = ()
         try:
             if task_result_has_pull_request(job.result):
@@ -2322,8 +2481,10 @@ class EnochTelegramBot:
             if deadline.expired.is_set():
                 reply = _task_timeout_message(deadline.timeout_seconds)
                 completed_status = "failed"
+                failure = classify_task_failure(reply)
             elif _work_reply_failed(reply):
                 completed_status = "failed"
+                failure = classify_task_failure(reply)
         except CodexAccessUnavailable as error:
             reply = _codex_pause_warning(job.id, str(error))
             completed_status = "paused"
@@ -2331,82 +2492,135 @@ class EnochTelegramBot:
             if deadline.expired.is_set():
                 reply = _task_timeout_message(deadline.timeout_seconds)
                 completed_status = "failed"
+                failure = classify_task_failure(reply)
             else:
                 reply = str(error)
                 completed_status = "cancelled"
         except Exception as error:
             reply = f"{failure_prefix}: {error}"
             completed_status = "failed"
+            failure = classify_task_failure(reply)
         finally:
             deadline.cancel()
             regression_signals = _CURRENT_REGRESSION_SIGNALS.get()
             _CURRENT_REGRESSION_SIGNALS.reset(regression_token)
             _CURRENT_WORK_STATUS.reset(token)
             _CURRENT_TASK_ID.reset(task_token)
+            _CURRENT_TASK_WORKER_ID.reset(worker_token)
             self._task_cancellations.pop(job.id, None)
             if completed_status == "cancelled":
-                cancel_running_task(
+                finished_job = cancel_running_task(
                     self.root,
                     result=reply,
                     event_actor="system",
                     trigger="task-runner-cancelled",
+                    expected_task_id=job.id,
+                    worker_id=worker_id,
                 )
-                cancel_evolve_candidate_for_task(
-                    job,
-                    self.root,
-                    event_actor="human",
-                    trigger="/stop",
-                    reason=reply,
-                )
+                if finished_job is not None:
+                    cancel_evolve_candidate_for_task(
+                        job,
+                        self.root,
+                        event_actor="human",
+                        trigger="/stop",
+                        reason=reply,
+                    )
             elif completed_status == "failed":
                 failure_actor = "system" if deadline.expired.is_set() else "agent"
                 failure_trigger = "task-timeout" if deadline.expired.is_set() else "task-runner"
-                fail_task(
-                    job.id,
-                    self.root,
-                    result=reply,
-                    event_actor=failure_actor,
-                    trigger=failure_trigger,
-                )
-                fail_evolve_candidate_for_task(
-                    job,
-                    self.root,
-                    event_actor=failure_actor,
-                    trigger=failure_trigger,
-                    reason=reply,
-                )
+                failure = failure or classify_task_failure(reply)
+                if failure.retryable and job.attempt < job.max_attempts:
+                    finished_job = retry_running_task(
+                        job.id,
+                        self.root,
+                        result=reply,
+                        failure_code=failure.code,
+                        failure_class=failure.failure_class,
+                        worker_id=worker_id,
+                        delay_seconds=automatic_retry_delay_seconds(job.attempt),
+                        event_actor=failure_actor,
+                        trigger=failure_trigger,
+                    )
+                    if finished_job is not None:
+                        completed_status = "retrying"
+                if finished_job is None:
+                    finished_job = fail_task(
+                        job.id,
+                        self.root,
+                        result=reply,
+                        event_actor=failure_actor,
+                        trigger=failure_trigger,
+                        worker_id=worker_id,
+                        failure_code=failure.code,
+                        failure_class=failure.failure_class,
+                        retryable=False,
+                    )
+                if finished_job is not None and completed_status == "failed":
+                    fail_evolve_candidate_for_task(
+                        job,
+                        self.root,
+                        event_actor=failure_actor,
+                        trigger=failure_trigger,
+                        reason=reply,
+                    )
             elif completed_status == "paused":
-                paused = pause_task(
+                finished_job = pause_task(
                     job.id,
                     self.root,
                     result=reply,
                     event_actor="system",
                     trigger="codex-unavailable",
+                    worker_id=worker_id,
                 )
-                if paused is not None:
+                if finished_job is not None:
                     pause_evolve_candidate_for_task(
-                        paused,
+                        finished_job,
                         self.root,
                         event_actor="system",
                         trigger="codex-unavailable",
                         reason=reply,
                     )
             else:
-                complete_task(job.id, self.root, result=reply)
-                complete_evolve_candidate_for_task(
-                    job,
+                finished_job = complete_task(
+                    job.id,
                     self.root,
-                    event_actor="agent",
-                    trigger="task-runner",
-                    reason=reply,
+                    result=reply,
+                    worker_id=worker_id,
                 )
+                if finished_job is not None:
+                    complete_evolve_candidate_for_task(
+                        job,
+                        self.root,
+                        event_actor="agent",
+                        trigger="task-runner",
+                        reason=reply,
+                    )
+        authoritative_job = finished_job or _task_by_id(job.id, self.root)
+        expected_status = "pending" if completed_status == "retrying" else completed_status
+        if authoritative_job is None or authoritative_job.status != expected_status:
+            return
         self._apply_task_regression_signals(
             regression_signals,
             current_task_id=job.id if completed_status == "completed" else None,
             allow_resolution=completed_status == "completed",
         )
-        completed_job = _task_by_id(job.id, self.root)
-        summary_job = completed_job or job
+        summary_job = authoritative_job
+        if completed_status == "retrying":
+            if task_status is not None:
+                retry_token = _CURRENT_WORK_STATUS.set(task_status)
+                try:
+                    self._update_work_status(
+                        (
+                            f"Transient failure ({summary_job.failure_code}); "
+                            f"retry {summary_job.attempt + 1}/{summary_job.max_attempts} scheduled."
+                        ),
+                        status="retrying",
+                    )
+                finally:
+                    _CURRENT_WORK_STATUS.reset(retry_token)
+            if command == "/do":
+                self._maybe_start_task_worker()
+            return
         if completed_status == "completed":
             self._record_automatic_learning(summary_job, command=command, result=reply)
         if task_status is not None:
@@ -2549,20 +2763,6 @@ class EnochTelegramBot:
             self._restart_after_reply = True
         return result.message
 
-    def _ensure_action_branch(self, request_text: str) -> str | None:
-        branch = current_branch(self.root)
-        resident_branch = self._remember_resident_branch(branch)
-        ensure_clean_worktree(self.root)
-        if branch != resident_branch:
-            switch_branch(resident_branch, self.root)
-        base = _task_branch_base(self.root)
-        branch_name = _branch_name(request_text)
-        create_branch(branch_name, self.root, start_point=base)
-        return (
-            f"Enoch created and switched to branch {branch_name} from {base} before editing. "
-            f"Resident branch: {resident_branch}."
-        )
-
     def _send_progress(self, chat_id: int, elapsed_seconds: int, sandbox: str) -> None:
         mode = _sandbox_description(sandbox)
         if self._update_work_status(f"Still working after {_format_elapsed(elapsed_seconds)}: {mode}."):
@@ -2652,6 +2852,7 @@ def main() -> None:
 
 
 def _notify_shutdown(bot: EnochTelegramBot, reason: str) -> None:
+    bot.stop_workers()
     sent = bot.client.config.allowed_chat_id is not None
     try:
         bot.notify_shutdown(reason)
@@ -2873,31 +3074,65 @@ def _record_current_task_result(result: str, root: Path) -> None:
     record_task_result(task_id, result, root)
 
 
-def _recover_running_task_from_direct_action_log(root: Path) -> None:
+def _recover_running_task_from_direct_action_log(root: Path) -> TaskJob | None:
     running = task_queue_status(root).running
-    if running is None:
-        return
+    if running is None or task_worker_is_active(running):
+        return None
     result = _latest_direct_action_result_for_task(running, root)
     if not result:
-        return
+        return None
     if _work_reply_failed(result):
-        fail_task(running.id, root, result=result, event_actor="system", trigger="recovery")
-        fail_evolve_candidate_for_task(
-            running,
-            root,
-            event_actor="system",
-            trigger="recovery",
-            reason=result,
-        )
+        recovered = fail_task(running.id, root, result=result, event_actor="system", trigger="recovery")
+        if recovered is not None:
+            fail_evolve_candidate_for_task(
+                running,
+                root,
+                event_actor="system",
+                trigger="recovery",
+                reason=result,
+            )
+        return recovered
     else:
-        complete_task(running.id, root, result=result, event_actor="system", trigger="recovery")
-        complete_evolve_candidate_for_task(
-            running,
+        recovered = complete_task(
+            running.id,
             root,
+            result=result,
             event_actor="system",
             trigger="recovery",
-            reason=result,
         )
+        if recovered is not None:
+            complete_evolve_candidate_for_task(
+                running,
+                root,
+                event_actor="system",
+                trigger="recovery",
+                reason=result,
+            )
+        return recovered
+
+
+def _cleanup_recovered_task_worktree(job: TaskJob | None, root: Path) -> None:
+    if (
+        job is None
+        or job.status != "completed"
+        or not job.worktree_path
+        or not job.branch_name
+        or not Path(job.worktree_path).exists()
+    ):
+        return
+    try:
+        remove_task_worktree(
+            root,
+            TaskWorktree(
+                task_id=job.id,
+                path=Path(job.worktree_path),
+                branch=job.branch_name,
+                created=False,
+            ),
+            force_delete_branch=True,
+        )
+    except GitError:
+        return
 
 
 def _latest_direct_action_result_for_task(job: TaskJob, root: Path) -> str:
@@ -3611,13 +3846,17 @@ def _legacy_task_approval_actor(job: TaskJob) -> str:
     return job.initiated_by
 
 
-def _create_pull_request_for_current_task(root: Path) -> PullRequestResult:
+def _create_pull_request_for_current_task(
+    work_root: Path,
+    state_root: Path | None = None,
+) -> PullRequestResult:
+    state_root = state_root or work_root
     task_id = _CURRENT_TASK_ID.get()
-    job = _task_by_id(task_id, root) if task_id is not None else None
+    job = _task_by_id(task_id, state_root) if task_id is not None else None
     provenance = _evolution_provenance_for_job(job) if job is not None else None
     if provenance is None:
-        return create_pull_request(root=root)
-    return create_pull_request(root=root, evolution_provenance=provenance)
+        return create_pull_request(root=work_root)
+    return create_pull_request(root=work_root, evolution_provenance=provenance)
 
 
 def _history_task(task_id: int, root: Path) -> TaskJob | None:
@@ -3650,16 +3889,26 @@ def _format_task_final_message(job: TaskJob, final_status: str, result: str) -> 
             ]
         )
     prs = job.pr_urls or ("none",)
-    return "\n".join(
+    lines = [
+        f"Task #{job.id} final update",
+        f"Final status: {final_status}",
+    ]
+    if final_status == "failed" and job.failure_code:
+        lines.extend(
+            [
+                f"Failure: {job.failure_code} ({job.failure_class or 'unknown'}, non-retryable)",
+                f"Attempts: {job.attempt}/{job.max_attempts}",
+            ]
+        )
+    lines.extend(
         [
-            f"Task #{job.id} final update",
-            f"Final status: {final_status}",
             "PR URL:",
             *[f"- {pr}" for pr in prs],
             "Result summary:",
             _clip_activity_block(_task_result_text(job, result), limit=1200),
         ]
     )
+    return "\n".join(lines)
 
 
 def _format_work_status_message(status: WorkStatusMessage) -> str:
@@ -4021,13 +4270,6 @@ def _remote_publish_summary(result: RemotePublishResult) -> str:
 
 def _pr_summary(result: PullRequestResult) -> str:
     return pr_summary(result)
-
-
-def _branch_name(text: str) -> str:
-    slug = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
-    slug = slug[:40].strip("-") or "telegram-code"
-    return f"enoch/{int(time.time())}-{slug}"
-
 
 if __name__ == "__main__":
     main()

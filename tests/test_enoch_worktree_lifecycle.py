@@ -8,16 +8,8 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from enoch.identity import load_identity
 from enoch.instance import instance_branch
-from enoch.telegram.bot import EnochTelegramBot
-
-
-class _Client:
-    class _Config:
-        allowed_chat_id = None
-
-    config = _Config()
+from enoch.task_worktree import prepare_task_worktree, remove_task_worktree
 
 
 class EnochWorktreeLifecycleTests(unittest.TestCase):
@@ -59,25 +51,37 @@ class EnochWorktreeLifecycleTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            bot = EnochTelegramBot(load_identity(), instance, _Client())
-            note = bot._ensure_action_branch("Update README")
-            task_branch = _git(instance, "branch", "--show-current").stdout.strip()
+            task = prepare_task_worktree(
+                instance,
+                1,
+                "Update README",
+                start_point="main",
+                resident_branch="agent/enoch-gary",
+                created_at="2026-07-18T20:14:54+00:00",
+            )
 
             self.assertEqual(instance_branch(instance), "agent/enoch-gary")
-            self.assertTrue(task_branch.startswith("enoch/"))
-            self.assertEqual(_git(instance, "rev-parse", "HEAD").stdout.strip(), main_head)
+            self.assertTrue(task.branch.startswith("enoch/"))
+            self.assertEqual(_git(task.path, "rev-parse", "HEAD").stdout.strip(), main_head)
             self.assertEqual(_git(source, "branch", "--show-current").stdout.strip(), "main")
-            self.assertIn("Resident branch: agent/enoch-gary.", note)
+            self.assertEqual(
+                _git(instance, "branch", "--show-current").stdout.strip(),
+                "agent/enoch-gary",
+            )
 
-            cleanup = bot._return_to_resident_and_delete_branch(task_branch)
+            cleanup = remove_task_worktree(
+                instance,
+                task,
+                force_delete_branch=True,
+            )
 
             self.assertEqual(
                 _git(instance, "branch", "--show-current").stdout.strip(),
                 "agent/enoch-gary",
             )
             self.assertEqual(_git(source, "branch", "--show-current").stdout.strip(), "main")
-            self.assertNotIn(task_branch, _git(instance, "branch", "--list", task_branch).stdout)
-            self.assertIn("switched local checkout back to agent/enoch-gary", cleanup)
+            self.assertNotIn(task.branch, _git(instance, "branch", "--list", task.branch).stdout)
+            self.assertIn("Removed task #1 worktree.", cleanup)
 
 
 def _git(root: Path, *args: str) -> subprocess.CompletedProcess[str]:

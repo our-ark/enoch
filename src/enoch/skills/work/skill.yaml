@@ -1,12 +1,14 @@
 name: work
-version: 0.1.0
-summary: Run persistent work through task queues, backlog, cron scheduling, and skill-only automatic learning.
+version: 0.2.0
+summary: Run leased persistent work in isolated task worktrees through queues, backlog, cron, and automatic learning.
 owner: Enoch
 status: active
 mode: background-work
 entrypoint: src/enoch/telegram/bot.py
 capabilities:
   task_queue: src/enoch/task_queue.py
+  task_failure_classification: src/enoch/task_failures.py
+  task_worktrees: src/enoch/task_worktree.py
   backlog: src/enoch/backlog.py
   cron: src/enoch/cron.py
   automatic_learning: src/enoch/automatic_learning.py

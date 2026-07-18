@@ -333,6 +333,7 @@ def act_in_session(
     sandbox: str = WORKSPACE_WRITE_SANDBOX,
     session_key: str = "",
     cancellation_event: threading.Event | None = None,
+    state_root: Path | None = None,
 ) -> str:
     if not session_key:
         return act(
@@ -342,6 +343,7 @@ def act_in_session(
             progress_callback=progress_callback,
             sandbox=sandbox,
             cancellation_event=cancellation_event,
+            state_root=state_root,
         )
     return _act_with_persistent_session(
         identity,
@@ -351,6 +353,7 @@ def act_in_session(
         session_key=session_key,
         progress_callback=progress_callback,
         cancellation_event=cancellation_event,
+        state_root=state_root,
     )
 
 
@@ -363,9 +366,11 @@ def _act_with_persistent_session(
     session_key: str,
     progress_callback: ProgressCallback | None = None,
     cancellation_event: threading.Event | None = None,
+    state_root: Path | None = None,
 ) -> str:
-    state = load_codex_session(session_key, cwd)
-    prompt = _build_persistent_prompt(message, cwd, state)
+    state_root = state_root or cwd
+    state = load_codex_session(session_key, state_root)
+    prompt = _build_persistent_prompt(message, state_root, state)
     try:
         result = _run_codex_result(
             identity,
@@ -376,6 +381,7 @@ def _act_with_persistent_session(
             persist_session=True,
             session_id=state.session_id if state else "",
             cancellation_event=cancellation_event,
+            state_root=state_root,
         )
     except BrainCancelled:
         raise
@@ -384,8 +390,8 @@ def _act_with_persistent_session(
     except BrainError:
         if state is None:
             raise
-        forget_codex_session(session_key, cwd)
-        recovery_prompt = _build_persistent_recovery_prompt(message, cwd)
+        forget_codex_session(session_key, state_root)
+        recovery_prompt = _build_persistent_recovery_prompt(message, state_root)
         result = _run_codex_result(
             identity,
             recovery_prompt,
@@ -394,6 +400,7 @@ def _act_with_persistent_session(
             progress_callback=progress_callback,
             persist_session=True,
             cancellation_event=cancellation_event,
+            state_root=state_root,
         )
         state = None
 
@@ -401,7 +408,7 @@ def _act_with_persistent_session(
         record_codex_session_turn(
             session_key,
             result.session_id,
-            cwd,
+            state_root,
             previous=state,
         )
     return result.answer
@@ -442,6 +449,7 @@ def act(
     progress_callback: ProgressCallback | None = None,
     sandbox: str = WORKSPACE_WRITE_SANDBOX,
     cancellation_event: threading.Event | None = None,
+    state_root: Path | None = None,
 ) -> str:
     return _run_codex(
         identity,
@@ -450,6 +458,7 @@ def act(
         sandbox=sandbox,
         progress_callback=progress_callback,
         cancellation_event=cancellation_event,
+        state_root=state_root,
     )
 
 
@@ -460,6 +469,7 @@ def _run_codex(
     sandbox: str,
     progress_callback: ProgressCallback | None = None,
     cancellation_event: threading.Event | None = None,
+    state_root: Path | None = None,
 ) -> str:
     return _run_codex_result(
         identity,
@@ -468,6 +478,7 @@ def _run_codex(
         sandbox,
         progress_callback=progress_callback,
         cancellation_event=cancellation_event,
+        state_root=state_root,
     ).answer
 
 
@@ -481,6 +492,7 @@ def _run_codex_result(
     persist_session: bool = False,
     session_id: str = "",
     cancellation_event: threading.Event | None = None,
+    state_root: Path | None = None,
 ) -> CodexRunResult:
     codex = _codex_binary()
     if codex is None:
@@ -497,24 +509,25 @@ def _run_codex_result(
         )
         prompt_marker = args.pop()
 
-        model = _configured_model(cwd)
+        state_root = state_root or cwd
+        model = _configured_model(state_root)
         if model:
             args.extend(["--model", model])
-        reasoning_effort = _configured_reasoning_effort(cwd)
+        reasoning_effort = _configured_reasoning_effort(state_root)
         if reasoning_effort:
             args.extend(["-c", f'model_reasoning_effort="{reasoning_effort}"'])
         args.append(prompt_marker)
 
         record_last_codex_input(
             prompt,
-            cwd,
+            state_root,
             sandbox=sandbox,
             persist_session=persist_session,
             session_id=session_id,
             resumed=bool(session_id),
         )
 
-        timeout = int(os.environ.get("ENOCH_CODEX_TIMEOUT", task_timeout_seconds(cwd)))
+        timeout = int(os.environ.get("ENOCH_CODEX_TIMEOUT", task_timeout_seconds(state_root)))
         if progress_callback is not None:
             result_stdout, result_stderr, returncode = _run_with_progress(
                 args=args,
