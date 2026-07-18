@@ -175,7 +175,7 @@ class EnochEvolutionEndToEndTests(unittest.TestCase):
         self._set_codex_mode("success")
         with patch.object(self.bot, "_maybe_start_task_worker"):
             reply = self._command("/resume")
-        self.assertEqual(reply, "Resumed 1 task(s): #1.")
+        self.assertEqual(reply, "Resumed 1 task: #1.")
 
         completed = self._run_next_task()
 

@@ -49,8 +49,11 @@ When work is queued:
    paused worktrees for inspection and recovery.
 9. `/task retry <id>` retries only a failed task by creating a new task with a
    new id and `parent_task_id`; never rewrite the original failure. Preserve the
-   request, context, source, and provenance. If a retry fails, retry that latest
-   failed task so the causal chain remains linear.
+   request, context, source, provenance, and any recoverable task
+   worktree/branch. Before new execution, reconcile recorded and logged PR
+   results with GitHub; reuse a validated open or merged PR instead of
+   duplicating work. If a retry fails, retry that latest failed task so the
+   causal chain remains linear.
 10. Give each running task a worker lease. Recovery must not requeue a task while
     its owner process is alive, and only the lease owner may publish a terminal
     task transition or final status message.
@@ -61,6 +64,9 @@ When work is queued:
     permission or configuration errors, and unknown failures as non-retryable.
     Record attempt, failure code, failure class, and retry disposition in task
     events. Keep `/task retry <id>` as the explicit human override.
+12. `/task resume <id|all>` resumes only paused tasks without changing their
+    ids or causal history. `/resume` remains the system-level alias for
+    `/task resume all`.
 
 ## Inheritance
 

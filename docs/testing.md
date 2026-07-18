@@ -25,7 +25,10 @@ The suite verifies:
   worker or accepting a stale final status;
 - permanent failures such as a dirty worktree fail immediately, while only
   classified transient failures retry with a three-attempt ceiling;
-- a failed candidate can be retried without rewriting failed task history;
+- `/task resume <id|all>` preserves paused task ids, while `/resume` remains
+  the resume-all alias;
+- a failed task can be retried without rewriting history, and retry reconciles
+  journaled or branch-linked PRs before starting duplicate work;
 - Codex authentication failure pauses a task and `/resume` completes that same
   task after access returns;
 - progress updates edit one Telegram status message;

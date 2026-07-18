@@ -14,7 +14,9 @@ from enoch.github.workflow import (
     PullRequestMergeStatus,
     close_pull_request,
     create_pull_request,
+    inspect_pull_request,
     inspect_pull_request_merge,
+    list_open_pull_requests,
     merge_pull_request,
     parse_pull_request_target,
     prepare_local_publish,
@@ -486,7 +488,7 @@ class EnochGithubWorkflowTests(unittest.TestCase):
         )
 
     def test_parses_numeric_pull_request_target_for_current_repository(self) -> None:
-        target = parse_pull_request_target("12")
+        target = parse_pull_request_target(" 12 ")
 
         self.assertEqual(target.reference, "12")
         self.assertEqual(target.number, 12)
@@ -545,6 +547,58 @@ class EnochGithubWorkflowTests(unittest.TestCase):
 
         with self.assertRaisesRegex(PublishError, "Could not resolve"):
             inspect_pull_request_merge("https://github.com/private/repo/pull/12", ROOT)
+
+    @patch("enoch.github.workflow.subprocess.run")
+    @patch("enoch.github.workflow.shutil.which", return_value="/usr/local/bin/gh")
+    def test_lists_open_pull_requests_without_mutation(
+        self,
+        _which: MagicMock,
+        run: MagicMock,
+    ) -> None:
+        first = _pull_request_payload()
+        first.update(
+            {
+                "title": "Add PR commands",
+                "headRefName": "feature/pr-commands",
+                "author": {"login": "enoch"},
+                "updatedAt": "2026-07-18T21:30:00Z",
+            }
+        )
+        run.return_value = _process_result(stdout=json.dumps([first]))
+
+        pull_requests = list_open_pull_requests(ROOT)
+
+        self.assertEqual(len(pull_requests), 1)
+        self.assertEqual(pull_requests[0].number, 12)
+        self.assertEqual(pull_requests[0].title, "Add PR commands")
+        self.assertEqual(pull_requests[0].head_branch, "feature/pr-commands")
+        self.assertEqual(pull_requests[0].author, "enoch")
+        command = run.call_args.args[0]
+        self.assertEqual(command[1:4], ["pr", "list", "--state"])
+        self.assertNotIn("merge", command)
+
+    @patch("enoch.github.workflow.subprocess.run")
+    @patch("enoch.github.workflow.shutil.which", return_value="/usr/local/bin/gh")
+    def test_inspects_draft_pull_request_without_requiring_mergeability(
+        self,
+        _which: MagicMock,
+        run: MagicMock,
+    ) -> None:
+        payload = _pull_request_payload()
+        payload.update(
+            {
+                "title": "Work in progress",
+                "isDraft": True,
+                "mergeable": "UNKNOWN",
+                "mergeStateStatus": "BLOCKED",
+            }
+        )
+        run.return_value = _process_result(stdout=json.dumps(payload))
+
+        pull_request = inspect_pull_request("12", ROOT)
+
+        self.assertTrue(pull_request.is_draft)
+        self.assertEqual(pull_request.title, "Work in progress")
 
     def test_merge_refuses_draft_conflicting_blocked_closed_and_merged_prs(self) -> None:
         cases = (
@@ -678,6 +732,20 @@ def _merge_status(**overrides) -> PullRequestMergeStatus:
     }
     values.update(overrides)
     return PullRequestMergeStatus(**values)
+
+
+def _pull_request_payload() -> dict[str, object]:
+    return {
+        "number": 12,
+        "url": "https://github.com/our-ark/enoch/pull/12",
+        "state": "OPEN",
+        "isDraft": False,
+        "mergeable": "MERGEABLE",
+        "mergeStateStatus": "CLEAN",
+        "headRefOid": "head123",
+        "baseRefName": "main",
+        "mergedAt": None,
+    }
 
 
 if __name__ == "__main__":

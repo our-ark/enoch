@@ -439,10 +439,10 @@ def help_message(topic: str = "") -> str:
             "/evolve - show self-evolution mode, theme, and top candidate",
             "",
             "System:",
-            "/pr merge <number-or-URL> - inspect and merge exactly one pull request",
             "/config - show or update local system settings",
             "/resume - continue tasks paused while Codex access was unavailable",
             "/doctor - run local health checks",
+            "/pr - list and manage pull requests",
             "/update - pull latest main, run doctor, and restart if safe",
             "/restart - restart Enoch's Telegram daemon from the locked chat",
             "",
@@ -524,6 +524,7 @@ def _help_topic_message(topic: str) -> str:
                 "Task commands:",
                 "/task <request> - queue background work for Enoch",
                 "/task cancel <id> - cancel a queued background task",
+                "/task resume <id|all> - continue paused tasks with the same ids",
                 "/task retry <id> - retry a failed task as a new linked task",
             ]
         ),
@@ -547,8 +548,10 @@ def pr_usage(prefix: str = "/") -> str:
     return "\n".join(
         [
             "Pull request commands:",
+            f"{prefix}pr - list open pull requests in the current repository",
+            f"{prefix}pr show <PR number or GitHub PR URL> - inspect one pull request",
             f"{prefix}pr merge <PR number or GitHub PR URL> - inspect and merge exactly that PR",
-            "A target is required; Enoch will not infer a pull request.",
+            "A merge target is required; Enoch will not infer one from the current branch or conversation.",
         ]
     )
 

@@ -36,9 +36,11 @@ from enoch.git_tools import GitError
 from enoch.github.workflow import (
     LocalPublishResult,
     PublishError,
+    PullRequestMergeCandidate,
     PullRequestCloseResult,
     PullRequestMergeResult,
     PullRequestResult,
+    PullRequestTarget,
     RemotePublishResult,
 )
 from enoch.immune import DoctorDiagnosis
@@ -63,6 +65,7 @@ from enoch.task_queue import (
     complete_task,
     enqueue_task,
     fail_task,
+    pause_task,
     record_task_result,
     task_queue_path,
     task_queue_status,
@@ -678,17 +681,6 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("/config task-timeout default", reply)
         self.assertNotIn("Enoch Telegram commands:", reply)
 
-    def test_help_lists_explicit_pull_request_merge_command(self) -> None:
-        client = FakeTelegramClient(allowed_chat_id=42)
-        bot = EnochTelegramBot(load_identity(), ROOT, client)
-
-        bot.handle_update(_message_update(chat_id=42, text="/help"))
-        bot.handle_update(_message_update(update_id=2, chat_id=42, text="/help pr"))
-
-        self.assertIn("/pr merge <number-or-URL>", client.sent[0][1])
-        self.assertIn("/pr merge <PR number or GitHub PR URL>", client.sent[1][1])
-        self.assertIn("will not infer a pull request", client.sent[1][1])
-
     @patch("enoch.telegram.bot.merge_pull_request")
     def test_pr_merge_requires_explicit_target(self, merge: MagicMock) -> None:
         client = FakeTelegramClient(allowed_chat_id=42)
@@ -766,6 +758,90 @@ class EnochTelegramTests(unittest.TestCase):
             client.sent[0][1],
             "/resume - continue tasks paused while Codex access was unavailable",
         )
+
+    def test_help_lists_pr_and_explains_its_subcommands(self) -> None:
+        client = FakeTelegramClient(allowed_chat_id=42)
+        bot = EnochTelegramBot(load_identity(), ROOT, client)
+
+        bot.handle_update(_message_update(chat_id=42, text="/help"))
+        bot.handle_update(_message_update(update_id=2, chat_id=42, text="/help pr"))
+
+        self.assertIn(
+            "/pr - list and manage pull requests",
+            client.sent[0][1],
+        )
+        self.assertNotIn("/pr merge", client.sent[0][1])
+        self.assertIn("/pr - list open pull requests", client.sent[1][1])
+        self.assertIn("/pr show <PR number or GitHub PR URL>", client.sent[1][1])
+        self.assertIn("/pr merge <PR number or GitHub PR URL>", client.sent[1][1])
+        self.assertIn("will not infer one", client.sent[1][1])
+
+    @patch("enoch.telegram.bot.list_open_pull_requests")
+    def test_pr_lists_open_pull_requests(
+        self,
+        list_open_pull_requests: MagicMock,
+    ) -> None:
+        list_open_pull_requests.return_value = (
+            _pull_request_info(
+                number=13,
+                title="Add PR commands",
+                head_branch="feature/pr-commands",
+            ),
+            _pull_request_info(
+                number=12,
+                title="Document config precedence",
+                is_draft=True,
+                mergeable="UNKNOWN",
+                merge_state_status="BLOCKED",
+            ),
+        )
+        client = FakeTelegramClient(allowed_chat_id=42)
+        bot = EnochTelegramBot(load_identity(), ROOT, client)
+
+        bot.handle_update(_message_update(chat_id=42, text="/pr"))
+
+        list_open_pull_requests.assert_called_once_with(ROOT)
+        reply = client.sent[0][1]
+        self.assertIn("Open pull requests (2):", reply)
+        self.assertIn("#13 [ready] Add PR commands", reply)
+        self.assertIn("main <- feature/pr-commands", reply)
+        self.assertIn("#12 [draft] Document config precedence", reply)
+
+    @patch("enoch.telegram.bot.list_open_pull_requests", return_value=())
+    def test_pr_reports_when_no_pull_requests_are_open(
+        self,
+        list_open_pull_requests: MagicMock,
+    ) -> None:
+        client = FakeTelegramClient(allowed_chat_id=42)
+        bot = EnochTelegramBot(load_identity(), ROOT, client)
+
+        bot.handle_update(_message_update(chat_id=42, text="/pr"))
+
+        list_open_pull_requests.assert_called_once_with(ROOT)
+        self.assertEqual(client.sent[0][1], "Open pull requests: none.")
+
+    @patch("enoch.telegram.bot.inspect_pull_request")
+    def test_pr_show_reports_read_only_detail(
+        self,
+        inspect_pull_request: MagicMock,
+    ) -> None:
+        inspect_pull_request.return_value = _pull_request_info(
+            number=13,
+            title="Add PR commands",
+            head_branch="feature/pr-commands",
+            author="enoch",
+        )
+        client = FakeTelegramClient(allowed_chat_id=42)
+        bot = EnochTelegramBot(load_identity(), ROOT, client)
+
+        bot.handle_update(_message_update(chat_id=42, text="/pr show 13"))
+
+        inspect_pull_request.assert_called_once_with("13", ROOT)
+        reply = client.sent[0][1]
+        self.assertIn("Pull request #13", reply)
+        self.assertIn("Status: ready", reply)
+        self.assertIn("Branch: main <- feature/pr-commands", reply)
+        self.assertIn("Author: enoch", reply)
 
     def test_config_shows_sets_and_resets_task_timeout(self) -> None:
         with TemporaryDirectory() as temp:
@@ -910,6 +986,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("Task commands:", reply)
         self.assertIn("/task <request> - queue background work for Enoch", reply)
         self.assertIn("/task cancel <id> - cancel a queued background task", reply)
+        self.assertIn("/task resume <id|all> - continue paused tasks with the same ids", reply)
         self.assertIn("/task retry <id> - retry a failed task as a new linked task", reply)
         self.assertNotIn("/task regress", reply)
         self.assertNotIn("/task resolve", reply)
@@ -1194,6 +1271,88 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("Retry of failed task #1", client.sent[0][1])
         self.assertEqual([event.event for event in events], ["created", "queued"])
         self.assertIn("#2 [pending] retry transient work (retry of #1)", tasks_report)
+
+    def test_task_retry_reconciles_existing_pr_before_execution(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            original = enqueue_task(42, "publish the PR command", root)
+            begin_next_task(root)
+            fail_task(
+                original.id,
+                root,
+                result="Worker state was lost before completion.",
+            )
+            client = FakeTelegramClient(allowed_chat_id=42)
+            bot = EnochTelegramBot(load_identity(), root, client)
+            existing_result = (
+                "Implemented and published ready for review: "
+                "https://github.com/our-ark/enoch/pull/13"
+            )
+
+            with patch(
+                "enoch.telegram.bot._latest_direct_action_result_for_task",
+                return_value=existing_result,
+            ):
+                with patch(
+                    "enoch.telegram.bot.inspect_pull_request",
+                    return_value=_pull_request_info(
+                        number=13,
+                        title="Add PR command",
+                    ),
+                ) as inspect:
+                    with patch.object(bot, "_maybe_start_task_worker"):
+                        bot.handle_update(
+                            _message_update(chat_id=42, text="/task retry 1")
+                        )
+            retry = task_queue_status(root).pending[0]
+            running = begin_next_task(root)
+            with patch.object(bot, "_run_direct_work") as run_direct_work:
+                bot._run_task_job(running)
+            status = task_queue_status(root)
+
+        inspect.assert_called_once_with(
+            "https://github.com/our-ark/enoch/pull/13",
+            root,
+        )
+        self.assertEqual(retry.parent_task_id, original.id)
+        self.assertEqual(
+            retry.pr_urls,
+            ("https://github.com/our-ark/enoch/pull/13",),
+        )
+        self.assertEqual(retry.result, existing_result)
+        run_direct_work.assert_not_called()
+        self.assertEqual(status.history[-1].status, "completed")
+        self.assertEqual(status.history[-1].pr_urls, retry.pr_urls)
+
+    def test_task_retry_reconciles_pr_from_preserved_branch(self) -> None:
+        job = TaskJob(
+            id=7,
+            chat_id=42,
+            text="publish PR command",
+            created_at="2026-07-18T21:10:00+00:00",
+            started_at="2026-07-18T21:10:01+00:00",
+            status="failed",
+            branch_name="feature/pr-command",
+        )
+        pull_request = _pull_request_info(
+            number=14,
+            title="Add PR command",
+            head_branch="feature/pr-command",
+        )
+
+        with patch(
+            "enoch.telegram.bot._latest_direct_action_result_for_task",
+            return_value="",
+        ):
+            with patch(
+                "enoch.telegram.bot.list_open_pull_requests",
+                return_value=(pull_request,),
+            ) as list_pull_requests:
+                result = telegram._reconciled_retry_result(job, ROOT)
+
+        list_pull_requests.assert_called_once_with(ROOT)
+        self.assertIn("Reconciled existing PR #14", result)
+        self.assertIn(pull_request.url, result)
 
     def test_task_retry_restores_linked_evolve_candidate(self) -> None:
         with TemporaryDirectory() as temp:
@@ -1563,9 +1722,48 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual(resumed_status.pending[0].id, job.id)
         self.assertEqual(resumed_events[-1].event, "resumed")
         self.assertEqual(resumed_events[-1].trigger, "/resume")
-        self.assertIn("Resumed 1 task(s): #1.", client.sent[-1][1])
+        self.assertIn("Resumed 1 task: #1.", client.sent[-1][1])
         self.assertIn("Status: queued", client.edited[-1][2])
         start_worker.assert_called_once()
+
+    def test_task_resume_selects_one_paused_task_and_all_alias_resumes_rest(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            first = enqueue_task(42, "first paused task", root)
+            second = enqueue_task(42, "second paused task", root)
+            pause_task(begin_next_task(root).id, root, result="No Codex access.")
+            pause_task(begin_next_task(root).id, root, result="No Codex access.")
+            client = FakeTelegramClient(allowed_chat_id=42)
+            bot = EnochTelegramBot(load_identity(), root, client)
+
+            with patch.object(bot, "_maybe_start_task_worker") as start_worker:
+                bot.handle_update(
+                    _message_update(chat_id=42, text=f"/task resume {second.id}")
+                )
+                selected_status = task_queue_status(root)
+                bot.handle_update(
+                    _message_update(
+                        update_id=2,
+                        chat_id=42,
+                        text="/task resume all",
+                    )
+                )
+            final_status = task_queue_status(root)
+            first_events = load_task_events(root, task_id=first.id)
+            second_events = load_task_events(root, task_id=second.id)
+
+        self.assertEqual([job.id for job in selected_status.pending], [second.id])
+        self.assertEqual([job.id for job in selected_status.paused], [first.id])
+        self.assertEqual(final_status.paused, ())
+        self.assertEqual(
+            [job.id for job in final_status.pending],
+            [first.id, second.id],
+        )
+        self.assertEqual(first_events[-1].trigger, "/task resume")
+        self.assertEqual(second_events[-1].trigger, "/task resume")
+        self.assertIn(f"Resumed 1 task: #{second.id}.", client.sent[0][1])
+        self.assertIn(f"Resumed 1 task: #{first.id}.", client.sent[1][1])
+        self.assertEqual(start_worker.call_count, 2)
 
     def test_task_worker_stops_queue_after_codex_access_error(self) -> None:
         with TemporaryDirectory() as temp:
@@ -4571,6 +4769,38 @@ class FailingTelegramClient(FakeTelegramClient):
 class FailingAckTelegramClient(FakeTelegramClient):
     def send_read_ack(self, chat_id, message_id):
         raise TelegramError("reaction failed")
+
+
+def _pull_request_info(
+    *,
+    number: int,
+    title: str,
+    head_branch: str = "feature/example",
+    is_draft: bool = False,
+    mergeable: str = "MERGEABLE",
+    merge_state_status: str = "CLEAN",
+    author: str = "",
+) -> PullRequestMergeCandidate:
+    url = f"https://github.com/our-ark/enoch/pull/{number}"
+    return PullRequestMergeCandidate(
+        target=PullRequestTarget(
+            reference=url,
+            number=number,
+            repository="our-ark/enoch",
+        ),
+        number=number,
+        repository="our-ark/enoch",
+        url=url,
+        state="OPEN",
+        is_draft=is_draft,
+        mergeable=mergeable,
+        merge_state_status=merge_state_status,
+        head_oid=f"head-{number}",
+        base_branch="main",
+        title=title,
+        head_branch=head_branch,
+        author=author,
+    )
 
 
 def _message_update(update_id=1, chat_id=42, text="hello", reply_text=None):

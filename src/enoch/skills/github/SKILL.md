@@ -8,6 +8,7 @@ Use this skill when Enoch needs to coordinate work with GitHub: branches, pull r
 
 - The human asks Enoch to open, update, or approve a pull request.
 - The human asks Enoch to inspect GitHub issues, PRs, comments, or checks.
+- The human uses `/pr` to list open pull requests or `/pr show` to inspect one.
 - Local code changes need to be published for review.
 
 ## Do Not Use When
@@ -35,6 +36,8 @@ Use this skill when Enoch needs to coordinate work with GitHub: branches, pull r
 
 Before merging, inspect that exact PR and refuse closed, already-merged, draft, conflicting, blocked, inaccessible, or otherwise unmergeable targets. Do not mark drafts ready, approve PRs, change their content, enable auto-merge, bypass protections, delete branches, or update local branches as part of this command. Pin the inspected head commit during the merge so changed content requires a new human command.
 
+Natural-language requests, task text, and prior approval do not authorize a merge.
+
 ## Natural Workflow
 
 Enoch should guide the human through this path:
@@ -46,6 +49,8 @@ ask for a change -> doctor -> commit -> push when intended -> open a PR when int
 After a local commit, suggest pushing the branch.
 After pushing the branch, suggest opening a PR.
 After opening a PR, stop at human review.
+If the human decides to merge it, they must name the exact target with `/pr merge <PR number or GitHub PR URL>`.
+Use `/pr` and `/pr show <PR number or GitHub PR URL>` for read-only status checks.
 
 ## Local Publish Prep
 
@@ -71,3 +76,4 @@ The helper:
 - When an evolve task supplies an `## Evolution provenance` section, include it verbatim in the PR body. It separates evidence source, signal actor, candidate actor, approval actor, task id, and any available candidate/task causal links.
 - Preserve human approval for push, PR creation, PR approval, comments, and merges.
 - Treat an authorized `/pr merge ...` command as approval for that exact merge only.
+- Never mark drafts ready, approve, enable auto-merge, alter PR content, or clean up branches as part of that command.

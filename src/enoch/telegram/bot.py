@@ -121,6 +121,7 @@ from enoch.github.workflow import (
     LocalPublishResult,
     PublishError,
     PullRequestCloseResult,
+    PullRequestMergeCandidate,
     PullRequestMergeResult,
     PullRequestResult,
     RemotePublishResult,
@@ -128,6 +129,8 @@ from enoch.github.workflow import (
     create_pull_request,
     feature_title,
     format_evolution_provenance,
+    inspect_pull_request,
+    list_open_pull_requests,
     merge_pull_request,
     prepare_local_publish,
     push_current_branch,
@@ -328,7 +331,7 @@ class EnochTelegramBot:
         recovered = _recover_running_task_from_direct_action_log(root)
         if recovered is None:
             recovered = recover_interrupted_task(root)
-        _cleanup_recovered_task_worktree(recovered, root)
+        _cleanup_completed_task_worktree(recovered, root)
         self._work_status_messages: dict[int, int] = _load_task_status_messages(root)
 
     def run_forever(self) -> None:
@@ -360,7 +363,7 @@ class EnochTelegramBot:
         recovered = _recover_running_task_from_direct_action_log(self.root)
         if recovered is None:
             recovered = recover_interrupted_task(self.root)
-        _cleanup_recovered_task_worktree(recovered, self.root)
+        _cleanup_completed_task_worktree(recovered, self.root)
         for update in self.client.get_updates(self.offset):
             self.handle_update(update)
         self._enqueue_due_cron_jobs()
@@ -1296,10 +1299,13 @@ class EnochTelegramBot:
         subcommand = argument.split(maxsplit=1)[0].lower()
         cancel_id = _task_cancel_id(argument)
         retry_id = _task_retry_id(argument)
+        resume_target = _task_resume_target(argument)
         if subcommand == "cancel" and cancel_id is None:
             return "Use /task cancel <id> to cancel a queued task."
         if subcommand == "retry" and retry_id is None:
             return "Use /task retry <id> to retry a failed task as a new linked task."
+        if subcommand == "resume" and resume_target is None:
+            return "Use /task resume <id|all> to continue paused tasks."
         if cancel_id is not None:
             cancelled = cancel_task(cancel_id, self.root)
             if cancelled is None:
@@ -1327,6 +1333,11 @@ class EnochTelegramBot:
             return f"Cancelled task #{cancelled.id}."
         if retry_id is not None:
             return self._retry_task(retry_id)
+        if resume_target is not None:
+            return self._resume_tasks(
+                str(resume_target),
+                trigger="/task resume",
+            )
         snapshot = self._resolve_task_context_snapshot(chat_id, argument)
         if snapshot.codex_unavailable_reason:
             return self._queue_paused_request(
@@ -1392,8 +1403,17 @@ class EnochTelegramBot:
                 )
             proposal_id = latest_open_proposal_id(candidate.id, self.root)
         try:
-            job = retry_failed_task(task_id, self.root)
-        except (OSError, TaskRetryError) as error:
+            reconciled_result = (
+                _reconciled_retry_result(original, self.root)
+                if original is not None
+                else ""
+            )
+            job = retry_failed_task(
+                task_id,
+                self.root,
+                reconciled_result=reconciled_result,
+            )
+        except (OSError, PublishError, TaskRetryError) as error:
             return f"Enoch could not retry task #{task_id}: {error}"
         if candidate is not None:
             self._record_evolve_event(
@@ -1434,7 +1454,12 @@ class EnochTelegramBot:
                 task_id=job.id,
                 status="queued",
                 latest_update=(
-                    f"Retry of failed task #{task_id} queued at position {position}."
+                    (
+                        f"Retry of failed task #{task_id} reconciled "
+                        f"{len(job.pr_urls)} existing PR(s)."
+                    )
+                    if job.pr_urls
+                    else f"Retry of failed task #{task_id} queued at position {position}."
                 ),
                 context=job.context,
             )
@@ -1502,18 +1527,31 @@ class EnochTelegramBot:
             return ""
         return warning
 
-    def _resume_tasks(self, argument: str) -> str:
-        if argument.strip():
+    def _resume_tasks(self, argument: str, *, trigger: str = "/resume") -> str:
+        cleaned = argument.strip().lower()
+        if trigger == "/resume" and cleaned:
             return "Use /resume to continue tasks paused because Codex access was unavailable."
-        resumed = resume_paused_tasks(self.root)
+        task_id = None
+        if trigger == "/task resume" and cleaned != "all":
+            try:
+                task_id = int(cleaned.lstrip("#"))
+            except ValueError:
+                return "Use /task resume <id|all> to continue paused tasks."
+        resumed = resume_paused_tasks(
+            self.root,
+            task_id=task_id,
+            trigger=trigger,
+        )
         if not resumed:
+            if task_id is not None:
+                return f"Task #{task_id} is not paused."
             return "No tasks are paused for Codex access."
         for job in resumed:
             resume_evolve_candidate_for_task(
                 job,
                 self.root,
                 event_actor="human",
-                trigger="/resume",
+                trigger=trigger,
                 reason="User resumed after restoring Codex access.",
             )
             message_id = self._work_status_messages.get(job.id) or job.status_message_id
@@ -1537,7 +1575,8 @@ class EnochTelegramBot:
                 )
         self._maybe_start_task_worker()
         task_ids = ", ".join(f"#{job.id}" for job in resumed)
-        return f"Resumed {len(resumed)} task(s): {task_ids}."
+        noun = "task" if len(resumed) == 1 else "tasks"
+        return f"Resumed {len(resumed)} {noun}: {task_ids}."
 
     def _capture_task_regression_signals(self, reply: str) -> str:
         result = extract_task_regression_signals(reply)
@@ -2627,6 +2666,7 @@ class EnochTelegramBot:
                 self._maybe_start_task_worker()
             return
         if completed_status == "completed":
+            _cleanup_completed_task_worktree(summary_job, self.root)
             self._record_automatic_learning(summary_job, command=command, result=reply)
         if task_status is not None:
             task_status.prs = list(summary_job.pr_urls)
@@ -2760,6 +2800,18 @@ class EnochTelegramBot:
 
     def _pr(self, chat_id: int, argument: str) -> str:
         parts = argument.split()
+        if not parts or (len(parts) == 1 and parts[0].lower() == "list"):
+            try:
+                pull_requests = list_open_pull_requests(self.root)
+            except PublishError as error:
+                return f"Enoch could not list open pull requests: {error}"
+            return _format_open_pull_requests(pull_requests)
+        if len(parts) == 2 and parts[0].lower() == "show":
+            try:
+                pull_request = inspect_pull_request(parts[1], self.root)
+            except PublishError as error:
+                return f"Enoch could not inspect that pull request: {error}"
+            return _format_pull_request(pull_request)
         if len(parts) != 2 or parts[0].lower() != "merge":
             return pr_usage()
         allowed_chat_id = self.client.config.allowed_chat_id
@@ -2921,6 +2973,71 @@ def _format_pull_request_merge_result(result: PullRequestMergeResult) -> str:
             f"GitHub result: {result.message}",
         ]
     )
+
+
+def _format_open_pull_requests(
+    pull_requests: tuple[PullRequestMergeCandidate, ...],
+) -> str:
+    if not pull_requests:
+        return "Open pull requests: none."
+    lines = [f"Open pull requests ({len(pull_requests)}):"]
+    for pull_request in pull_requests:
+        lines.extend(
+            [
+                "",
+                f"#{pull_request.number} [{_pull_request_readiness(pull_request)}] "
+                f"{pull_request.title or 'Untitled pull request'}",
+                _pull_request_branch_line(pull_request),
+                pull_request.url,
+            ]
+        )
+    return "\n".join(lines)
+
+
+def _format_pull_request(pull_request: PullRequestMergeCandidate) -> str:
+    lines = [
+        f"Pull request #{pull_request.number}",
+        f"Title: {pull_request.title or 'Untitled pull request'}",
+        f"Status: {_pull_request_readiness(pull_request)}",
+        f"State: {pull_request.state.lower() or 'unknown'}",
+        (
+            "Merge: "
+            f"{pull_request.mergeable.lower() or 'unknown'} / "
+            f"{pull_request.merge_state_status.lower() or 'unknown'}"
+        ),
+        f"Branch: {_pull_request_branch_line(pull_request)}",
+    ]
+    if pull_request.author:
+        lines.append(f"Author: {pull_request.author}")
+    if pull_request.updated_at:
+        lines.append(f"Updated: {pull_request.updated_at}")
+    lines.append(f"URL: {pull_request.url}")
+    return "\n".join(lines)
+
+
+def _pull_request_readiness(pull_request: PullRequestMergeCandidate) -> str:
+    if pull_request.state == "MERGED" or pull_request.merged_at:
+        return "merged"
+    if pull_request.state == "CLOSED":
+        return "closed"
+    if pull_request.is_draft:
+        return "draft"
+    if pull_request.mergeable == "CONFLICTING":
+        return "conflicts"
+    if (
+        pull_request.mergeable == "MERGEABLE"
+        and pull_request.merge_state_status in {"CLEAN", "UNSTABLE"}
+    ):
+        return "ready"
+    if pull_request.merge_state_status in {"BLOCKED", "DIRTY", "BEHIND"}:
+        return "blocked"
+    return "checking"
+
+
+def _pull_request_branch_line(pull_request: PullRequestMergeCandidate) -> str:
+    base = pull_request.base_branch or "unknown"
+    head = pull_request.head_branch or "unknown"
+    return f"{base} <- {head}"
 
 
 def _action_sandbox(_root: Path) -> str:
@@ -3109,6 +3226,41 @@ def _record_current_task_result(result: str, root: Path) -> None:
     record_task_result(task_id, result, root)
 
 
+def _reconciled_retry_result(job: TaskJob, root: Path) -> str:
+    candidates = []
+    logged_result = _latest_direct_action_result_for_task(job, root)
+    if logged_result:
+        candidates.append(logged_result)
+    if job.result and job.result not in candidates:
+        candidates.append(job.result)
+    for result in candidates:
+        urls = re.findall(
+            r"https://github\.com/[^/\s]+/[^/\s]+/pull/\d+",
+            result,
+        )
+        for url in urls:
+            pull_request = inspect_pull_request(url, root)
+            if (
+                pull_request.state == "OPEN"
+                or pull_request.state == "MERGED"
+                or pull_request.merged_at
+            ):
+                return result
+    if job.branch_name:
+        matching = [
+            pull_request
+            for pull_request in list_open_pull_requests(root)
+            if pull_request.head_branch == job.branch_name
+        ]
+        if matching:
+            pull_request = matching[0]
+            return (
+                f"Reconciled existing PR #{pull_request.number} for task "
+                f"branch {job.branch_name}: {pull_request.url}"
+            )
+    return ""
+
+
 def _recover_running_task_from_direct_action_log(root: Path) -> TaskJob | None:
     running = task_queue_status(root).running
     if running is None or task_worker_is_active(running):
@@ -3146,7 +3298,7 @@ def _recover_running_task_from_direct_action_log(root: Path) -> TaskJob | None:
         return recovered
 
 
-def _cleanup_recovered_task_worktree(job: TaskJob | None, root: Path) -> None:
+def _cleanup_completed_task_worktree(job: TaskJob | None, root: Path) -> None:
     if (
         job is None
         or job.status != "completed"
@@ -3987,6 +4139,19 @@ def _task_retry_id(argument: str) -> int | None:
     parts = argument.split()
     if len(parts) != 2 or parts[0].lower() != "retry":
         return None
+    try:
+        task_id = int(parts[1].lstrip("#"))
+    except ValueError:
+        return None
+    return task_id if task_id > 0 else None
+
+
+def _task_resume_target(argument: str) -> int | str | None:
+    parts = argument.split()
+    if len(parts) != 2 or parts[0].lower() != "resume":
+        return None
+    if parts[1].lower() == "all":
+        return "all"
     try:
         task_id = int(parts[1].lstrip("#"))
     except ValueError:

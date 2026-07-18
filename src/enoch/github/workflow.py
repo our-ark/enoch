@@ -114,12 +114,41 @@ class PullRequestTarget:
 
 
 @dataclass(frozen=True)
+class PullRequestMergeCandidate:
+    target: PullRequestTarget
+    number: int
+    repository: str
+    url: str
+    state: str
+    is_draft: bool
+    mergeable: str
+    merge_state_status: str
+    head_oid: str
+    base_branch: str
+    title: str = ""
+    head_branch: str = ""
+    author: str = ""
+    updated_at: str = ""
+    merged_at: str = ""
+
+
+@dataclass(frozen=True)
 class PullRequestMergeResult:
     number: int
     url: str
     method: str
     merge_commit: str
     message: str
+
+
+_PR_VIEW_FIELDS = (
+    "number,title,url,state,isDraft,mergeable,mergeStateStatus,"
+    "headRefOid,headRefName,baseRefName,author,updatedAt,mergedAt"
+)
+_PR_LIST_FIELDS = (
+    "number,title,url,state,isDraft,mergeable,mergeStateStatus,"
+    "headRefOid,headRefName,baseRefName,author,updatedAt"
+)
 
 
 def prepare_local_publish(
@@ -410,6 +439,81 @@ def parse_pull_request_target(reference: str) -> PullRequestTarget:
     )
 
 
+def list_open_pull_requests(
+    root: Path | None = None,
+    *,
+    limit: int = 20,
+) -> tuple[PullRequestMergeCandidate, ...]:
+    gh = shutil.which("gh")
+    if gh is None:
+        raise PublishError("GitHub CLI is not available.")
+    result = subprocess.run(
+        [
+            gh,
+            "pr",
+            "list",
+            "--state",
+            "open",
+            "--limit",
+            str(max(1, min(limit, 50))),
+            "--json",
+            _PR_LIST_FIELDS,
+        ],
+        cwd=root,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        note = result.stderr.strip() or result.stdout.strip() or "GitHub could not list pull requests."
+        raise PublishError(f"Could not list open pull requests: {note}")
+    data = _github_json_array(result.stdout, "pull request list")
+    pull_requests = []
+    for item in data:
+        if not isinstance(item, dict):
+            raise PublishError("GitHub CLI returned invalid pull request list data.")
+        url = str(item.get("url") or "").strip()
+        target = parse_pull_request_target(url)
+        pull_request = _pull_request_candidate(target, item)
+        if pull_request.state == "OPEN":
+            pull_requests.append(pull_request)
+    return tuple(pull_requests)
+
+
+def inspect_pull_request(
+    reference: str,
+    root: Path | None = None,
+) -> PullRequestMergeCandidate:
+    target = parse_pull_request_target(reference)
+    gh = shutil.which("gh")
+    if gh is None:
+        raise PublishError("GitHub CLI is not available.")
+    result = subprocess.run(
+        [
+            gh,
+            "pr",
+            "view",
+            target.reference,
+            "--json",
+            _PR_VIEW_FIELDS,
+        ],
+        cwd=root,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        note = result.stderr.strip() or result.stdout.strip() or "GitHub could not find that PR."
+        raise PublishError(f"Could not inspect {target.reference}: {note}")
+    data = _github_json_object(result.stdout, "pull request")
+    candidate = _pull_request_candidate(target, data)
+    if candidate.number != target.number:
+        raise PublishError("GitHub returned a different pull request than the requested target.")
+    if target.repository and candidate.repository.lower() != target.repository.lower():
+        raise PublishError("GitHub returned a different pull request than the requested target.")
+    return candidate
+
+
 def merge_pull_request(
     reference: str,
     root: Path | None = None,
@@ -521,6 +625,62 @@ def _repository_merge_method(gh: str, repository: str, root: Path | None) -> str
         if data.get(setting) is True:
             return method
     raise PublishError("The repository has no supported pull request merge method enabled.")
+
+
+def _github_json_object(output: str, label: str) -> dict[str, object]:
+    try:
+        data = json.loads(output)
+    except json.JSONDecodeError as error:
+        raise PublishError(f"GitHub CLI returned invalid {label} data.") from error
+    if not isinstance(data, dict):
+        raise PublishError(f"GitHub CLI returned invalid {label} data.")
+    return data
+
+
+def _github_json_array(output: str, label: str) -> list[object]:
+    try:
+        data = json.loads(output)
+    except json.JSONDecodeError as error:
+        raise PublishError(f"GitHub CLI returned invalid {label} data.") from error
+    if not isinstance(data, list):
+        raise PublishError(f"GitHub CLI returned invalid {label} data.")
+    return data
+
+
+def _pull_request_candidate(
+    target: PullRequestTarget,
+    data: dict[str, object],
+) -> PullRequestMergeCandidate:
+    try:
+        number = int(data.get("number"))
+    except (TypeError, ValueError) as error:
+        raise PublishError("GitHub CLI returned invalid pull request data.") from error
+    canonical = parse_pull_request_target(str(data.get("url") or "").strip())
+    if canonical.number != number:
+        raise PublishError("GitHub returned inconsistent pull request data.")
+    author_data = data.get("author")
+    author = (
+        str(author_data.get("login") or "").strip()
+        if isinstance(author_data, dict)
+        else ""
+    )
+    return PullRequestMergeCandidate(
+        target=target,
+        number=number,
+        repository=canonical.repository,
+        url=canonical.reference,
+        state=str(data.get("state") or "").strip().upper(),
+        is_draft=bool(data.get("isDraft")),
+        mergeable=str(data.get("mergeable") or "").strip().upper(),
+        merge_state_status=str(data.get("mergeStateStatus") or "").strip().upper(),
+        head_oid=str(data.get("headRefOid") or "").strip(),
+        base_branch=str(data.get("baseRefName") or "").strip(),
+        title=str(data.get("title") or "").strip(),
+        head_branch=str(data.get("headRefName") or "").strip(),
+        author=author,
+        updated_at=str(data.get("updatedAt") or "").strip(),
+        merged_at=str(data.get("mergedAt") or "").strip(),
+    )
 
 
 def _git_or_raise(args: list[str], root: Path | None, fallback: str) -> str:

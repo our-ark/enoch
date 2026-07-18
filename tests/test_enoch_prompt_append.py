@@ -48,6 +48,8 @@ class EnochPromptAppendTests(unittest.TestCase):
         self.assertIn("ready for review, not draft", prompt)
         self.assertIn("intentionally incomplete", prompt)
         self.assertIn("Evolution provenance", prompt)
+        self.assertIn("Never merge a pull request from a work request", prompt)
+        self.assertIn("/pr merge <PR number or GitHub PR URL>", prompt)
         self.assertIn("forward-fixed", prompt)
 
     def test_extract_edit_request_strips_marker_from_visible_reply(self) -> None:

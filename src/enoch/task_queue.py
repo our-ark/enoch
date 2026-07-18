@@ -139,6 +139,7 @@ def retry_failed_task(
     task_id: int,
     root: Path | None = None,
     *,
+    reconciled_result: str = "",
     event_actor: str = "human",
     trigger: str = "/task retry",
 ) -> TaskJob:
@@ -182,6 +183,7 @@ def retry_failed_task(
                 f"Task #{original.id} already has retry task #{latest.id} "
                 f"in status {latest.status}."
             )
+        artifact_result = reconciled_result.strip()
         job = TaskJob(
             id=_next_id(data),
             chat_id=original.chat_id,
@@ -200,6 +202,10 @@ def retry_failed_task(
             approval_actor="human" if original.candidate_id else "",
             parent_candidate_id=original.parent_candidate_id,
             source_task_id=original.source_task_id,
+            result=artifact_result,
+            pr_urls=_pull_request_urls(artifact_result),
+            worktree_path=original.worktree_path,
+            branch_name=original.branch_name,
         )
         pending = data.setdefault("pending", [])
         pending.append(_job_to_dict(job))
@@ -633,6 +639,7 @@ def pause_task(
 def resume_paused_tasks(
     root: Path | None = None,
     *,
+    task_id: int | None = None,
     event_actor: str = "human",
     trigger: str = "/resume",
 ) -> tuple[TaskJob, ...]:
@@ -641,6 +648,14 @@ def resume_paused_tasks(
         paused = _paused_jobs(data)
         if not paused:
             return ()
+        selected = [
+            job
+            for job in paused
+            if task_id is None or job.id == task_id
+        ]
+        if not selected:
+            return ()
+        selected_ids = {job.id for job in selected}
         resumed = tuple(
             _replace_job(
                 job,
@@ -650,9 +665,13 @@ def resume_paused_tasks(
                 worker_id="",
                 worker_pid=None,
             )
-            for job in paused
+            for job in selected
         )
-        data["paused"] = []
+        data["paused"] = [
+            _job_to_dict(job)
+            for job in paused
+            if job.id not in selected_ids
+        ]
         data["pending"] = [
             *[_job_to_dict(job) for job in resumed],
             *[_job_to_dict(job) for job in _pending_jobs(data)],

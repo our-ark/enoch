@@ -87,6 +87,46 @@ class EnochTaskQueueTests(unittest.TestCase):
         self.assertEqual([event.event for event in events], ["created", "queued"])
         self.assertEqual([event.event_actor for event in events], ["human", "human"])
 
+    def test_retry_preserves_recoverable_branch_and_reconciled_pr(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            original = enqueue_task(42, "publish existing work", root)
+            running = begin_next_task(root)
+            claim_running_task(running.id, "worker-one", os.getpid(), root)
+            record_task_worktree(
+                running.id,
+                "worker-one",
+                root / "task-worktree",
+                "enoch/task-1",
+                root,
+            )
+            fail_task(
+                running.id,
+                root,
+                result="Worker stopped before recording its PR.",
+                worker_id="worker-one",
+            )
+
+            retried = retry_failed_task(
+                original.id,
+                root,
+                reconciled_result=(
+                    "Existing work is available at "
+                    "https://github.com/our-ark/enoch/pull/13"
+                ),
+            )
+
+        self.assertEqual(retried.branch_name, "enoch/task-1")
+        self.assertEqual(
+            retried.worktree_path,
+            str((root / "task-worktree").resolve()),
+        )
+        self.assertEqual(
+            retried.pr_urls,
+            ("https://github.com/our-ark/enoch/pull/13",),
+        )
+        self.assertIn("Existing work is available", retried.result)
+
     def test_retry_requires_latest_failed_task_in_retry_chain(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
@@ -313,6 +353,28 @@ class EnochTaskQueueTests(unittest.TestCase):
         self.assertEqual([event.event for event in events[-2:]], ["paused", "resumed"])
         self.assertEqual(events[-1].event_actor, "human")
         self.assertEqual(events[-1].trigger, "/resume")
+
+    def test_resume_can_select_one_paused_task(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            first = enqueue_task(42, "first paused task", root)
+            second = enqueue_task(42, "second paused task", root)
+            pause_task(begin_next_task(root).id, root, result="No Codex access.")
+            pause_task(begin_next_task(root).id, root, result="No Codex access.")
+
+            resumed = resume_paused_tasks(
+                root,
+                task_id=second.id,
+                trigger="/task resume",
+            )
+            status = task_queue_status(root)
+            events = load_task_events(root, task_id=second.id)
+
+        self.assertEqual([job.id for job in resumed], [second.id])
+        self.assertEqual([job.id for job in status.pending], [second.id])
+        self.assertEqual([job.id for job in status.paused], [first.id])
+        self.assertEqual(events[-1].event, "resumed")
+        self.assertEqual(events[-1].trigger, "/task resume")
 
     def test_enqueue_task_front_runs_before_existing_pending_tasks(self) -> None:
         with TemporaryDirectory() as temp:
