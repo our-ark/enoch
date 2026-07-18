@@ -43,8 +43,10 @@ CANDIDATE_STATUSES = {
     "forward-fixed",
     "removed",
 }
-VISIBLE_CANDIDATE_STATUSES = {"candidate", "running"}
+ACTIONABLE_CANDIDATE_STATUSES = {"candidate", "failed"}
+VISIBLE_CANDIDATE_STATUSES = {"candidate", "running", "failed"}
 AUTO_BRAINSTORM_COOLDOWN_SECONDS = 24 * 60 * 60
+FAILED_RETRY_SCORE_BONUS = 30
 BrainstormFallback = Callable[[str], Iterable[object]]
 
 
@@ -344,7 +346,11 @@ def propose_evolve(
     now: datetime | None = None,
 ) -> EvolveProposal:
     report = evolve_report(root)
-    candidates = tuple(candidate for candidate in report.candidates if candidate.status == "candidate")
+    candidates = tuple(
+        candidate
+        for candidate in report.candidates
+        if candidate.status in ACTIONABLE_CANDIDATE_STATUSES
+    )
     attempted = False
     added = 0
     skip_reason = ""
@@ -365,7 +371,11 @@ def propose_evolve(
             except (OSError, RuntimeError, ValueError) as brainstorm_error:
                 error = clean_text(str(brainstorm_error)) or brainstorm_error.__class__.__name__
             report = evolve_report(root)
-            candidates = tuple(candidate for candidate in report.candidates if candidate.status == "candidate")
+            candidates = tuple(
+                candidate
+                for candidate in report.candidates
+                if candidate.status in ACTIONABLE_CANDIDATE_STATUSES
+            )
     return EvolveProposal(
         report=report,
         candidates=candidates,
@@ -496,7 +506,7 @@ def remove_evolve_candidate(
     trigger: str = "/evolve remove",
 ) -> EvolveCandidate:
     candidate = get_evolve_candidate(candidate_id, root, theme=theme)
-    if candidate.status != "candidate":
+    if candidate.status not in ACTIONABLE_CANDIDATE_STATUSES:
         raise ValueError(f"Evolve candidate {candidate.id} cannot be removed from status {candidate.status}.")
     removed = _set_candidate_status(candidate.id, "removed", root, theme=theme)
     _record_candidate_event_safely(
@@ -516,6 +526,27 @@ def run_evolve_candidate(candidate_id: str, root: Path | None = None, *, theme: 
     if candidate.status != "candidate":
         raise ValueError(f"Evolve candidate {candidate.id} cannot run from status {candidate.status}.")
     return _set_candidate_status(candidate.id, "running", root, theme=theme)
+
+
+def retry_evolve_candidate(candidate_id: str, root: Path | None = None, *, theme: str = "") -> EvolveCandidate:
+    candidate = get_evolve_candidate(candidate_id, root, theme=theme)
+    if candidate.status != "failed":
+        raise ValueError(f"Evolve candidate {candidate.id} cannot retry from status {candidate.status}.")
+    return _set_candidate_status(candidate.id, "running", root, theme=theme)
+
+
+def latest_failed_evolve_task(
+    candidate_id: str,
+    root: Path | None = None,
+) -> TaskJob | None:
+    normalized_id = candidate_id.strip().lower().lstrip("#")
+    matches = [
+        job
+        for job in task_queue_status(root).history
+        if job.status == "failed"
+        and _evolve_candidate_id_from_task(job).lower() == normalized_id
+    ]
+    return max(matches, key=lambda job: job.id, default=None)
 
 
 def complete_evolve_candidate(candidate_id: str, root: Path | None = None, *, theme: str = "") -> EvolveCandidate:
@@ -917,7 +948,7 @@ def _candidate_matches_id(candidate: EvolveCandidate, candidate_id: str) -> bool
 def _evolve_candidate_id_from_task(job: TaskJob) -> str:
     if job.candidate_id:
         return job.candidate_id
-    if job.context_source not in {"evolve-approve", "evolve-run", "evolve-scheduler"}:
+    if job.context_source not in {"evolve-approve", "evolve-retry", "evolve-run", "evolve-scheduler"}:
         return ""
     for raw_line in job.context.splitlines():
         label, separator, value = raw_line.partition(":")
@@ -931,7 +962,7 @@ def _candidate_status_order(status: str) -> int:
         "running": 0,
         "candidate": 1,
         "done": 2,
-        "failed": 3,
+        "failed": 1,
         "cancelled": 4,
         "regressed": 5,
         "reverted": 6,
@@ -1275,6 +1306,8 @@ def _score_candidate(candidate: EvolveCandidate, *, theme: str) -> EvolveCandida
         score += 10
     if candidate.source == "brainstorming":
         score += 4
+    if candidate.status == "failed":
+        score += FAILED_RETRY_SCORE_BONUS
     return EvolveCandidate(**{**candidate.__dict__, "score": score})
 
 

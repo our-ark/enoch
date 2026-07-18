@@ -27,13 +27,13 @@ Enoch collects exactly six semantic candidate sources:
 
 The theme is ranking pressure, not a seventh source. `/evolve brainstorm` requires a non-empty theme, asks the reasoning engine for a small JSON list, validates the result, and persists only structured candidates in `.enoch/evolve_brainstorms.jsonl`.
 
-`/propose` first refreshes and ranks all six sources. If no active candidate
+`/propose` first refreshes and ranks all six sources. If no actionable candidate
 exists and a theme is set, it runs one bounded fallback brainstorm and ranks
 again. Automatic fallback attempts have a per-theme 24-hour cooldown persisted
 in `.enoch/evolve_brainstorm_fallback.json`; explicit `/evolve brainstorm`
 remains available during the cooldown.
 
-Candidates are persisted in `.enoch/evolve_candidates.json` so Enoch can remember whether a candidate is available, running, done, failed, cancelled, or removed. Normal candidate views hide done, failed, cancelled, and removed candidates.
+Candidates are persisted in `.enoch/evolve_candidates.json` so Enoch can remember whether a candidate is available, running, done, failed, cancelled, or removed. Normal candidate views retain failed candidates as retryable and hide done, cancelled, and removed candidates.
 
 Evolution decisions are appended to `.enoch/evolve_events.jsonl`. The funnel
 records checks, proposals, selections, queueing, terminal outcomes, skips, and
@@ -50,9 +50,12 @@ When the scheduler is due:
 
 - `disabled` mode advances the schedule and takes no action.
 - `co-evolve` mode runs the same proposal selection as `/propose` and sends that proposal to the locked Telegram chat.
-- `auto-evolve` mode runs the same proposal selection as `/propose` and turns its top new candidate into a queued task for review-oriented implementation.
+- `auto-evolve` mode runs the same proposal selection as `/propose` and turns
+  its top new candidate into a queued task for review-oriented implementation.
+  Failed candidates are proposed for explicit human retry instead of being
+  retried automatically.
 
-Proposal selection only considers candidates whose status is `candidate`. Running candidates are not proposed again.
+Proposal selection considers candidates whose status is `candidate` or `failed`. Running candidates are not proposed again.
 Scheduled co-evolve and auto-evolve checks use the same empty-candidate fallback
 and cooldown as `/propose`.
 
@@ -104,6 +107,7 @@ Enoch must require human direction before changing identity, mission, secrets, p
 - `/evolve list`
 - `/evolve list all`
 - `/evolve approve <id>`
+- `/evolve retry <id>`
 - `/evolve remove <id>`
 - `/evolve schedule <text>`
 - `/evolve schedule once a day`

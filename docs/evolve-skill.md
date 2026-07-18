@@ -116,7 +116,7 @@ expected_benefit: What improves if this lands
 risk: What could go wrong
 test_plan: How Enoch will verify the change
 requires_human_approval: true
-status: candidate|running|done|failed|cancelled|removed
+status: candidate|running|done|failed|cancelled|regressed|reverted|forward-fixed|removed
 ```
 
 ## Selection
@@ -217,20 +217,24 @@ Candidate selection and control:
 /evolve brainstorm
 /evolve list
 /evolve approve <id>
+/evolve retry <id>
 /evolve remove <id>
 /evolve schedule <text>
 ```
 
 `/feedback` shows the human feedback signals available to evolution. `/experience`
 shows candidates derived from Enoch's task history, recurring workflows, and
-successful skill work. `/propose` refreshes all six sources, ranks the available
-candidates, and presents the strongest new candidate without selecting or running
-it. When no active candidate exists and a theme is set, `/propose` runs one
-bounded fallback brainstorm and ranks again. Automatic fallback attempts have a
-per-theme 24-hour cooldown; explicit `/evolve brainstorm` bypasses that cooldown.
-Scheduled co-evolve and auto-evolve checks use the same proposal selection, so
-running candidates are not proposed or queued again, and empty scheduled
-proposals use the same fallback brainstorm policy.
+successful skill work. `/propose` refreshes all six sources, ranks new and failed
+candidates, and presents the strongest actionable candidate without selecting or
+running it. Failed candidates remain available for `/evolve retry <id>`, which
+creates a new linked task without rewriting the failed task's history. When no
+actionable candidate exists and a theme is set, `/propose` runs one bounded
+fallback brainstorm and ranks again. Automatic fallback attempts have a per-theme
+24-hour cooldown; explicit `/evolve brainstorm` bypasses that cooldown. Scheduled
+co-evolve and auto-evolve checks use the same proposal selection, so running
+candidates are not proposed or queued again, failed candidates require an
+explicit human retry, and empty scheduled proposals use the same fallback
+brainstorm policy.
 
 ## Principle
 

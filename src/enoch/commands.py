@@ -502,6 +502,7 @@ def _help_topic_message(topic: str) -> str:
                 "/evolve brainstorm - generate bounded candidates under the current theme",
                 "/evolve list - show current self-evolution candidates",
                 "/evolve approve <id> - approve and queue a self-evolution candidate",
+                "/evolve retry <id> - retry a failed self-evolution candidate as a new task",
                 "/evolve remove <id> - remove a self-evolution candidate",
                 "/evolve schedule <text> - let Enoch interpret common schedule text",
             ]

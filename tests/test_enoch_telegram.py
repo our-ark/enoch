@@ -880,6 +880,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertNotIn("/evolve run <id>", reply)
         self.assertNotIn("/evolve reject <id>", reply)
         self.assertIn("/evolve approve <id>", reply)
+        self.assertIn("/evolve retry <id>", reply)
         self.assertIn("/evolve remove <id>", reply)
         self.assertIn("/evolve schedule <text>", reply)
         self.assertNotIn("/evolve schedule off - stop scheduled evolve checks", reply)
@@ -1737,7 +1738,7 @@ class EnochTelegramTests(unittest.TestCase):
 
         reply = client.sent[0][1]
         self.assertIn("Enoch proposes:", reply)
-        self.assertIn("Ranked 1 new candidate(s) from the six evolve sources.", reply)
+        self.assertIn("Ranked 1 actionable candidate(s) from the six evolve sources.", reply)
         self.assertIn("backlog-1 [candidate backlog] improve Telegram work UX", reply)
         self.assertIn("Approve with /evolve approve backlog-1.", reply)
         self.assertIn("Remove with /evolve remove backlog-1.", reply)
@@ -2016,11 +2017,70 @@ class EnochTelegramTests(unittest.TestCase):
             all_candidates = load_evolve_candidates(root, include_inactive=True)
             report = evolve_report(root)
 
-        self.assertNotIn("backlog-1", {candidate.id for candidate in visible})
+        self.assertIn("backlog-1", {candidate.id for candidate in visible})
         statuses = {candidate.id: candidate.status for candidate in all_candidates}
         self.assertEqual(statuses["backlog-1"], "failed")
         self.assertIn("experience", report.counts_by_source)
         self.assertIn("Final status: failed", client.sent[-1][1])
+
+    @patch("enoch.telegram.bot.ensure_long_term_memory")
+    @patch("enoch.telegram.bot.log_conversation_turn")
+    def test_propose_suggests_retry_and_retry_links_new_task_to_failure(
+        self,
+        _log_conversation_turn: MagicMock,
+        _update_memory: MagicMock,
+    ) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            add_backlog_item(42, "ship retryable evolve work", root, priority="p1")
+            client = FakeTelegramClient(allowed_chat_id=42)
+            bot = EnochTelegramBot(load_identity(), root, client)
+
+            bot.handle_update(_message_update(chat_id=42, text="/evolve approve backlog-1"))
+            failed_job = begin_next_task(root)
+            assert failed_job is not None
+            with patch.object(
+                bot,
+                "_run_direct_work",
+                return_value="Enoch could not complete the requested work yet: transient failure",
+            ):
+                bot._run_task_job(failed_job)
+
+            bot.handle_update(_message_update(update_id=2, chat_id=42, text="/propose"))
+            proposal_reply = client.sent[-1][1]
+            bot.handle_update(
+                _message_update(
+                    update_id=3,
+                    chat_id=42,
+                    text="/evolve retry backlog-1",
+                )
+            )
+            queued = task_queue_status(root)
+            candidates = load_evolve_candidates(root)
+            task_events = load_task_events(root, task_id=2)
+            evolve_events = load_evolve_events(root, candidate_id="backlog-1")
+
+        self.assertIn("backlog-1 [failed backlog]", proposal_reply)
+        self.assertIn("Retry with /evolve retry backlog-1.", proposal_reply)
+        self.assertNotIn("Approve with /evolve approve backlog-1.", proposal_reply)
+        self.assertEqual(queued.pending_count, 1)
+        self.assertEqual(queued.pending[0].id, 2)
+        self.assertEqual(queued.pending[0].candidate_id, "backlog-1")
+        self.assertEqual(queued.pending[0].parent_task_id, failed_job.id)
+        self.assertEqual(queued.pending[0].context_source, "evolve-retry")
+        self.assertEqual(candidates[0].status, "running")
+        self.assertEqual([event.parent_task_id for event in task_events], [1, 1])
+        self.assertEqual([event.trigger for event in task_events], ["/evolve retry", "/evolve retry"])
+        self.assertEqual(
+            [event.event for event in evolve_events[-3:]],
+            ["proposed", "selected", "queued"],
+        )
+        self.assertEqual(evolve_events[-1].task_id, 2)
+        self.assertEqual(evolve_events[-1].reason, "retry-of-task-1")
+        self.assertIn(
+            "Retrying evolve candidate backlog-1 as task #2, linked to failed task #1.",
+            client.sent[-1][1],
+        )
 
     @patch("enoch.telegram.bot.ensure_long_term_memory")
     @patch("enoch.telegram.bot.log_conversation_turn")
@@ -2270,7 +2330,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIsNone(job)
         self.assertIn("Scheduled evolve check", client.sent[0][1])
         self.assertIn("Enoch proposes:", client.sent[0][1])
-        self.assertIn("Ranked 1 new candidate(s) from the six evolve sources.", client.sent[0][1])
+        self.assertIn("Ranked 1 actionable candidate(s) from the six evolve sources.", client.sent[0][1])
         self.assertIn("backlog-1 [candidate backlog] improve Telegram work UX", client.sent[0][1])
         self.assertEqual([event.event for event in events], ["checked", "proposed", "skipped"])
         self.assertEqual(events[-1].reason, "awaiting-human-approval")
@@ -2316,6 +2376,45 @@ class EnochTelegramTests(unittest.TestCase):
             if event.event in {"proposed", "selected", "queued"}
         }
         self.assertEqual(len(proposal_ids), 1)
+
+    @patch("enoch.telegram.bot.ensure_long_term_memory")
+    @patch("enoch.telegram.bot.log_conversation_turn")
+    def test_due_auto_evolve_proposes_failed_candidate_without_automatic_retry(
+        self,
+        _log_conversation_turn: MagicMock,
+        _update_memory: MagicMock,
+    ) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            add_backlog_item(42, "retry only with human approval", root, priority="p1")
+            client = FakeTelegramClient(allowed_chat_id=42)
+            bot = EnochTelegramBot(load_identity(), root, client)
+            bot.handle_update(_message_update(chat_id=42, text="/evolve approve backlog-1"))
+            failed_job = begin_next_task(root)
+            assert failed_job is not None
+            with patch.object(
+                bot,
+                "_run_direct_work",
+                return_value="Enoch could not complete the requested work yet: transient failure",
+            ):
+                bot._run_task_job(failed_job)
+            set_evolve_mode(MODE_AUTO_EVOLVE, root)
+            set_evolve_schedule(
+                60,
+                root,
+                now=datetime(2020, 1, 1, tzinfo=timezone.utc),
+            )
+            client.sent.clear()
+
+            retry_job = bot._run_due_evolve_schedule()
+            queued = task_queue_status(root)
+            events = load_evolve_events(root, candidate_id="backlog-1")
+
+        self.assertIsNone(retry_job)
+        self.assertEqual(queued.pending_count, 0)
+        self.assertIn("Retry with /evolve retry backlog-1.", client.sent[0][1])
+        self.assertEqual(events[-1].event, "skipped")
+        self.assertEqual(events[-1].reason, "retry-requires-human")
 
     def test_due_auto_evolve_schedule_does_not_requeue_running_candidate(self) -> None:
         with TemporaryDirectory() as temp:

@@ -22,11 +22,13 @@ from enoch.evolve import (
     evolve_report,
     complete_evolve_candidate_for_task,
     fail_evolve_candidate_for_task,
+    latest_failed_evolve_task,
     load_evolve_candidates,
     load_evolve_state,
     propose_evolve,
     rank_evolve_candidates,
     remove_evolve_candidate,
+    retry_evolve_candidate,
     run_evolve_candidate,
     set_evolve_cron_schedule,
     set_evolve_daily_schedule,
@@ -395,7 +397,7 @@ class EnochEvolveTests(unittest.TestCase):
         self.assertEqual(events[0].event_actor, "agent")
         self.assertEqual(events[0].trigger, "task-runner")
 
-    def test_failed_and_cancelled_evolve_tasks_mark_candidates_inactive(self) -> None:
+    def test_failed_candidate_stays_retryable_while_cancelled_candidate_is_inactive(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
             add_backlog_item(1, "ship failing evolve", root, priority="p1")
@@ -428,12 +430,50 @@ class EnochEvolveTests(unittest.TestCase):
         assert cancelled is not None
         self.assertEqual(failed.status, "failed")
         self.assertEqual(cancelled.status, "cancelled")
-        self.assertEqual(visible, ())
+        self.assertEqual(
+            [(candidate.id, candidate.status) for candidate in visible],
+            [("backlog-1", "failed")],
+        )
         statuses = {candidate.id: candidate.status for candidate in all_candidates}
         self.assertEqual(statuses["backlog-1"], "failed")
         self.assertEqual(statuses["backlog-2"], "cancelled")
         self.assertEqual(failed_events[0].event, "failed")
         self.assertEqual(cancelled_events[0].event, "cancelled")
+
+    def test_failed_candidate_remains_proposable_and_can_retry(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            add_backlog_item(1, "ship retryable evolve work", root, priority="p1")
+            run_evolve_candidate("backlog-1", root)
+            queued = enqueue_task(
+                42,
+                "Evolve approved candidate backlog-1",
+                root,
+                context="\n".join(["Evolve candidate context:", "ID: backlog-1"]),
+                context_source="evolve-approve",
+                source="backlog",
+                candidate_id="backlog-1",
+            )
+            running = begin_next_task(root)
+            assert running is not None
+            fail_task(running.id, root, result="Transient branch setup failure.")
+            failed = fail_evolve_candidate_for_task(running, root, reason=running.result)
+
+            proposal = propose_evolve(
+                root,
+                brainstormer=lambda _theme: self.fail("failed candidate should prevent fallback brainstorming"),
+            )
+            failed_task = latest_failed_evolve_task("backlog-1", root)
+            retried = retry_evolve_candidate("backlog-1", root)
+
+        assert failed is not None
+        assert proposal.top_candidate is not None
+        assert failed_task is not None
+        self.assertEqual(proposal.top_candidate.id, "backlog-1")
+        self.assertEqual(proposal.top_candidate.status, "failed")
+        self.assertFalse(proposal.brainstorm_attempted)
+        self.assertEqual(failed_task.id, queued.id)
+        self.assertEqual(retried.status, "running")
 
     def test_schedule_can_be_set_claimed_and_disabled(self) -> None:
         with TemporaryDirectory() as temp:

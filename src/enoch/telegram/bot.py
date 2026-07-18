@@ -60,12 +60,14 @@ from enoch.evolve import (
     evolve_report,
     fail_evolve_candidate_for_task,
     get_evolve_candidate,
+    latest_failed_evolve_task,
     load_evolve_candidates,
     load_evolve_state,
     pause_evolve_candidate_for_task,
     propose_evolve,
     regress_evolve_candidate_for_task,
     remove_evolve_candidate,
+    retry_evolve_candidate,
     rank_evolve_candidates,
     resolve_evolve_candidate_regression_for_task,
     resume_evolve_candidate_for_task,
@@ -1517,6 +1519,10 @@ class EnochTelegramBot:
             if not rest.strip():
                 return "Use /evolve approve <id> to approve and queue a self-evolution candidate."
             return self._evolve_approve(rest)
+        if subcommand == "retry":
+            if not rest.strip():
+                return "Use /evolve retry <id> to retry a failed self-evolution candidate."
+            return self._evolve_retry(rest)
         if subcommand == "schedule":
             return self._evolve_schedule(rest)
         return _evolve_usage()
@@ -1660,6 +1666,68 @@ class EnochTelegramBot:
         )
         return f"Approved evolve candidate {candidate.id} and queued task #{job.id}.\n\n" + "\n".join(
             _format_evolve_candidate(candidate)
+        )
+
+    def _evolve_retry(self, candidate_id: str) -> str:
+        chat_id = self.client.config.allowed_chat_id
+        if chat_id is None:
+            return "Enoch needs a locked Telegram chat before retrying evolve work."
+        state = evolve_report(self.root).state
+        try:
+            candidate = get_evolve_candidate(candidate_id, self.root, theme=state.theme)
+        except ValueError as error:
+            return str(error)
+        if candidate.status != "failed":
+            return f"Evolve candidate {candidate.id} cannot retry from status {candidate.status}."
+        failed_job = latest_failed_evolve_task(candidate.id, self.root)
+        if failed_job is None:
+            return f"Enoch could not find a failed task to retry for evolve candidate {candidate.id}."
+        proposal_id = latest_open_proposal_id(candidate.id, self.root)
+        self._record_evolve_event(
+            "selected",
+            event_actor="human",
+            trigger="/evolve retry",
+            candidate=candidate,
+            proposal_id=proposal_id,
+        )
+        try:
+            job = enqueue_task(
+                chat_id,
+                _evolve_task_request(candidate, state.theme),
+                self.root,
+                context=_evolve_task_context(candidate),
+                context_source="evolve-retry",
+                source=candidate.source,
+                initiated_by=candidate.initiated_by,
+                event_actor="human",
+                trigger="/evolve retry",
+                candidate_id=candidate.id,
+                parent_task_id=failed_job.id,
+            )
+        except (OSError, ValueError):
+            self._record_evolve_event(
+                "skipped",
+                event_actor="human",
+                trigger="/evolve retry",
+                candidate=candidate,
+                reason="queue-failed",
+                proposal_id=proposal_id,
+            )
+            return "Enoch could not retry and queue that evolve candidate."
+        candidate = retry_evolve_candidate(candidate.id, self.root, theme=state.theme)
+        self._record_evolve_event(
+            "queued",
+            event_actor="human",
+            trigger="/evolve retry",
+            candidate=candidate,
+            task_id=job.id,
+            reason=f"retry-of-task-{failed_job.id}",
+            proposal_id=proposal_id,
+        )
+        return (
+            f"Retrying evolve candidate {candidate.id} as task #{job.id}, "
+            f"linked to failed task #{failed_job.id}.\n\n"
+            + "\n".join(_format_evolve_candidate(candidate))
         )
 
     def _evolve_schedule(self, argument: str) -> str:
@@ -1959,6 +2027,20 @@ class EnochTelegramBot:
             return None
         report = proposal.report
         candidate = proposal.top_candidate
+        if candidate.status == "failed":
+            self._record_evolve_event(
+                "skipped",
+                event_actor="system",
+                trigger="evolve-scheduler",
+                proposal=proposal,
+                candidate=candidate,
+                reason="retry-requires-human",
+            )
+            self._safe_send_message(
+                chat_id,
+                "Scheduled evolve check\n\n" + _format_evolve_proposal(proposal),
+            )
+            return None
         self._record_evolve_event(
             "selected",
             event_actor="system",
@@ -3118,19 +3200,18 @@ def _format_evolve_proposal(proposal: EvolveProposal) -> str:
     lines = [
         "Enoch proposes:",
         f"Theme: {report.state.theme or 'not set'}",
-        f"Ranked {len(proposal.candidates)} new candidate(s) from the six evolve sources.",
+        f"Ranked {len(proposal.candidates)} actionable candidate(s) from the six evolve sources.",
     ]
     if proposal.brainstorm_attempted:
         lines.append(f"Fallback brainstorm added {proposal.brainstorm_added} candidate(s).")
     lines.append("")
     lines.extend(_format_evolve_candidate(candidate))
-    lines.extend(
-        [
-            "",
-            f"Approve with /evolve approve {candidate.id}.",
-            f"Remove with /evolve remove {candidate.id}.",
-        ]
-    )
+    lines.append("")
+    if candidate.status == "failed":
+        lines.append(f"Retry with /evolve retry {candidate.id}.")
+    else:
+        lines.append(f"Approve with /evolve approve {candidate.id}.")
+    lines.append(f"Remove with /evolve remove {candidate.id}.")
     return "\n".join(lines)
 
 
@@ -3211,6 +3292,8 @@ def _evolve_next_action(report: EvolveReport) -> str:
         return "disabled; Enoch will not collect or rank self-evolution candidates."
     if report.top_candidate is None:
         return "no candidate yet."
+    if report.top_candidate.status == "failed":
+        return "propose retrying this failed candidate and wait for explicit human approval."
     if report.state.mode == MODE_AUTO_EVOLVE:
         return "select this bounded candidate, then queue or run work only after guardrails pass."
     return "propose this candidate and wait for human approval before changing code."
@@ -3377,6 +3460,7 @@ def _evolve_usage() -> str:
             "Use /evolve brainstorm to generate bounded candidates under the current theme.",
             "Use /evolve list to show current candidates.",
             "Use /evolve approve <id> to approve and queue a candidate as a task.",
+            "Use /evolve retry <id> to queue a new task for a failed candidate.",
             "Use /evolve remove <id> to remove a candidate from future proposals.",
             "Use /evolve schedule <text> to let Enoch interpret common schedule text.",
         ]
