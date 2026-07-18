@@ -35,7 +35,9 @@ from enoch.evolve_events import load_evolve_events
 from enoch.git_tools import GitError
 from enoch.github.workflow import (
     LocalPublishResult,
+    PublishError,
     PullRequestCloseResult,
+    PullRequestMergeResult,
     PullRequestResult,
     RemotePublishResult,
 )
@@ -675,6 +677,84 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("/config task-timeout <duration>", reply)
         self.assertIn("/config task-timeout default", reply)
         self.assertNotIn("Enoch Telegram commands:", reply)
+
+    def test_help_lists_explicit_pull_request_merge_command(self) -> None:
+        client = FakeTelegramClient(allowed_chat_id=42)
+        bot = EnochTelegramBot(load_identity(), ROOT, client)
+
+        bot.handle_update(_message_update(chat_id=42, text="/help"))
+        bot.handle_update(_message_update(update_id=2, chat_id=42, text="/help pr"))
+
+        self.assertIn("/pr merge <number-or-URL>", client.sent[0][1])
+        self.assertIn("/pr merge <PR number or GitHub PR URL>", client.sent[1][1])
+        self.assertIn("will not infer a pull request", client.sent[1][1])
+
+    @patch("enoch.telegram.bot.merge_pull_request")
+    def test_pr_merge_requires_explicit_target(self, merge: MagicMock) -> None:
+        client = FakeTelegramClient(allowed_chat_id=42)
+        bot = EnochTelegramBot(load_identity(), ROOT, client)
+
+        bot.handle_update(_message_update(chat_id=42, text="/pr merge"))
+
+        self.assertIn("/pr merge <PR number or GitHub PR URL>", client.sent[0][1])
+        merge.assert_not_called()
+
+    @patch("enoch.telegram.bot.merge_pull_request")
+    def test_pr_merge_is_ignored_from_unauthorized_chat(self, merge: MagicMock) -> None:
+        client = FakeTelegramClient(allowed_chat_id=42)
+        bot = EnochTelegramBot(load_identity(), ROOT, client)
+
+        bot.handle_update(_message_update(chat_id=99, text="/pr merge 12"))
+
+        self.assertEqual(client.sent, [])
+        merge.assert_not_called()
+
+    @patch("enoch.telegram.bot.merge_pull_request")
+    def test_pr_merge_requires_configured_chat_lock(self, merge: MagicMock) -> None:
+        client = FakeTelegramClient()
+        bot = EnochTelegramBot(load_identity(), ROOT, client)
+
+        bot.handle_update(_message_update(chat_id=42, text="/pr merge 12"))
+
+        self.assertIn("locked Telegram chat", client.sent[0][1])
+        merge.assert_not_called()
+
+    @patch("enoch.telegram.bot.merge_pull_request")
+    def test_pr_merge_reports_success_for_exact_target(self, merge: MagicMock) -> None:
+        merge.return_value = PullRequestMergeResult(
+            number=12,
+            url="https://github.com/our-ark/enoch/pull/12",
+            method="merge",
+            merge_commit="def456",
+            message="Pull Request successfully merged",
+        )
+        client = FakeTelegramClient(allowed_chat_id=42)
+        bot = EnochTelegramBot(load_identity(), ROOT, client)
+
+        bot.handle_update(
+            _message_update(
+                chat_id=42,
+                text="/pr merge https://github.com/our-ark/enoch/pull/12",
+            )
+        )
+
+        merge.assert_called_once_with("https://github.com/our-ark/enoch/pull/12", ROOT)
+        self.assertIn("Merged PR #12.", client.sent[0][1])
+        self.assertIn("https://github.com/our-ark/enoch/pull/12", client.sent[0][1])
+        self.assertIn("Merge commit: def456", client.sent[0][1])
+
+    @patch("enoch.telegram.bot.merge_pull_request", side_effect=PublishError("PR #12 is a draft."))
+    def test_pr_merge_reports_github_workflow_error(self, merge: MagicMock) -> None:
+        client = FakeTelegramClient(allowed_chat_id=42)
+        bot = EnochTelegramBot(load_identity(), ROOT, client)
+
+        bot.handle_update(_message_update(chat_id=42, text="/pr merge 12"))
+
+        merge.assert_called_once_with("12", ROOT)
+        self.assertEqual(
+            client.sent[0][1],
+            "Enoch could not merge that pull request: PR #12 is a draft.",
+        )
 
     def test_help_resume_shows_only_resume_usage(self) -> None:
         client = FakeTelegramClient(allowed_chat_id=42)

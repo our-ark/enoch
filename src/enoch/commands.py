@@ -439,6 +439,7 @@ def help_message(topic: str = "") -> str:
             "/evolve - show self-evolution mode, theme, and top candidate",
             "",
             "System:",
+            "/pr merge <number-or-URL> - inspect and merge exactly one pull request",
             "/config - show or update local system settings",
             "/resume - continue tasks paused while Codex access was unavailable",
             "/doctor - run local health checks",
@@ -510,6 +511,8 @@ def _help_topic_message(topic: str) -> str:
         )
     if topic == "config":
         return config_usage("/")
+    if topic == "pr":
+        return pr_usage("/")
     topics = {
         "start": "/start - start Enoch and point to /help",
         "self": "/self - show Enoch's identity, role, ancestor, and mission",
@@ -538,6 +541,16 @@ def _help_topic_message(topic: str) -> str:
         "thinking": thinking_usage("/"),
     }
     return topics.get(topic, "")
+
+
+def pr_usage(prefix: str = "/") -> str:
+    return "\n".join(
+        [
+            "Pull request commands:",
+            f"{prefix}pr merge <PR number or GitHub PR URL> - inspect and merge exactly that PR",
+            "A target is required; Enoch will not infer a pull request.",
+        ]
+    )
 
 
 def action_lock_message() -> str:

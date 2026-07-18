@@ -121,12 +121,14 @@ from enoch.github.workflow import (
     LocalPublishResult,
     PublishError,
     PullRequestCloseResult,
+    PullRequestMergeResult,
     PullRequestResult,
     RemotePublishResult,
     close_pull_request,
     create_pull_request,
     feature_title,
     format_evolution_provenance,
+    merge_pull_request,
     prepare_local_publish,
     push_current_branch,
 )
@@ -204,6 +206,7 @@ from enoch.commands import (
     inherit_command,
     lineage_command,
     mission_command,
+    pr_usage,
     skills_command,
     status_message,
 )
@@ -426,6 +429,8 @@ class EnochTelegramBot:
             reply = self._status(chat_id)
         elif command == "/doctor":
             reply = self._doctor()
+        elif command == "/pr":
+            reply = self._pr(chat_id, argument)
         elif command == "/update":
             reply = self._update()
             self._queue_session_sync(
@@ -2753,6 +2758,19 @@ class EnochTelegramBot:
             format_doctor=_format_doctor_result,
         )
 
+    def _pr(self, chat_id: int, argument: str) -> str:
+        parts = argument.split()
+        if len(parts) != 2 or parts[0].lower() != "merge":
+            return pr_usage()
+        allowed_chat_id = self.client.config.allowed_chat_id
+        if allowed_chat_id is None or allowed_chat_id != chat_id:
+            return "Enoch will only merge a pull request from her locked Telegram chat."
+        try:
+            result = merge_pull_request(parts[1], self.root)
+        except PublishError as error:
+            return f"Enoch could not merge that pull request: {error}"
+        return _format_pull_request_merge_result(result)
+
     def _update(self) -> str:
         if not self._action_allowed():
             return _action_lock_message()
@@ -2890,6 +2908,19 @@ def _parse_telegram_command(text: str) -> tuple[str, str]:
         return "", text.strip()
     command = first.split("@", 1)[0].lower()
     return command, rest.strip()
+
+
+def _format_pull_request_merge_result(result: PullRequestMergeResult) -> str:
+    commit = result.merge_commit or "reported by GitHub"
+    return "\n".join(
+        [
+            f"Merged PR #{result.number}.",
+            f"URL: {result.url}",
+            f"Method: {result.method}",
+            f"Merge commit: {commit}",
+            f"GitHub result: {result.message}",
+        ]
+    )
 
 
 def _action_sandbox(_root: Path) -> str:
