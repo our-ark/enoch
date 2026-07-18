@@ -1445,7 +1445,7 @@ class EnochTelegramTests(unittest.TestCase):
         edited_text = "\n".join(text for _chat_id, _message_id, text in client.edited)
         self.assertIn("Latest update: Preparing a fresh branch.", edited_text)
         self.assertIn("Latest update: Working.", edited_text)
-        self.assertIn("Still working after 1 minute(s)", edited_text)
+        self.assertIn("Still working after 1 minute", edited_text)
         self.assertEqual(completed.status_message_id, 2002)
 
     def test_task_worker_pauses_on_codex_access_error_and_resumes_same_task(self) -> None:
@@ -3544,7 +3544,14 @@ class EnochTelegramTests(unittest.TestCase):
 
         bot._send_progress(42, 60, "workspace-write")
 
-        self.assertEqual(client.sent[0][1], "Enoch is still working after 1 minute(s): editing her code body.")
+        self.assertEqual(client.sent[0][1], "Enoch is still working after 1 minute: editing her code body.")
+
+    def test_elapsed_time_omits_seconds(self) -> None:
+        self.assertEqual(telegram._format_elapsed(0), "<1 minute")
+        self.assertEqual(telegram._format_elapsed(59), "<1 minute")
+        self.assertEqual(telegram._format_elapsed(60), "1 minute")
+        self.assertEqual(telegram._format_elapsed(122), "2 minutes")
+        self.assertEqual(telegram._format_elapsed(4082), "1 hour 8 minutes")
 
     @patch("enoch.command_surface.run_git")
     def test_checktree_reports_clean_worktree(self, run_git: MagicMock) -> None:

@@ -2906,12 +2906,16 @@ def _sandbox_description(sandbox: str) -> str:
 
 def _format_elapsed(elapsed_seconds: int) -> str:
     if elapsed_seconds < 60:
-        return f"{elapsed_seconds} second(s)"
+        return "<1 minute"
     minutes = elapsed_seconds // 60
-    seconds = elapsed_seconds % 60
-    if seconds == 0:
-        return f"{minutes} minute(s)"
-    return f"{minutes} minute(s) {seconds} second(s)"
+    if minutes < 60:
+        return f"{minutes} minute" + ("" if minutes == 1 else "s")
+    hours, remaining_minutes = divmod(minutes, 60)
+    hour_text = f"{hours} hour" + ("" if hours == 1 else "s")
+    if remaining_minutes == 0:
+        return hour_text
+    minute_text = f"{remaining_minutes} minute" + ("" if remaining_minutes == 1 else "s")
+    return f"{hour_text} {minute_text}"
 
 
 def _worktree_snapshot(root: Path) -> str:
