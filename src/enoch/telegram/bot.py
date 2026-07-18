@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 import json
@@ -71,7 +72,7 @@ from enoch.evolve import (
     set_evolve_mode,
     set_evolve_theme,
 )
-from enoch.experience import ExperienceRecord, load_experience_records, record_task_experience
+from enoch.experience import ExperienceRecord, load_experience_records
 from enoch.feedback import FeedbackSignal, extract_feedback_signals
 from enoch.git_tools import (
     GitError,
@@ -158,6 +159,7 @@ from enoch.task_queue import (
     task_result_has_pull_request,
     task_queue_status,
 )
+from enoch.task_events import TASK_SOURCES
 from enoch.telegram.client import TelegramClient, TelegramError, load_config
 from enoch.commands import (
     action_lock_message as _action_lock_message,
@@ -503,6 +505,60 @@ class EnochTelegramBot:
         if message_id is not None:
             return ""
         return f"Started task #{direct_task.id}. Enoch is working on it now."
+
+    def _run_tracked_inline_work(
+        self,
+        chat_id: int,
+        request: str,
+        *,
+        source: str,
+        initiated_by: str,
+        trigger: str,
+        session_key: str,
+    ) -> str:
+        try:
+            job = begin_direct_task(
+                chat_id,
+                request,
+                self.root,
+                source=source,
+                initiated_by=initiated_by,
+                event_actor=initiated_by,
+                trigger=trigger,
+            )
+        except RuntimeError:
+            return "Enoch cannot start that work while another task is running."
+        except (OSError, ValueError):
+            return "Enoch could not create a tracked task for that work."
+        task_token = _CURRENT_TASK_ID.set(job.id)
+        completed_status = "completed"
+        try:
+            reply = self._run_direct_work(chat_id, request, session_key=session_key)
+            if _work_reply_failed(reply):
+                completed_status = "failed"
+        except BrainCancelled as error:
+            reply = str(error)
+            completed_status = "cancelled"
+        except Exception as error:
+            reply = f"Enoch could not complete task #{job.id}: {error}"
+            completed_status = "failed"
+        finally:
+            _CURRENT_TASK_ID.reset(task_token)
+            if completed_status == "cancelled":
+                cancel_running_task(
+                    self.root,
+                    result=reply,
+                    event_actor="agent",
+                    trigger=trigger,
+                )
+            elif completed_status == "failed":
+                fail_task(job.id, self.root, result=reply, event_actor="agent", trigger=trigger)
+            else:
+                complete_task(job.id, self.root, result=reply, event_actor="agent", trigger=trigger)
+        completed = _history_task(job.id, self.root) or job
+        if completed_status == "completed":
+            self._record_automatic_learning(completed, command=trigger, result=reply)
+        return reply
 
     def _queue_direct_work_next(
         self,
@@ -907,9 +963,12 @@ class EnochTelegramBot:
         if not self._action_allowed():
             return "\n\n".join(part for part in [visible, memory_note, _action_lock_message()] if part)
 
-        edit_result = self._run_direct_work(
+        edit_result = self._run_tracked_inline_work(
             chat_id,
             edit_request.request,
+            source="learning",
+            initiated_by="human",
+            trigger="/learn",
             session_key=f"telegram:{chat_id}",
         )
         return "\n\n".join(part for part in [visible, memory_note, edit_result] if part)
@@ -925,7 +984,6 @@ class EnochTelegramBot:
             cancelled = cancel_task(cancel_id, self.root)
             if cancelled is None:
                 return f"Enoch could not cancel task #{cancel_id}. It may be running, completed, or missing."
-            self._record_task_experience(cancelled, command="/task cancel", result="Cancelled before running.")
             message_id = self._work_status_messages.pop(cancelled.id, cancelled.status_message_id)
             if message_id is not None:
                 cancelled_status = WorkStatusMessage(
@@ -987,7 +1045,6 @@ class EnochTelegramBot:
         cancelled = cancel_running_task(self.root, result=result)
         if cancelled is None:
             return "No running task to stop."
-        self._record_task_experience(cancelled, command="/stop", result=result)
         message_id = self._work_status_messages.pop(cancelled.id, cancelled.status_message_id)
         if message_id is not None:
             stopped_status = WorkStatusMessage(
@@ -1157,6 +1214,11 @@ class EnochTelegramBot:
                 self.root,
                 context=_evolve_task_context(candidate),
                 context_source="evolve-approve",
+                source=candidate.source,
+                initiated_by=candidate.initiated_by,
+                event_actor="human",
+                trigger="/evolve approve",
+                candidate_id=candidate.id,
             )
         except (OSError, ValueError):
             return "Enoch could not approve and queue that evolve candidate."
@@ -1332,21 +1394,25 @@ class EnochTelegramBot:
         item = next_backlog_item(self.root)
         if item is None:
             return None
-        return self._enqueue_backlog_item(item)
+        return self._enqueue_backlog_item(item, event_actor="system", trigger="backlog-idle")
 
     def _promote_backlog_item_to_queue(self, item_id: int) -> TaskJob | None:
         item = backlog_item(item_id, self.root)
         if item is None:
             return None
-        return self._enqueue_backlog_item(item)
+        return self._enqueue_backlog_item(item, event_actor="human", trigger="/backlog promote")
 
-    def _enqueue_backlog_item(self, item: BacklogItem) -> TaskJob:
+    def _enqueue_backlog_item(self, item: BacklogItem, *, event_actor: str, trigger: str) -> TaskJob:
         job = enqueue_task(
             item.chat_id,
             item.text,
             self.root,
             context=item.context,
             context_source=item.context_source,
+            source="backlog",
+            initiated_by="human",
+            event_actor=event_actor,
+            trigger=trigger,
         )
         promoted = promote_backlog_item(item.id, self.root, promoted_task_id=job.id)
         if promoted is None:
@@ -1379,6 +1445,10 @@ class EnochTelegramBot:
                     self.root,
                     context=cron.context,
                     context_source=f"cron:{cron.context_source}" if cron.context_source else "cron",
+                    source="task",
+                    initiated_by="human",
+                    event_actor="system",
+                    trigger=f"cron:{cron.id}",
                 )
             except (OSError, ValueError):
                 continue
@@ -1426,6 +1496,11 @@ class EnochTelegramBot:
                 self.root,
                 context=context,
                 context_source="evolve-scheduler",
+                source=candidate.source,
+                initiated_by=candidate.initiated_by,
+                event_actor="system",
+                trigger="evolve-scheduler",
+                candidate_id=candidate.id,
             )
         except (OSError, ValueError):
             return None
@@ -1511,7 +1586,12 @@ class EnochTelegramBot:
             _CURRENT_TASK_ID.reset(task_token)
             self._task_cancellations.pop(job.id, None)
             if completed_status == "cancelled":
-                cancel_running_task(self.root, result=reply)
+                cancel_running_task(
+                    self.root,
+                    result=reply,
+                    event_actor="system",
+                    trigger="task-runner-cancelled",
+                )
                 cancel_evolve_candidate_for_task(job, self.root)
             elif completed_status == "failed":
                 fail_task(job.id, self.root, result=reply)
@@ -1521,7 +1601,6 @@ class EnochTelegramBot:
                 complete_evolve_candidate_for_task(job, self.root)
         completed_job = _history_task(job.id, self.root)
         summary_job = completed_job or job
-        self._record_task_experience(summary_job, command=command, result=reply)
         if completed_status == "completed":
             self._record_automatic_learning(summary_job, command=command, result=reply)
         if task_status is not None:
@@ -1561,12 +1640,6 @@ class EnochTelegramBot:
                 context_source=job.context_source,
                 pr_urls=job.pr_urls,
             )
-        except (OSError, ValueError):
-            return
-
-    def _record_task_experience(self, job: TaskJob, *, command: str, result: str) -> None:
-        try:
-            record_task_experience(job, self.root, command=command, result=result)
         except (OSError, ValueError):
             return
 
@@ -1627,9 +1700,12 @@ class EnochTelegramBot:
         if not self._action_allowed():
             return "\n\n".join(part for part in [visible, memory_note, _action_lock_message()] if part)
 
-        edit_result = self._run_direct_work(
+        edit_result = self._run_tracked_inline_work(
             chat_id,
             edit_request.request,
+            source="inheritance",
+            initiated_by="human",
+            trigger="/inherit",
             session_key=f"telegram:{chat_id}",
         )
         try:
@@ -2035,17 +2111,11 @@ def _recover_running_task_from_direct_action_log(root: Path) -> None:
     if not result:
         return
     if _work_reply_failed(result):
-        fail_task(running.id, root, result=result)
+        fail_task(running.id, root, result=result, event_actor="system", trigger="recovery")
         fail_evolve_candidate_for_task(running, root)
     else:
-        complete_task(running.id, root, result=result)
+        complete_task(running.id, root, result=result, event_actor="system", trigger="recovery")
         complete_evolve_candidate_for_task(running, root)
-    completed = _history_task(running.id, root)
-    if completed is not None:
-        try:
-            record_task_experience(completed, root, command="/recovery", result=result)
-        except (OSError, ValueError):
-            pass
 
 
 def _latest_direct_action_result_for_task(job: TaskJob, root: Path) -> str:
@@ -2216,9 +2286,26 @@ def _format_feedback_signal(signal: FeedbackSignal) -> list[str]:
 
 def _format_experience_report(root: Path) -> str:
     state = load_evolve_state(root)
-    records = load_experience_records(root)
+    records = load_experience_records(root, limit=10_000)
     candidates = rank_evolve_candidates(collect_experience_candidates(root), theme=state.theme)
-    lines = ["Experience:", "", "Recent task experiences:"]
+    lines = ["Experience:", "", "Task statistics:"]
+    if records:
+        outcomes = Counter(record.outcome for record in records)
+        sources = Counter({source: 0 for source in TASK_SOURCES})
+        sources.update(record.source for record in records)
+        initiators = Counter({"human": 0, "agent": 0})
+        initiators.update(record.initiated_by for record in records)
+        lines.extend(
+            [
+                f"- Total tasks: {len(records)}",
+                f"- Outcomes: {_format_counter(outcomes)}",
+                f"- Sources: {_format_counter(sources)}",
+                f"- Initiated by: {_format_counter(initiators)}",
+            ]
+        )
+    else:
+        lines.append("- none")
+    lines.extend(["", "Recent tasks:"])
     if records:
         for record in records[:10]:
             lines.extend(_format_experience_record(record))
@@ -2239,7 +2326,11 @@ def _format_experience_record(record: ExperienceRecord) -> list[str]:
     lines = [
         f"- task-{record.task_id} [{record.outcome}] {_clip_activity_text(record.request, limit=120)}",
     ]
-    details = [record.command or "unknown command"]
+    details = [
+        f"source {record.source}",
+        f"initiated by {record.initiated_by}",
+        f"trigger {record.command or 'unknown'}",
+    ]
     if record.context_source:
         details.append(f"context {record.context_source}")
     if record.changed_files:
@@ -2250,6 +2341,10 @@ def _format_experience_record(record: ExperienceRecord) -> list[str]:
     if record.result_summary:
         lines.append(f"  Result: {_clip_activity_text(record.result_summary, limit=180)}")
     return lines
+
+
+def _format_counter(counts: Counter[str]) -> str:
+    return ", ".join(f"{key} {counts[key]}" for key in sorted(counts)) or "none"
 
 
 def _format_evolve_proposal(proposal: EvolveProposal) -> str:

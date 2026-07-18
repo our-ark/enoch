@@ -43,7 +43,18 @@ When the scheduler is due:
 
 Proposal selection only considers candidates whose status is `candidate`. Running candidates are not proposed again.
 
-Every terminal `/do` or `/task` writes a structured record to `.enoch/experience.jsonl`. The journal records completed, failed, and cancelled outcomes, but only actionable failures, started cancellations, repeated successful user workflows, recurring jobs, and skill-work artifacts become evolve candidates.
+Every tracked task writes append-only lifecycle events to `.enoch/task_events.jsonl`.
+Events include `created`, `queued`, `started`, `completed`, `failed`, `cancelled`,
+and `reverted`. Each event keeps three independent provenance dimensions:
+
+- `source` is one of `backlog`, `feedback`, `experience`, `inheritance`, `learning`, `brainstorming`, `task`, or `chat-task`;
+- `initiated_by` is `human` or `agent` and remains stable for the task; and
+- `event_actor` is `human`, `agent`, or `system`, identifying who caused that lifecycle transition.
+
+Cron, recovery, backlog promotion, approval, and evolve scheduling are triggers,
+not extra sources. Legacy `.enoch/experience.jsonl` records remain readable.
+Only actionable failures, started cancellations, repeated successful user
+workflows, recurring jobs, and skill-work artifacts become evolve candidates.
 
 ## Guardrails
 

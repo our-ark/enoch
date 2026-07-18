@@ -47,6 +47,7 @@ from enoch.task_queue import (
     task_queue_path,
     task_queue_status,
 )
+from enoch.task_events import load_task_events
 from enoch.telegram.bot import (
     EnochTelegramBot,
     ShutdownRequested,
@@ -606,7 +607,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("/cron - show scheduled jobs", client.sent[0][1])
         self.assertIn("/evolve - show self-evolution mode, theme, and top candidate", client.sent[0][1])
         self.assertIn("/feedback - show feedback signals available to self-evolution", client.sent[0][1])
-        self.assertIn("/experience - show the task experience journal and evolution candidates", client.sent[0][1])
+        self.assertIn("/experience - show task provenance statistics and evolution candidates", client.sent[0][1])
         self.assertIn("/propose - rank all evolve sources and propose the strongest candidate", client.sent[0][1])
         self.assertNotIn("/evolve mode <mode> - set self-evolution behavior", client.sent[0][1])
         self.assertNotIn("/evolve mode disabled|co-evolve|auto-evolve", client.sent[0][1])
@@ -713,7 +714,7 @@ class EnochTelegramTests(unittest.TestCase):
     def test_evolve_related_top_level_commands_have_separate_help_topics(self) -> None:
         topics = {
             "feedback": "/feedback - show feedback signals available to self-evolution",
-            "experience": "/experience - show the task experience journal and evolution candidates",
+            "experience": "/experience - show task provenance statistics and evolution candidates",
             "propose": "/propose - rank all evolve sources and propose the strongest candidate",
         }
         for index, (topic, expected) in enumerate(topics.items(), start=1):
@@ -756,6 +757,7 @@ class EnochTelegramTests(unittest.TestCase):
             bot.handle_update(_message_update(chat_id=42, text="/task add queued work"))
 
             data = json.loads(task_queue_path(root).read_text(encoding="utf-8"))
+            events = load_task_events(root, task_id=1)
 
         self.assertEqual(len(client.sent), 1)
         self.assertIn("Task #1", client.sent[0][1])
@@ -766,6 +768,10 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual(data["pending"][0]["id"], 1)
         self.assertEqual(data["pending"][0]["chat_id"], 42)
         self.assertEqual(data["pending"][0]["text"], "add queued work")
+        self.assertEqual(data["pending"][0]["source"], "task")
+        self.assertEqual(data["pending"][0]["initiated_by"], "human")
+        self.assertEqual([event.event for event in events], ["created", "queued"])
+        self.assertTrue(all(event.event_actor == "human" for event in events))
         self.assertIsNone(data["running"])
 
     @patch("enoch.telegram.bot.ensure_long_term_memory")
@@ -1142,6 +1148,7 @@ class EnochTelegramTests(unittest.TestCase):
             job = bot._promote_next_backlog_if_idle()
             queue = task_queue_status(root)
             backlog = backlog_status(root)
+            events = load_task_events(root, task_id=queue.pending[0].id)
 
         self.assertEqual(job.text, "background cleanup")
         self.assertEqual(job.context, "Use saved context.")
@@ -1149,6 +1156,8 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual(backlog.pending, ())
         self.assertEqual(backlog.history[-1].id, backlog_item.id)
         self.assertEqual(backlog.history[-1].promoted_task_id, job.id)
+        self.assertEqual(events[0].event_actor, "system")
+        self.assertEqual(events[0].trigger, "backlog-idle")
         self.assertIn("Promoted from backlog #1 (p2).", client.sent[0][1])
 
     def test_backlog_idle_promotion_waits_for_empty_task_queue(self) -> None:
@@ -1226,9 +1235,14 @@ class EnochTelegramTests(unittest.TestCase):
                 bot.handle_update(_message_update(update_id=2, chat_id=42, text="/backlog promote 1"))
             queue = task_queue_status(root)
             backlog = backlog_status(root)
+            events = load_task_events(root, task_id=queue.pending[0].id)
 
         self.assertEqual(queue.pending_count, 1)
         self.assertEqual(backlog.history[-1].promoted_task_id, queue.pending[0].id)
+        self.assertEqual(queue.pending[0].source, "backlog")
+        self.assertEqual(queue.pending[0].initiated_by, "human")
+        self.assertEqual(events[0].event_actor, "human")
+        self.assertEqual(events[0].trigger, "/backlog promote")
         self.assertIn("Promoted backlog #1 to task #1.", client.sent[2][1])
 
     @patch("enoch.telegram.bot.ensure_long_term_memory")
@@ -1321,9 +1335,15 @@ class EnochTelegramTests(unittest.TestCase):
             bot.handle_update(_message_update(chat_id=42, text="/experience"))
 
         reply = client.sent[0][1]
-        self.assertIn("Recent task experiences:", reply)
+        self.assertIn("Task statistics:", reply)
+        self.assertIn("backlog 0", reply)
+        self.assertIn("brainstorming 0", reply)
+        self.assertIn("chat-task 0", reply)
+        self.assertIn("task 1", reply)
+        self.assertIn("Initiated by: agent 0, human 1", reply)
+        self.assertIn("Recent tasks:", reply)
         self.assertIn("task-7 [completed] improve Telegram recovery", reply)
-        self.assertIn("/task; context chat-snapshot", reply)
+        self.assertIn("source task; initiated by human; trigger /task; context chat-snapshot", reply)
         self.assertIn("Result: Recovery tests passed.", reply)
 
     def test_propose_ranks_all_sources_without_selecting_candidate(self) -> None:
@@ -1397,6 +1417,9 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("backlog-1 [running backlog] ship evolve approval", client.sent[0][1])
         self.assertIn("Evolve candidate backlog-1", queued.pending[0].text)
         self.assertEqual(queued.pending[0].context_source, "evolve-approve")
+        self.assertEqual(queued.pending[0].source, "backlog")
+        self.assertEqual(queued.pending[0].initiated_by, "human")
+        self.assertEqual(queued.pending[0].candidate_id, "backlog-1")
         self.assertIn("Evolve candidate context:", queued.pending[0].context)
 
     def test_evolve_cannot_approve_removed_candidate(self) -> None:
@@ -1690,6 +1713,9 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual(queued.pending_count, 1)
         self.assertIn("Evolve candidate backlog-1", queued.pending[0].text)
         self.assertEqual(queued.pending[0].context_source, "evolve-scheduler")
+        self.assertEqual(queued.pending[0].source, "backlog")
+        self.assertEqual(queued.pending[0].initiated_by, "human")
+        self.assertEqual(queued.pending[0].candidate_id, "backlog-1")
         self.assertEqual(report.top_candidate.status, "running")
         self.assertIn("Latest update: Scheduled by evolve auto-evolve.", client.sent[0][1])
 
@@ -1780,12 +1806,17 @@ class EnochTelegramTests(unittest.TestCase):
             queued = task_queue_status(root)
             cron_after = cron_status(root)
             jobs_again = bot._enqueue_due_cron_jobs()
+            events = load_task_events(root, task_id=queued.pending[0].id)
 
         self.assertEqual([job.id for job in jobs], [1])
         self.assertEqual(jobs_again, ())
         self.assertEqual(queued.pending[0].text, "scheduled cleanup")
         self.assertEqual(queued.pending[0].context, "Use saved cron context.")
         self.assertEqual(queued.pending[0].context_source, "cron:chat-snapshot")
+        self.assertEqual(queued.pending[0].source, "task")
+        self.assertEqual(queued.pending[0].initiated_by, "human")
+        self.assertEqual(events[0].event_actor, "system")
+        self.assertEqual(events[0].trigger, "cron:1")
         self.assertEqual(cron_after.active[0].id, cron.id)
         self.assertEqual(cron_after.active[0].last_task_id, queued.pending[0].id)
         self.assertIn("Task #1", client.sent[0][1])
@@ -2108,6 +2139,30 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("Enoch mode: chat.", client.sent[0][1])
         self.assertIn("will not change code", client.sent[1][1])
         act_in_session.assert_not_called()
+
+    def test_human_triggered_learning_work_is_tracked_with_learning_source(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            client = FakeTelegramClient(allowed_chat_id=42)
+            bot = EnochTelegramBot(load_identity(), root, client)
+
+            with patch.object(bot, "_run_direct_work", return_value="Adapted the skill."):
+                reply = bot._run_tracked_inline_work(
+                    42,
+                    "adapt the research skill",
+                    source="learning",
+                    initiated_by="human",
+                    trigger="/learn",
+                    session_key="telegram:42",
+                )
+            history = task_queue_status(root).history
+            events = load_task_events(root, task_id=1)
+
+        self.assertEqual(reply, "Adapted the skill.")
+        self.assertEqual(history[-1].source, "learning")
+        self.assertEqual(history[-1].initiated_by, "human")
+        self.assertEqual([event.event for event in events], ["created", "started", "completed"])
+        self.assertEqual(events[0].trigger, "/learn")
 
     @patch("enoch.telegram.bot.model_summary", return_value="AI model: gpt-5-codex")
     def test_self_reports_identity_without_runtime_status(self, model_summary: MagicMock) -> None:
@@ -2761,6 +2816,7 @@ class EnochTelegramTests(unittest.TestCase):
             self.assertEqual(len(started), 1)
             bot._run_direct_task_job(started[0][0], session_key=started[0][1])
             status = task_queue_status(root)
+            events = load_task_events(root, task_id=1)
 
         respond.assert_not_called()
         act_in_session.assert_called_once()
@@ -2777,6 +2833,10 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("Use the earlier README scope decision.", client.sent[0][1])
         self.assertIn("Status: completed", client.edited[-1][2])
         self.assertEqual(status.history[-1].status, "completed")
+        self.assertEqual(status.history[-1].source, "chat-task")
+        self.assertEqual(status.history[-1].initiated_by, "human")
+        self.assertEqual([event.event for event in events], ["created", "started", "completed"])
+        self.assertEqual([event.event_actor for event in events], ["human", "system", "agent"])
         self.assertEqual(status.history[-1].context, "Use the earlier README scope decision.")
         self.assertIn("https://github.com/our-ark/enoch/pull/2", status.history[-1].result)
 

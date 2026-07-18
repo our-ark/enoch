@@ -21,7 +21,7 @@ from enoch.task_queue import TaskJob, task_queue_status
 
 
 SCHEMA_VERSION = 1
-CANDIDATE_SCHEMA_VERSION = 2
+CANDIDATE_SCHEMA_VERSION = 3
 MODE_DISABLED = "disabled"
 MODE_CO_EVOLVE = "co-evolve"
 MODE_AUTO_EVOLVE = "auto-evolve"
@@ -54,6 +54,7 @@ class EvolveCandidate:
     expected_benefit: str
     risk: str
     test_plan: str
+    initiated_by: str = "agent"
     status: str = "candidate"
     score: int = 0
 
@@ -537,6 +538,7 @@ def _candidate_to_json(candidate: EvolveCandidate) -> dict[str, object]:
         "expected_benefit": candidate.expected_benefit,
         "risk": candidate.risk,
         "test_plan": candidate.test_plan,
+        "initiated_by": candidate.initiated_by if candidate.initiated_by in {"human", "agent"} else "agent",
         "status": candidate.status if candidate.status in CANDIDATE_STATUSES else "candidate",
         "score": int(candidate.score),
     }
@@ -559,6 +561,9 @@ def _candidate_from_json(raw: dict[str, object]) -> EvolveCandidate | None:
         source = "experience"
     if source == "learning" and not candidate_id.startswith("learning-peer-"):
         source = "experience"
+    initiated_by = clean_text(str(raw.get("initiated_by") or "")).lower()
+    if initiated_by not in {"human", "agent"}:
+        initiated_by = _candidate_initiator(source)
     return EvolveCandidate(
         id=candidate_id,
         source=source,
@@ -568,6 +573,7 @@ def _candidate_from_json(raw: dict[str, object]) -> EvolveCandidate | None:
         expected_benefit=clean_text(str(raw.get("expected_benefit") or "")),
         risk=clean_text(str(raw.get("risk") or "")),
         test_plan=clean_text(str(raw.get("test_plan") or "")),
+        initiated_by=initiated_by,
         status=status,
         score=_int(raw.get("score"), default=0),
     )
@@ -579,6 +585,8 @@ def _candidate_matches_id(candidate: EvolveCandidate, candidate_id: str) -> bool
 
 
 def _evolve_candidate_id_from_task(job: TaskJob) -> str:
+    if job.candidate_id:
+        return job.candidate_id
     if job.context_source not in {"evolve-approve", "evolve-run", "evolve-scheduler"}:
         return ""
     for raw_line in job.context.splitlines():
@@ -599,6 +607,10 @@ def _candidate_status_order(status: str) -> int:
     }.get(status, 1)
 
 
+def _candidate_initiator(source: str) -> str:
+    return "human" if source in {"backlog", "feedback", "learning"} else "agent"
+
+
 def _backlog_candidates(items: Iterable[BacklogItem]) -> list[EvolveCandidate]:
     priority_score = {"p0": 35, "p1": 25, "p2": 15}
     candidates = []
@@ -613,6 +625,7 @@ def _backlog_candidates(items: Iterable[BacklogItem]) -> list[EvolveCandidate]:
                 expected_benefit="Completes deferred human-visible work that may improve Enoch's body or workflow.",
                 risk="Backlog item may need clarification before implementation.",
                 test_plan="Run focused tests for the changed behavior and Enoch doctor if code changes.",
+                initiated_by="human",
                 score=priority_score.get(item.priority, 10),
             )
         )
@@ -633,6 +646,7 @@ def _inheritance_candidates(items: Iterable[LineageCandidate]) -> list[EvolveCan
                 expected_benefit="Keeps Enoch aligned with useful parent improvements without blindly copying them.",
                 risk="Parent change may not apply cleanly to Enoch or may duplicate existing behavior.",
                 test_plan="Inspect changed files, adapt only relevant pieces, then run affected tests.",
+                initiated_by="agent",
                 score=relevance_score.get(item.relevance, 8),
             )
         )
@@ -659,6 +673,7 @@ def _feedback_candidates(items: Iterable[FeedbackSignal]) -> list[EvolveCandidat
                 expected_benefit="Turns explicit human feedback into an accountable, testable improvement candidate.",
                 risk="Heuristic feedback extraction can misclassify ordinary conversation; confirm intent before editing.",
                 test_plan="Add or update focused tests for the affected behavior and verify the feedback is addressed.",
+                initiated_by="human",
                 score=kind_score.get(item.kind, 20) + min(item.occurrences, 3) * 2,
             )
         )
@@ -690,6 +705,7 @@ def _task_history_candidates(items: Iterable[TaskJob]) -> list[EvolveCandidate]:
                 expected_benefit="Turns recent operational friction into a concrete reliability improvement.",
                 risk="The original task may have failed for transient reasons, so avoid broad changes without evidence.",
                 test_plan="Reproduce the failed or cancelled path if possible, then run focused tests around the changed workflow.",
+                initiated_by="agent",
                 score=30 if is_failed else 18,
             )
         )
@@ -720,6 +736,7 @@ def _experience_record_candidates(items: Iterable[ExperienceRecord]) -> list[Evo
                 expected_benefit="Turns a durable operational experience into a concrete reliability improvement.",
                 risk="The task may have failed for transient reasons, so confirm the lesson before changing behavior.",
                 test_plan="Reproduce the recorded failure if possible, then run focused tests around the changed workflow.",
+                initiated_by="agent",
                 score=30 if is_failed else 18,
             )
         )
@@ -758,6 +775,7 @@ def _repeated_success_candidates(items: Iterable[ExperienceRecord]) -> list[Evol
                 expected_benefit="Converts repeated successful work into reusable capability when the evidence supports it.",
                 risk="Repeated requests may still differ in important context; do not automate away necessary judgment.",
                 test_plan="Add focused tests for any extracted reusable behavior and verify existing task execution remains intact.",
+                initiated_by="agent",
                 score=18 + min(len(records), 5),
             )
         )
@@ -784,6 +802,7 @@ def _cron_candidates(items: Iterable[CronJob]) -> list[EvolveCandidate]:
                 expected_benefit="Keeps scheduled automation aligned with current needs instead of letting stale jobs drift.",
                 risk="Recurring jobs are user-facing automation; changes should not silently disable or broaden their behavior.",
                 test_plan="Run cron parsing/status tests and verify the scheduled request still renders clearly in Telegram.",
+                initiated_by="agent",
                 score=12,
             )
         )
@@ -807,6 +826,7 @@ def _learning_candidates(items: Iterable[LearningArtifact]) -> list[EvolveCandid
                 expected_benefit="Promotes successful skill work into deliberate self-improvement instead of passive archive data.",
                 risk="The artifact may be too context-specific to generalize; adapt only reusable pieces.",
                 test_plan="Run skill discovery tests and focused tests for any adapted skill behavior.",
+                initiated_by="agent",
                 score=20,
             )
         )
@@ -829,6 +849,7 @@ def _peer_learning_candidates(items: Iterable[PeerLearningObservation]) -> list[
                 expected_benefit="Allows horizontal capability learning without treating a peer as an ancestor.",
                 risk="The peer skill may be incompatible, stale, or too specific to the source agent.",
                 test_plan="Verify skill discovery and run focused tests for every adapted behavior.",
+                initiated_by="human",
                 score=22,
             )
         )
@@ -846,6 +867,7 @@ def _brainstorm_candidates(items: Iterable[BrainstormIdea]) -> list[EvolveCandid
             expected_benefit=item.expected_benefit,
             risk=item.risk,
             test_plan=item.test_plan,
+            initiated_by="agent",
             score=16,
         )
         for item in items

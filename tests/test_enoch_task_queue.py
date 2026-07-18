@@ -20,9 +20,11 @@ from enoch.task_queue import (
     recover_interrupted_task,
     record_task_result,
     record_task_status_message,
+    revert_task,
     task_result_has_pull_request,
     task_queue_status,
 )
+from enoch.task_events import load_task_events
 from enoch import task_queue
 
 
@@ -55,11 +57,14 @@ class EnochTaskQueueTests(unittest.TestCase):
 
             cancelled = cancel_task(first.id, root)
             status = task_queue_status(root)
+            events = load_task_events(root, task_id=first.id)
 
         self.assertEqual(cancelled.id, first.id)
         self.assertEqual(status.pending, (second,))
         self.assertEqual(status.history[-1].id, first.id)
         self.assertEqual(status.history[-1].status, "cancelled")
+        self.assertEqual(events[-1].event, "cancelled")
+        self.assertEqual(events[-1].event_actor, "human")
 
     def test_enqueue_task_front_runs_before_existing_pending_tasks(self) -> None:
         with TemporaryDirectory() as temp:
@@ -98,6 +103,30 @@ class EnochTaskQueueTests(unittest.TestCase):
         self.assertEqual(status.history[-1].status_message_id, 2001)
         self.assertEqual(status.history[-1].result, "Done.")
         self.assertEqual(status.history[-1].pr_urls, ())
+
+    def test_records_complete_lifecycle_with_source_and_actors(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            queued = enqueue_task(
+                42,
+                "adapt a brainstormed improvement",
+                root,
+                source="brainstorming",
+                initiated_by="agent",
+                event_actor="human",
+                trigger="/evolve approve",
+                candidate_id="brainstorm-1",
+            )
+            running = begin_next_task(root)
+
+            complete_task(running.id, root, result="Done.")
+            events = load_task_events(root, task_id=queued.id)
+
+        self.assertEqual([event.event for event in events], ["created", "queued", "started", "completed"])
+        self.assertEqual([event.event_actor for event in events], ["human", "human", "system", "agent"])
+        self.assertTrue(all(event.source == "brainstorming" for event in events))
+        self.assertTrue(all(event.initiated_by == "agent" for event in events))
+        self.assertTrue(all(event.candidate_id == "brainstorm-1" for event in events))
 
     def test_queued_task_preserves_context_snapshot_through_history(self) -> None:
         with TemporaryDirectory() as temp:
@@ -202,11 +231,14 @@ class EnochTaskQueueTests(unittest.TestCase):
 
             fail_task(running.id, root, result="GitHub rejected the push.")
             status = task_queue_status(root)
+            events = load_task_events(root, task_id=queued.id)
 
         self.assertIsNone(status.running)
         self.assertEqual(status.history[-1].id, queued.id)
         self.assertEqual(status.history[-1].status, "failed")
         self.assertEqual(status.history[-1].result, "GitHub rejected the push.")
+        self.assertEqual(events[-1].event, "failed")
+        self.assertEqual(events[-1].event_actor, "agent")
 
     def test_cancel_running_task_moves_it_to_history(self) -> None:
         with TemporaryDirectory() as temp:
@@ -215,12 +247,15 @@ class EnochTaskQueueTests(unittest.TestCase):
 
             cancelled = cancel_running_task(root, result="Stopped by /stop.")
             status = task_queue_status(root)
+            events = load_task_events(root, task_id=running.id)
 
         self.assertEqual(cancelled.id, running.id)
         self.assertIsNone(status.running)
         self.assertEqual(status.history[-1].id, running.id)
         self.assertEqual(status.history[-1].status, "cancelled")
         self.assertEqual(status.history[-1].result, "Stopped by /stop.")
+        self.assertEqual(events[-1].event, "cancelled")
+        self.assertEqual(events[-1].trigger, "/stop")
 
     def test_recover_interrupted_task_requeues_with_status_message(self) -> None:
         with TemporaryDirectory() as temp:
@@ -257,6 +292,41 @@ class EnochTaskQueueTests(unittest.TestCase):
         self.assertEqual(status.history[-1].status, "completed")
         self.assertTrue(task_result_has_pull_request(status.history[-1].result))
         self.assertEqual(status.history[-1].pr_urls, ("https://github.com/our-ark/enoch/pull/3",))
+
+    def test_recovery_events_are_attributed_to_system(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            queued = enqueue_task(42, "resume me", root)
+            begin_next_task(root)
+
+            recover_interrupted_task(root)
+            events = load_task_events(root, task_id=queued.id)
+
+        self.assertEqual(events[-1].event, "queued")
+        self.assertEqual(events[-1].event_actor, "system")
+        self.assertEqual(events[-1].trigger, "recovery")
+
+    def test_reverted_task_keeps_completed_and_reverted_events(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            queued = enqueue_task(42, "ship reversible work", root)
+            running = begin_next_task(root)
+            complete_task(running.id, root, result="Shipped.")
+
+            reverted = revert_task(
+                queued.id,
+                root,
+                result="Reverted after regression.",
+                event_actor="human",
+                trigger="/task revert",
+                related_task_id=7,
+            )
+            events = load_task_events(root, task_id=queued.id)
+
+        self.assertEqual(reverted.status, "reverted")
+        self.assertEqual([event.event for event in events[-2:]], ["completed", "reverted"])
+        self.assertEqual(events[-1].event_actor, "human")
+        self.assertEqual(events[-1].related_task_id, 7)
 
 
 if __name__ == "__main__":

@@ -14,6 +14,7 @@ except ImportError:  # pragma: no cover - fcntl is unavailable on Windows.
 
 from enoch.memory.paths import atomic_write, now as current_time
 from enoch.paths import enoch_home
+from enoch.task_events import normalize_task_initiator, normalize_task_source, record_task_event
 
 
 SCHEMA_VERSION = 1
@@ -35,6 +36,11 @@ class TaskJob:
     pr_urls: tuple[str, ...] = ()
     context: str = ""
     context_source: str = ""
+    source: str = "task"
+    initiated_by: str = "human"
+    trigger: str = ""
+    candidate_id: str = ""
+    parent_task_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -56,10 +62,18 @@ def enqueue_task(
     *,
     context: str = "",
     context_source: str = "",
+    source: str = "task",
+    initiated_by: str = "human",
+    event_actor: str = "human",
+    trigger: str = "/task",
+    candidate_id: str = "",
+    parent_task_id: int | None = None,
 ) -> TaskJob:
     cleaned = " ".join(text.split())
     if not cleaned:
         raise ValueError("Task text is required.")
+    source = normalize_task_source(source)
+    initiated_by = normalize_task_initiator(initiated_by)
     with _queue_transaction(root):
         data = _load_queue(root)
         job = TaskJob(
@@ -69,11 +83,18 @@ def enqueue_task(
             created_at=current_time(),
             context=context.strip(),
             context_source=context_source.strip(),
+            source=source,
+            initiated_by=initiated_by,
+            trigger=trigger.strip(),
+            candidate_id=candidate_id.strip(),
+            parent_task_id=_positive_int(parent_task_id),
         )
         pending = data.setdefault("pending", [])
         pending.append(_job_to_dict(job))
         data["next_id"] = job.id + 1
         _write_queue(data, root)
+        _record_task_event_safely(job, "created", root, event_actor=event_actor, trigger=trigger)
+        _record_task_event_safely(job, "queued", root, event_actor=event_actor, trigger=trigger)
         return job
 
 
@@ -84,10 +105,18 @@ def enqueue_task_front(
     *,
     context: str = "",
     context_source: str = "",
+    source: str = "chat-task",
+    initiated_by: str = "human",
+    event_actor: str = "human",
+    trigger: str = "/do",
+    candidate_id: str = "",
+    parent_task_id: int | None = None,
 ) -> TaskJob:
     cleaned = " ".join(text.split())
     if not cleaned:
         raise ValueError("Task text is required.")
+    source = normalize_task_source(source)
+    initiated_by = normalize_task_initiator(initiated_by)
     with _queue_transaction(root):
         data = _load_queue(root)
         job = TaskJob(
@@ -97,11 +126,18 @@ def enqueue_task_front(
             created_at=current_time(),
             context=context.strip(),
             context_source=context_source.strip(),
+            source=source,
+            initiated_by=initiated_by,
+            trigger=trigger.strip(),
+            candidate_id=candidate_id.strip(),
+            parent_task_id=_positive_int(parent_task_id),
         )
         pending = data.setdefault("pending", [])
         pending.insert(0, _job_to_dict(job))
         data["next_id"] = job.id + 1
         _write_queue(data, root)
+        _record_task_event_safely(job, "created", root, event_actor=event_actor, trigger=trigger)
+        _record_task_event_safely(job, "queued", root, event_actor=event_actor, trigger=trigger)
         return job
 
 
@@ -112,10 +148,18 @@ def begin_direct_task(
     *,
     context: str = "",
     context_source: str = "",
+    source: str = "chat-task",
+    initiated_by: str = "human",
+    event_actor: str = "human",
+    trigger: str = "/do",
+    candidate_id: str = "",
+    parent_task_id: int | None = None,
 ) -> TaskJob:
     cleaned = " ".join(text.split())
     if not cleaned:
         raise ValueError("Task text is required.")
+    source = normalize_task_source(source)
+    initiated_by = normalize_task_initiator(initiated_by)
     with _queue_transaction(root):
         data = _load_queue(root)
         if _parse_job(data.get("running")) is not None:
@@ -129,10 +173,17 @@ def begin_direct_task(
             status="running",
             context=context.strip(),
             context_source=context_source.strip(),
+            source=source,
+            initiated_by=initiated_by,
+            trigger=trigger.strip(),
+            candidate_id=candidate_id.strip(),
+            parent_task_id=_positive_int(parent_task_id),
         )
         data["running"] = _job_to_dict(job)
         data["next_id"] = job.id + 1
         _write_queue(data, root)
+        _record_task_event_safely(job, "created", root, event_actor=event_actor, trigger=trigger)
+        _record_task_event_safely(job, "started", root, event_actor="system", trigger="task-runner")
         return job
 
 
@@ -178,19 +229,96 @@ def begin_next_task(root: Path | None = None) -> TaskJob | None:
             pr_urls=job.pr_urls,
             context=job.context,
             context_source=job.context_source,
+            source=job.source,
+            initiated_by=job.initiated_by,
+            trigger=job.trigger,
+            candidate_id=job.candidate_id,
+            parent_task_id=job.parent_task_id,
         )
         data["pending"] = [_job_to_dict(item) for item in pending[1:]]
         data["running"] = _job_to_dict(running)
         _write_queue(data, root)
+        _record_task_event_safely(running, "started", root, event_actor="system", trigger="task-runner")
         return running
 
 
-def complete_task(task_id: int, root: Path | None = None, result: str = "") -> None:
-    _finish_running_task(task_id, "completed", root, result=result)
+def complete_task(
+    task_id: int,
+    root: Path | None = None,
+    result: str = "",
+    *,
+    event_actor: str = "agent",
+    trigger: str = "task-runner",
+) -> None:
+    _finish_running_task(
+        task_id,
+        "completed",
+        root,
+        result=result,
+        event_actor=event_actor,
+        trigger=trigger,
+    )
 
 
-def fail_task(task_id: int, root: Path | None = None, result: str = "") -> None:
-    _finish_running_task(task_id, "failed", root, result=result)
+def fail_task(
+    task_id: int,
+    root: Path | None = None,
+    result: str = "",
+    *,
+    event_actor: str = "agent",
+    trigger: str = "task-runner",
+) -> None:
+    _finish_running_task(
+        task_id,
+        "failed",
+        root,
+        result=result,
+        event_actor=event_actor,
+        trigger=trigger,
+    )
+
+
+def revert_task(
+    task_id: int,
+    root: Path | None = None,
+    result: str = "",
+    *,
+    event_actor: str = "human",
+    trigger: str = "revert",
+    related_task_id: int | None = None,
+) -> TaskJob | None:
+    with _queue_transaction(root):
+        data = _load_queue(root)
+        history = _history_jobs(data)
+        reverted: TaskJob | None = None
+        updated: list[TaskJob] = []
+        for job in history:
+            if job.id == task_id and reverted is None:
+                if job.status not in {"completed", "failed", "cancelled", "reverted"}:
+                    return None
+                reverted = _replace_job(
+                    job,
+                    status="reverted",
+                    completed_at=current_time(),
+                    result=result or job.result,
+                )
+                updated.append(reverted)
+            else:
+                updated.append(job)
+        if reverted is None:
+            return None
+        data["history"] = [_job_to_dict(job) for job in updated[-20:]]
+        _write_queue(data, root)
+        _record_task_event_safely(
+            reverted,
+            "reverted",
+            root,
+            event_actor=event_actor,
+            trigger=trigger,
+            result=result,
+            related_task_id=related_task_id,
+        )
+        return reverted
 
 
 def record_task_result(task_id: int, result: str, root: Path | None = None) -> None:
@@ -222,27 +350,48 @@ def record_task_result(task_id: int, result: str, root: Path | None = None) -> N
         _write_queue(data, root)
 
 
-def _finish_running_task(task_id: int, status: str, root: Path | None = None, result: str = "") -> None:
+def _finish_running_task(
+    task_id: int,
+    status: str,
+    root: Path | None = None,
+    result: str = "",
+    *,
+    event_actor: str,
+    trigger: str,
+) -> None:
     with _queue_transaction(root):
         data = _load_queue(root)
         running = _parse_job(data.get("running"))
         if running is not None and running.id == task_id:
             history = _history_jobs(data)
-            history.append(
-                _replace_job(
-                    running,
-                    status=status,
-                    completed_at=current_time(),
-                    result=result,
-                    pr_urls=_merge_pr_urls(running.pr_urls, _pull_request_urls(result)),
-                )
+            finished = _replace_job(
+                running,
+                status=status,
+                completed_at=current_time(),
+                result=result,
+                pr_urls=_merge_pr_urls(running.pr_urls, _pull_request_urls(result)),
             )
+            history.append(finished)
             data["running"] = None
             data["history"] = [_job_to_dict(job) for job in history[-20:]]
             _write_queue(data, root)
+            _record_task_event_safely(
+                finished,
+                status,
+                root,
+                event_actor=event_actor,
+                trigger=trigger,
+                result=result,
+            )
 
 
-def cancel_task(task_id: int, root: Path | None = None) -> TaskJob | None:
+def cancel_task(
+    task_id: int,
+    root: Path | None = None,
+    *,
+    event_actor: str = "human",
+    trigger: str = "/task cancel",
+) -> TaskJob | None:
     with _queue_transaction(root):
         data = _load_queue(root)
         pending = _pending_jobs(data)
@@ -260,10 +409,23 @@ def cancel_task(task_id: int, root: Path | None = None) -> TaskJob | None:
         data["pending"] = [_job_to_dict(job) for job in kept]
         data["history"] = [_job_to_dict(job) for job in history[-20:]]
         _write_queue(data, root)
+        _record_task_event_safely(
+            cancelled,
+            "cancelled",
+            root,
+            event_actor=event_actor,
+            trigger=trigger,
+        )
         return cancelled
 
 
-def cancel_running_task(root: Path | None = None, result: str = "Stopped by /stop.") -> TaskJob | None:
+def cancel_running_task(
+    root: Path | None = None,
+    result: str = "Stopped by /stop.",
+    *,
+    event_actor: str = "human",
+    trigger: str = "/stop",
+) -> TaskJob | None:
     with _queue_transaction(root):
         data = _load_queue(root)
         running = _parse_job(data.get("running"))
@@ -281,6 +443,14 @@ def cancel_running_task(root: Path | None = None, result: str = "Stopped by /sto
         data["running"] = None
         data["history"] = [_job_to_dict(job) for job in history[-20:]]
         _write_queue(data, root)
+        _record_task_event_safely(
+            cancelled,
+            "cancelled",
+            root,
+            event_actor=event_actor,
+            trigger=trigger,
+            result=result,
+        )
         return cancelled
 
 
@@ -297,11 +467,20 @@ def recover_interrupted_task(root: Path | None = None) -> TaskJob | None:
             data["running"] = None
             data["history"] = [_job_to_dict(job) for job in history[-20:]]
             _write_queue(data, root)
+            _record_task_event_safely(
+                completed,
+                "completed",
+                root,
+                event_actor="system",
+                trigger="recovery",
+                result=completed.result,
+            )
             return completed
         recovered = _replace_job(running, status="pending", started_at="")
         data["running"] = None
         data["pending"] = [_job_to_dict(recovered), *[_job_to_dict(job) for job in _pending_jobs(data)]]
         _write_queue(data, root)
+        _record_task_event_safely(recovered, "queued", root, event_actor="system", trigger="recovery")
         return recovered
 
 
@@ -413,6 +592,15 @@ def _parse_job(raw: object) -> TaskJob | None:
     pr_urls = _merge_pr_urls(pr_urls, _pull_request_urls(result))
     context = str(raw.get("context") or "").strip()
     context_source = str(raw.get("context_source") or "").strip()
+    try:
+        source = normalize_task_source(str(raw.get("source") or "task"))
+        initiated_by = normalize_task_initiator(str(raw.get("initiated_by") or "human"))
+    except ValueError:
+        source = "task"
+        initiated_by = "human"
+    trigger = str(raw.get("trigger") or "").strip()
+    candidate_id = str(raw.get("candidate_id") or "").strip()
+    parent_task_id = _positive_int(raw.get("parent_task_id"))
     if task_id <= 0 or not isinstance(chat_id, int) or not text:
         return None
     return TaskJob(
@@ -428,6 +616,11 @@ def _parse_job(raw: object) -> TaskJob | None:
         pr_urls=pr_urls,
         context=context,
         context_source=context_source,
+        source=source,
+        initiated_by=initiated_by,
+        trigger=trigger,
+        candidate_id=candidate_id,
+        parent_task_id=parent_task_id,
     )
 
 
@@ -447,6 +640,11 @@ def _job_to_dict(job: TaskJob | None) -> dict:
         "pr_urls": list(job.pr_urls),
         "context": job.context,
         "context_source": job.context_source,
+        "source": job.source,
+        "initiated_by": job.initiated_by,
+        "trigger": job.trigger,
+        "candidate_id": job.candidate_id,
+        "parent_task_id": job.parent_task_id,
     }
 
 
@@ -464,6 +662,11 @@ def _replace_job(job: TaskJob, **changes: object) -> TaskJob:
         "pr_urls": job.pr_urls,
         "context": job.context,
         "context_source": job.context_source,
+        "source": job.source,
+        "initiated_by": job.initiated_by,
+        "trigger": job.trigger,
+        "candidate_id": job.candidate_id,
+        "parent_task_id": job.parent_task_id,
     }
     values.update(changes)
     return TaskJob(**values)
@@ -486,8 +689,37 @@ def _optional_int(value: object) -> int | None:
     return parsed if parsed > 0 else None
 
 
+def _positive_int(value: object) -> int | None:
+    parsed = _int(value)
+    return parsed if parsed > 0 else None
+
+
 def _pull_request_urls(result: str) -> tuple[str, ...]:
     return tuple(PULL_REQUEST_URL_PATTERN.findall(result))
+
+
+def _record_task_event_safely(
+    job: TaskJob,
+    event: str,
+    root: Path | None,
+    *,
+    event_actor: str,
+    trigger: str,
+    result: str = "",
+    related_task_id: int | None = None,
+) -> None:
+    try:
+        record_task_event(
+            job,
+            event,
+            root,
+            event_actor=event_actor,
+            trigger=trigger,
+            result=result,
+            related_task_id=related_task_id,
+        )
+    except (OSError, ValueError):
+        return
 
 
 def _parse_pr_urls(raw: object) -> tuple[str, ...]:

@@ -8,10 +8,27 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from enoch.experience import experience_path, load_experience_records, record_task_experience
+from enoch.task_events import TASK_EVENT_TYPES, TASK_SOURCES, load_task_events, task_event_path
 from enoch.task_queue import TaskJob
 
 
 class EnochExperienceTests(unittest.TestCase):
+    def test_declares_eight_task_sources_and_full_terminal_lifecycle(self) -> None:
+        self.assertEqual(
+            TASK_SOURCES,
+            {
+                "backlog",
+                "feedback",
+                "experience",
+                "inheritance",
+                "learning",
+                "brainstorming",
+                "task",
+                "chat-task",
+            },
+        )
+        self.assertTrue({"completed", "failed", "cancelled", "reverted"} <= TASK_EVENT_TYPES)
+
     def test_records_structured_terminal_task_experience(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
@@ -30,30 +47,56 @@ class EnochExperienceTests(unittest.TestCase):
 
             record = record_task_experience(job, root, command="/task")
             loaded = load_experience_records(root)
+            events = load_task_events(root, task_id=7)
 
         self.assertEqual(record.id, "task-7")
         self.assertEqual(record.outcome, "completed")
         self.assertTrue(record.started)
         self.assertEqual(record.changed_files, ("src/enoch/telegram/bot.py",))
         self.assertEqual(record.pr_urls, ("https://github.com/our-ark/enoch/pull/42",))
+        self.assertEqual(record.source, "task")
+        self.assertEqual(record.initiated_by, "human")
         self.assertEqual(loaded, (record,))
+        self.assertEqual(
+            [event.event for event in events],
+            ["created", "started", "completed"],
+        )
 
-    def test_deduplicates_repeated_writes_for_same_task(self) -> None:
+    def test_deduplicates_repeated_terminal_compatibility_writes(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
             job = _task_job(3, status="cancelled", result="Stopped by /stop.")
 
             first = record_task_experience(job, root, command="/stop")
             second = record_task_experience(job, root, command="/task")
-            lines = experience_path(root).read_text(encoding="utf-8").splitlines()
+            lines = task_event_path(root).read_text(encoding="utf-8").splitlines()
 
         self.assertEqual(first, second)
-        self.assertEqual(len(lines), 1)
+        self.assertEqual(len(lines), 3)
 
     def test_rejects_non_terminal_task(self) -> None:
         with TemporaryDirectory() as temp:
-            with self.assertRaisesRegex(ValueError, "completed, failed, or cancelled"):
+            with self.assertRaisesRegex(ValueError, "completed, failed, cancelled, or reverted"):
                 record_task_experience(_task_job(1, status="running"), Path(temp))
+
+    def test_reads_legacy_experience_records_when_event_log_is_absent(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            path = experience_path(root)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                '{"task_id":9,"outcome":"failed","request":"legacy task",'
+                '"created_at":"2026-07-18T00:00:00+00:00","command":"/task",'
+                '"result_summary":"failed before migration","started":true}\n',
+                encoding="utf-8",
+            )
+
+            records = load_experience_records(root)
+
+        self.assertEqual(records[0].task_id, 9)
+        self.assertEqual(records[0].outcome, "failed")
+        self.assertEqual(records[0].source, "task")
+        self.assertEqual(records[0].initiated_by, "human")
 
 
 def _task_job(

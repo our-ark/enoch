@@ -57,10 +57,22 @@ Feedback includes corrections, frustrations, repeated requests, UX complaints, a
 
 ### experience
 
-Enoch writes terminal task outcomes to `.enoch/experience.jsonl`, including the
-request, outcome, result summary, context source, pull requests, and changed files.
-The journal keeps successful work visible without turning every success into an
-evolve candidate.
+Enoch writes every tracked task transition to the append-only
+`.enoch/task_events.jsonl`. Events cover `created`, `queued`, `started`,
+`completed`, `failed`, `cancelled`, and `reverted`, including the request, result
+summary, context source, pull requests, and changed files. Legacy
+`.enoch/experience.jsonl` records remain readable.
+
+Task provenance has three independent dimensions:
+
+- `source`: `backlog`, `feedback`, `experience`, `inheritance`, `learning`,
+  `brainstorming`, `task`, or `chat-task`;
+- `initiated_by`: `human` or `agent`; and
+- `event_actor`: `human`, `agent`, or `system`.
+
+Schedulers, cron, recovery, approvals, and promotions are recorded as triggers,
+not additional sources. The journal keeps successful work visible without turning
+every success into an evolve candidate.
 
 Experience candidates come from failures, repeated manual steps, confusing flows, missing commands, test failures, recovery friction, and places where Enoch notices she needed human help for something she could safely automate next time.
 
@@ -88,7 +100,8 @@ Each candidate should be stored with enough context to explain why it exists and
 
 ```yaml
 id: evo_001
-source: theme|backlog|feedback|experience|brainstorm|inheritance|learn
+source: backlog|feedback|experience|brainstorming|inheritance|learning
+initiated_by: human|agent
 title: Short candidate title
 rationale: Why this candidate matters
 proposed_change: What Enoch would change

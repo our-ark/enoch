@@ -165,6 +165,13 @@ class EnochEvolveTests(unittest.TestCase):
             {candidate.source for candidate in candidates},
             {"backlog", "feedback", "experience", "inheritance", "learning", "brainstorming"},
         )
+        initiators = {candidate.source: candidate.initiated_by for candidate in candidates}
+        self.assertEqual(initiators["backlog"], "human")
+        self.assertEqual(initiators["feedback"], "human")
+        self.assertEqual(initiators["learning"], "human")
+        self.assertEqual(initiators["experience"], "agent")
+        self.assertEqual(initiators["inheritance"], "agent")
+        self.assertEqual(initiators["brainstorming"], "agent")
 
     def test_brainstorm_candidates_are_scoped_to_current_theme(self) -> None:
         response = json.dumps(
