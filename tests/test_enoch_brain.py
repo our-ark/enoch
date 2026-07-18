@@ -42,6 +42,7 @@ class EnochBrainTests(unittest.TestCase):
                 summary = model_summary()
 
         self.assertIn("AI model: Codex CLI default", summary)
+        self.assertIn("Enoch config codex.model", summary)
         self.assertIn("Codex config model are not set", summary)
 
     def test_model_summary_reports_codex_config_model_and_reasoning(self) -> None:
@@ -89,6 +90,38 @@ class EnochBrainTests(unittest.TestCase):
         self.assertIn("Model source: ENOCH_CODEX_MODEL", summary)
         self.assertIn("Reasoning effort: medium", summary)
         self.assertIn("Codex config model: gpt-5.5", summary)
+
+    def test_model_summary_prefers_enoch_config_over_codex_config_per_setting(self) -> None:
+        with TemporaryDirectory() as temp, TemporaryDirectory() as codex_home:
+            root = Path(temp)
+            config = root / ".enoch" / "config.yaml"
+            config.parent.mkdir()
+            config.write_text(
+                "\n".join(
+                    [
+                        "codex:",
+                        "  model: gpt-enoch-local",
+                        "  reasoning_effort: high",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            (Path(codex_home) / "config.toml").write_text(
+                "\n".join(
+                    [
+                        'model = "gpt-global"',
+                        'model_reasoning_effort = "low"',
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            with patch.dict("os.environ", {"CODEX_HOME": codex_home}, clear=True):
+                summary = model_summary(root)
+
+        self.assertIn("AI model: gpt-enoch-local", summary)
+        self.assertIn("Model source: Enoch config codex.model", summary)
+        self.assertIn("Reasoning effort: high", summary)
+        self.assertIn("Reasoning source: Enoch config codex.reasoning_effort", summary)
 
     def test_model_summary_reports_enoch_reasoning_override(self) -> None:
         with TemporaryDirectory() as temp:
