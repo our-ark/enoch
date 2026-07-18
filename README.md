@@ -48,6 +48,17 @@ Codex model and reasoning effort, settings are resolved in this order:
 Use `/config` in Telegram to inspect the effective settings and `/config model`
 or `/config reasoning-effort` to change Enoch's local overrides.
 
+## Testing
+
+Run the unit and hermetic evolution E2E tests with:
+
+```bash
+python -m unittest discover -s tests
+```
+
+The E2E design and covered workflows are documented in
+[`docs/testing.md`](docs/testing.md).
+
 ## Lineage
 
 - created by: Genesis
