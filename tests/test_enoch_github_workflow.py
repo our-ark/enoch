@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 import sys
 import unittest
 from unittest.mock import MagicMock, patch
@@ -10,9 +11,12 @@ sys.path.insert(0, str(ROOT / "src"))
 from enoch.github.workflow import (
     EvolutionProvenance,
     PublishError,
+    PullRequestMergeStatus,
     close_pull_request,
     create_pull_request,
     inspect_pull_request_merge,
+    merge_pull_request,
+    parse_pull_request_target,
     prepare_local_publish,
     push_current_branch,
 )
@@ -474,9 +478,157 @@ class EnochGithubWorkflowTests(unittest.TestCase):
                 "view",
                 "https://github.com/our-ark/enoch/pull/12",
                 "--json",
-                "state,mergedAt,mergeCommit,baseRefName,url",
+                (
+                    "number,state,isDraft,mergeable,mergeStateStatus,mergedAt,"
+                    "mergeCommit,baseRefName,headRefOid,url"
+                ),
             ],
         )
+
+    def test_parses_numeric_pull_request_target_for_current_repository(self) -> None:
+        target = parse_pull_request_target("12")
+
+        self.assertEqual(target.reference, "12")
+        self.assertEqual(target.number, 12)
+        self.assertEqual(target.repository, "")
+
+    def test_parses_and_normalizes_full_github_pull_request_url(self) -> None:
+        target = parse_pull_request_target(
+            "https://github.com/our-ark/enoch/pull/12/?tab=checks"
+        )
+
+        self.assertEqual(target.reference, "https://github.com/our-ark/enoch/pull/12")
+        self.assertEqual(target.number, 12)
+        self.assertEqual(target.repository, "our-ark/enoch")
+
+    def test_rejects_non_pull_request_target(self) -> None:
+        for target in ("", "0", "feature", "https://github.com/our-ark/enoch/issues/12"):
+            with self.subTest(target=target), self.assertRaisesRegex(
+                PublishError,
+                "positive PR number",
+            ):
+                parse_pull_request_target(target)
+
+    @patch("enoch.github.workflow.subprocess.run")
+    @patch("enoch.github.workflow.shutil.which", return_value="/usr/local/bin/gh")
+    def test_numeric_target_is_inspected_in_current_repository(
+        self,
+        _which: MagicMock,
+        run: MagicMock,
+    ) -> None:
+        run.return_value = _process_result(
+            stdout=(
+                '{"number":12,"state":"OPEN","isDraft":false,"mergeable":"MERGEABLE",'
+                '"mergeStateStatus":"CLEAN","mergedAt":null,"mergeCommit":null,'
+                '"baseRefName":"main","headRefOid":"abc123",'
+                '"url":"https://github.com/our-ark/enoch/pull/12"}'
+            )
+        )
+
+        result = inspect_pull_request_merge("12", ROOT)
+
+        self.assertEqual(result.repository, "our-ark/enoch")
+        self.assertEqual(result.number, 12)
+        self.assertEqual(run.call_args.args[0][3], "12")
+
+    @patch("enoch.github.workflow.subprocess.run")
+    @patch("enoch.github.workflow.shutil.which", return_value="/usr/local/bin/gh")
+    def test_inaccessible_pull_request_url_reports_github_failure(
+        self,
+        _which: MagicMock,
+        run: MagicMock,
+    ) -> None:
+        run.return_value = _process_result(
+            returncode=1,
+            stderr="GraphQL: Could not resolve to a PullRequest",
+        )
+
+        with self.assertRaisesRegex(PublishError, "Could not resolve"):
+            inspect_pull_request_merge("https://github.com/private/repo/pull/12", ROOT)
+
+    def test_merge_refuses_draft_conflicting_blocked_closed_and_merged_prs(self) -> None:
+        cases = (
+            (_merge_status(is_draft=True), "is a draft"),
+            (
+                _merge_status(mergeable="CONFLICTING", merge_state_status="DIRTY"),
+                "merge conflicts",
+            ),
+            (_merge_status(merge_state_status="BLOCKED"), "merge state: blocked"),
+            (_merge_status(state="CLOSED"), "is closed"),
+            (_merge_status(state="MERGED", merged_at="2026-07-18T18:30:00Z"), "already merged"),
+        )
+        for status, expected in cases:
+            with self.subTest(expected=expected), patch(
+                "enoch.github.workflow.inspect_pull_request_merge",
+                return_value=status,
+            ):
+                with self.assertRaisesRegex(PublishError, expected):
+                    merge_pull_request("12", ROOT)
+
+    @patch("enoch.github.workflow.subprocess.run")
+    @patch("enoch.github.workflow.shutil.which", return_value="/usr/local/bin/gh")
+    @patch("enoch.github.workflow.inspect_pull_request_merge", return_value=None)
+    def test_merges_inspected_head_with_supported_default_method(
+        self,
+        inspect: MagicMock,
+        _which: MagicMock,
+        run: MagicMock,
+    ) -> None:
+        inspect.return_value = _merge_status()
+        run.side_effect = [
+            _process_result(
+                stdout=(
+                    '{"mergeCommitAllowed":true,"squashMergeAllowed":true,'
+                    '"rebaseMergeAllowed":true}'
+                )
+            ),
+            _process_result(
+                stdout=(
+                    '{"merged":true,"message":"Pull Request successfully merged",'
+                    '"sha":"def456"}'
+                )
+            ),
+        ]
+
+        result = merge_pull_request("12", ROOT)
+
+        self.assertEqual(result.number, 12)
+        self.assertEqual(result.method, "merge")
+        self.assertEqual(result.merge_commit, "def456")
+        self.assertEqual(
+            run.call_args_list[1].args[0],
+            [
+                "/usr/local/bin/gh",
+                "api",
+                "--method",
+                "PUT",
+                "repos/our-ark/enoch/pulls/12/merge",
+                "--input",
+                "-",
+            ],
+        )
+        self.assertEqual(
+            json.loads(run.call_args_list[1].kwargs["input"]),
+            {"sha": "abc123", "merge_method": "merge"},
+        )
+
+    @patch("enoch.github.workflow.subprocess.run")
+    @patch("enoch.github.workflow.shutil.which", return_value="/usr/local/bin/gh")
+    @patch("enoch.github.workflow.inspect_pull_request_merge", return_value=None)
+    def test_merge_reports_github_api_failure(
+        self,
+        inspect: MagicMock,
+        _which: MagicMock,
+        run: MagicMock,
+    ) -> None:
+        inspect.return_value = _merge_status()
+        run.side_effect = [
+            _process_result(stdout='{"mergeCommitAllowed":true}'),
+            _process_result(returncode=1, stderr="HTTP 405: Pull Request is not mergeable"),
+        ]
+
+        with self.assertRaisesRegex(PublishError, "HTTP 405"):
+            merge_pull_request("12", ROOT)
 
 
 def _doctor_result(passed: bool, summary: str) -> MagicMock:
@@ -499,6 +651,33 @@ def _git_result(returncode: int, stdout: str = "", stderr: str = "") -> MagicMoc
     result.stdout = stdout
     result.stderr = stderr
     return result
+
+
+def _process_result(returncode: int = 0, stdout: str = "", stderr: str = "") -> MagicMock:
+    result = MagicMock()
+    result.returncode = returncode
+    result.stdout = stdout
+    result.stderr = stderr
+    return result
+
+
+def _merge_status(**overrides) -> PullRequestMergeStatus:
+    values = {
+        "reference": "12",
+        "url": "https://github.com/our-ark/enoch/pull/12",
+        "state": "OPEN",
+        "base_branch": "main",
+        "merge_commit": "",
+        "merged_at": "",
+        "number": 12,
+        "repository": "our-ark/enoch",
+        "is_draft": False,
+        "mergeable": "MERGEABLE",
+        "merge_state_status": "CLEAN",
+        "head_sha": "abc123",
+    }
+    values.update(overrides)
+    return PullRequestMergeStatus(**values)
 
 
 if __name__ == "__main__":
