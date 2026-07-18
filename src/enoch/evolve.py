@@ -64,6 +64,13 @@ class EvolveReport:
     counts_by_source: dict[str, int]
 
 
+@dataclass(frozen=True)
+class EvolveProposal:
+    report: EvolveReport
+    candidates: tuple[EvolveCandidate, ...]
+    top_candidate: EvolveCandidate | None
+
+
 def evolve_state_path(root: Path | None = None) -> Path:
     return enoch_home(root) / "evolve.json"
 
@@ -298,6 +305,16 @@ def evolve_report(root: Path | None = None) -> EvolveReport:
         candidates=candidates,
         top_candidate=candidates[0] if candidates else None,
         counts_by_source=counts,
+    )
+
+
+def propose_evolve(root: Path | None = None) -> EvolveProposal:
+    report = evolve_report(root)
+    candidates = tuple(candidate for candidate in report.candidates if candidate.status == "candidate")
+    return EvolveProposal(
+        report=report,
+        candidates=candidates,
+        top_candidate=candidates[0] if candidates else None,
     )
 
 

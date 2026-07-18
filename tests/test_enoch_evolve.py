@@ -24,6 +24,7 @@ from enoch.evolve import (
     fail_evolve_candidate_for_task,
     load_evolve_candidates,
     load_evolve_state,
+    propose_evolve,
     rank_evolve_candidates,
     reject_evolve_candidate,
     run_evolve_candidate,
@@ -207,6 +208,20 @@ class EnochEvolveTests(unittest.TestCase):
         self.assertEqual(running.status, "running")
         self.assertEqual(visible[0].id, "backlog-1")
         self.assertEqual(visible[0].status, "running")
+
+    def test_proposal_skips_running_candidate(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            add_backlog_item(1, "lower priority candidate", root, priority="p2")
+            add_backlog_item(2, "highest priority candidate", root, priority="p0")
+            run_evolve_candidate("backlog-2", root)
+
+            proposal = propose_evolve(root)
+
+        self.assertEqual([candidate.id for candidate in proposal.candidates], ["backlog-1"])
+        assert proposal.top_candidate is not None
+        self.assertEqual(proposal.top_candidate.id, "backlog-1")
+        self.assertEqual(proposal.top_candidate.status, "candidate")
 
     def test_completed_evolve_task_marks_candidate_done(self) -> None:
         with TemporaryDirectory() as temp:

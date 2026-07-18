@@ -48,6 +48,7 @@ from enoch.evolve import (
     MODE_CO_EVOLVE,
     MODE_DISABLED,
     EvolveCandidate,
+    EvolveProposal,
     EvolveReport,
     EvolveState,
     cancel_evolve_candidate_for_task,
@@ -60,6 +61,7 @@ from enoch.evolve import (
     get_evolve_candidate,
     load_evolve_candidates,
     load_evolve_state,
+    propose_evolve,
     reject_evolve_candidate,
     rank_evolve_candidates,
     run_evolve_candidate,
@@ -330,7 +332,7 @@ class EnochTelegramBot:
         elif command == "/experience":
             reply = _format_experience_report(self.root)
         elif command == "/propose":
-            reply = _format_evolve_proposal(evolve_report(self.root))
+            reply = _format_evolve_proposal(propose_evolve(self.root))
         elif command == "/evolve":
             reply = self._evolve(chat_id, argument)
         elif command == "/mode":
@@ -1424,13 +1426,14 @@ class EnochTelegramBot:
         chat_id = self.client.config.allowed_chat_id
         if chat_id is None or claimed.mode == MODE_DISABLED:
             return None
-        report = evolve_report(self.root)
+        proposal = propose_evolve(self.root)
         if claimed.mode == MODE_CO_EVOLVE:
-            self._safe_send_message(chat_id, "Scheduled evolve check\n\n" + _format_evolve_report(report))
+            self._safe_send_message(chat_id, "Scheduled evolve check\n\n" + _format_evolve_proposal(proposal))
             return None
-        if claimed.mode != MODE_AUTO_EVOLVE or report.top_candidate is None:
+        if claimed.mode != MODE_AUTO_EVOLVE or proposal.top_candidate is None:
             return None
-        candidate = report.top_candidate
+        report = proposal.report
+        candidate = proposal.top_candidate
         request = _evolve_task_request(candidate, report.state.theme)
         context = _evolve_task_context(candidate)
         try:
@@ -2229,16 +2232,17 @@ def _format_experience_report(root: Path) -> str:
     return "\n".join(lines)
 
 
-def _format_evolve_proposal(report: EvolveReport) -> str:
+def _format_evolve_proposal(proposal: EvolveProposal) -> str:
+    report = proposal.report
     if report.state.mode == MODE_DISABLED:
         return "Evolve is disabled. Use /evolve mode co-evolve or /evolve mode auto-evolve before proposing."
-    candidate = next((item for item in report.candidates if item.status == "candidate"), None)
+    candidate = proposal.top_candidate
     if candidate is None:
         return "Enoch found no new evolve candidate to propose."
     lines = [
         "Enoch proposes:",
         f"Theme: {report.state.theme or 'not set'}",
-        f"Ranked {len(report.candidates)} candidate(s) from the six evolve sources.",
+        f"Ranked {len(proposal.candidates)} new candidate(s) from the six evolve sources.",
         "",
     ]
     lines.extend(_format_evolve_candidate(candidate))

@@ -1283,7 +1283,7 @@ class EnochTelegramTests(unittest.TestCase):
 
         reply = client.sent[0][1]
         self.assertIn("Enoch proposes:", reply)
-        self.assertIn("Ranked 1 candidate(s) from the six evolve sources.", reply)
+        self.assertIn("Ranked 1 new candidate(s) from the six evolve sources.", reply)
         self.assertIn("backlog-1 [candidate backlog] improve Telegram work UX", reply)
         self.assertIn("Approve with /evolve run backlog-1.", reply)
         self.assertEqual(candidates[0].status, "candidate")
@@ -1556,6 +1556,8 @@ class EnochTelegramTests(unittest.TestCase):
 
         self.assertIsNone(job)
         self.assertIn("Scheduled evolve check", client.sent[0][1])
+        self.assertIn("Enoch proposes:", client.sent[0][1])
+        self.assertIn("Ranked 1 new candidate(s) from the six evolve sources.", client.sent[0][1])
         self.assertIn("backlog-1 [candidate backlog] improve Telegram work UX", client.sent[0][1])
 
     def test_due_evolve_schedule_auto_mode_queues_top_candidate(self) -> None:
@@ -1581,6 +1583,24 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual(queued.pending[0].context_source, "evolve-scheduler")
         self.assertEqual(report.top_candidate.status, "running")
         self.assertIn("Latest update: Scheduled by evolve auto-evolve.", client.sent[0][1])
+
+    def test_due_auto_evolve_schedule_does_not_requeue_running_candidate(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            add_backlog_item(42, "improve Telegram work UX", root, priority="p0")
+            set_evolve_mode(MODE_AUTO_EVOLVE, root)
+            set_evolve_schedule(60, root, now=datetime(2020, 1, 1, tzinfo=timezone.utc))
+            client = FakeTelegramClient(allowed_chat_id=42)
+            bot = EnochTelegramBot(load_identity(), root, client)
+
+            first = bot._run_due_evolve_schedule()
+            set_evolve_schedule(60, root, now=datetime(2020, 1, 1, tzinfo=timezone.utc))
+            second = bot._run_due_evolve_schedule()
+            queued = task_queue_status(root)
+
+        self.assertIsNotNone(first)
+        self.assertIsNone(second)
+        self.assertEqual(queued.pending_count, 1)
 
     @patch("enoch.telegram.bot.ensure_long_term_memory")
     @patch("enoch.telegram.bot.log_conversation_turn")

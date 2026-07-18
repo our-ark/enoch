@@ -38,8 +38,10 @@ It can run on a fixed interval, once per day at a local HH:MM time, or a cron-st
 When the scheduler is due:
 
 - `disabled` mode advances the schedule and takes no action.
-- `co-evolve` mode sends the ranked evolve report to the locked Telegram chat.
-- `auto-evolve` mode turns the top bounded candidate into a queued task for review-oriented implementation.
+- `co-evolve` mode runs the same proposal selection as `/propose` and sends that proposal to the locked Telegram chat.
+- `auto-evolve` mode runs the same proposal selection as `/propose` and turns its top new candidate into a queued task for review-oriented implementation.
+
+Proposal selection only considers candidates whose status is `candidate`. Already selected or running candidates are not proposed again.
 
 ## Guardrails
 

@@ -204,6 +204,8 @@ Candidate selection and control:
 shows candidates derived from Enoch's task history, recurring workflows, and
 successful skill work. `/propose` refreshes all six sources, ranks the available
 candidates, and presents the strongest new candidate without selecting or running it.
+Scheduled co-evolve and auto-evolve checks use the same proposal selection, so
+selected or running candidates are not proposed or queued again.
 
 ## Principle
 
