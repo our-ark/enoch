@@ -13,6 +13,7 @@ except ImportError:  # pragma: no cover - fcntl is unavailable on Windows.
 
 from enoch.memory.paths import atomic_write, now as current_time
 from enoch.paths import enoch_home
+from enoch.providers.contracts import ConversationId, normalize_conversation_id
 
 
 SCHEMA_VERSION = 1
@@ -24,7 +25,7 @@ _BACKLOG_THREAD_LOCK = threading.RLock()
 @dataclass(frozen=True)
 class BacklogItem:
     id: int
-    chat_id: int
+    chat_id: ConversationId
     text: str
     priority: str
     created_at: str
@@ -48,7 +49,7 @@ def backlog_path(root: Path | None = None) -> Path:
 
 
 def add_backlog_item(
-    chat_id: int,
+    chat_id: ConversationId,
     text: str,
     root: Path | None = None,
     *,
@@ -282,7 +283,7 @@ def _parse_item(raw: object) -> BacklogItem | None:
     if not isinstance(raw, dict):
         return None
     item_id = _int(raw.get("id"))
-    chat_id = _int(raw.get("chat_id"))
+    chat_id = normalize_conversation_id(raw.get("chat_id"))
     text = str(raw.get("text") or "").strip()
     try:
         priority = normalize_priority(str(raw.get("priority") or DEFAULT_PRIORITY))
@@ -295,7 +296,7 @@ def _parse_item(raw: object) -> BacklogItem | None:
     promoted_task_id = _optional_int(raw.get("promoted_task_id"))
     context = str(raw.get("context") or "").strip()
     context_source = str(raw.get("context_source") or "").strip()
-    if item_id <= 0 or not isinstance(chat_id, int) or not text:
+    if item_id <= 0 or chat_id is None or not text:
         return None
     return BacklogItem(
         id=item_id,

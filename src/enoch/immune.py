@@ -10,6 +10,8 @@ import sys
 from pathlib import Path
 
 from enoch.paths import repo_root
+from enoch.providers.contracts import AgentRuntimeError
+from enoch.providers.registry import ProviderError, load_provider, provider_name
 
 
 DEFAULT_TEST_ARGS = ["-m", "unittest", "discover", "-s", "tests"]
@@ -52,7 +54,7 @@ def run_immune_system(root: Path | None = None) -> ImmuneResult:
         _python_runtime_check(root_path, timeout),
         _run_check("tests", _test_command(), root_path, timeout),
         _run_check("import smoke", _import_smoke_command(), root_path, timeout),
-        _codex_binary_check(root_path),
+        _runtime_provider_check(root_path),
         _git_worktree_check(root_path, timeout),
         _memory_storage_check(root_path),
     ]
@@ -206,7 +208,55 @@ def _codex_binary_check(root: Path) -> DoctorCheckResult:
     )
 
 
+def _runtime_provider_check(root: Path) -> DoctorCheckResult:
+    if provider_name("runtime", root) == "codex":
+        return _codex_binary_check(root)
+    try:
+        runtime = load_provider("runtime", root)
+        health = runtime.health(root)
+    except (ProviderError, AgentRuntimeError, OSError) as error:
+        return DoctorCheckResult(
+            name="agent runtime",
+            passed=False,
+            command="load runtime provider",
+            output=str(error),
+            category="operational readiness",
+            summary="provider unavailable",
+        )
+    return DoctorCheckResult(
+        name=health.name,
+        passed=health.passed,
+        command=health.command,
+        output=health.output,
+        category="operational readiness",
+        summary=health.summary,
+    )
+
+
 def _git_worktree_check(root: Path, timeout: float) -> DoctorCheckResult:
+    selected = provider_name("vcs", root)
+    if selected != "git":
+        try:
+            provider = load_provider("vcs", root, name=selected)
+            provider_result = provider.run(["status", "--porcelain"], root)
+        except (ProviderError, OSError) as error:
+            return DoctorCheckResult(
+                name=f"{selected} worktree",
+                passed=False,
+                command=f"{selected} status",
+                output=str(error),
+                category="operational readiness",
+                summary="provider unavailable",
+            )
+        output = str(provider_result.stdout).strip()
+        return DoctorCheckResult(
+            name=f"{selected} worktree",
+            passed=int(provider_result.returncode) == 0,
+            command=f"{selected} status",
+            output=output,
+            category="operational readiness",
+            summary="worktree dirty" if output else "worktree clean",
+        )
     result = _run_check(
         "git worktree",
         ["git", "status", "--porcelain"],

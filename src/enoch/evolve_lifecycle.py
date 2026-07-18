@@ -12,13 +12,13 @@ from enoch.evolve_events import (
     record_evolve_event,
 )
 from enoch.github.workflow import (
-    PublishError,
     PullRequestMergeStatus,
     inspect_pull_request_merge,
 )
 from enoch.git_tools import GitError, run_git
 from enoch.memory.paths import atomic_write
 from enoch.paths import enoch_home
+from enoch.providers.contracts import ForgeProvider, ForgeProviderError
 from enoch.runtime import DEFAULT_BRANCH
 from enoch.task_events import TaskEvent, load_task_events
 from enoch.update_tools import (
@@ -70,6 +70,7 @@ def reconcile_evolve_candidate(
     root: Path,
     *,
     recording_mode: str = "realtime",
+    forge: ForgeProvider | None = None,
 ) -> EvolutionReconcileResult:
     mode = _recording_mode(recording_mode)
     try:
@@ -87,8 +88,12 @@ def reconcile_evolve_candidate(
         )
     pr_url = task_event.pr_urls[-1]
     try:
-        pull_request = inspect_pull_request_merge(pr_url, root)
-    except PublishError as error:
+        pull_request = (
+            forge.inspect_pull_request_merge(pr_url, root)
+            if forge is not None
+            else inspect_pull_request_merge(pr_url, root)
+        )
+    except ForgeProviderError as error:
         raise EvolveLifecycleError(f"Could not inspect {pr_url}: {error}") from error
     _validate_merged_pull_request(pull_request)
     try:

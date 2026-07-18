@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from enoch.telegram.bot import telegram_main
+from enoch.telegram.bot import main
 
 
 if __name__ == "__main__":
-    telegram_main()
+    main()

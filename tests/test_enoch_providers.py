@@ -1,0 +1,237 @@
+from pathlib import Path
+import sys
+import unittest
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
+
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+
+from enoch.commands import config_command
+from enoch.daemon import daemon_paths, plist_bytes
+from enoch.git_tools import run_git
+from enoch.identity import load_identity
+from enoch.immune import _runtime_provider_check
+from enoch.providers import (
+    ChatEvent,
+    ProviderHealth,
+    available_providers,
+    load_provider,
+    provider_name,
+    register_provider,
+)
+from enoch.telegram.bot import EnochApplication
+from enoch.task_queue import enqueue_task, record_task_status_message, task_queue_status
+
+
+class _Result:
+    returncode = 0
+    stdout = "custom vcs"
+    stderr = ""
+
+
+class _Vcs:
+    name = "test-vcs"
+    provider_kind = "vcs"
+
+    def __init__(self) -> None:
+        self.calls = []
+
+    def run(self, args, root=None):
+        self.calls.append((args, root))
+        return _Result()
+
+
+class _Runtime:
+    name = "test-runtime"
+    provider_kind = "runtime"
+    config_section = "test-runtime"
+
+    def __init__(self) -> None:
+        self.messages = []
+        self.reset_count = 0
+
+    def respond(self, identity, message, **kwargs):
+        self.messages.append((identity, message, kwargs))
+        return "Hello from a plugin runtime."
+
+    def act_in_session(self, identity, message, **kwargs):
+        return "Plugin work completed."
+
+    def model_summary(self, root=None):
+        return "AI model: plugin-model"
+
+    def model_options(self):
+        return ()
+
+    def reset_usage(self):
+        self.reset_count += 1
+
+    def health(self, root=None):
+        return ProviderHealth(
+            name="test runtime",
+            passed=True,
+            command="test-runtime doctor",
+            summary="ready",
+        )
+
+
+class _Chat:
+    name = "test-chat"
+    provider_kind = "chat"
+
+    def __init__(self) -> None:
+        self.sent = []
+        self.acks = []
+
+    @property
+    def allowed_conversation_id(self):
+        return "room-1"
+
+    def receive(self, cursor=None):
+        return []
+
+    def send_message(self, conversation_id, text):
+        self.sent.append((conversation_id, text))
+        return "message-2"
+
+    def edit_message(self, conversation_id, message_id, text):
+        return None
+
+    def send_read_ack(self, conversation_id, message_id):
+        self.acks.append((conversation_id, message_id))
+
+
+class _EntryPoint:
+    name = "chat.entry-chat"
+
+    def load(self):
+        return lambda _root=None: _Chat()
+
+
+class _EntryPoints(list):
+    def select(self, *, group):
+        return self if group == "enoch.providers" else ()
+
+
+class EnochProviderTests(unittest.TestCase):
+    def test_defaults_preserve_existing_stack(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+
+            self.assertEqual(provider_name("chat", root), "telegram")
+            self.assertEqual(provider_name("runtime", root), "codex")
+            self.assertEqual(provider_name("vcs", root), "git")
+            self.assertEqual(provider_name("forge", root), "github")
+
+    def test_registered_provider_can_be_selected_from_instance_config(self) -> None:
+        provider = _Vcs()
+        register_provider("vcs", "test-vcs", lambda _root=None: provider, replace=True)
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            config = root / ".enoch" / "config.yaml"
+            config.parent.mkdir()
+            config.write_text("providers:\n  vcs: test-vcs\n", encoding="utf-8")
+
+            result = run_git(["status", "--short"], root)
+
+        self.assertEqual(result.stdout, "custom vcs")
+        self.assertEqual(provider.calls, [(["status", "--short"], root)])
+
+    def test_config_lists_and_selects_installed_providers(self) -> None:
+        register_provider("runtime", "test-runtime", lambda _root=None: _Runtime(), replace=True)
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+
+            status = config_command("/config providers", root)
+            changed = config_command("/config provider runtime test-runtime", root)
+
+            self.assertIn("runtime: codex", status)
+            self.assertIn("test-runtime", status)
+            self.assertIn("runtime provider set to test-runtime", changed)
+            self.assertEqual(provider_name("runtime", root), "test-runtime")
+
+    def test_doctor_uses_selected_runtime_health(self) -> None:
+        register_provider("runtime", "test-runtime", lambda _root=None: _Runtime(), replace=True)
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            config = root / ".enoch" / "config.yaml"
+            config.parent.mkdir()
+            config.write_text("providers:\n  runtime: test-runtime\n", encoding="utf-8")
+
+            check = _runtime_provider_check(root)
+
+        self.assertTrue(check.passed)
+        self.assertEqual(check.name, "test runtime")
+        self.assertEqual(check.command, "test-runtime doctor")
+
+    def test_normalized_chat_event_uses_runtime_without_telegram_payloads(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            chat = _Chat()
+            runtime = _Runtime()
+            bot = EnochApplication(load_identity(), root, chat, runtime=runtime)
+            event = ChatEvent(
+                cursor=2,
+                conversation_id="room-1",
+                message_id="message-1",
+                text="hello",
+            )
+
+            with (
+                patch("enoch.telegram.bot.log_conversation_turn"),
+                patch("enoch.telegram.bot.ensure_long_term_memory"),
+                patch("enoch.telegram.bot._save_telegram_offset"),
+                patch.object(bot, "_queue_session_sync"),
+            ):
+                bot.handle_event(event)
+
+        self.assertEqual(chat.acks, [("room-1", "message-1")])
+        self.assertEqual(chat.sent, [("room-1", "Hello from a plugin runtime.")])
+        self.assertEqual(runtime.reset_count, 1)
+        self.assertEqual(runtime.messages[0][2]["session_key"], "test-chat:room-1")
+
+    def test_custom_chat_provider_selects_generic_daemon_launcher(self) -> None:
+        register_provider("chat", "test-chat", lambda _root=None: _Chat(), replace=True)
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            config = root / ".enoch" / "config.yaml"
+            config.parent.mkdir()
+            config.write_text("providers:\n  chat: test-chat\n", encoding="utf-8")
+            paths = daemon_paths(root, home=root / "home")
+
+            payload = plist_bytes(paths).decode("utf-8")
+
+        self.assertIn("enoch-agent", payload)
+        self.assertNotIn("enoch-telegram", payload)
+
+    def test_string_chat_and_message_ids_survive_task_persistence(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            job = enqueue_task("room-1", "plugin task", root)
+            record_task_status_message(job.id, "message-9", root)
+
+            pending = task_queue_status(root).pending[0]
+
+        self.assertEqual(pending.chat_id, "room-1")
+        self.assertEqual(pending.status_message_id, "message-9")
+
+    def test_builtin_providers_are_discoverable(self) -> None:
+        self.assertIn("telegram", available_providers("chat"))
+        self.assertIn("codex", available_providers("runtime"))
+        self.assertEqual(load_provider("vcs", name="git").name, "git")
+
+    def test_installed_entry_point_loads_without_core_changes(self) -> None:
+        with patch(
+            "enoch.providers.registry.metadata.entry_points",
+            return_value=_EntryPoints([_EntryPoint()]),
+        ):
+            provider = load_provider("chat", name="entry-chat")
+
+        self.assertEqual(provider.name, "test-chat")
+        self.assertEqual(provider.provider_kind, "chat")
+
+
+if __name__ == "__main__":
+    unittest.main()

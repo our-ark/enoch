@@ -16,6 +16,12 @@ except ImportError:  # pragma: no cover - fcntl is unavailable on Windows.
 
 from enoch.memory.paths import atomic_write, now as current_time
 from enoch.paths import enoch_home
+from enoch.providers.contracts import (
+    ConversationId,
+    MessageId,
+    normalize_conversation_id,
+    normalize_message_id,
+)
 from enoch.task_events import normalize_task_initiator, normalize_task_source, record_task_event
 
 
@@ -28,13 +34,13 @@ _QUEUE_THREAD_LOCK = threading.RLock()
 @dataclass(frozen=True)
 class TaskJob:
     id: int
-    chat_id: int
+    chat_id: ConversationId
     text: str
     created_at: str
     started_at: str = ""
     completed_at: str = ""
     status: str = "pending"
-    status_message_id: int | None = None
+    status_message_id: MessageId | None = None
     result: str = ""
     pr_urls: tuple[str, ...] = ()
     context: str = ""
@@ -81,7 +87,7 @@ def task_queue_path(root: Path | None = None) -> Path:
 
 
 def enqueue_task(
-    chat_id: int,
+    chat_id: ConversationId,
     text: str,
     root: Path | None = None,
     *,
@@ -229,7 +235,7 @@ def retry_failed_task(
 
 
 def enqueue_task_front(
-    chat_id: int,
+    chat_id: ConversationId,
     text: str,
     root: Path | None = None,
     *,
@@ -284,7 +290,7 @@ def enqueue_task_front(
 
 
 def begin_direct_task(
-    chat_id: int,
+    chat_id: ConversationId,
     text: str,
     root: Path | None = None,
     *,
@@ -342,7 +348,11 @@ def begin_direct_task(
         return job
 
 
-def record_task_status_message(task_id: int, message_id: int, root: Path | None = None) -> None:
+def record_task_status_message(
+    task_id: int,
+    message_id: MessageId,
+    root: Path | None = None,
+) -> None:
     with _queue_transaction(root):
         data = _load_queue(root)
         pending = []
@@ -1207,13 +1217,13 @@ def _parse_job(raw: object) -> TaskJob | None:
     if not isinstance(raw, dict):
         return None
     task_id = _int(raw.get("id"))
-    chat_id = _int(raw.get("chat_id"))
+    chat_id = normalize_conversation_id(raw.get("chat_id"))
     text = str(raw.get("text") or "").strip()
     created_at = str(raw.get("created_at") or "").strip()
     started_at = str(raw.get("started_at") or "").strip()
     completed_at = str(raw.get("completed_at") or "").strip()
     status = str(raw.get("status") or "").strip() or "pending"
-    status_message_id = _optional_int(raw.get("status_message_id"))
+    status_message_id = normalize_message_id(raw.get("status_message_id"))
     result = str(raw.get("result") or "").strip()
     pr_urls = _parse_pr_urls(raw.get("pr_urls"))
     pr_urls = _merge_pr_urls(pr_urls, _pull_request_urls(result))
@@ -1250,7 +1260,7 @@ def _parse_job(raw: object) -> TaskJob | None:
         signal_actor = signal_actor or _legacy_signal_actor(evidence_source)
         candidate_actor = candidate_actor or "agent"
         approval_actor = approval_actor or _legacy_approval_actor(trigger, context_source, initiated_by)
-    if task_id <= 0 or not isinstance(chat_id, int) or not text:
+    if task_id <= 0 or chat_id is None or not text:
         return None
     return TaskJob(
         id=task_id,

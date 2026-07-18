@@ -19,6 +19,7 @@ from enoch.git_tools import (
     run_git,
 )
 from enoch.immune import ImmuneResult, run_immune_system
+from enoch.providers.contracts import ForgeProviderError
 from enoch.runtime import DEFAULT_BRANCH, DEFAULT_REMOTE, PROTECTED_BRANCHES
 
 
@@ -28,7 +29,7 @@ _POSITIVE_PR_NUMBER = re.compile(r"^[1-9][0-9]*$")
 _GITHUB_REPOSITORY_PART = re.compile(r"^[A-Za-z0-9_.-]+$")
 
 
-class PublishError(RuntimeError):
+class PublishError(ForgeProviderError):
     pass
 
 

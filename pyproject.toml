@@ -10,8 +10,9 @@ dependencies = []
 
 [project.scripts]
 enoch = "enoch.cli:main"
+enoch-agent = "enoch.telegram:main"
 enoch-daemon = "enoch.daemon:main"
-enoch-telegram = "enoch.telegram:main"
+enoch-telegram = "enoch.telegram:telegram_main"
 
 [build-system]
 requires = ["setuptools>=77"]

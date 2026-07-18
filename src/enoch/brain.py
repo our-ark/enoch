@@ -24,6 +24,11 @@ from enoch.identity import Identity
 from enoch.last_codex_input import record_last_codex_input
 from enoch.memory.prompt import memory_for_prompt
 from enoch.prompt_append import startup_context_note
+from enoch.providers.contracts import (
+    AgentRuntimeAccessUnavailable,
+    AgentRuntimeCancelled,
+    AgentRuntimeError,
+)
 from enoch.runtime import ACTION_SANDBOX_READ_ONLY, WORKSPACE_WRITE_SANDBOX
 from enoch.task_config import task_timeout_seconds
 
@@ -66,15 +71,15 @@ class CodexModelOption:
 _TOKEN_USAGE: ContextVar[TokenUsage] = ContextVar("enoch_token_usage", default=TokenUsage())
 
 
-class BrainError(RuntimeError):
+class BrainError(AgentRuntimeError):
     """Raised when Enoch cannot reach her Codex brain."""
 
 
-class BrainCancelled(BrainError):
+class BrainCancelled(BrainError, AgentRuntimeCancelled):
     """Raised when Enoch's human cancels an active Codex run."""
 
 
-class CodexAccessUnavailable(BrainError):
+class CodexAccessUnavailable(BrainError, AgentRuntimeAccessUnavailable):
     """Raised when Codex authentication, quota, or rate limits block a run."""
 
 

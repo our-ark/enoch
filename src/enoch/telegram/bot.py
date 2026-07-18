@@ -27,9 +27,8 @@ from enoch.backlog import (
 from enoch.automatic_learning import record_learning_artifact
 from enoch.brain import (
     BrainCancelled,
-    BrainError,
-    CodexAccessUnavailable,
     act_in_session,
+    codex_model_options,
     model_summary,
     reset_token_usage,
     respond,
@@ -130,6 +129,7 @@ from enoch.github.workflow import (
     feature_title,
     format_evolution_provenance,
     inspect_pull_request,
+    inspect_pull_request_merge,
     list_open_pull_requests,
     merge_pull_request,
     prepare_local_publish,
@@ -167,6 +167,22 @@ from enoch.prompt_append import (
     startup_context_note,
     work_request_prompt,
 )
+from enoch.providers.contracts import (
+    AgentRuntime,
+    AgentRuntimeAccessUnavailable,
+    AgentRuntimeCancelled,
+    AgentRuntimeError,
+    ChatEvent,
+    ChatProvider,
+    ChatProviderError,
+    ConversationId,
+    ForgeProvider,
+    ForgeProviderError,
+    MessageId,
+)
+from enoch.providers.forge import FunctionForgeProvider
+from enoch.providers.registry import ProviderError, load_provider
+from enoch.providers.runtime import FunctionAgentRuntime
 from enoch.runtime import (
     ACTION_SANDBOX_FULL_ACCESS,
     DEFAULT_BRANCH,
@@ -199,7 +215,7 @@ from enoch.task_queue import (
     task_worker_is_active,
 )
 from enoch.task_events import TASK_SOURCES
-from enoch.telegram.client import TelegramClient, TelegramError, load_config
+from enoch.telegram.client import TelegramClient, TelegramError, load_config, telegram_event
 from enoch.commands import (
     action_lock_message as _action_lock_message,
     config_command,
@@ -249,8 +265,8 @@ class ShutdownRequested(RuntimeError):
 
 @dataclass
 class WorkStatusMessage:
-    chat_id: int
-    message_id: int
+    chat_id: ConversationId
+    message_id: MessageId
     request: str
     started_at: float
     task_id: int | None = None
@@ -313,12 +329,31 @@ class EnochTelegramBot:
         self,
         identity: Identity,
         root: Path,
-        client: TelegramClient,
+        client: ChatProvider,
         previous_shutdown_warning: str = "",
+        *,
+        runtime: AgentRuntime | None = None,
+        forge: ForgeProvider | None = None,
     ) -> None:
         self.identity = identity
         self.root = root
         self.client = client
+        self._forge_injected = forge is not None
+        self.runtime = runtime or FunctionAgentRuntime(
+            respond_fn=lambda *args, **kwargs: respond(*args, **kwargs),
+            act_in_session_fn=lambda *args, **kwargs: act_in_session(*args, **kwargs),
+            model_summary_fn=lambda root=None: model_summary(root),
+            model_options_fn=lambda: codex_model_options(),
+            reset_usage_fn=lambda: reset_token_usage(),
+        )
+        self.forge = forge or FunctionForgeProvider(
+            close_fn=lambda *args, **kwargs: close_pull_request(*args, **kwargs),
+            create_fn=lambda **kwargs: create_pull_request(**kwargs),
+            inspect_fn=lambda *args, **kwargs: inspect_pull_request(*args, **kwargs),
+            inspect_merge_fn=lambda *args, **kwargs: inspect_pull_request_merge(*args, **kwargs),
+            list_fn=lambda *args, **kwargs: list_open_pull_requests(*args, **kwargs),
+            merge_fn=lambda *args, **kwargs: merge_pull_request(*args, **kwargs),
+        )
         self.previous_shutdown_warning = previous_shutdown_warning
         self.offset: int | None = _load_telegram_offset(root)
         self._restart_after_reply = False
@@ -332,29 +367,36 @@ class EnochTelegramBot:
         if recovered is None:
             recovered = recover_interrupted_task(root)
         _cleanup_completed_task_worktree(recovered, root)
-        self._work_status_messages: dict[int, int] = _load_task_status_messages(root)
+        self._work_status_messages: dict[int, MessageId] = _load_task_status_messages(root)
 
     def run_forever(self) -> None:
         while True:
             try:
                 self.run_once()
-            except (OSError, TelegramError) as error:
+            except (OSError, ChatProviderError) as error:
                 print(f"Enoch Telegram polling error: {error}")
                 time.sleep(5)
 
     def notify_startup(self) -> None:
-        chat_id = self.client.config.allowed_chat_id
+        chat_id = _allowed_conversation_id(self.client)
         if chat_id is None:
             return
         self.client.send_message(
             chat_id,
             _startup_message(self.identity, self.root, self.previous_shutdown_warning),
         )
-        _sync_session_activity(self.identity, self.root, chat_id, startup_context_note(memory_for_prompt(self.root)))
+        _sync_session_activity(
+            self.identity,
+            self.root,
+            chat_id,
+            startup_context_note(memory_for_prompt(self.root)),
+            runtime=self.runtime,
+            session_key=self._session_key(chat_id),
+        )
 
     def notify_shutdown(self, reason: str) -> None:
         _record_system_event("shutdown", self.root, details={"reason": reason})
-        chat_id = self.client.config.allowed_chat_id
+        chat_id = _allowed_conversation_id(self.client)
         if chat_id is None:
             return
         self.client.send_message(chat_id, _shutdown_message(self.identity, self.root, reason))
@@ -364,30 +406,41 @@ class EnochTelegramBot:
         if recovered is None:
             recovered = recover_interrupted_task(self.root)
         _cleanup_completed_task_worktree(recovered, self.root)
-        for update in self.client.get_updates(self.offset):
-            self.handle_update(update)
+        receive = getattr(self.client, "receive", None)
+        if callable(receive):
+            for event in receive(self.offset):
+                self.handle_event(event)
+        else:
+            for update in self.client.get_updates(self.offset):
+                self.handle_update(update)
         self._enqueue_due_cron_jobs()
         self._run_due_evolve_schedule()
         self._maybe_start_task_worker()
 
     def handle_update(self, update: dict[str, Any]) -> None:
         next_offset = _next_update_offset(update)
-        message = update.get("message") or {}
-        chat = message.get("chat") or {}
-        chat_id = chat.get("id")
-        message_id = message.get("message_id")
-        text = str(message.get("text") or "").strip()
-        if not isinstance(chat_id, int) or not text:
+        event = telegram_event(update)
+        if event is None:
             self._remember_update_offset(next_offset)
             return
+        self.handle_event(event)
+
+    def handle_event(self, event: ChatEvent) -> None:
+        chat_id = event.conversation_id
+        message_id = event.message_id
+        text = event.text.strip()
         if not self._chat_allowed(chat_id):
-            self._remember_update_offset(next_offset)
+            self._remember_update_offset(event.cursor)
             return
 
         self._safe_send_read_ack(chat_id, message_id)
-        reset_token_usage()
+        self.runtime.reset_usage()
         command, argument = _parse_telegram_command(text)
-        work_text = _with_replied_message_context(text, message)
+        work_text = _with_replied_text_context(
+            text,
+            event.replied_text,
+            provider_name=_chat_provider_name(self.client),
+        )
         if command == "/start":
             reply = "Use /help to see available commands."
         elif command == "/help":
@@ -425,7 +478,7 @@ class EnochTelegramBot:
         elif command == "/evolve":
             reply = self._evolve(chat_id, argument)
         elif command == "/config":
-            reply = config_command(text, self.root)
+            reply = config_command(text, self.root, runtime=self.runtime)
         elif command == "/self":
             reply = identity_summary(self.identity, self.root)
         elif command == "/status":
@@ -454,7 +507,7 @@ class EnochTelegramBot:
             logged_reply = "\n\n".join([reply, f"Telegram send failed: {send_error}"])
         self._record_turn(chat_id, text, logged_reply)
         self._flush_session_syncs()
-        self._remember_update_offset(next_offset)
+        self._remember_update_offset(event.cursor)
         if self._restart_after_reply:
             self._restart_after_reply = False
             _schedule_daemon_restart(self.root)
@@ -465,22 +518,32 @@ class EnochTelegramBot:
         self.offset = offset
         _save_telegram_offset(offset, self.root)
 
-    def _chat_allowed(self, chat_id: int) -> bool:
-        allowed = self.client.config.allowed_chat_id
+    def _chat_allowed(self, chat_id: ConversationId) -> bool:
+        allowed = _allowed_conversation_id(self.client)
         return allowed is None or allowed == chat_id
 
-    def _respond_read_only_turn(self, chat_id: int, text: str, *, session_key: str | None = None) -> str:
+    def _session_key(self, chat_id: ConversationId) -> str:
+        provider = _chat_provider_name(self.client)
+        return f"{provider}:{chat_id}"
+
+    def _respond_read_only_turn(
+        self,
+        chat_id: ConversationId,
+        text: str,
+        *,
+        session_key: str | None = None,
+    ) -> str:
         try:
-            return respond(
+            return self.runtime.respond(
                 self.identity,
                 read_only_turn_prompt(text),
                 cwd=self.root,
-                session_key=session_key or f"telegram:{chat_id}",
+                session_key=session_key or self._session_key(chat_id),
             )
-        except BrainError as error:
+        except AgentRuntimeError as error:
             return str(error)
 
-    def _queue_session_sync(self, chat_id: int | None, note: str) -> None:
+    def _queue_session_sync(self, chat_id: ConversationId | None, note: str) -> None:
         if chat_id is None or not note.strip():
             return
         self._pending_session_syncs.append((chat_id, note.strip()))
@@ -489,12 +552,25 @@ class EnochTelegramBot:
         pending = self._pending_session_syncs
         self._pending_session_syncs = []
         for chat_id, note in pending:
-            _sync_session_activity(self.identity, self.root, chat_id, note)
+            _sync_session_activity(
+                self.identity,
+                self.root,
+                chat_id,
+                note,
+                runtime=self.runtime,
+                session_key=self._session_key(chat_id),
+            )
 
-    def _natural(self, chat_id: int, text: str) -> str:
-        return self._natural_with_session(chat_id, text, session_key=f"telegram:{chat_id}")
+    def _natural(self, chat_id: ConversationId, text: str) -> str:
+        return self._natural_with_session(chat_id, text, session_key=self._session_key(chat_id))
 
-    def _natural_with_session(self, chat_id: int, text: str, *, session_key: str) -> str:
+    def _natural_with_session(
+        self,
+        chat_id: ConversationId,
+        text: str,
+        *,
+        session_key: str,
+    ) -> str:
         reply = self._respond_read_only_turn(chat_id, text, session_key=session_key)
         regression_result = extract_task_regression_signals(reply)
         self._apply_task_regression_signals(regression_result.signals)
@@ -507,7 +583,7 @@ class EnochTelegramBot:
         memory_note = self._save_memory_requests(memory_result.requests)
         return "\n\n".join(part for part in [reply, memory_note] if part)
 
-    def _do(self, chat_id: int, text: str) -> str:
+    def _do(self, chat_id: ConversationId, text: str) -> str:
         command, argument = _parse_telegram_command(text)
         if command != "/do" or not argument:
             return "Use /do <request> to run work now."
@@ -545,23 +621,27 @@ class EnochTelegramBot:
             context_source=snapshot.source,
         )
 
-    def _resolve_task_context_snapshot(self, chat_id: int, request: str) -> TaskContextSnapshot:
+    def _resolve_task_context_snapshot(
+        self,
+        chat_id: ConversationId,
+        request: str,
+    ) -> TaskContextSnapshot:
         try:
-            reply = respond(
+            reply = self.runtime.respond(
                 self.identity,
                 _task_context_snapshot_prompt(request),
                 cwd=self.root,
-                session_key=f"telegram:{chat_id}",
+                session_key=self._session_key(chat_id),
             )
-        except CodexAccessUnavailable as error:
+        except AgentRuntimeAccessUnavailable as error:
             return TaskContextSnapshot(codex_unavailable_reason=str(error))
-        except BrainError as error:
+        except AgentRuntimeError as error:
             return TaskContextSnapshot(error=str(error))
         return _parse_task_context_snapshot(reply)
 
     def _run_direct_work_with_status(
         self,
-        chat_id: int,
+        chat_id: ConversationId,
         request: str,
         *,
         context: str = "",
@@ -587,7 +667,7 @@ class EnochTelegramBot:
             return "Enoch could not create a task id for this /do job."
         context = direct_task.context
         if not session_key:
-            session_key = f"telegram:{chat_id}:do:{direct_task.id}"
+            session_key = f"{self._session_key(chat_id)}:do:{direct_task.id}"
         status_message = WorkStatusMessage(
             chat_id=chat_id,
             message_id=0,
@@ -658,10 +738,10 @@ class EnochTelegramBot:
             elif _work_reply_failed(reply):
                 completed_status = "failed"
                 failure = classify_task_failure(reply)
-        except CodexAccessUnavailable as error:
+        except AgentRuntimeAccessUnavailable as error:
             reply = _codex_pause_warning(job.id, str(error))
             completed_status = "paused"
-        except BrainCancelled as error:
+        except AgentRuntimeCancelled as error:
             if deadline.expired.is_set():
                 reply = _task_timeout_message(deadline.timeout_seconds)
                 completed_status = "failed"
@@ -818,7 +898,14 @@ class EnochTelegramBot:
                 continue
             worker.join(timeout=max(0.0, deadline - time.monotonic()))
 
-    def _run_direct_work(self, chat_id: int, request: str, *, context: str = "", session_key: str) -> str:
+    def _run_direct_work(
+        self,
+        chat_id: ConversationId,
+        request: str,
+        *,
+        context: str = "",
+        session_key: str,
+    ) -> str:
         self._raise_if_current_task_cancelled()
         github_maintenance = _github_maintenance_request(request)
         if github_maintenance is not None:
@@ -843,7 +930,7 @@ class EnochTelegramBot:
             )
             before_action = _worktree_snapshot(work_root)
             self._send_step_update(chat_id, "Working.")
-            result = act_in_session(
+            result = self.runtime.act_in_session(
                 self.identity,
                 work_request_prompt(_work_request_with_context(request, context)),
                 cwd=work_root,
@@ -861,11 +948,11 @@ class EnochTelegramBot:
             _record_direct_action(request, result, self.root)
             action_files = tuple(sorted(_changed_files_or_empty(work_root)))
             after_action = _worktree_snapshot(work_root)
-        except BrainCancelled:
+        except AgentRuntimeCancelled:
             raise
-        except CodexAccessUnavailable:
+        except AgentRuntimeAccessUnavailable:
             raise
-        except (BrainError, GitError, OSError) as error:
+        except (AgentRuntimeError, GitError, OSError) as error:
             return f"Enoch could not complete the requested work yet: {error}"
 
         parts = [branch_note, result or "Enoch completed the requested work.", memory_note]
@@ -941,7 +1028,7 @@ class EnochTelegramBot:
     def _run_github_maintenance(self, request: "GithubMaintenanceRequest") -> str:
         self._update_work_status("Updating GitHub pull requests.")
         results = [
-            close_pull_request(
+            self.forge.close_pull_request(
                 number,
                 root=self.root,
                 comment=_duplicate_close_comment(request.keep_number) if request.keep_number else None,
@@ -991,7 +1078,11 @@ class EnochTelegramBot:
             self._send_step_update(chat_id, f"Pushed branch {pushed.branch}.")
 
             self._send_step_update(chat_id, "Opening a pull request.")
-            pr = _create_pull_request_for_current_task(work_root, self.root)
+            pr = _create_pull_request_for_current_task(
+                work_root,
+                self.root,
+                forge=self.forge,
+            )
             outputs.append(_format_pr_result(pr))
             if pr.url:
                 self._update_work_status(_pr_step_update(pr), pr_url=pr.url)
@@ -1012,7 +1103,7 @@ class EnochTelegramBot:
                     chat_id,
                     repository_handoff_note(pr.branch, pr.url, resident_branch),
                 )
-        except (GitError, PublishError) as error:
+        except (GitError, ForgeProviderError) as error:
             failure = f"Enoch could not publish existing branch {branch}: {error}"
             self._send_step_update(chat_id, failure)
             return "\n\n".join([*outputs, failure]) if outputs else failure
@@ -1093,7 +1184,11 @@ class EnochTelegramBot:
             self._send_step_update(chat_id, f"Pushed branch {pushed.branch}.")
 
             self._send_step_update(chat_id, "Opening a pull request.")
-            pr = _create_pull_request_for_current_task(publish_root, self.root)
+            pr = _create_pull_request_for_current_task(
+                publish_root,
+                self.root,
+                forge=self.forge,
+            )
             outputs.append(_format_pr_result(pr))
             summaries.append(_pr_summary(pr))
             if pr.url:
@@ -1120,7 +1215,7 @@ class EnochTelegramBot:
                     chat_id,
                     repository_handoff_note(pr.branch, pr.url, resident_branch),
                 )
-        except (GitError, PublishError) as error:
+        except (GitError, ForgeProviderError) as error:
             failure = f"Enoch could not publish this edit as a pull request: {error}"
             self._send_step_update(chat_id, failure)
             return "\n\n".join([*outputs, failure]) if outputs else failure
@@ -1174,30 +1269,39 @@ class EnochTelegramBot:
             return self._remember_resident_branch(fallback)
         return self._remember_resident_branch(DEFAULT_BRANCH)
 
-    def _send_step_update(self, chat_id: int | None, message: str) -> None:
+    def _send_step_update(self, chat_id: ConversationId | None, message: str) -> None:
         if chat_id is None:
             return
         if self._update_work_status(message):
             return
         self._safe_send_message(chat_id, f"Enoch update: {message}")
 
-    def _safe_send_message(self, chat_id: int, message: str) -> str:
+    def _safe_send_message(self, chat_id: ConversationId, message: str) -> str:
         try:
             self.client.send_message(chat_id, message)
-        except (OSError, TelegramError) as error:
+        except (OSError, ChatProviderError) as error:
             return str(error)
         return ""
 
-    def _safe_send_message_id(self, chat_id: int, message: str) -> int | None:
+    def _safe_send_message_id(
+        self,
+        chat_id: ConversationId,
+        message: str,
+    ) -> MessageId | None:
         try:
             return self.client.send_message(chat_id, message)
-        except (OSError, TelegramError):
+        except (OSError, ChatProviderError):
             return None
 
-    def _safe_edit_message(self, chat_id: int, message_id: int, message: str) -> None:
+    def _safe_edit_message(
+        self,
+        chat_id: ConversationId,
+        message_id: MessageId,
+        message: str,
+    ) -> None:
         try:
             self.client.edit_message(chat_id, message_id, message)
-        except (OSError, TelegramError):
+        except (OSError, ChatProviderError):
             return
 
     def _update_work_status(self, latest_update: str, *, status: str | None = None, pr_url: str = "") -> bool:
@@ -1218,12 +1322,12 @@ class EnochTelegramBot:
         )
         return True
 
-    def _safe_send_read_ack(self, chat_id: int, message_id: object) -> None:
-        if not isinstance(message_id, int):
+    def _safe_send_read_ack(self, chat_id: ConversationId, message_id: object) -> None:
+        if not isinstance(message_id, (int, str)):
             return
         try:
             self.client.send_read_ack(chat_id, message_id)
-        except (OSError, TelegramError) as error:
+        except (OSError, ChatProviderError) as error:
             _record_system_event(
                 "telegram_read_ack_failed",
                 self.root,
@@ -1235,13 +1339,13 @@ class EnochTelegramBot:
                 },
             )
 
-    def _status(self, chat_id: int | None = None) -> str:
+    def _status(self, chat_id: ConversationId | None = None) -> str:
         status = status_message(
             self.identity,
             self.root,
-            allowed_chat_id=self.client.config.allowed_chat_id,
+            allowed_chat_id=_allowed_conversation_id(self.client),
             chat_id=chat_id,
-            model_summary_fn=model_summary,
+            model_summary_fn=self.runtime.model_summary,
         )
         return "\n\n".join([status, _task_status_message(self.root)])
 
@@ -1288,7 +1392,7 @@ class EnochTelegramBot:
             source="learning",
             initiated_by="human",
             trigger="/learn",
-            session_key=f"telegram:{chat_id}",
+            session_key=self._session_key(chat_id),
         )
         return "\n\n".join(part for part in [visible, memory_note, edit_result] if part)
 
@@ -1404,7 +1508,7 @@ class EnochTelegramBot:
             proposal_id = latest_open_proposal_id(candidate.id, self.root)
         try:
             reconciled_result = (
-                _reconciled_retry_result(original, self.root)
+                _reconciled_retry_result(original, self.root, forge=self.forge)
                 if original is not None
                 else ""
             )
@@ -1413,7 +1517,7 @@ class EnochTelegramBot:
                 self.root,
                 reconciled_result=reconciled_result,
             )
-        except (OSError, PublishError, TaskRetryError) as error:
+        except (OSError, ForgeProviderError, TaskRetryError) as error:
             return f"Enoch could not retry task #{task_id}: {error}"
         if candidate is not None:
             self._record_evolve_event(
@@ -1778,7 +1882,7 @@ class EnochTelegramBot:
                     mission=self.identity.mission,
                     generator=lambda prompt: self._respond_read_only_turn(chat_id, prompt),
                 )
-            except (BrainError, OSError, ValueError) as error:
+            except (AgentRuntimeError, OSError, ValueError) as error:
                 return f"Enoch could not brainstorm evolution candidates: {error}"
             report = evolve_report(self.root)
             return f"Added {len(ideas)} theme-guided brainstorming candidate(s).\n\n" + _format_evolve_report(report)
@@ -1823,10 +1927,15 @@ class EnochTelegramBot:
                     "of a completed candidate."
                 )
             try:
+                reconcile_kwargs: dict[str, object] = {
+                    "recording_mode": recording_mode,
+                }
+                if self._forge_injected:
+                    reconcile_kwargs["forge"] = self.forge
                 result = reconcile_evolve_candidate(
                     reconcile_parts[0],
                     self.root,
-                    recording_mode=recording_mode,
+                    **reconcile_kwargs,
                 )
             except EvolveLifecycleError as error:
                 return f"Enoch could not reconcile evolution promotion: {error}"
@@ -1845,7 +1954,7 @@ class EnochTelegramBot:
                 generator=lambda prompt: self._respond_read_only_turn(
                     chat_id,
                     prompt,
-                    session_key=f"telegram:{chat_id}:{trigger}",
+                    session_key=f"{self._session_key(chat_id)}:{trigger}",
                 ),
             ),
         )
@@ -1926,7 +2035,7 @@ class EnochTelegramBot:
             return None
 
     def _evolve_approve(self, candidate_id: str) -> str:
-        chat_id = self.client.config.allowed_chat_id
+        chat_id = _allowed_conversation_id(self.client)
         if chat_id is None:
             return "Enoch needs a locked Telegram chat before approving evolve work."
         state = evolve_report(self.root).state
@@ -1989,7 +2098,7 @@ class EnochTelegramBot:
         )
 
     def _evolve_retry(self, candidate_id: str) -> str:
-        chat_id = self.client.config.allowed_chat_id
+        chat_id = _allowed_conversation_id(self.client)
         if chat_id is None:
             return "Enoch needs a locked Telegram chat before retrying evolve work."
         state = evolve_report(self.root).state
@@ -2312,7 +2421,7 @@ class EnochTelegramBot:
         claimed = claim_due_evolve_schedule(self.root)
         if claimed is None:
             return None
-        chat_id = self.client.config.allowed_chat_id
+        chat_id = _allowed_conversation_id(self.client)
         if chat_id is None:
             self._record_evolve_event(
                 "checked",
@@ -2529,10 +2638,10 @@ class EnochTelegramBot:
             elif _work_reply_failed(reply):
                 completed_status = "failed"
                 failure = classify_task_failure(reply)
-        except CodexAccessUnavailable as error:
+        except AgentRuntimeAccessUnavailable as error:
             reply = _codex_pause_warning(job.id, str(error))
             completed_status = "paused"
-        except BrainCancelled as error:
+        except AgentRuntimeCancelled as error:
             if deadline.expired.is_set():
                 reply = _task_timeout_message(deadline.timeout_seconds)
                 completed_status = "failed"
@@ -2777,7 +2886,7 @@ class EnochTelegramBot:
             source="inheritance",
             initiated_by="human",
             trigger="/inherit",
-            session_key=f"telegram:{chat_id}",
+            session_key=self._session_key(chat_id),
         )
         try:
             marked = mark_inbox_candidate(
@@ -2802,24 +2911,24 @@ class EnochTelegramBot:
         parts = argument.split()
         if not parts or (len(parts) == 1 and parts[0].lower() == "list"):
             try:
-                pull_requests = list_open_pull_requests(self.root)
-            except PublishError as error:
+                pull_requests = self.forge.list_open_pull_requests(self.root)
+            except ForgeProviderError as error:
                 return f"Enoch could not list open pull requests: {error}"
             return _format_open_pull_requests(pull_requests)
         if len(parts) == 2 and parts[0].lower() == "show":
             try:
-                pull_request = inspect_pull_request(parts[1], self.root)
-            except PublishError as error:
+                pull_request = self.forge.inspect_pull_request(parts[1], self.root)
+            except ForgeProviderError as error:
                 return f"Enoch could not inspect that pull request: {error}"
             return _format_pull_request(pull_request)
         if len(parts) != 2 or parts[0].lower() != "merge":
             return pr_usage()
-        allowed_chat_id = self.client.config.allowed_chat_id
+        allowed_chat_id = _allowed_conversation_id(self.client)
         if allowed_chat_id is None or allowed_chat_id != chat_id:
             return "Enoch will only merge a pull request from her locked Telegram chat."
         try:
-            result = merge_pull_request(parts[1], self.root)
-        except PublishError as error:
+            result = self.forge.merge_pull_request(parts[1], self.root)
+        except ForgeProviderError as error:
             return f"Enoch could not merge that pull request: {error}"
         return _format_pull_request_merge_result(result)
 
@@ -2840,10 +2949,10 @@ class EnochTelegramBot:
         self._safe_send_message(chat_id, f"Enoch is still working after {_format_elapsed(elapsed_seconds)}: {mode}.")
 
     def _action_allowed(self) -> bool:
-        return self.client.config.allowed_chat_id is not None
+        return _allowed_conversation_id(self.client) is not None
 
     def _restart_from_telegram(self) -> str:
-        if self.client.config.allowed_chat_id is None:
+        if _allowed_conversation_id(self.client) is None:
             return "\n".join(
                 [
                     "Enoch will not restart from Telegram unless Telegram is locked to one chat.",
@@ -2858,7 +2967,7 @@ class EnochTelegramBot:
             ]
         )
 
-    def _record_turn(self, chat_id: int, text: str, reply: str) -> None:
+    def _record_turn(self, chat_id: ConversationId, text: str, reply: str) -> None:
         try:
             log_conversation_turn(
                 chat_id=chat_id,
@@ -2871,12 +2980,17 @@ class EnochTelegramBot:
             return
 
 
-def main() -> None:
+EnochApplication = EnochTelegramBot
+
+
+def main(chat_provider_name: str = "") -> None:
     root = Path.cwd()
     identity = load_identity()
     try:
-        config = load_config(root=root)
-    except TelegramError as error:
+        chat_provider = load_provider("chat", root, name=chat_provider_name)
+        runtime_provider = load_provider("runtime", root)
+        forge_provider = load_provider("forge", root)
+    except (ProviderError, ChatProviderError) as error:
         print(str(error))
         raise SystemExit(1) from error
     previous_shutdown_warning = _begin_lifecycle_run(root)
@@ -2896,39 +3010,46 @@ def main() -> None:
     bot = EnochTelegramBot(
         identity=identity,
         root=root,
-        client=TelegramClient(config),
+        client=chat_provider,
         previous_shutdown_warning=previous_shutdown_warning,
+        runtime=runtime_provider,
+        forge=forge_provider,
     )
     _install_shutdown_handlers()
-    print(f"{identity.name} is listening on Telegram.")
+    provider_label = str(getattr(chat_provider, "name", "chat")).strip() or "chat"
+    print(f"{identity.name} is listening on {provider_label}.")
     try:
-        if config.allowed_chat_id is None:
+        if _allowed_conversation_id(chat_provider) is None:
             print(
-                "Telegram chat lock is not set; all chats with the bot token are accepted. "
-                "Send /status, then run `bin/enoch setup-chat <chat_id>` locally."
+                f"{provider_label.title()} conversation lock is not set; all conversations "
+                "accepted by the provider can reach Enoch."
             )
         else:
             try:
                 bot.notify_startup()
-            except (OSError, TelegramError) as error:
-                print(f"Enoch could not send Telegram startup notification: {error}")
+            except (OSError, ChatProviderError) as error:
+                print(f"Enoch could not send startup notification: {error}")
         bot.run_forever()
     except ShutdownRequested as shutdown:
         _notify_shutdown(bot, shutdown.reason)
         print(f"\n{identity.name} is shutting down: {shutdown.reason}.")
     except KeyboardInterrupt:
         _notify_shutdown(bot, "keyboard interrupt")
-        print(f"\n{identity.name} stopped listening on Telegram.")
+        print(f"\n{identity.name} stopped listening on {provider_label}.")
+
+
+def telegram_main() -> None:
+    main("telegram")
 
 
 def _notify_shutdown(bot: EnochTelegramBot, reason: str) -> None:
     bot.stop_workers()
-    sent = bot.client.config.allowed_chat_id is not None
+    sent = _allowed_conversation_id(bot.client) is not None
     try:
         bot.notify_shutdown(reason)
-    except (OSError, TelegramError) as error:
+    except (OSError, ChatProviderError) as error:
         sent = False
-        print(f"Enoch could not send Telegram shutdown notification: {error}")
+        print(f"Enoch could not send shutdown notification: {error}")
     _record_lifecycle_shutdown(bot.root, reason, shutdown_notification_sent=sent)
 
 
@@ -2960,6 +3081,22 @@ def _parse_telegram_command(text: str) -> tuple[str, str]:
         return "", text.strip()
     command = first.split("@", 1)[0].lower()
     return command, rest.strip()
+
+
+def _allowed_conversation_id(client: object) -> ConversationId | None:
+    if hasattr(client, "allowed_conversation_id"):
+        return getattr(client, "allowed_conversation_id")
+    config = getattr(client, "config", None)
+    return getattr(config, "allowed_chat_id", None)
+
+
+def _chat_provider_name(client: object) -> str:
+    name = str(getattr(client, "name", "")).strip().lower()
+    if name:
+        return name
+    if hasattr(getattr(client, "config", None), "allowed_chat_id"):
+        return "telegram"
+    return "chat"
 
 
 def _format_pull_request_merge_result(result: PullRequestMergeResult) -> str:
@@ -3135,6 +3272,19 @@ def _task_timeout_message(timeout_seconds: int) -> str:
 
 
 def _with_replied_message_context(text: str, message: dict[str, Any]) -> str:
+    return _with_replied_text_context(
+        text,
+        _replied_message_text(message),
+        provider_name="telegram",
+    )
+
+
+def _with_replied_text_context(
+    text: str,
+    reply_text: str,
+    *,
+    provider_name: str,
+) -> str:
     command, argument = _parse_telegram_command(text)
     if command not in {"/do", "/task", "/backlog", "/cron"} or not argument:
         return text
@@ -3145,13 +3295,13 @@ def _with_replied_message_context(text: str, message: dict[str, Any]) -> str:
         return text
     if command == "/cron" and first_word == "cancel":
         return text
-    reply_text = _replied_message_text(message)
     if not reply_text:
         return text
+    label = "Telegram" if provider_name.strip().lower() == "telegram" else provider_name.strip().title()
     return "\n\n".join(
         [
             f"{command} {argument}",
-            "Context from replied Telegram message:",
+            f"Context from replied {label or 'chat'} message:",
             reply_text,
         ]
     )
@@ -3226,7 +3376,20 @@ def _record_current_task_result(result: str, root: Path) -> None:
     record_task_result(task_id, result, root)
 
 
-def _reconciled_retry_result(job: TaskJob, root: Path) -> str:
+def _reconciled_retry_result(
+    job: TaskJob,
+    root: Path,
+    *,
+    forge: ForgeProvider | None = None,
+) -> str:
+    forge = forge or FunctionForgeProvider(
+        close_fn=close_pull_request,
+        create_fn=create_pull_request,
+        inspect_fn=inspect_pull_request,
+        inspect_merge_fn=inspect_pull_request_merge,
+        list_fn=list_open_pull_requests,
+        merge_fn=merge_pull_request,
+    )
     candidates = []
     logged_result = _latest_direct_action_result_for_task(job, root)
     if logged_result:
@@ -3239,7 +3402,7 @@ def _reconciled_retry_result(job: TaskJob, root: Path) -> str:
             result,
         )
         for url in urls:
-            pull_request = inspect_pull_request(url, root)
+            pull_request = forge.inspect_pull_request(url, root)
             if (
                 pull_request.state == "OPEN"
                 or pull_request.state == "MERGED"
@@ -3249,7 +3412,7 @@ def _reconciled_retry_result(job: TaskJob, root: Path) -> str:
     if job.branch_name:
         matching = [
             pull_request
-            for pull_request in list_open_pull_requests(root)
+            for pull_request in forge.list_open_pull_requests(root)
             if pull_request.head_branch == job.branch_name
         ]
         if matching:
@@ -4036,14 +4199,24 @@ def _legacy_task_approval_actor(job: TaskJob) -> str:
 def _create_pull_request_for_current_task(
     work_root: Path,
     state_root: Path | None = None,
+    *,
+    forge: ForgeProvider | None = None,
 ) -> PullRequestResult:
+    forge = forge or FunctionForgeProvider(
+        close_fn=close_pull_request,
+        create_fn=create_pull_request,
+        inspect_fn=inspect_pull_request,
+        inspect_merge_fn=inspect_pull_request_merge,
+        list_fn=list_open_pull_requests,
+        merge_fn=merge_pull_request,
+    )
     state_root = state_root or work_root
     task_id = _CURRENT_TASK_ID.get()
     job = _task_by_id(task_id, state_root) if task_id is not None else None
     provenance = _evolution_provenance_for_job(job) if job is not None else None
     if provenance is None:
-        return create_pull_request(root=work_root)
-    return create_pull_request(root=work_root, evolution_provenance=provenance)
+        return forge.create_pull_request(root=work_root)
+    return forge.create_pull_request(root=work_root, evolution_provenance=provenance)
 
 
 def _history_task(task_id: int, root: Path) -> TaskJob | None:
@@ -4363,7 +4536,7 @@ def _looks_like_branch_name(value: str) -> bool:
     return bool(re.match(r"^[A-Za-z0-9._/-]+$", value))
 
 
-def _load_task_status_messages(root: Path) -> dict[int, int]:
+def _load_task_status_messages(root: Path) -> dict[int, MessageId]:
     status = task_queue_status(root)
     jobs = [*status.pending]
     if status.running is not None:
@@ -4371,15 +4544,30 @@ def _load_task_status_messages(root: Path) -> dict[int, int]:
     return {job.id: job.status_message_id for job in jobs if job.status_message_id is not None}
 
 
-def _sync_session_activity(identity: Identity, root: Path, chat_id: int, note: str) -> None:
+def _sync_session_activity(
+    identity: Identity,
+    root: Path,
+    chat_id: ConversationId,
+    note: str,
+    *,
+    runtime: AgentRuntime | None = None,
+    session_key: str = "",
+) -> None:
+    runtime = runtime or FunctionAgentRuntime(
+        respond_fn=respond,
+        act_in_session_fn=act_in_session,
+        model_summary_fn=model_summary,
+        model_options_fn=codex_model_options,
+        reset_usage_fn=reset_token_usage,
+    )
     try:
-        respond(
+        runtime.respond(
             identity,
             note,
             cwd=root,
-            session_key=f"telegram:{chat_id}",
+            session_key=session_key or f"telegram:{chat_id}",
         )
-    except BrainError:
+    except AgentRuntimeError:
         return
 
 

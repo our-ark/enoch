@@ -15,6 +15,7 @@ except ImportError:  # pragma: no cover - fcntl is unavailable on Windows.
 
 from enoch.memory.paths import atomic_write, now as current_time
 from enoch.paths import enoch_home
+from enoch.providers.contracts import ConversationId, normalize_conversation_id
 
 
 SCHEMA_VERSION = 1
@@ -29,7 +30,7 @@ _INTERVAL_PATTERN = re.compile(
 @dataclass(frozen=True)
 class CronJob:
     id: int
-    chat_id: int
+    chat_id: ConversationId
     text: str
     interval_seconds: int
     created_at: str
@@ -83,7 +84,7 @@ def format_cron_interval(seconds: int) -> str:
 
 
 def add_cron_job(
-    chat_id: int,
+    chat_id: ConversationId,
     text: str,
     interval_seconds: int,
     root: Path | None = None,
@@ -260,7 +261,7 @@ def _parse_job(raw: object) -> CronJob | None:
     if not isinstance(raw, dict):
         return None
     job_id = _int(raw.get("id"))
-    chat_id = _int(raw.get("chat_id"))
+    chat_id = normalize_conversation_id(raw.get("chat_id"))
     text = str(raw.get("text") or "").strip()
     interval_seconds = _int(raw.get("interval_seconds"))
     created_at = str(raw.get("created_at") or "").strip()
@@ -271,7 +272,7 @@ def _parse_job(raw: object) -> CronJob | None:
     last_task_id = _optional_int(raw.get("last_task_id"))
     context = str(raw.get("context") or "").strip()
     context_source = str(raw.get("context_source") or "").strip()
-    if job_id <= 0 or chat_id <= 0 or interval_seconds <= 0 or not text:
+    if job_id <= 0 or chat_id is None or interval_seconds <= 0 or not text:
         return None
     return CronJob(
         id=job_id,

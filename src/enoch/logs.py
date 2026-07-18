@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from enoch.paths import enoch_home
+from enoch.providers.contracts import ConversationId
 
 
 def conversation_log_dir(root: Path | None = None) -> Path:
@@ -30,7 +31,7 @@ def system_log_path(root: Path | None = None, *, when: datetime | None = None) -
 
 def log_conversation_turn(
     *,
-    chat_id: int,
+    chat_id: ConversationId,
     message: str,
     reply: str,
     root: Path | None = None,

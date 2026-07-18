@@ -25,6 +25,15 @@ from enoch.lineage.core import (
     refresh_lineage_inbox,
     resolve_lineage,
 )
+from enoch.providers.contracts import AgentRuntime
+from enoch.providers.contracts import ConversationId
+from enoch.providers.registry import (
+    DEFAULT_PROVIDERS,
+    ProviderError,
+    available_providers,
+    provider_name,
+)
+from enoch.providers.runtime import FunctionAgentRuntime
 from enoch.skills import skills_command
 from enoch.task_config import (
     format_task_timeout,
@@ -48,8 +57,8 @@ def status_message(
     identity: Identity,
     root: Path,
     *,
-    allowed_chat_id: int | None,
-    chat_id: int | None = None,
+    allowed_chat_id: ConversationId | None,
+    chat_id: ConversationId | None = None,
     model_summary_fn: ModelSummaryFn = model_summary,
 ) -> str:
     lines = [
@@ -123,11 +132,15 @@ def thinking_command(
     text: str,
     root: Path,
     *,
-    allowed_chat_id: int | None,
+    allowed_chat_id: ConversationId | None,
     model_summary_fn: ModelSummaryFn = model_summary,
     write_config: Callable[[str, str, str | None, Path | None], Path] = write_section_value,
     prefix: str = "/",
+    runtime: AgentRuntime | None = None,
 ) -> str:
+    runtime = runtime or _default_runtime()
+    if model_summary_fn is model_summary:
+        model_summary_fn = runtime.model_summary
     parts = text.split()
     if len(parts) == 1:
         return thinking_status(root, model_summary_fn=model_summary_fn, prefix=prefix)
@@ -135,7 +148,7 @@ def thinking_command(
     if choice in {"default", "reset", "off"}:
         if allowed_chat_id is None:
             return thinking_lock_message()
-        write_config("codex", "reasoning_effort", None, root)
+        write_config(runtime.config_section, "reasoning_effort", None, root)
         return "\n".join(
             [
                 "Enoch cleared her local thinking override.",
@@ -147,7 +160,7 @@ def thinking_command(
         return thinking_usage(prefix=prefix)
     if allowed_chat_id is None:
         return thinking_lock_message()
-    write_config("codex", "reasoning_effort", choice, root)
+    write_config(runtime.config_section, "reasoning_effort", choice, root)
     return "\n".join(
         [
             f"Enoch thinking level set to {choice}.",
@@ -188,14 +201,47 @@ def thinking_lock_message() -> str:
     return "Enoch needs Telegram to be locked to one chat before changing her thinking level."
 
 
-def config_command(text: str, root: Path, *, prefix: str = "/") -> str:
+def config_command(
+    text: str,
+    root: Path,
+    *,
+    prefix: str = "/",
+    runtime: AgentRuntime | None = None,
+) -> str:
+    runtime = runtime or _default_runtime()
     parts = text.split()
     if len(parts) == 1:
-        return config_status(root, prefix=prefix)
+        return config_status(root, prefix=prefix, runtime=runtime)
     setting = parts[1].lower().replace("_", "-")
+    if setting in {"provider", "providers"}:
+        if len(parts) == 2:
+            return provider_config_status(root, prefix=prefix)
+        if len(parts) != 4 or setting != "provider":
+            return config_usage(prefix=prefix)
+        kind = parts[2].strip().lower()
+        if kind not in DEFAULT_PROVIDERS:
+            return "Provider kind must be chat, runtime, vcs, or forge."
+        value = parts[3].strip().lower()
+        if value in {"default", "reset"}:
+            write_section_value("providers", kind, None, root)
+            selected = DEFAULT_PROVIDERS[kind]
+            message = f"Enoch {kind} provider reset to {selected}."
+        else:
+            try:
+                choices = available_providers(kind)
+            except ProviderError as error:
+                return str(error)
+            if value not in choices:
+                return (
+                    f"Unknown {kind} provider {value}. "
+                    f"Available: {', '.join(choices) or 'none'}."
+                )
+            write_section_value("providers", kind, value, root)
+            message = f"Enoch {kind} provider set to {value}."
+        return "\n\n".join([message, provider_config_status(root, prefix=prefix)])
     if setting == "task-timeout":
         if len(parts) == 2:
-            return config_status(root, prefix=prefix)
+            return config_status(root, prefix=prefix, runtime=runtime)
         if len(parts) != 3:
             return config_usage(prefix=prefix)
         value = parts[2].lower()
@@ -212,43 +258,57 @@ def config_command(text: str, root: Path, *, prefix: str = "/") -> str:
                 f"Task timeout set to {format_task_timeout(settings.timeout_seconds)}"
                 + (" (default)." if settings.uses_default_timeout else "."),
                 "",
-                config_status(root, prefix=prefix),
+                config_status(root, prefix=prefix, runtime=runtime),
             ]
         )
     if setting == "model":
         if len(parts) == 2:
-            return model_config_status(root, prefix=prefix)
+            return model_config_status(root, prefix=prefix, runtime=runtime)
         if len(parts) != 3:
             return config_usage(prefix=prefix)
         value = parts[2].strip()
+        section = runtime.config_section
+        runtime_label = runtime.name.title()
         if value.lower() in {"default", "reset"}:
-            write_section_value("codex", "model", None, root)
-            message = "Enoch cleared her local Codex model override."
+            write_section_value(section, "model", None, root)
+            message = f"Enoch cleared her local {runtime_label} model override."
         elif not _CODEX_MODEL_PATTERN.fullmatch(value):
-            return "Codex model must be one model identifier without spaces."
+            return f"{runtime_label} model must be one model identifier without spaces."
         else:
-            write_section_value("codex", "model", value, root)
-            message = f"Enoch Codex model set to {value}."
-        return "\n\n".join([message, model_config_status(root, prefix=prefix)])
+            write_section_value(section, "model", value, root)
+            message = f"Enoch {runtime_label} model set to {value}."
+        return "\n\n".join(
+            [message, model_config_status(root, prefix=prefix, runtime=runtime)]
+        )
     if setting == "reasoning-effort":
         if len(parts) == 2:
-            return config_status(root, prefix=prefix)
+            return config_status(root, prefix=prefix, runtime=runtime)
         if len(parts) != 3:
             return config_usage(prefix=prefix)
         value = parts[2].strip().lower()
+        section = runtime.config_section
+        runtime_label = runtime.name.title()
         if value in {"default", "reset"}:
-            write_section_value("codex", "reasoning_effort", None, root)
-            message = "Enoch cleared her local Codex reasoning effort override."
+            write_section_value(section, "reasoning_effort", None, root)
+            message = f"Enoch cleared her local {runtime_label} reasoning effort override."
         elif value not in REASONING_EFFORTS:
-            return "Codex reasoning effort must be low, medium, high, or default."
+            return f"{runtime_label} reasoning effort must be low, medium, high, or default."
         else:
-            write_section_value("codex", "reasoning_effort", value, root)
-            message = f"Enoch Codex reasoning effort set to {value}."
-        return "\n\n".join([message, config_status(root, prefix=prefix)])
+            write_section_value(section, "reasoning_effort", value, root)
+            message = f"Enoch {runtime_label} reasoning effort set to {value}."
+        return "\n\n".join(
+            [message, config_status(root, prefix=prefix, runtime=runtime)]
+        )
     return config_usage(prefix=prefix)
 
 
-def config_status(root: Path, *, prefix: str = "/") -> str:
+def config_status(
+    root: Path,
+    *,
+    prefix: str = "/",
+    runtime: AgentRuntime | None = None,
+) -> str:
+    runtime = runtime or _default_runtime()
     settings = task_settings(root)
     default = " (default)" if settings.uses_default_timeout else ""
     command = f"{prefix}config"
@@ -256,9 +316,10 @@ def config_status(root: Path, *, prefix: str = "/") -> str:
         [
             "Enoch config:",
             f"- Task timeout: {format_task_timeout(settings.timeout_seconds)}{default}",
+            f"- Providers: {_provider_summary(root)}",
             "",
-            "Codex:",
-            model_summary(root),
+            f"{runtime.name.title()}:",
+            runtime.model_summary(root),
             "",
             f"Use {command} model to see available models or set one with {command} model <name>.",
             (
@@ -270,32 +331,88 @@ def config_status(root: Path, *, prefix: str = "/") -> str:
     )
 
 
-def model_config_status(root: Path, *, prefix: str = "/") -> str:
+def model_config_status(
+    root: Path,
+    *,
+    prefix: str = "/",
+    runtime: AgentRuntime | None = None,
+) -> str:
+    runtime = runtime or _default_runtime()
     command = f"{prefix}config"
-    summary = model_summary(root)
+    summary = runtime.model_summary(root)
     current = _model_name_from_summary(summary)
-    lines = ["Codex model:", summary, "", "Available GPT-5.6 models:"]
-    options = tuple(
-        option
-        for option in codex_model_options()
-        if option.slug == "gpt-5.6" or option.slug.startswith("gpt-5.6-")
-    )
+    runtime_label = runtime.name.title()
+    all_options = runtime.model_options()
+    if runtime.name == "codex":
+        options = tuple(
+            option
+            for option in all_options
+            if option.slug == "gpt-5.6" or option.slug.startswith("gpt-5.6-")
+        )
+        available_label = "Available GPT-5.6 models:"
+        example = f"Example: {command} model gpt-5.6-sol"
+    else:
+        options = all_options
+        available_label = f"Available {runtime_label} models:"
+        example = (
+            f"Set with {command} model <name>."
+            if not options
+            else f"Example: {command} model {options[0].slug}"
+        )
+    lines = [f"{runtime_label} model:", summary, "", available_label]
     if options:
         for option in options:
             current_label = " [current]" if option.slug == current else ""
             description = f" - {option.description}" if option.description else ""
             lines.append(f"- {option.slug}{current_label}{description}")
     else:
-        lines.append("- unavailable; Enoch could not find GPT-5.6 models in the installed Codex catalog")
+        lines.append(
+            f"- unavailable; Enoch could not find compatible models in the installed {runtime_label} catalog"
+        )
     lines.extend(
         [
             "",
-            f"Example: {command} model gpt-5.6-sol",
-            f"Use {command} model default to inherit the Codex default.",
-            "Other valid model ids are accepted for private or future Codex rollouts.",
+            example,
+            f"Use {command} model default to inherit the {runtime_label} default.",
+            f"Other valid model ids are accepted for private or future {runtime_label} rollouts.",
         ]
     )
     return "\n".join(lines)
+
+
+def provider_config_status(root: Path, *, prefix: str = "/") -> str:
+    command = f"{prefix}config"
+    lines = ["Enoch providers:"]
+    for kind in ("chat", "runtime", "vcs", "forge"):
+        selected = provider_name(kind, root)
+        choices = ", ".join(available_providers(kind))
+        lines.append(f"- {kind}: {selected} (available: {choices})")
+    lines.extend(
+        [
+            "",
+            f"Set with {command} provider <chat|runtime|vcs|forge> <name>.",
+            f"Reset with {command} provider <kind> default.",
+            "Restart Enoch after changing a provider.",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _provider_summary(root: Path) -> str:
+    return ", ".join(
+        f"{kind}={provider_name(kind, root)}"
+        for kind in ("chat", "runtime", "vcs", "forge")
+    )
+
+
+def _default_runtime() -> FunctionAgentRuntime:
+    return FunctionAgentRuntime(
+        respond_fn=lambda *_args, **_kwargs: "",
+        act_in_session_fn=lambda *_args, **_kwargs: "",
+        model_summary_fn=model_summary,
+        model_options_fn=codex_model_options,
+        reset_usage_fn=lambda: None,
+    )
 
 
 def _model_name_from_summary(summary: str) -> str:
@@ -312,6 +429,8 @@ def config_usage(prefix: str = "/") -> str:
         [
             "Config commands:",
             f"{command} - show local system settings",
+            f"{command} providers - show active and available providers",
+            f"{command} provider <kind> <name|default> - select a provider",
             f"{command} model - show the effective and available Codex models",
             f"{command} model <name> - set a local Codex model override",
             f"{command} model default - inherit the Codex model",

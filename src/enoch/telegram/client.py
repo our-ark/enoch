@@ -8,6 +8,7 @@ from typing import Any
 from urllib import parse, request
 
 from enoch.config import config_path, read_section
+from enoch.providers.contracts import ChatEvent, ChatProviderError, ConversationId
 from enoch.runtime import DEFAULT_TELEGRAM_POLL_TIMEOUT, MAX_TELEGRAM_MESSAGE
 
 
@@ -15,7 +16,7 @@ TELEGRAM_API = "https://api.telegram.org"
 READ_ACK_EMOJI = "👀"
 
 
-class TelegramError(RuntimeError):
+class TelegramError(ChatProviderError):
     pass
 
 
@@ -27,8 +28,22 @@ class TelegramConfig:
 
 
 class TelegramClient:
+    name = "telegram"
+    provider_kind = "chat"
+
     def __init__(self, config: TelegramConfig) -> None:
         self.config = config
+
+    @property
+    def allowed_conversation_id(self) -> ConversationId | None:
+        return self.config.allowed_chat_id
+
+    def receive(self, cursor: int | None = None) -> list[ChatEvent]:
+        return [
+            event
+            for update in self.get_updates(cursor)
+            if (event := telegram_event(update)) is not None
+        ]
 
     def get_updates(self, offset: int | None = None) -> list[dict[str, Any]]:
         payload: dict[str, Any] = {"timeout": self.config.poll_timeout}
@@ -67,6 +82,25 @@ class TelegramClient:
         return data
 
 
+def telegram_event(update: dict[str, Any]) -> ChatEvent | None:
+    update_id = update.get("update_id")
+    message = update.get("message") or {}
+    chat = message.get("chat") or {}
+    chat_id = chat.get("id")
+    message_id = message.get("message_id")
+    text = str(message.get("text") or "").strip()
+    if not isinstance(update_id, int) or not isinstance(chat_id, int) or not text:
+        return None
+    return ChatEvent(
+        cursor=update_id + 1,
+        conversation_id=chat_id,
+        message_id=message_id if isinstance(message_id, int) else None,
+        text=text,
+        replied_text=_replied_text(message),
+        raw=update,
+    )
+
+
 def load_config(root: Path | None = None) -> TelegramConfig:
     settings = read_section("telegram", root)
     token = _setting(settings, "bot_token", "ENOCH_TELEGRAM_BOT_TOKEN")
@@ -99,6 +133,17 @@ def _message_id(data: dict[str, Any]) -> int | None:
         return None
     message_id = result.get("message_id")
     return message_id if isinstance(message_id, int) else None
+
+
+def _replied_text(message: dict[str, Any]) -> str:
+    reply = message.get("reply_to_message")
+    if not isinstance(reply, dict):
+        return ""
+    for key in ("text", "caption"):
+        value = reply.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
 
 
 def _optional_int(value: str | None, *, name: str) -> int | None:

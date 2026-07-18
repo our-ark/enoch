@@ -11,7 +11,16 @@ from enoch.immune import run_immune_system
 from enoch.instance import InstanceError, format_instance_init_result, init_instance
 from enoch.logs import log_system_event
 from enoch.memory.store import ensure_long_term_memory
-from enoch.commands import inherit_command, learn_command, lineage_command, mission_command, skills_command, thinking_command
+from enoch.providers.registry import load_provider
+from enoch.commands import (
+    config_command,
+    inherit_command,
+    learn_command,
+    lineage_command,
+    mission_command,
+    skills_command,
+    thinking_command,
+)
 from enoch.setup_tools import setup_command
 from enoch.update_tools import schedule_daemon_restart as _schedule_daemon_restart
 from enoch.updater import update_from_main
@@ -22,6 +31,7 @@ HELP = """Commands:
   init        Create or claim a local Enoch instance worktree.
   status      Show identity, model, and lineage.
   setup       Configure Telegram token, chat lock, and setup status.
+  config      Show settings or select installed providers.
   thinking    Show or set Enoch's Codex thinking level.
   mission     Show or update Enoch's mission.
   ancestors   Inspect ancestor chain and inheritable updates.
@@ -110,6 +120,8 @@ def _command_output(raw_command: str, identity: Identity, root: Path) -> str | o
         return _setup(raw_command, root)
     if command == "setup-token" or command.startswith("setup-token "):
         return _setup(raw_command, root)
+    if command == "config" or command.startswith("config "):
+        return config_command(raw_command, root, prefix="")
     if command == "thinking" or command.startswith("thinking "):
         return _thinking(raw_command, root)
     if command == "mission" or command.startswith("mission "):
@@ -135,6 +147,8 @@ def _status(identity: Identity, root: Path) -> None:
 
 def _status_text(identity: Identity, root: Path) -> str:
     ancestor = display_ancestor(identity, root)
+    runtime = load_provider("runtime", root)
+    summary = model_summary(root) if runtime.name == "codex" else runtime.model_summary(root)
     return "\n".join(
         [
             f"{identity.name} status:",
@@ -145,7 +159,7 @@ def _status_text(identity: Identity, root: Path) -> str:
             f"Ancestor: {ancestor}",
             f"Mission: {identity.mission}",
             "",
-            model_summary(root),
+            summary,
         ]
     )
 
@@ -194,7 +208,16 @@ def _mission(text: str, identity: Identity, root: Path) -> str:
 
 
 def _thinking(text: str, root: Path) -> str:
-    return thinking_command(text, root, allowed_chat_id=0, model_summary_fn=model_summary, prefix="")
+    runtime = load_provider("runtime", root)
+    summary_fn = model_summary if runtime.name == "codex" else runtime.model_summary
+    return thinking_command(
+        text,
+        root,
+        allowed_chat_id=0,
+        model_summary_fn=summary_fn,
+        prefix="",
+        runtime=runtime,
+    )
 
 
 def _skills(text: str, root: Path) -> str:

@@ -5,9 +5,11 @@ import subprocess
 from pathlib import Path
 
 from enoch.paths import repo_root
+from enoch.providers.contracts import VersionControlProviderError
+from enoch.providers.registry import load_provider, provider_name
 
 
-class GitError(RuntimeError):
+class GitError(VersionControlProviderError):
     pass
 
 
@@ -19,6 +21,15 @@ class GitResult:
 
 
 def run_git(args: list[str], root: Path | None = None) -> GitResult:
+    selected = provider_name("vcs", root)
+    if selected != "git":
+        provider = load_provider("vcs", root, name=selected)
+        result = provider.run(args, root)
+        return GitResult(
+            int(result.returncode),
+            str(result.stdout).strip(),
+            str(result.stderr).strip(),
+        )
     result = subprocess.run(
         ["git", *args],
         cwd=repo_root(root),

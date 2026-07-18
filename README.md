@@ -48,6 +48,16 @@ Codex model and reasoning effort, settings are resolved in this order:
 Use `/config` in Telegram to inspect the effective settings and `/config model`
 or `/config reasoning-effort` to change Enoch's local overrides.
 
+## Providers
+
+Telegram, Codex, Git, and GitHub are built-in providers rather than required
+fork points. Installed Python packages can add chat, agent runtime, version
+control, and code forge providers through the `enoch.providers` entry-point
+group. Select them in `.enoch/config.yaml` or with `/config provider`.
+
+Provider contracts, packaging examples, normalized chat events, and migration
+compatibility are documented in [`docs/providers.md`](docs/providers.md).
+
 ## Testing
 
 Run the unit and hermetic evolution E2E tests with:
