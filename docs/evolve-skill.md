@@ -175,34 +175,35 @@ Enoch should require human direction before changing:
 
 Enoch should prefer small pull requests with a clear rationale and test plan.
 
-## First Command Surface
+## Command Surface
 
-The first implementation can stay small.
+Source visibility:
 
 ```text
+/feedback
+/experience
+```
+
+Candidate selection and control:
+
+```text
+/propose
 /evolve
-/evolve disabled
-/evolve co-evolve
-/evolve auto-evolve
+/evolve mode <mode>
 /evolve theme <text>
-```
-
-`/evolve` should show:
-
-- current mode
-- current theme
-- candidate counts by source
-- top candidate
-- whether Enoch would propose, wait, or run
-
-Future commands can expose more detail:
-
-```text
+/evolve brainstorm
+/evolve explore <agent>
 /evolve candidates
-/evolve select
-/evolve run
+/evolve select <id>
+/evolve run <id>
 /evolve reject <id>
+/evolve schedule <text>
 ```
+
+`/feedback` shows the human feedback signals available to evolution. `/experience`
+shows candidates derived from Enoch's task history, recurring workflows, and
+successful skill work. `/propose` refreshes all six sources, ranks the available
+candidates, and presents the strongest new candidate without selecting or running it.
 
 ## Principle
 

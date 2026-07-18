@@ -35,7 +35,7 @@ from enoch.lineage.core import (
     LineageResolution,
     load_inbox_candidates,
 )
-from enoch.logs import log_system_event
+from enoch.logs import log_conversation_turn, log_system_event
 from enoch.prompt_append import EDIT_REQUEST_END, EDIT_REQUEST_START, MEMORY_REQUEST_END, MEMORY_REQUEST_START
 from enoch.task_queue import (
     TaskJob,
@@ -604,6 +604,9 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("/cron cancel <id> - cancel a scheduled job", client.sent[0][1])
         self.assertIn("/cron - show scheduled jobs", client.sent[0][1])
         self.assertIn("/evolve - show self-evolution mode, theme, and top candidate", client.sent[0][1])
+        self.assertIn("/feedback - show feedback signals available to self-evolution", client.sent[0][1])
+        self.assertIn("/experience - show experience candidates from Enoch's work history", client.sent[0][1])
+        self.assertIn("/propose - rank all evolve sources and propose the strongest candidate", client.sent[0][1])
         self.assertIn("/evolve mode <mode> - set self-evolution behavior", client.sent[0][1])
         self.assertNotIn("/evolve mode disabled|co-evolve|auto-evolve", client.sent[0][1])
         self.assertIn("/evolve theme <text> - set the current self-evolution theme", client.sent[0][1])
@@ -666,6 +669,9 @@ class EnochTelegramTests(unittest.TestCase):
 
         reply = client.sent[0][1]
         self.assertIn("Evolve commands:", reply)
+        self.assertIn("/feedback", reply)
+        self.assertIn("/experience", reply)
+        self.assertIn("/propose", reply)
         self.assertIn("/evolve mode <mode>", reply)
         self.assertIn("Modes: disabled, co-evolve, auto-evolve.", reply)
         self.assertNotIn("/evolve mode disabled|co-evolve|auto-evolve", reply)
@@ -1220,6 +1226,54 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("- backlog: 1", reply)
         self.assertIn("backlog-1 [candidate backlog] improve Telegram work UX", reply)
         self.assertIn("wait for human approval", reply)
+
+    def test_feedback_lists_evolve_feedback_signals(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            log_conversation_turn(
+                chat_id=42,
+                message="The evolve proposal is broken.",
+                reply="I will inspect it.",
+                root=root,
+            )
+            client = FakeTelegramClient(allowed_chat_id=42)
+            bot = EnochTelegramBot(load_identity(), root, client)
+
+            bot.handle_update(_message_update(chat_id=42, text="/feedback"))
+
+        reply = client.sent[0][1]
+        self.assertIn("Feedback:", reply)
+        self.assertIn("[complaint x1] The evolve proposal is broken.", reply)
+
+    def test_experience_lists_candidates_from_work_history(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            add_cron_job(42, "review recurring recovery", 3600, root)
+            client = FakeTelegramClient(allowed_chat_id=42)
+            bot = EnochTelegramBot(load_identity(), root, client)
+
+            bot.handle_update(_message_update(chat_id=42, text="/experience"))
+
+        reply = client.sent[0][1]
+        self.assertIn("Experience:", reply)
+        self.assertIn("cron-1 [candidate experience] Review recurring workflow #1", reply)
+
+    def test_propose_ranks_all_sources_without_selecting_candidate(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            add_backlog_item(42, "improve Telegram work UX", root, priority="p0")
+            client = FakeTelegramClient(allowed_chat_id=42)
+            bot = EnochTelegramBot(load_identity(), root, client)
+
+            bot.handle_update(_message_update(chat_id=42, text="/propose"))
+            candidates = load_evolve_candidates(root)
+
+        reply = client.sent[0][1]
+        self.assertIn("Enoch proposes:", reply)
+        self.assertIn("Ranked 1 candidate(s) from the six evolve sources.", reply)
+        self.assertIn("backlog-1 [candidate backlog] improve Telegram work UX", reply)
+        self.assertIn("Approve with /evolve run backlog-1.", reply)
+        self.assertEqual(candidates[0].status, "candidate")
 
     def test_evolve_can_list_select_and_reject_candidates(self) -> None:
         with TemporaryDirectory() as temp:

@@ -310,11 +310,17 @@ def collect_evolve_candidates(
     candidates.extend(_backlog_candidates(backlog_status(root).pending))
     candidates.extend(_feedback_candidates(extract_feedback_signals(root)))
     candidates.extend(_inheritance_candidates(load_parent_inbox_candidates(root)))
+    candidates.extend(collect_experience_candidates(root))
+    candidates.extend(_peer_learning_candidates(load_peer_learning_observations(root)))
+    candidates.extend(_brainstorm_candidates(load_brainstorm_ideas(root, theme=theme)))
+    return tuple(candidates)
+
+
+def collect_experience_candidates(root: Path | None = None) -> tuple[EvolveCandidate, ...]:
+    candidates: list[EvolveCandidate] = []
     candidates.extend(_task_history_candidates(task_queue_status(root).history))
     candidates.extend(_cron_candidates(cron_status(root).active))
     candidates.extend(_learning_candidates(_load_learning_artifacts(root)))
-    candidates.extend(_peer_learning_candidates(load_peer_learning_observations(root)))
-    candidates.extend(_brainstorm_candidates(load_brainstorm_ideas(root, theme=theme)))
     return tuple(candidates)
 
 

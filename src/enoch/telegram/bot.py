@@ -52,13 +52,16 @@ from enoch.evolve import (
     EvolveState,
     cancel_evolve_candidate_for_task,
     claim_due_evolve_schedule,
+    collect_experience_candidates,
     complete_evolve_candidate_for_task,
     disable_evolve_schedule,
     evolve_report,
     fail_evolve_candidate_for_task,
     get_evolve_candidate,
     load_evolve_candidates,
+    load_evolve_state,
     reject_evolve_candidate,
+    rank_evolve_candidates,
     run_evolve_candidate,
     select_evolve_candidate,
     set_evolve_cron_schedule,
@@ -67,6 +70,7 @@ from enoch.evolve import (
     set_evolve_mode,
     set_evolve_theme,
 )
+from enoch.feedback import FeedbackSignal, extract_feedback_signals
 from enoch.git_tools import (
     GitError,
     changed_files,
@@ -321,6 +325,12 @@ class EnochTelegramBot:
             reply = self._backlog(chat_id, work_text)
         elif command in {"/cron", "/crons"}:
             reply = self._cron(chat_id, work_text)
+        elif command == "/feedback":
+            reply = _format_feedback_report(self.root)
+        elif command == "/experience":
+            reply = _format_experience_report(self.root)
+        elif command == "/propose":
+            reply = _format_evolve_proposal(evolve_report(self.root))
         elif command == "/evolve":
             reply = self._evolve(chat_id, argument)
         elif command == "/mode":
@@ -2178,6 +2188,62 @@ def _format_cron_list_item(job: CronJob) -> str:
     if job.last_task_id is None:
         return label
     return f"{label} (last task #{job.last_task_id})"
+
+
+def _format_feedback_report(root: Path) -> str:
+    signals = extract_feedback_signals(root)
+    lines = ["Feedback:"]
+    if not signals:
+        lines.append("- none")
+        return "\n".join(lines)
+    for signal in signals[:20]:
+        lines.extend(_format_feedback_signal(signal))
+    if len(signals) > 20:
+        lines.append(f"- {len(signals) - 20} more")
+    return "\n".join(lines)
+
+
+def _format_feedback_signal(signal: FeedbackSignal) -> list[str]:
+    lines = [
+        (
+            f"- {signal.id} [{signal.kind} x{signal.occurrences}] "
+            f"{_clip_activity_text(signal.message, limit=140)}"
+        )
+    ]
+    if signal.last_seen_at:
+        lines.append(f"  Last seen: {signal.last_seen_at}")
+    return lines
+
+
+def _format_experience_report(root: Path) -> str:
+    state = load_evolve_state(root)
+    candidates = rank_evolve_candidates(collect_experience_candidates(root), theme=state.theme)
+    lines = ["Experience:"]
+    if not candidates:
+        lines.append("- none")
+        return "\n".join(lines)
+    for candidate in candidates[:10]:
+        lines.extend(_format_evolve_candidate(candidate))
+    if len(candidates) > 10:
+        lines.append(f"- {len(candidates) - 10} more")
+    return "\n".join(lines)
+
+
+def _format_evolve_proposal(report: EvolveReport) -> str:
+    if report.state.mode == MODE_DISABLED:
+        return "Evolve is disabled. Use /evolve mode co-evolve or /evolve mode auto-evolve before proposing."
+    candidate = next((item for item in report.candidates if item.status == "candidate"), None)
+    if candidate is None:
+        return "Enoch found no new evolve candidate to propose."
+    lines = [
+        "Enoch proposes:",
+        f"Theme: {report.state.theme or 'not set'}",
+        f"Ranked {len(report.candidates)} candidate(s) from the six evolve sources.",
+        "",
+    ]
+    lines.extend(_format_evolve_candidate(candidate))
+    lines.extend(["", f"Approve with /evolve run {candidate.id}."])
+    return "\n".join(lines)
 
 
 def _format_evolve_report(report: EvolveReport) -> str:
