@@ -9,6 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from enoch.task_queue import (
+    TaskRetryError,
     begin_direct_task,
     begin_next_task,
     cancel_task,
@@ -23,6 +24,7 @@ from enoch.task_queue import (
     record_task_status_message,
     regress_task,
     resolve_regressed_task,
+    retry_failed_task,
     resume_paused_tasks,
     revert_task,
     task_result_has_pull_request,
@@ -33,6 +35,95 @@ from enoch import task_queue
 
 
 class EnochTaskQueueTests(unittest.TestCase):
+    def test_retry_failed_task_creates_new_linked_job_with_provenance(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            original = enqueue_task(
+                42,
+                "retry this work",
+                root,
+                context="Preserve this context.",
+                context_source="evolve-approve",
+                source="feedback",
+                initiated_by="human",
+                trigger="/evolve approve",
+                candidate_id="feedback-1",
+                evidence_source="feedback",
+                signal_actor="human",
+                candidate_actor="agent",
+                approval_actor="human",
+                parent_candidate_id="feedback-parent",
+                source_task_id=7,
+            )
+            begin_next_task(root)
+            fail_task(original.id, root, result="transient failure")
+
+            retried = retry_failed_task(original.id, root)
+            status = task_queue_status(root)
+            events = load_task_events(root, task_id=retried.id)
+
+        self.assertEqual(retried.id, 2)
+        self.assertEqual(retried.parent_task_id, original.id)
+        self.assertEqual(retried.text, original.text)
+        self.assertEqual(retried.context, original.context)
+        self.assertEqual(retried.context_source, original.context_source)
+        self.assertEqual(retried.source, "feedback")
+        self.assertEqual(retried.initiated_by, "human")
+        self.assertEqual(retried.trigger, "/task retry")
+        self.assertEqual(retried.candidate_id, "feedback-1")
+        self.assertEqual(retried.evidence_source, "feedback")
+        self.assertEqual(retried.signal_actor, "human")
+        self.assertEqual(retried.candidate_actor, "agent")
+        self.assertEqual(retried.approval_actor, "human")
+        self.assertEqual(retried.parent_candidate_id, "feedback-parent")
+        self.assertEqual(retried.source_task_id, 7)
+        self.assertEqual(status.history[0].status, "failed")
+        self.assertEqual(status.pending, (retried,))
+        self.assertEqual([event.event for event in events], ["created", "queued"])
+        self.assertEqual([event.event_actor for event in events], ["human", "human"])
+
+    def test_retry_requires_latest_failed_task_in_retry_chain(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            original = enqueue_task(42, "retry chain", root)
+            begin_next_task(root)
+            fail_task(original.id, root, result="first failure")
+            second = retry_failed_task(original.id, root)
+            begin_next_task(root)
+            fail_task(second.id, root, result="second failure")
+
+            with self.assertRaisesRegex(
+                TaskRetryError,
+                "Retry task #2 instead",
+            ):
+                retry_failed_task(original.id, root)
+            third = retry_failed_task(second.id, root)
+
+        self.assertEqual(third.id, 3)
+        self.assertEqual(third.parent_task_id, second.id)
+
+    def test_retry_refuses_non_failed_task(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            queued = enqueue_task(42, "not failed", root)
+
+            with self.assertRaisesRegex(TaskRetryError, "not a failed task"):
+                retry_failed_task(queued.id, root)
+
+    def test_cancelled_retry_does_not_block_another_attempt(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            original = enqueue_task(42, "retry after cancellation", root)
+            begin_next_task(root)
+            fail_task(original.id, root, result="failed")
+            cancelled_retry = retry_failed_task(original.id, root)
+            cancel_task(cancelled_retry.id, root)
+
+            next_retry = retry_failed_task(original.id, root)
+
+        self.assertEqual(next_retry.id, 3)
+        self.assertEqual(next_retry.parent_task_id, original.id)
+
     def test_begin_direct_task_creates_running_job_without_pending(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)

@@ -76,6 +76,51 @@ class EnochUpdaterTests(unittest.TestCase):
         self.assertEqual(result.direct_action_result, "Already up to date.")
 
     @patch(
+        "enoch.updater.stage_promoted_evolve_adoptions",
+        return_value=(MagicMock(),),
+    )
+    @patch(
+        "enoch.updater.promotions_pending_adoption",
+        return_value=(MagicMock(),),
+    )
+    @patch("enoch.updater.run_immune_system")
+    @patch("enoch.updater.pull_origin_main", return_value="Already up to date.")
+    @patch(
+        "enoch.updater.current_head",
+        side_effect=[
+            "1111111111111111111111111111111111111111",
+            "1111111111111111111111111111111111111111",
+        ],
+    )
+    @patch("enoch.updater.current_branch", return_value="main")
+    @patch("enoch.updater.fetch_origin_main")
+    @patch("enoch.updater.ensure_clean_worktree")
+    def test_update_verifies_pending_adoption_even_when_code_is_current(
+        self,
+        _ensure_clean_worktree: MagicMock,
+        _fetch_origin_main: MagicMock,
+        _current_branch: MagicMock,
+        _current_head: MagicMock,
+        _pull_origin_main: MagicMock,
+        run_immune_system: MagicMock,
+        _pending_adoption: MagicMock,
+        stage_adoptions: MagicMock,
+    ) -> None:
+        run_immune_system.return_value = _doctor_result()
+
+        result = update_from_main(ROOT)
+
+        run_immune_system.assert_called_once_with(ROOT)
+        stage_adoptions.assert_called_once_with(
+            ROOT,
+            "1111111111111111111111111111111111111111",
+            health_check="passed",
+        )
+        self.assertTrue(result.restart_required)
+        self.assertIn("adoption checks passed", result.message)
+        self.assertIn("verified adoption after restart", result.message)
+
+    @patch(
         "enoch.updater._load_telegram_lifecycle_state",
         return_value={
             "status": "running",

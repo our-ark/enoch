@@ -86,6 +86,12 @@ from enoch.evolve_events import (
     load_evolve_events,
     record_evolve_event,
 )
+from enoch.evolve_lifecycle import (
+    EvolveLifecycleError,
+    finalize_promoted_evolve_adoptions,
+    format_reconcile_result,
+    reconcile_evolve_candidate,
+)
 from enoch.experience import ExperienceRecord, load_experience_records
 from enoch.feedback import FeedbackSignal, extract_feedback_signals
 from enoch.git_tools import (
@@ -162,6 +168,7 @@ from enoch.runtime import (
 )
 from enoch.task_queue import (
     TaskJob,
+    TaskRetryError,
     begin_direct_task,
     begin_next_task,
     cancel_task,
@@ -176,6 +183,7 @@ from enoch.task_queue import (
     record_task_result,
     record_task_status_message,
     resolve_regressed_task,
+    retry_failed_task,
     resume_paused_tasks,
     task_result_has_pull_request,
     task_queue_status,
@@ -1133,8 +1141,11 @@ class EnochTelegramBot:
             return "Use /task <request> to queue background work."
         subcommand = argument.split(maxsplit=1)[0].lower()
         cancel_id = _task_cancel_id(argument)
+        retry_id = _task_retry_id(argument)
         if subcommand == "cancel" and cancel_id is None:
             return "Use /task cancel <id> to cancel a queued task."
+        if subcommand == "retry" and retry_id is None:
+            return "Use /task retry <id> to retry a failed task as a new linked task."
         if cancel_id is not None:
             cancelled = cancel_task(cancel_id, self.root)
             if cancelled is None:
@@ -1160,6 +1171,8 @@ class EnochTelegramBot:
                 )
                 self._safe_edit_message(cancelled.chat_id, message_id, _format_work_status_message(cancelled_status))
             return f"Cancelled task #{cancelled.id}."
+        if retry_id is not None:
+            return self._retry_task(retry_id)
         snapshot = self._resolve_task_context_snapshot(chat_id, argument)
         if snapshot.codex_unavailable_reason:
             return self._queue_paused_request(
@@ -1203,6 +1216,81 @@ class EnochTelegramBot:
             record_task_status_message(job.id, message_id, self.root)
             return ""
         return f"Queued task #{job.id}. Enoch will work on it in the background when idle."
+
+    def _retry_task(self, task_id: int) -> str:
+        original = _task_by_id(task_id, self.root)
+        candidate = None
+        proposal_id = ""
+        if original is not None and original.candidate_id:
+            state = evolve_report(self.root).state
+            try:
+                candidate = get_evolve_candidate(
+                    original.candidate_id,
+                    self.root,
+                    theme=state.theme,
+                )
+            except ValueError as error:
+                return f"Enoch could not retry task #{task_id}: {error}"
+            if candidate.status != "failed":
+                return (
+                    f"Enoch could not retry task #{task_id}: evolve candidate "
+                    f"{candidate.id} is in status {candidate.status}, not failed."
+                )
+            proposal_id = latest_open_proposal_id(candidate.id, self.root)
+        try:
+            job = retry_failed_task(task_id, self.root)
+        except (OSError, TaskRetryError) as error:
+            return f"Enoch could not retry task #{task_id}: {error}"
+        if candidate is not None:
+            self._record_evolve_event(
+                "selected",
+                event_actor="human",
+                trigger="/task retry",
+                candidate=candidate,
+                approval_actor="human",
+                proposal_id=proposal_id,
+            )
+            try:
+                candidate = retry_evolve_candidate(
+                    candidate.id,
+                    self.root,
+                    theme=evolve_report(self.root).state.theme,
+                )
+            except ValueError as error:
+                cancel_task(job.id, self.root)
+                return f"Enoch could not retry task #{task_id}: {error}"
+            self._record_evolve_event(
+                "queued",
+                event_actor="human",
+                trigger="/task retry",
+                candidate=candidate,
+                task_id=job.id,
+                approval_actor="human",
+                retry_of_task_id=task_id,
+                reason=f"retry-of-task-{task_id}",
+                proposal_id=proposal_id,
+            )
+        position = task_queue_status(self.root).pending_count
+        message = _format_work_status_message(
+            WorkStatusMessage(
+                chat_id=job.chat_id,
+                message_id=0,
+                request=job.text,
+                started_at=time.monotonic(),
+                task_id=job.id,
+                status="queued",
+                latest_update=(
+                    f"Retry of failed task #{task_id} queued at position {position}."
+                ),
+                context=job.context,
+            )
+        )
+        message_id = self._safe_send_message_id(job.chat_id, message)
+        if message_id is not None:
+            self._work_status_messages[job.id] = message_id
+            record_task_status_message(job.id, message_id, self.root)
+            return ""
+        return f"Queued retry task #{job.id} for failed task #{task_id}."
 
     def _queue_paused_request(
         self,
@@ -1527,6 +1615,29 @@ class EnochTelegramBot:
             if not rest.strip():
                 return "Use /evolve retry <id> to retry a failed self-evolution candidate."
             return self._evolve_retry(rest)
+        if subcommand == "reconcile":
+            reconcile_parts = rest.split()
+            recording_mode = "realtime"
+            if reconcile_parts and reconcile_parts[-1].lower() in {
+                "backfill",
+                "--backfill",
+            }:
+                recording_mode = "backfill"
+                reconcile_parts.pop()
+            if len(reconcile_parts) != 1:
+                return (
+                    "Use /evolve reconcile <id> [backfill] to verify human promotion "
+                    "of a completed candidate."
+                )
+            try:
+                result = reconcile_evolve_candidate(
+                    reconcile_parts[0],
+                    self.root,
+                    recording_mode=recording_mode,
+                )
+            except EvolveLifecycleError as error:
+                return f"Enoch could not reconcile evolution promotion: {error}"
+            return format_reconcile_result(result)
         if subcommand == "schedule":
             return self._evolve_schedule(rest)
         return _evolve_usage()
@@ -2499,12 +2610,17 @@ def main() -> None:
         print(str(error))
         raise SystemExit(1) from error
     previous_shutdown_warning = _begin_lifecycle_run(root)
+    try:
+        adopted = finalize_promoted_evolve_adoptions(root)
+    except (OSError, ValueError, GitError, EvolveLifecycleError):
+        adopted = ()
     _record_system_event(
         "startup",
         root,
         details={
             "identity": identity.name,
             "previous_shutdown_warning": previous_shutdown_warning,
+            "adopted_evolutions": [event.candidate_id for event in adopted],
         },
     )
     bot = EnochTelegramBot(
@@ -2872,10 +2988,13 @@ def _format_tasks_report(root: Path) -> str:
 
 def _format_task_list_item(job: TaskJob) -> str:
     item = f"#{job.id} [{job.status}] {_clip_activity_text(job.text, limit=120)}"
-    if not job.pr_urls:
-        return item
-    label = "PR" if len(job.pr_urls) == 1 else "PRs"
-    return f"{item} ({label}: {', '.join(job.pr_urls)})"
+    details = []
+    if job.parent_task_id is not None:
+        details.append(f"retry of #{job.parent_task_id}")
+    if job.pr_urls:
+        label = "PR" if len(job.pr_urls) == 1 else "PRs"
+        details.append(f"{label}: {', '.join(job.pr_urls)}")
+    return f"{item} ({'; '.join(details)})" if details else item
 
 
 def _format_backlog_report(root: Path) -> str:
@@ -3115,6 +3234,12 @@ def _format_experience_report(root: Path) -> str:
             event.event_actor == "human" and event.trigger == "/evolve approve"
             for event in queued
         )
+        lifecycle = Counter({"promoted": 0, "adopted": 0})
+        lifecycle.update(
+            event.event
+            for event in evolve_events
+            if event.event in {"promoted", "adopted"}
+        )
         lines.extend(
             [
                 f"- Checks: {sum(event.event == 'checked' for event in evolve_events)}",
@@ -3135,6 +3260,7 @@ def _format_experience_report(root: Path) -> str:
                 f"- Queued candidate actors: {_format_counter(candidate_actors)}",
                 f"- Queued approval actors: {_format_counter(approval_actors)}",
                 f"- Outcomes: {_format_counter(outcomes)}",
+                f"- Governed lifecycle: {_format_counter(lifecycle)}",
             ]
         )
     else:
@@ -3226,6 +3352,18 @@ def _format_evolve_event(event: EvolveEvent) -> list[str]:
         details.append(f"retry of task-{event.retry_of_task_id}")
     if event.mode:
         details.append(f"mode {event.mode}")
+    if event.pr_url:
+        details.append(f"PR {event.pr_url}")
+    if event.merge_commit:
+        details.append(f"merge {event.merge_commit[:12]}")
+    if event.authoritative_branch:
+        details.append(f"authoritative {event.authoritative_branch}")
+    if event.version:
+        details.append(f"version {event.version[:12]}")
+    if event.health_check:
+        details.append(f"health {event.health_check}")
+    if event.recording_mode:
+        details.append(f"recording {event.recording_mode}")
     lines.append(f"  {'; '.join(details)}")
     if event.reason:
         lines.append(f"  Reason: {_clip_activity_text(event.reason, limit=180)}")
@@ -3561,6 +3699,17 @@ def _task_cancel_id(argument: str) -> int | None:
     return task_id if task_id > 0 else None
 
 
+def _task_retry_id(argument: str) -> int | None:
+    parts = argument.split()
+    if len(parts) != 2 or parts[0].lower() != "retry":
+        return None
+    try:
+        task_id = int(parts[1].lstrip("#"))
+    except ValueError:
+        return None
+    return task_id if task_id > 0 else None
+
+
 def _task_by_id(task_id: int, root: Path) -> TaskJob | None:
     status = task_queue_status(root)
     jobs = [*status.pending, *status.paused, *status.history]
@@ -3612,6 +3761,7 @@ def _evolve_usage() -> str:
             "Use /evolve list to show current candidates.",
             "Use /evolve approve <id> to approve and queue a candidate as a task.",
             "Use /evolve retry <id> to queue a new task for a failed candidate.",
+            "Use /evolve reconcile <id> [backfill] to verify promotion of a completed candidate.",
             "Use /evolve remove <id> to remove a candidate from future proposals.",
             "Use /evolve schedule <text> to let Enoch interpret common schedule text.",
         ]

@@ -45,6 +45,10 @@ When work is queued:
    branch. Create each task branch directly from the latest available
    `origin/main` or local `main` commit without checking out `main`, then return
    to the resident branch after publishing or cleanup.
+9. `/task retry <id>` retries only a failed task by creating a new task with a
+   new id and `parent_task_id`; never rewrite the original failure. Preserve the
+   request, context, source, and provenance. If a retry fails, retry that latest
+   failed task so the causal chain remains linear.
 
 ## Inheritance
 

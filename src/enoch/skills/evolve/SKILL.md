@@ -71,6 +71,14 @@ retain the same `proposal_id`, including completion, failure, cancellation, and
 regression resolution. `/experience` reports proposal disposition, acceptance
 rate, source and trigger distribution, and selected proposal outcomes.
 
+Task completion is not promotion or adoption. `/evolve reconcile <id>` verifies
+that a completed candidate's PR was merged by a human and that its merge commit
+is contained in trusted `origin/main`, then records a `promoted` event.
+`/evolve reconcile <id> backfill` performs the same verification while marking
+the evidence as historical backfill. After `/update` passes doctor, Enoch stages
+eligible promotions and records `adopted` only when the restarted daemon confirms
+it is running the verified version.
+
 Every tracked task writes append-only lifecycle events to `.enoch/task_events.jsonl`.
 Events include `created`, `queued`, `started`, `completed`, `failed`, `cancelled`,
 `paused`, `resumed`, `regressed`, `reverted`, and `forward-fixed`. Codex access
@@ -117,6 +125,7 @@ Enoch must require human direction before changing identity, mission, secrets, p
 - `/evolve list all`
 - `/evolve approve <id>`
 - `/evolve retry <id>`
+- `/evolve reconcile <id> [backfill]`
 - `/evolve remove <id>`
 - `/evolve schedule <text>`
 - `/evolve schedule once a day`

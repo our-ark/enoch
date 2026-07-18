@@ -503,6 +503,7 @@ def _help_topic_message(topic: str) -> str:
                 "/evolve list - show current self-evolution candidates",
                 "/evolve approve <id> - approve and queue a self-evolution candidate",
                 "/evolve retry <id> - retry a failed self-evolution candidate as a new task",
+                "/evolve reconcile <id> [backfill] - verify promotion of a completed candidate",
                 "/evolve remove <id> - remove a self-evolution candidate",
                 "/evolve schedule <text> - let Enoch interpret common schedule text",
             ]
@@ -520,6 +521,7 @@ def _help_topic_message(topic: str) -> str:
                 "Task commands:",
                 "/task <request> - queue background work for Enoch",
                 "/task cancel <id> - cancel a queued background task",
+                "/task retry <id> - retry a failed task as a new linked task",
             ]
         ),
         "tasks": "/tasks - show running, queued, and recent task history",

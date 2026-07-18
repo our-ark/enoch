@@ -5,6 +5,10 @@ import json
 import os
 from pathlib import Path
 
+from enoch.evolve_lifecycle import (
+    promotions_pending_adoption,
+    stage_promoted_evolve_adoptions,
+)
 from enoch.formatting import format_doctor_result
 from enoch.git_tools import GitError, current_branch, ensure_clean_worktree
 from enoch.immune import run_immune_system
@@ -46,6 +50,44 @@ def update_from_main(root: Path) -> UpdateResult:
         return _message(f"Enoch could not update: {error}")
 
     if previous_head == updated_head:
+        pending_promotions = promotions_pending_adoption(root, updated_head)
+        if pending_promotions:
+            doctor = run_immune_system(root)
+            if not doctor.passed:
+                return _message(
+                    "\n\n".join(
+                        [
+                            "Enoch is already up to date, but adoption verification failed.",
+                            format_doctor_result(doctor),
+                            "No adoption event was staged.",
+                        ]
+                    )
+                )
+            staged_note = _stage_adoptions(root, updated_head)
+            formatted_doctor = format_doctor_result(doctor)
+            return UpdateResult(
+                message="\n\n".join(
+                    part
+                    for part in [
+                        "Enoch is already up to date and adoption checks passed.",
+                        formatted_doctor,
+                        staged_note,
+                        "Restarting now so the running instance can verify adoption.",
+                    ]
+                    if part
+                ),
+                direct_action_result="\n\n".join(
+                    part
+                    for part in [
+                        pull_result,
+                        formatted_doctor,
+                        staged_note,
+                        f"Restarting into {updated_head[:7]}.",
+                    ]
+                    if part
+                ),
+                restart_required=True,
+            )
         restart_note = _running_commit_restart_note(root, updated_head)
         return UpdateResult(
             message="\n\n".join(part for part in ["Enoch is already up to date.", restart_note] if part),
@@ -71,21 +113,48 @@ def update_from_main(root: Path) -> UpdateResult:
         )
 
     formatted_doctor = format_doctor_result(doctor)
+    staged_note = _stage_adoptions(root, updated_head)
     return UpdateResult(
         message="\n\n".join(
-            [
+            part
+            for part in [
                 "Enoch pulled latest main and doctor passed.",
                 formatted_doctor,
+                staged_note,
                 "Restarting now. The startup notification will confirm Enoch came back.",
             ]
+            if part
         ),
-        direct_action_result="\n\n".join([pull_result, formatted_doctor, f"Restarting into {updated_head[:7]}."]),
+        direct_action_result="\n\n".join(
+            part
+            for part in [
+                pull_result,
+                formatted_doctor,
+                staged_note,
+                f"Restarting into {updated_head[:7]}.",
+            ]
+            if part
+        ),
         restart_required=True,
     )
 
 
 def _message(message: str) -> UpdateResult:
     return UpdateResult(message=message, direct_action_result="")
+
+
+def _stage_adoptions(root: Path, version: str) -> str:
+    try:
+        staged = stage_promoted_evolve_adoptions(
+            root,
+            version,
+            health_check="passed",
+        )
+    except OSError as error:
+        return f"Could not stage evolution adoption evidence: {error}"
+    if not staged:
+        return ""
+    return f"Staged {len(staged)} promoted evolution(s) for verified adoption after restart."
 
 
 def _running_commit_restart_note(root: Path, current: str) -> str:

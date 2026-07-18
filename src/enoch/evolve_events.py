@@ -17,7 +17,7 @@ from enoch.memory.paths import clean_text, now as current_time
 from enoch.paths import enoch_home
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 EVOLVE_EVENT_TYPES = {
     "checked",
     "proposed",
@@ -34,6 +34,8 @@ EVOLVE_EVENT_TYPES = {
     "no-action",
     "skipped",
     "removed",
+    "promoted",
+    "adopted",
 }
 EVOLVE_EVENT_ACTORS = {"human", "agent", "system"}
 EVOLVE_SOURCES = {
@@ -58,8 +60,11 @@ _CANDIDATE_EVENTS = {
     "forward-fixed",
     "no-action",
     "removed",
+    "promoted",
+    "adopted",
 }
 PROPOSAL_DISPOSITION_EVENTS = {"selected", "removed", "no-action"}
+RECORDING_MODES = {"realtime", "backfill"}
 _EVOLVE_EVENT_THREAD_LOCK = threading.RLock()
 
 
@@ -98,6 +103,14 @@ class EvolveEvent:
     retry_of_task_id: int | None = None
     score: int = 0
     reason: str = ""
+    pr_url: str = ""
+    merge_commit: str = ""
+    authoritative_branch: str = ""
+    promoted_at: str = ""
+    verified_at: str = ""
+    version: str = ""
+    health_check: str = ""
+    recording_mode: str = ""
 
 
 def evolve_event_path(root: Path | None = None) -> Path:
@@ -118,6 +131,14 @@ def record_evolve_event(
     retry_of_task_id: int | None = None,
     reason: str = "",
     proposal_id: str = "",
+    pr_url: str = "",
+    merge_commit: str = "",
+    authoritative_branch: str = "",
+    promoted_at: str = "",
+    verified_at: str = "",
+    version: str = "",
+    health_check: str = "",
+    recording_mode: str = "",
 ) -> EvolveEvent:
     normalized_event = clean_text(event).lower()
     normalized_actor = clean_text(event_actor).lower()
@@ -187,6 +208,39 @@ def record_evolve_event(
         and normalized_task_id is None
     ):
         raise ValueError(f"Evolve event {normalized_event} requires a task id.")
+    normalized_recording_mode = clean_text(recording_mode).lower()
+    normalized_pr_url = clean_text(pr_url)
+    normalized_merge_commit = clean_text(merge_commit)
+    normalized_authoritative_branch = clean_text(authoritative_branch)
+    normalized_promoted_at = clean_text(promoted_at)
+    normalized_verified_at = clean_text(verified_at)
+    normalized_version = clean_text(version)
+    normalized_health_check = clean_text(health_check).lower()
+    if normalized_event in {"promoted", "adopted"}:
+        normalized_recording_mode = normalized_recording_mode or "realtime"
+        normalized_verified_at = normalized_verified_at or current_time()
+        if normalized_recording_mode not in RECORDING_MODES:
+            raise ValueError("Lifecycle recording mode must be realtime or backfill.")
+    if normalized_event == "promoted":
+        if normalized_actor != "human":
+            raise ValueError("Promoted evolution events require a human actor.")
+        if not all(
+            [
+                normalized_pr_url,
+                normalized_merge_commit,
+                normalized_authoritative_branch,
+                normalized_promoted_at,
+            ]
+        ):
+            raise ValueError(
+                "Promoted evolution events require PR URL, merge commit, "
+                "authoritative branch, and promoted time."
+            )
+    if normalized_event == "adopted":
+        if not normalized_version or normalized_health_check != "passed":
+            raise ValueError(
+                "Adopted evolution events require a version and a passed health check."
+            )
     evolve_event = EvolveEvent(
         id=f"evolve-event-{uuid4().hex}",
         occurred_at=current_time(),
@@ -209,6 +263,14 @@ def record_evolve_event(
         retry_of_task_id=_positive_int(retry_of_task_id),
         score=_int(getattr(candidate, "score", 0)),
         reason=_clip(clean_text(reason)),
+        pr_url=normalized_pr_url,
+        merge_commit=normalized_merge_commit,
+        authoritative_branch=normalized_authoritative_branch,
+        promoted_at=normalized_promoted_at,
+        verified_at=normalized_verified_at,
+        version=normalized_version,
+        health_check=normalized_health_check,
+        recording_mode=normalized_recording_mode,
     )
     with _evolve_event_transaction(root):
         path = evolve_event_path(root)
@@ -386,6 +448,24 @@ def _event_from_line(line: str) -> EvolveEvent | None:
         "forward-fixed",
     } and task_id is None:
         return None
+    recording_mode = clean_text(str(raw.get("recording_mode") or "")).lower()
+    if event in {"promoted", "adopted"} and recording_mode not in RECORDING_MODES:
+        return None
+    if event == "promoted" and (
+        actor != "human"
+        or not clean_text(str(raw.get("pr_url") or ""))
+        or not clean_text(str(raw.get("merge_commit") or ""))
+        or not clean_text(str(raw.get("authoritative_branch") or ""))
+        or not clean_text(str(raw.get("promoted_at") or ""))
+        or not clean_text(str(raw.get("verified_at") or ""))
+    ):
+        return None
+    if event == "adopted" and (
+        not clean_text(str(raw.get("version") or ""))
+        or clean_text(str(raw.get("health_check") or "")).lower() != "passed"
+        or not clean_text(str(raw.get("verified_at") or ""))
+    ):
+        return None
     occurred_at = str(raw.get("occurred_at") or "")
     event_id = clean_text(str(raw.get("id") or ""))
     legacy_id = f"legacy-evolve-event-{event}-{candidate_id or task_id or occurred_at}"
@@ -416,6 +496,16 @@ def _event_from_line(line: str) -> EvolveEvent | None:
         retry_of_task_id=_positive_int(raw.get("retry_of_task_id")),
         score=_int(raw.get("score")),
         reason=_clip(clean_text(str(raw.get("reason") or ""))),
+        pr_url=clean_text(str(raw.get("pr_url") or "")),
+        merge_commit=clean_text(str(raw.get("merge_commit") or "")),
+        authoritative_branch=clean_text(
+            str(raw.get("authoritative_branch") or "")
+        ),
+        promoted_at=clean_text(str(raw.get("promoted_at") or "")),
+        verified_at=clean_text(str(raw.get("verified_at") or "")),
+        version=clean_text(str(raw.get("version") or "")),
+        health_check=clean_text(str(raw.get("health_check") or "")).lower(),
+        recording_mode=recording_mode,
     )
 
 

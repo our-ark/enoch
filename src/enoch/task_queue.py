@@ -59,6 +59,10 @@ class TaskQueueStatus:
     history: tuple[TaskJob, ...] = ()
 
 
+class TaskRetryError(ValueError):
+    pass
+
+
 def task_queue_path(root: Path | None = None) -> Path:
     return enoch_home(root) / "task_queue.json"
 
@@ -115,6 +119,93 @@ def enqueue_task(
         _write_queue(data, root)
         _record_task_event_safely(job, "created", root, event_actor=event_actor, trigger=trigger)
         _record_task_event_safely(job, "queued", root, event_actor=event_actor, trigger=trigger)
+        return job
+
+
+def retry_failed_task(
+    task_id: int,
+    root: Path | None = None,
+    *,
+    event_actor: str = "human",
+    trigger: str = "/task retry",
+) -> TaskJob:
+    with _queue_transaction(root):
+        data = _load_queue(root)
+        original = next(
+            (
+                job
+                for job in _history_jobs(data)
+                if job.id == task_id and job.status == "failed"
+            ),
+            None,
+        )
+        if original is None:
+            raise TaskRetryError(
+                f"Task #{task_id} is not a failed task available for retry."
+            )
+        existing_retries = [
+            job
+            for job in [
+                *_pending_jobs(data),
+                *_paused_jobs(data),
+                *(
+                    [_parse_job(data.get("running"))]
+                    if _parse_job(data.get("running")) is not None
+                    else []
+                ),
+                *_history_jobs(data),
+            ]
+            if job.parent_task_id == original.id
+            and job.status != "cancelled"
+        ]
+        if existing_retries:
+            latest = max(existing_retries, key=lambda job: job.id)
+            if latest.status == "failed":
+                raise TaskRetryError(
+                    f"Task #{original.id} was already retried as failed task "
+                    f"#{latest.id}. Retry task #{latest.id} instead."
+                )
+            raise TaskRetryError(
+                f"Task #{original.id} already has retry task #{latest.id} "
+                f"in status {latest.status}."
+            )
+        job = TaskJob(
+            id=_next_id(data),
+            chat_id=original.chat_id,
+            text=original.text,
+            created_at=current_time(),
+            context=original.context,
+            context_source=original.context_source,
+            source=original.source,
+            initiated_by="human",
+            trigger=trigger,
+            candidate_id=original.candidate_id,
+            parent_task_id=original.id,
+            evidence_source=original.evidence_source,
+            signal_actor=original.signal_actor,
+            candidate_actor=original.candidate_actor,
+            approval_actor="human" if original.candidate_id else "",
+            parent_candidate_id=original.parent_candidate_id,
+            source_task_id=original.source_task_id,
+        )
+        pending = data.setdefault("pending", [])
+        pending.append(_job_to_dict(job))
+        data["next_id"] = job.id + 1
+        _write_queue(data, root)
+        _record_task_event_safely(
+            job,
+            "created",
+            root,
+            event_actor=event_actor,
+            trigger=trigger,
+        )
+        _record_task_event_safely(
+            job,
+            "queued",
+            root,
+            event_actor=event_actor,
+            trigger=trigger,
+        )
         return job
 
 

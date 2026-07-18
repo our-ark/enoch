@@ -161,6 +161,32 @@ class EnochEvolveEventTests(unittest.TestCase):
         )
         self.assertEqual(proposal_events[-1].reason, "superseded-by-new-proposal")
 
+    def test_governed_lifecycle_events_require_verified_evidence(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            with self.assertRaisesRegex(ValueError, "require a human actor"):
+                record_evolve_event(
+                    "promoted",
+                    root,
+                    event_actor="system",
+                    trigger="/evolve reconcile",
+                    candidate=_candidate(),
+                    pr_url="https://github.com/our-ark/enoch/pull/12",
+                    merge_commit="7207317",
+                    authoritative_branch="main",
+                    promoted_at="2026-07-18T18:30:00Z",
+                )
+            with self.assertRaisesRegex(ValueError, "passed health check"):
+                record_evolve_event(
+                    "adopted",
+                    root,
+                    event_actor="system",
+                    trigger="daemon-startup",
+                    candidate=_candidate(),
+                    version="7207317",
+                    health_check="failed",
+                )
+
 
 def _candidate() -> EvolveCandidate:
     return EvolveCandidate(

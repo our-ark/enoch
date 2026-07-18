@@ -24,6 +24,7 @@ from enoch.cron import add_cron_job, cron_status
 from enoch.evolve import (
     MODE_AUTO_EVOLVE,
     evolve_report,
+    get_evolve_candidate,
     load_evolve_candidates,
     set_evolve_mode,
     set_evolve_schedule,
@@ -828,6 +829,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("Task commands:", reply)
         self.assertIn("/task <request> - queue background work for Enoch", reply)
         self.assertIn("/task cancel <id> - cancel a queued background task", reply)
+        self.assertIn("/task retry <id> - retry a failed task as a new linked task", reply)
         self.assertNotIn("/task regress", reply)
         self.assertNotIn("/task resolve", reply)
         self.assertNotIn("Enoch Telegram commands:", reply)
@@ -1073,6 +1075,80 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("Cancelled task #1.", client.sent[-1][1])
         self.assertIn("Status: cancelled", client.edited[-1][2])
         self.assertIn("Latest update: Cancelled before running.", client.edited[-1][2])
+
+    def test_task_retry_queues_new_linked_task_and_preserves_failure(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            original = enqueue_task(
+                42,
+                "retry transient work",
+                root,
+                context="Keep the original context.",
+                context_source="chat-snapshot",
+            )
+            begin_next_task(root)
+            fail_task(original.id, root, result="temporary failure")
+            client = FakeTelegramClient(allowed_chat_id=42)
+            bot = EnochTelegramBot(load_identity(), root, client)
+
+            bot.handle_update(
+                _message_update(chat_id=42, text="/task retry 1")
+            )
+            status = task_queue_status(root)
+            events = load_task_events(root, task_id=2)
+            bot.handle_update(
+                _message_update(update_id=2, chat_id=42, text="/tasks")
+            )
+            tasks_report = client.sent[-1][1]
+
+        self.assertEqual([(job.id, job.status) for job in status.history], [(1, "failed")])
+        self.assertEqual(len(status.pending), 1)
+        retry = status.pending[0]
+        self.assertEqual(retry.id, 2)
+        self.assertEqual(retry.parent_task_id, 1)
+        self.assertEqual(retry.text, original.text)
+        self.assertEqual(retry.context, original.context)
+        self.assertEqual(retry.trigger, "/task retry")
+        self.assertIn("Task #2", client.sent[0][1])
+        self.assertIn("Retry of failed task #1", client.sent[0][1])
+        self.assertEqual([event.event for event in events], ["created", "queued"])
+        self.assertIn("#2 [pending] retry transient work (retry of #1)", tasks_report)
+
+    def test_task_retry_restores_linked_evolve_candidate(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            add_backlog_item(42, "retry evolve work", root, priority="p0")
+            client = FakeTelegramClient(allowed_chat_id=42)
+            bot = EnochTelegramBot(load_identity(), root, client)
+            bot._evolve_approve("backlog-1")
+            original = begin_next_task(root)
+            with patch.object(
+                bot,
+                "_run_direct_work",
+                return_value="Enoch could not complete evolve work: temporary failure",
+            ):
+                bot._run_task_job(original)
+            self.assertEqual(
+                get_evolve_candidate("backlog-1", root).status,
+                "failed",
+            )
+            client.sent.clear()
+            client.edited.clear()
+
+            bot.handle_update(
+                _message_update(chat_id=42, text="/task retry 1")
+            )
+            status = task_queue_status(root)
+            candidate = get_evolve_candidate("backlog-1", root)
+            evolve_events = load_evolve_events(root, candidate_id="backlog-1")
+
+        self.assertEqual(candidate.status, "running")
+        self.assertEqual(status.pending[0].candidate_id, "backlog-1")
+        self.assertEqual(status.pending[0].parent_task_id, 1)
+        self.assertEqual(status.pending[0].approval_actor, "human")
+        self.assertEqual(evolve_events[-1].event, "queued")
+        self.assertEqual(evolve_events[-1].trigger, "/task retry")
+        self.assertEqual(evolve_events[-1].retry_of_task_id, 1)
 
     @patch(
         "enoch.telegram.bot.respond",
@@ -1708,6 +1784,35 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("- backlog: 1", reply)
         self.assertIn("backlog-1 [candidate backlog] improve Telegram work UX", reply)
         self.assertIn("wait for human approval", reply)
+
+    @patch(
+        "enoch.telegram.bot.format_reconcile_result",
+        return_value="Recorded governed promotion.",
+    )
+    @patch("enoch.telegram.bot.reconcile_evolve_candidate")
+    def test_evolve_reconcile_supports_explicit_backfill(
+        self,
+        reconcile_evolve_candidate: MagicMock,
+        _format_reconcile_result: MagicMock,
+    ) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            client = FakeTelegramClient(allowed_chat_id=42)
+            bot = EnochTelegramBot(load_identity(), root, client)
+
+            bot.handle_update(
+                _message_update(
+                    chat_id=42,
+                    text="/evolve reconcile feedback-c3ed71fd1d2d backfill",
+                )
+            )
+
+        reconcile_evolve_candidate.assert_called_once_with(
+            "feedback-c3ed71fd1d2d",
+            root,
+            recording_mode="backfill",
+        )
+        self.assertEqual(client.sent[0][1], "Recorded governed promotion.")
 
     def test_feedback_lists_evolve_feedback_signals(self) -> None:
         with TemporaryDirectory() as temp:

@@ -48,7 +48,22 @@ def fetch_origin_main(root: Path | None = None) -> None:
 
 
 def head_merged_into_origin_main(root: Path | None = None) -> bool:
-    result = run_git(["merge-base", "--is-ancestor", "HEAD", f"{DEFAULT_REMOTE}/{DEFAULT_BRANCH}"], root)
+    return revision_merged_into_origin_main("HEAD", root)
+
+
+def revision_merged_into_origin_main(
+    revision: str,
+    root: Path | None = None,
+) -> bool:
+    result = run_git(
+        [
+            "merge-base",
+            "--is-ancestor",
+            revision,
+            f"{DEFAULT_REMOTE}/{DEFAULT_BRANCH}",
+        ],
+        root,
+    )
     return result.returncode == 0
 
 

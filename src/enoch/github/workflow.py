@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 import os
 from pathlib import Path
 import shutil
@@ -82,6 +83,17 @@ class PullRequestCloseResult:
     number: int
     closed: bool
     url: str
+    note: str | None = None
+
+
+@dataclass(frozen=True)
+class PullRequestMergeStatus:
+    reference: str
+    url: str
+    state: str
+    base_branch: str
+    merge_commit: str
+    merged_at: str
     note: str | None = None
 
 
@@ -271,6 +283,55 @@ def close_pull_request(
         note = result.stderr.strip() or result.stdout.strip() or "GitHub CLI could not close the pull request."
         return PullRequestCloseResult(number=number, closed=False, url=url, note=note)
     return PullRequestCloseResult(number=number, closed=True, url=url)
+
+
+def inspect_pull_request_merge(
+    reference: str,
+    root: Path | None = None,
+) -> PullRequestMergeStatus:
+    cleaned = reference.strip()
+    if not cleaned:
+        raise PublishError("Pull request reference is required.")
+    gh = shutil.which("gh")
+    if gh is None:
+        raise PublishError("GitHub CLI is not available.")
+    result = subprocess.run(
+        [
+            gh,
+            "pr",
+            "view",
+            cleaned,
+            "--json",
+            "state,mergedAt,mergeCommit,baseRefName,url",
+        ],
+        cwd=root,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        note = result.stderr.strip() or result.stdout.strip() or "GitHub CLI could not inspect the PR."
+        raise PublishError(note)
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError as error:
+        raise PublishError("GitHub CLI returned invalid pull request data.") from error
+    if not isinstance(data, dict):
+        raise PublishError("GitHub CLI returned invalid pull request data.")
+    merge_commit = data.get("mergeCommit")
+    merge_oid = (
+        str(merge_commit.get("oid") or "").strip()
+        if isinstance(merge_commit, dict)
+        else ""
+    )
+    return PullRequestMergeStatus(
+        reference=cleaned,
+        url=str(data.get("url") or cleaned).strip(),
+        state=str(data.get("state") or "").strip().upper(),
+        base_branch=str(data.get("baseRefName") or "").strip(),
+        merge_commit=merge_oid,
+        merged_at=str(data.get("mergedAt") or "").strip(),
+    )
 
 
 def _git_or_raise(args: list[str], root: Path | None, fallback: str) -> str:

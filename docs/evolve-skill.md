@@ -215,6 +215,22 @@ Enoch should require human direction before changing:
 
 Enoch should prefer small pull requests with a clear rationale and test plan.
 
+## Governed Lifecycle
+
+Candidate completion means the agent finished its task and published reviewable
+work. It does not mean the change became authoritative or entered the running
+instance.
+
+- `promoted` means a human merged the candidate PR and Enoch verified its merge
+  commit is contained in trusted `origin/main`.
+- `adopted` means the instance updated to a version containing that promotion,
+  passed doctor, restarted, and confirmed the running version.
+
+`/evolve reconcile <id>` records promotion evidence for a completed candidate.
+Historical reconciliation uses `/evolve reconcile <id> backfill` and writes
+`recording_mode: backfill`; it never presents reconstructed evidence as a
+realtime observation.
+
 ## Command Surface
 
 Source visibility:
@@ -235,6 +251,7 @@ Candidate selection and control:
 /evolve list
 /evolve approve <id>
 /evolve retry <id>
+/evolve reconcile <id> [backfill]
 /evolve remove <id>
 /evolve schedule <text>
 ```

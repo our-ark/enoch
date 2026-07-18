@@ -12,6 +12,7 @@ from enoch.github.workflow import (
     PublishError,
     close_pull_request,
     create_pull_request,
+    inspect_pull_request_merge,
     prepare_local_publish,
     push_current_branch,
 )
@@ -437,6 +438,46 @@ class EnochGithubWorkflowTests(unittest.TestCase):
         self.assertFalse(result.closed)
         self.assertEqual(result.note, "GitHub CLI is not available.")
         self.assertEqual(result.url, "https://github.com/our-ark/enoch/pull/2")
+
+    @patch("enoch.github.workflow.subprocess.run")
+    @patch(
+        "enoch.github.workflow.shutil.which",
+        return_value="/usr/local/bin/gh",
+    )
+    def test_inspects_pull_request_merge_evidence(
+        self,
+        _which: MagicMock,
+        run: MagicMock,
+    ) -> None:
+        run.return_value.returncode = 0
+        run.return_value.stdout = (
+            '{"state":"MERGED","mergedAt":"2026-07-18T18:30:00Z",'
+            '"mergeCommit":{"oid":"7207317abc"},"baseRefName":"main",'
+            '"url":"https://github.com/our-ark/enoch/pull/12"}'
+        )
+        run.return_value.stderr = ""
+
+        result = inspect_pull_request_merge(
+            "https://github.com/our-ark/enoch/pull/12",
+            ROOT,
+        )
+
+        self.assertEqual(result.state, "MERGED")
+        self.assertEqual(result.merge_commit, "7207317abc")
+        self.assertEqual(result.base_branch, "main")
+        self.assertEqual(result.merged_at, "2026-07-18T18:30:00Z")
+        self.assertEqual(
+            run.call_args.args[0],
+            [
+                "/usr/local/bin/gh",
+                "pr",
+                "view",
+                "https://github.com/our-ark/enoch/pull/12",
+                "--json",
+                "state,mergedAt,mergeCommit,baseRefName,url",
+            ],
+        )
+
 
 def _doctor_result(passed: bool, summary: str) -> MagicMock:
     result = MagicMock()
