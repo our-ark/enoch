@@ -15,7 +15,14 @@ from enoch.updater import update_from_main
 
 class EnochUpdaterTests(unittest.TestCase):
     @patch("enoch.updater.run_immune_system")
-    @patch("enoch.updater.pull_origin_main", return_value="Updating 1111111..2222222")
+    @patch(
+        "enoch.updater.pull_origin_main",
+        return_value=(
+            "Fast-forward\n"
+            " src/enoch/updater.py | 2 +-\n"
+            " 1 file changed, 1 insertion(+), 1 deletion(-)"
+        ),
+    )
     @patch("enoch.updater.current_head", side_effect=["1111111111111111111111111111111111111111", "2222222222222222222222222222222222222222"])
     @patch("enoch.updater.current_branch", return_value="main")
     @patch("enoch.updater.fetch_origin_main")
@@ -41,6 +48,9 @@ class EnochUpdaterTests(unittest.TestCase):
         self.assertTrue(result.restart_required)
         self.assertIn("Enoch pulled latest main and doctor passed.", result.message)
         self.assertIn("Restarting now.", result.message)
+        self.assertNotIn("Fast-forward", result.message)
+        self.assertNotIn("1 file changed", result.message)
+        self.assertIn("Fast-forward", result.direct_action_result)
         self.assertIn("Restarting into 2222222.", result.direct_action_result)
 
     @patch("enoch.updater.run_immune_system")
@@ -62,7 +72,7 @@ class EnochUpdaterTests(unittest.TestCase):
 
         run_immune_system.assert_not_called()
         self.assertFalse(result.restart_required)
-        self.assertIn("Enoch is already up to date.", result.message)
+        self.assertEqual(result.message, "Enoch is already up to date.")
         self.assertEqual(result.direct_action_result, "Already up to date.")
 
     @patch(

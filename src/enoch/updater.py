@@ -48,7 +48,7 @@ def update_from_main(root: Path) -> UpdateResult:
     if previous_head == updated_head:
         restart_note = _running_commit_restart_note(root, updated_head)
         return UpdateResult(
-            message="\n\n".join(part for part in ["Enoch is already up to date.", pull_result, restart_note] if part),
+            message="\n\n".join(part for part in ["Enoch is already up to date.", restart_note] if part),
             direct_action_result="\n\n".join(part for part in [pull_result, restart_note] if part),
         )
 
@@ -75,7 +75,6 @@ def update_from_main(root: Path) -> UpdateResult:
         message="\n\n".join(
             [
                 "Enoch pulled latest main and doctor passed.",
-                pull_result,
                 formatted_doctor,
                 "Restarting now. The startup notification will confirm Enoch came back.",
             ]

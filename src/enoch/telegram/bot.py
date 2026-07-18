@@ -25,14 +25,6 @@ from enoch.backlog import (
 from enoch.automatic_learning import record_learning_artifact
 from enoch.brain import BrainCancelled, BrainError, act_in_session, model_summary, reset_token_usage, respond
 from enoch.brainstorming import generate_brainstorm_ideas
-from enoch.command_surface import (
-    ACTION_MODE_CONVERSATION,
-    ACTION_MODE_FULL_ACCESS,
-    action_mode as _action_mode,
-    action_mode_description as _action_mode_description,
-    action_mode_label as _action_mode_label,
-    save_action_mode as _save_action_mode,
-)
 from enoch.config import read_section
 from enoch.cron import (
     CronJob,
@@ -139,7 +131,6 @@ from enoch.prompt_append import (
 )
 from enoch.runtime import (
     ACTION_SANDBOX_FULL_ACCESS,
-    ACTION_SANDBOX_READ_ONLY,
     DEFAULT_BRANCH,
     PROTECTED_BRANCHES,
     WORKSPACE_WRITE_SANDBOX,
@@ -187,7 +178,6 @@ from enoch.telegram.lifecycle import (
 from enoch.update_tools import (
     ensure_local_main_current as _ensure_local_main_current,
     schedule_daemon_restart as _schedule_daemon_restart,
-    schedule_daemon_stop as _schedule_daemon_stop,
 )
 from enoch.updater import update_from_main
 
@@ -267,7 +257,6 @@ class EnochTelegramBot:
         self.previous_shutdown_warning = previous_shutdown_warning
         self.offset: int | None = _load_telegram_offset(root)
         self._restart_after_reply = False
-        self._stop_after_reply = False
         self._pending_session_syncs: list[tuple[int, str]] = []
         self._task_worker: threading.Thread | None = None
         self._task_cancellations: dict[int, threading.Event] = {}
@@ -359,12 +348,8 @@ class EnochTelegramBot:
             reply = _format_evolve_proposal(self._propose_evolve(chat_id, trigger="propose-fallback"))
         elif command == "/evolve":
             reply = self._evolve(chat_id, argument)
-        elif command == "/mode":
-            reply = self._mode(text)
         elif command == "/config":
             reply = config_command(text, self.root)
-        elif command == "/shutdown":
-            reply = self._shutdown_from_telegram()
         elif command == "/self":
             reply = identity_summary(self.identity, self.root)
         elif command == "/status":
@@ -395,10 +380,6 @@ class EnochTelegramBot:
         if self._restart_after_reply:
             self._restart_after_reply = False
             _schedule_daemon_restart(self.root)
-        if self._stop_after_reply:
-            self._stop_after_reply = False
-            _schedule_daemon_stop(self.root)
-            raise ShutdownRequested("Telegram /shutdown")
 
     def _remember_update_offset(self, offset: int | None) -> None:
         if offset is None:
@@ -2011,44 +1992,7 @@ class EnochTelegramBot:
         self._safe_send_message(chat_id, f"Enoch is still working after {_format_elapsed(elapsed_seconds)}: {mode}.")
 
     def _action_allowed(self) -> bool:
-        return self.client.config.allowed_chat_id is not None and _action_mode(self.root) == ACTION_MODE_FULL_ACCESS
-
-    def _mode(self, text: str) -> str:
-        if self.client.config.allowed_chat_id is None:
-            return _action_lock_message()
-        parts = text.split(maxsplit=1)
-        if len(parts) == 1:
-            return _mode_status(self.root)
-        choice = parts[1].strip().lower()
-        if choice == "chat":
-            next_mode = ACTION_MODE_CONVERSATION
-        elif choice == "work":
-            next_mode = ACTION_MODE_FULL_ACCESS
-        else:
-            return _mode_usage(self.root)
-        _save_action_mode(next_mode, self.root)
-        return "\n".join(
-            [
-                f"Enoch mode: {_mode_name(next_mode)}.",
-                _action_mode_description(next_mode),
-            ]
-        )
-
-    def _shutdown_from_telegram(self) -> str:
-        if self.client.config.allowed_chat_id is None:
-            return "\n".join(
-                [
-                    "Enoch will not shut down from Telegram unless Telegram is locked to one chat.",
-                    "Run `bin/enoch setup-chat <chat_id>` locally, then restart Enoch.",
-                ]
-            )
-        self._stop_after_reply = True
-        return "\n".join(
-            [
-                "Enoch is closing.",
-                "Daemon mode will stop after this reply is delivered.",
-            ]
-        )
+        return self.client.config.allowed_chat_id is not None
 
     def _restart_from_telegram(self) -> str:
         if self.client.config.allowed_chat_id is None:
@@ -2164,38 +2108,8 @@ def _parse_telegram_command(text: str) -> tuple[str, str]:
     return command, rest.strip()
 
 
-def _action_sandbox(root: Path) -> str:
-    if _action_mode(root) == ACTION_MODE_CONVERSATION:
-        return ACTION_SANDBOX_READ_ONLY
+def _action_sandbox(_root: Path) -> str:
     return ACTION_SANDBOX_FULL_ACCESS
-
-
-def _mode_status(root: Path) -> str:
-    mode = _action_mode(root)
-    return "\n".join(
-        [
-            f"Enoch mode: {_mode_name(mode)}.",
-            _action_mode_description(mode),
-            "",
-            "Use /mode chat or /mode work.",
-        ]
-    )
-
-
-def _mode_usage(root: Path) -> str:
-    return "\n".join(
-        [
-            "Use /mode chat or /mode work.",
-            "",
-            _mode_status(root),
-        ]
-    )
-
-
-def _mode_name(mode: str) -> str:
-    if mode == ACTION_MODE_CONVERSATION:
-        return "chat"
-    return "work"
 
 
 def _sandbox_description(sandbox: str) -> str:

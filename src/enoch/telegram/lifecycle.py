@@ -6,7 +6,6 @@ from pathlib import Path
 import time
 from typing import Any
 
-from enoch.command_surface import action_mode, action_mode_label
 from enoch.identity import Identity
 from enoch.paths import enoch_home
 from enoch.update_tools import current_head, main_pull_summary
@@ -20,7 +19,6 @@ def startup_message(
     lines = [
         f"{identity.name} restarted and is listening on Telegram.",
         "Startup notification: daemon is running.",
-        f"Action mode: {action_mode_label(action_mode(root))}.",
         main_pull_summary(root),
     ]
     if previous_shutdown_warning:
@@ -34,7 +32,6 @@ def shutdown_message(identity: Identity, root: Path | None = None, reason: str =
         [
             f"{identity.name} is shutting down.",
             f"Reason: {reason}.",
-            f"Action mode: {action_mode_label(action_mode(root))}.",
             "Telegram bridge is closing.",
         ]
     )

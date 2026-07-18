@@ -12,7 +12,6 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from enoch.cli import _repl, main
-from enoch.command_surface import save_action_mode
 from enoch.config import read_section
 from enoch.immune import DoctorCheckResult, DoctorDiagnosis
 from enoch.identity import load_identity
@@ -22,7 +21,7 @@ class EnochCliTests(unittest.TestCase):
     def test_help_shows_admin_command_surface(self) -> None:
         output = _run_repl_commands("help", "exit")
 
-        self.assertIn("status      Show identity, model, local state, and action mode.", output)
+        self.assertIn("status      Show identity, model, and lineage.", output)
         self.assertIn("init        Create or claim a local Enoch instance worktree.", output)
         self.assertIn("setup       Configure Telegram token, chat lock, and setup status.", output)
         self.assertIn("thinking    Show or set Enoch's Codex thinking level.", output)
@@ -34,7 +33,7 @@ class EnochCliTests(unittest.TestCase):
         self.assertNotIn("teach       Package local changes as a portable lesson.", output)
         self.assertIn("learn       Inspect a published skill for adaptation.", output)
         self.assertNotIn("debug       Inspect prompts, logs, state files, and worktree health.", output)
-        self.assertIn("mode        Show or set chat/work mode.", output)
+        self.assertNotIn("mode        Show or set chat/work mode.", output)
         self.assertIn("doctor      Run Enoch's local health checks", output)
         self.assertIn("update      Pull latest main, run doctor, and restart Enoch if safe.", output)
         self.assertIn("Enoch CLI is admin-only.", output)
@@ -43,7 +42,7 @@ class EnochCliTests(unittest.TestCase):
         self.assertNotIn("Natural input is classified", output)
 
     @patch("enoch.cli.model_summary", return_value="AI model: gpt-5-codex")
-    def test_status_combines_identity_model_state_and_action_mode(self, model_summary: MagicMock) -> None:
+    def test_status_combines_identity_model_and_lineage(self, model_summary: MagicMock) -> None:
         output = _run_repl_commands("status", "exit")
 
         model_summary.assert_called_once_with(ROOT)
@@ -51,8 +50,7 @@ class EnochCliTests(unittest.TestCase):
         self.assertIn("I am Enoch.", output)
         self.assertIn("Mission:", output)
         self.assertIn("AI model: gpt-5-codex", output)
-        self.assertIn("Local state:", output)
-        self.assertIn("- action mode:", output)
+        self.assertNotIn("action mode", output)
 
     def test_init_claims_current_worktree_as_instance(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -147,17 +145,6 @@ class EnochCliTests(unittest.TestCase):
 
         learn_command.assert_called_once_with("learn teach from lucy", ROOT, prefix="")
         self.assertIn("Enoch inspected Lucy's teach skill.", output)
-
-    @patch("enoch.cli.update_from_main")
-    def test_update_refuses_conversation_mode(self, update_from_main: MagicMock) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            save_action_mode("conversation-only", root)
-
-            output = _run_repl_commands("update", "exit", root=root)
-
-        update_from_main.assert_not_called()
-        self.assertIn("Enoch will not change code or coordinate GitHub", output)
 
     @patch("enoch.cli._schedule_daemon_restart")
     @patch("enoch.cli._record_direct_action")
@@ -283,17 +270,6 @@ class EnochCliTests(unittest.TestCase):
         self.assertIn("Enoch thinking status:", output)
         self.assertIn("Set with thinking low, thinking medium, thinking high, or thinking default.", output)
         self.assertNotIn("/thinking low", output)
-
-    def test_mode_sets_shared_action_mode(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-
-            output = _run_repl_commands("mode chat", "status", "mode work", "status", "exit", root=root)
-
-        self.assertIn("Enoch mode: chat.", output)
-        self.assertIn("- action mode: conversation-only", output)
-        self.assertIn("Enoch mode: work.", output)
-        self.assertIn("- action mode: full-access", output)
 
     @patch("enoch.cli.run_immune_system")
     def test_doctor_runs_local_health_checks(self, run_immune_system: MagicMock) -> None:

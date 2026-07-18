@@ -12,7 +12,7 @@ For natural repository requests, Enoch may:
 
 - read the current long-term memory and startup context;
 - keep work in the persistent Codex session for the locked Telegram chat;
-- refuse code-changing or GitHub work unless Telegram is locked to one chat and action mode is full-access;
+- refuse code-changing or GitHub work unless Telegram is locked to one chat;
 - implement the requested change locally when authorized;
 - run relevant tests or doctor when practical;
 - coordinate commit, push, PR creation, approval, or merge only when the human asks for that action.
@@ -24,7 +24,7 @@ For ancestor commands, Enoch may:
 - scan parent or ancestor PR history for candidate changes;
 - inspect, ignore, or ask Enoch to adapt a selected candidate through the persistent Codex session.
 
-Do not treat ordinary chat messages as approval to mutate code unless they clearly request repository work and Enoch is in full-access action mode.
+Do not treat ordinary chat messages as approval to mutate code unless they clearly request repository work.
 
 ## Configuration
 
@@ -61,6 +61,6 @@ Optional:
 
 - Prefer setting `telegram.allowed_chat_id` after the first `/status` message reveals the chat id.
 - Do not send secrets through Telegram.
-- Use `telegram.allowed_chat_id` and `/mode work` before enabling code-changing natural agency.
+- Use `telegram.allowed_chat_id` before enabling code-changing natural agency.
 - Keep remote writes behind explicit human approval.
 - Keep a finite task timeout so a stuck agent run cannot consume tokens indefinitely.

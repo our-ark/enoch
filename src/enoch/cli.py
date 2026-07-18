@@ -4,14 +4,6 @@ import sys
 from pathlib import Path
 
 from enoch.brain import model_summary
-from enoch.command_surface import (
-    ACTION_MODE_CONVERSATION,
-    ACTION_MODE_FULL_ACCESS,
-    action_mode as _action_mode,
-    action_mode_description as _action_mode_description,
-    action_mode_label as _action_mode_label,
-    save_action_mode as _save_action_mode,
-)
 from enoch.formatting import format_doctor_result, summarize_for_log
 from enoch.identity import Identity, load_identity
 from enoch.identity_context import display_ancestor
@@ -28,7 +20,7 @@ from enoch.updater import update_from_main
 HELP = """Commands:
   help        Show this help.
   init        Create or claim a local Enoch instance worktree.
-  status      Show identity, model, local state, and action mode.
+  status      Show identity, model, and lineage.
   setup       Configure Telegram token, chat lock, and setup status.
   thinking    Show or set Enoch's Codex thinking level.
   mission     Show or update Enoch's mission.
@@ -36,7 +28,6 @@ HELP = """Commands:
   inherit     Show inheritable direct-parent changes.
   skills      Show declared skills for Enoch or another local agent.
   learn       Inspect a published skill for adaptation.
-  mode        Show or set chat/work mode.
   doctor      Run Enoch's local health checks.
   update      Pull latest main, run doctor, and restart Enoch if safe.
   exit        Put Enoch back to sleep.
@@ -131,8 +122,6 @@ def _command_output(raw_command: str, identity: Identity, root: Path) -> str | o
         return _skills(raw_command, root)
     if command == "learn" or command.startswith("learn "):
         return _learn(raw_command, root)
-    if command == "mode" or command.startswith("mode "):
-        return _mode(raw_command, root)
     if command == "doctor":
         return _doctor_text(root)
     if command == "update":
@@ -157,9 +146,6 @@ def _status_text(identity: Identity, root: Path) -> str:
             f"Mission: {identity.mission}",
             "",
             model_summary(root),
-            "",
-            "Local state:",
-            f"- action mode: {_action_mode_label(_action_mode(root))}",
         ]
     )
 
@@ -219,64 +205,7 @@ def _learn(text: str, root: Path) -> str:
     return learn_command(text, root, prefix="")
 
 
-def _mode(text: str, root: Path) -> str:
-    parts = text.split(maxsplit=1)
-    if len(parts) == 1:
-        return _mode_status(root)
-    choice = parts[1].strip().lower()
-    if choice == "chat":
-        next_mode = ACTION_MODE_CONVERSATION
-    elif choice == "work":
-        next_mode = ACTION_MODE_FULL_ACCESS
-    else:
-        return _mode_usage(root)
-    _save_action_mode(next_mode, root)
-    return "\n".join(
-        [
-            f"Enoch mode: {_mode_name(next_mode)}.",
-            _action_mode_description(next_mode),
-        ]
-    )
-
-
-def _mode_status(root: Path) -> str:
-    mode = _action_mode(root)
-    return "\n".join(
-        [
-            f"Enoch mode: {_mode_name(mode)}.",
-            _action_mode_description(mode),
-            "",
-            "Use mode chat or mode work.",
-        ]
-    )
-
-
-def _mode_usage(root: Path) -> str:
-    return "\n".join(["Use mode chat or mode work.", "", _mode_status(root)])
-
-
-def _mode_name(mode: str) -> str:
-    if mode == ACTION_MODE_CONVERSATION:
-        return "chat"
-    return "work"
-
-
-def _action_allowed(root: Path) -> bool:
-    return _action_mode(root) == ACTION_MODE_FULL_ACCESS
-
-
-def _action_lock_message(root: Path) -> str:
-    return "\n".join(
-        [
-            "Enoch will not change code or coordinate GitHub while action mode is conversation-only.",
-            "Use mode work if needed.",
-        ]
-    )
-
-
 def _update(root: Path) -> str:
-    if not _action_allowed(root):
-        return _action_lock_message(root)
     result = update_from_main(root)
     if result.direct_action_result:
         _record_direct_action("update from main", result.direct_action_result, root)

@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Callable
 
 from enoch.brain import REASONING_EFFORTS, model_summary
-from enoch.command_surface import action_mode, action_mode_label, lineage_usage
+from enoch.command_surface import lineage_usage
 from enoch.config import write_section_value
 from enoch.identity import Identity, identity_file_path, load_identity, update_mission
 from enoch.identity_context import display_ancestor
@@ -46,7 +46,6 @@ def status_message(
     chat_id: int | None = None,
     model_summary_fn: ModelSummaryFn = model_summary,
 ) -> str:
-    current_action_mode = action_mode(root)
     lines = [
         f"{identity.name} status:",
         "",
@@ -59,7 +58,6 @@ def status_message(
     lines.extend(
         [
             f"- Telegram chat lock: {allowed_chat_id if allowed_chat_id is not None else 'not set'}",
-            f"- action mode: {action_mode_label(current_action_mode)}",
         ]
     )
     if allowed_chat_id is None and chat_id is not None:
@@ -330,7 +328,6 @@ def help_message(topic: str = "") -> str:
             "/self - show Enoch's identity, role, ancestor, and mission",
             "/mission [text] - show or update Enoch's mission",
             "/status - show identity, model, local state, and chat setup",
-            "/mode [chat|work] - show or set whether Enoch only chats or can work on repo changes",
             "",
             "Work:",
             "/do <request> - run work now instead of queueing it",
@@ -359,7 +356,6 @@ def help_message(topic: str = "") -> str:
             "/doctor - run local health checks",
             "/update - pull latest main, run doctor, and restart if safe",
             "/restart - restart Enoch's Telegram daemon from the locked chat",
-            "/shutdown - stop Enoch's Telegram daemon from the locked chat",
             "",
             "For repository changes, say the request naturally. Enoch will open a PR automatically when Codex requests an edit.",
         ]
@@ -444,11 +440,9 @@ def _help_topic_message(topic: str) -> str:
         "propose": "/propose - rank all evolve sources and propose the strongest candidate",
         "skills": "/skills [agent-or-path] - show declared skills",
         "learn": "/learn <skill> from <agent> - adapt a published skill from another Our-Ark agent",
-        "mode": "/mode [chat|work] - show or set whether Enoch only chats or can work on repo changes",
         "doctor": "/doctor - run local health checks",
         "update": "/update - pull latest main, run doctor, and restart if safe",
         "restart": "/restart - restart Enoch's Telegram daemon from the locked chat",
-        "shutdown": "/shutdown - stop Enoch's Telegram daemon from the locked chat",
         "thinking": thinking_usage("/"),
     }
     return topics.get(topic, "")
@@ -457,7 +451,7 @@ def _help_topic_message(topic: str) -> str:
 def action_lock_message() -> str:
     return "\n".join(
         [
-            "Enoch will not change code or coordinate GitHub unless Telegram is locked to one chat and mode is work.",
-            "Run `bin/enoch setup-chat <chat_id>`, restart Enoch, then use /mode work if needed.",
+            "Enoch will not change code or coordinate GitHub unless Telegram is locked to one chat.",
+            "Run `bin/enoch setup-chat <chat_id>` and restart Enoch.",
         ]
     )

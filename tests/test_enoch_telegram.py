@@ -63,7 +63,6 @@ from enoch.telegram.bot import (
     WorkStatusMessage,
     _CURRENT_WORK_STATUS,
     _action_sandbox,
-    _action_mode,
     _begin_lifecycle_run,
     _format_task_final_message,
     _parse_task_context_snapshot,
@@ -419,7 +418,7 @@ class EnochTelegramTests(unittest.TestCase):
 
         self.assertEqual(client.sent[0][0], 42)
         self.assertIn("Enoch restarted and is listening on Telegram.", client.sent[0][1])
-        self.assertIn("Action mode: full-access.", client.sent[0][1])
+        self.assertNotIn("Action mode:", client.sent[0][1])
         self.assertIn("Last git main pull observed:", client.sent[0][1])
         self.assertIn("/help", client.sent[0][1])
         self.sync_session_activity.assert_called_once()
@@ -457,7 +456,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual(client.sent[0][0], 42)
         self.assertIn("Enoch is shutting down.", client.sent[0][1])
         self.assertIn("Reason: SIGTERM.", client.sent[0][1])
-        self.assertIn("Action mode: full-access.", client.sent[0][1])
+        self.assertNotIn("Action mode:", client.sent[0][1])
 
     def test_shutdown_notification_requires_locked_chat(self) -> None:
         client = FakeTelegramClient(allowed_chat_id=None)
@@ -467,12 +466,12 @@ class EnochTelegramTests(unittest.TestCase):
 
         self.assertEqual(client.sent, [])
 
-    def test_shutdown_message_includes_reason_and_mode(self) -> None:
+    def test_shutdown_message_includes_reason(self) -> None:
         message = _shutdown_message(load_identity(), ROOT, "keyboard interrupt")
 
         self.assertIn("Enoch is shutting down.", message)
         self.assertIn("Reason: keyboard interrupt.", message)
-        self.assertIn("Action mode:", message)
+        self.assertNotIn("Action mode:", message)
 
     def test_signal_reason_uses_signal_name(self) -> None:
         self.assertEqual(_signal_reason(15), "SIGTERM")
@@ -599,10 +598,8 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertNotIn("Mode:", client.sent[0][1])
         self.assertIn("/doctor", client.sent[0][1])
         self.assertNotIn("/debug", client.sent[0][1])
-        self.assertIn("/mode [chat|work]", client.sent[0][1])
-        self.assertLess(client.sent[0][1].index("Common:"), client.sent[0][1].index("/mode [chat|work]"))
+        self.assertNotIn("/mode [chat|work]", client.sent[0][1])
         self.assertLess(client.sent[0][1].index("/mission [text]"), client.sent[0][1].index("/status"))
-        self.assertLess(client.sent[0][1].index("/mode [chat|work]"), client.sent[0][1].index("Work:"))
         self.assertIn("/self - show Enoch's identity, role, ancestor, and mission", client.sent[0][1])
         self.assertIn("/status", client.sent[0][1])
         self.assertIn("/mission [text] - show or update Enoch's mission", client.sent[0][1])
@@ -645,7 +642,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("/update", client.sent[0][1])
         self.assertIn("/config - show or update local system settings", client.sent[0][1])
         self.assertIn("/restart - restart Enoch's Telegram daemon from the locked chat", client.sent[0][1])
-        self.assertLess(client.sent[0][1].index("System:"), client.sent[0][1].index("/shutdown"))
+        self.assertNotIn("/shutdown", client.sent[0][1])
         self.assertIn("say the request naturally", client.sent[0][1])
 
     def test_help_config_shows_only_config_commands(self) -> None:
@@ -786,6 +783,14 @@ class EnochTelegramTests(unittest.TestCase):
         bot.handle_update(_message_update(chat_id=42, text="/help /debug"))
 
         self.assertEqual(client.sent[0][1], "No help found for /debug.\nUse /help to see available commands.")
+
+    def test_help_shutdown_reports_removed_command(self) -> None:
+        client = FakeTelegramClient(allowed_chat_id=42)
+        bot = EnochTelegramBot(load_identity(), ROOT, client)
+
+        bot.handle_update(_message_update(chat_id=42, text="/help shutdown"))
+
+        self.assertEqual(client.sent[0][1], "No help found for /shutdown.\nUse /help to see available commands.")
 
     def test_help_topic_reports_unknown_command(self) -> None:
         client = FakeTelegramClient(allowed_chat_id=42)
@@ -2326,30 +2331,6 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("Enoch wrapper instructions:", respond.call_args.args[1])
         self.assertIn("This skill does not fit Enoch yet.", client.sent[0][1])
 
-    @patch(
-        "enoch.telegram.bot.respond",
-        return_value=f"I can adapt it.\n\n{EDIT_REQUEST_START}\nadapt skill\n{EDIT_REQUEST_END}",
-    )
-    @patch("enoch.telegram.bot.learn_skill_prompt", return_value="learn prompt")
-    @patch("enoch.telegram.bot.act_in_session")
-    def test_learn_skill_requires_action_mode_for_edit(
-        self,
-        act_in_session: MagicMock,
-        _learn_skill_prompt: MagicMock,
-        _respond: MagicMock,
-    ) -> None:
-        with TemporaryDirectory() as temp:
-            root = Path(temp)
-            client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
-
-            bot.handle_update(_message_update(chat_id=42, text="/mode chat"))
-            bot.handle_update(_message_update(chat_id=42, text="/learn teach from lucy"))
-
-        self.assertIn("Enoch mode: chat.", client.sent[0][1])
-        self.assertIn("will not change code", client.sent[1][1])
-        act_in_session.assert_not_called()
-
     def test_human_triggered_learning_work_is_tracked_with_learning_source(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
@@ -2427,7 +2408,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("AI model: gpt-5-codex", client.sent[0][1])
         self.assertIn("Local state:", client.sent[0][1])
         self.assertIn("Telegram chat lock: 42", client.sent[0][1])
-        self.assertIn("action mode: full-access", client.sent[0][1])
+        self.assertNotIn("action mode", client.sent[0][1])
         self.assertNotIn("I am Enoch.", client.sent[0][1])
         self.assertNotIn("Ancestor:", client.sent[0][1])
         self.assertNotIn("Mission:", client.sent[0][1])
@@ -2583,122 +2564,17 @@ class EnochTelegramTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             self.assertEqual(_action_sandbox(Path(temp)), "danger-full-access")
 
-    def test_action_sandbox_follows_mode(self) -> None:
+    def test_legacy_conversation_mode_state_is_ignored(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
+            state = root / ".enoch" / "action_mode.json"
+            state.parent.mkdir()
+            state.write_text('{"mode":"conversation-only"}', encoding="utf-8")
             client = FakeTelegramClient(allowed_chat_id=42)
             bot = EnochTelegramBot(load_identity(), root, client)
 
-            bot.handle_update(_message_update(chat_id=42, text="/mode chat"))
-            locked_sandbox = _action_sandbox(root)
-            bot.handle_update(_message_update(chat_id=42, text="/mode work"))
-            unlocked_sandbox = _action_sandbox(root)
-
-            self.assertEqual(locked_sandbox, "read-only")
-            self.assertEqual(unlocked_sandbox, "danger-full-access")
-
-    def test_mode_sets_action_mode(self) -> None:
-        with TemporaryDirectory() as temp:
-            root = Path(temp)
-            client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
-
-            bot.handle_update(_message_update(chat_id=42, text="/mode chat"))
-            bot.handle_update(_message_update(chat_id=42, text="/mode work"))
-
-            self.assertIn("Enoch mode: chat.", client.sent[0][1])
-            self.assertIn("Enoch mode: work.", client.sent[1][1])
-            self.assertEqual(_action_mode(root), "full-access")
-
-    def test_mode_requires_locked_chat(self) -> None:
-        with TemporaryDirectory() as temp:
-            client = FakeTelegramClient(allowed_chat_id=None)
-            bot = EnochTelegramBot(load_identity(), Path(temp), client)
-
-            bot.handle_update(_message_update(chat_id=42, text="/mode chat"))
-
-            self.assertIn("locked to one chat", client.sent[0][1])
-
-    def test_mode_without_argument_shows_status(self) -> None:
-        with TemporaryDirectory() as temp:
-            root = Path(temp)
-            client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
-
-            bot.handle_update(_message_update(chat_id=42, text="/mode"))
-
-            self.assertIn("Enoch mode: work.", client.sent[0][1])
-            self.assertIn("Use /mode chat or /mode work.", client.sent[0][1])
-
-    @patch(
-        "enoch.telegram.bot.respond",
-        return_value=(
-            "I can make that change."
-            f"\n\n{EDIT_REQUEST_START}\nadd reminders\n{EDIT_REQUEST_END}"
-        ),
-    )
-    @patch("enoch.telegram.bot.act_in_session")
-    def test_conversation_only_mode_blocks_requested_edit(
-        self,
-        act_in_session: MagicMock,
-        respond: MagicMock,
-    ) -> None:
-        with TemporaryDirectory() as temp:
-            root = Path(temp)
-            client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
-
-            bot.handle_update(_message_update(chat_id=42, text="/mode chat"))
-            bot.handle_update(_message_update(chat_id=42, text="add reminders"))
-
-            self.assertIn("Enoch mode: chat.", client.sent[0][1])
-            self.assertIn("I can make that change.", client.sent[1][1])
-            self.assertNotIn("will not change code", client.sent[1][1])
-            respond.assert_called_once()
-            act_in_session.assert_not_called()
-
-    @patch("enoch.telegram.bot.ensure_long_term_memory")
-    @patch("enoch.telegram.bot.log_conversation_turn")
-    @patch("enoch.telegram.bot.act_in_session", return_value="Implemented requested edit.")
-    @patch("enoch.telegram.bot._worktree_snapshot", side_effect=["clean", "clean"])
-    @patch("enoch.telegram.bot.create_branch")
-    @patch("enoch.telegram.bot._ensure_local_main_current")
-    @patch("enoch.telegram.bot.ensure_clean_worktree")
-    @patch("enoch.telegram.bot.current_branch", return_value="main")
-    @patch("enoch.telegram.bot.time.time", return_value=789)
-    def test_locked_mode_uses_read_only_sandbox_if_action_runner_is_reached(
-        self,
-        _time: MagicMock,
-        current_branch: MagicMock,
-        ensure_clean_worktree: MagicMock,
-        ensure_local_main_current: MagicMock,
-        create_branch: MagicMock,
-        _snapshot: MagicMock,
-        act_in_session: MagicMock,
-        log_conversation_turn: MagicMock,
-        update_memory: MagicMock,
-    ) -> None:
-        with TemporaryDirectory() as temp:
-            root = Path(temp)
-            client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
-
-            bot.handle_update(_message_update(chat_id=42, text="/mode chat"))
-            result = bot._run_direct_work(42, "add reminders", session_key="telegram:42")
-
-        self.assertEqual(current_branch.call_count, 2)
-        current_branch.assert_any_call(root)
-        ensure_clean_worktree.assert_called_once_with(root)
-        ensure_local_main_current.assert_called_once_with(root)
-        create_branch.assert_called_once_with("enoch/789-add-reminders", root)
-        act_in_session.assert_called_once()
-        self.assertEqual(act_in_session.call_args.kwargs["sandbox"], "read-only")
-        self.assertEqual(act_in_session.call_args.kwargs["session_key"], "telegram:42")
-        self.assertIn("Work request:", act_in_session.call_args.args[1])
-        self.assertNotIn("Edit phase:", act_in_session.call_args.args[1])
-        log_conversation_turn.assert_called()
-        update_memory.assert_any_call(root)
-        self.assertIn("Implemented requested edit.", result)
+            self.assertTrue(bot._action_allowed())
+            self.assertEqual(_action_sandbox(root), "danger-full-access")
 
     def test_progress_update_uses_minutes_at_default_interval(self) -> None:
         client = FakeTelegramClient(allowed_chat_id=42)
@@ -2797,27 +2673,6 @@ class EnochTelegramTests(unittest.TestCase):
         bot.handle_update(_message_update(chat_id=42, text="/update"))
 
         update_from_main.assert_not_called()
-        self.assertIn("locked to one chat", client.sent[0][1])
-
-    @patch("enoch.telegram.bot._schedule_daemon_stop")
-    def test_shutdown_schedules_daemon_stop_after_reply(self, schedule_stop: MagicMock) -> None:
-        client = FakeTelegramClient(allowed_chat_id=42)
-        bot = EnochTelegramBot(load_identity(), ROOT, client)
-
-        with self.assertRaisesRegex(ShutdownRequested, "Telegram /shutdown"):
-            bot.handle_update(_message_update(chat_id=42, text="/shutdown"))
-
-        schedule_stop.assert_called_once_with(ROOT)
-        self.assertIn("Enoch is closing.", client.sent[0][1])
-
-    @patch("enoch.telegram.bot._schedule_daemon_stop")
-    def test_shutdown_requires_locked_chat(self, schedule_stop: MagicMock) -> None:
-        client = FakeTelegramClient(allowed_chat_id=None)
-        bot = EnochTelegramBot(load_identity(), ROOT, client)
-
-        bot.handle_update(_message_update(chat_id=42, text="/shutdown"))
-
-        schedule_stop.assert_not_called()
         self.assertIn("locked to one chat", client.sent[0][1])
 
     @patch("enoch.telegram.bot._schedule_daemon_restart")
