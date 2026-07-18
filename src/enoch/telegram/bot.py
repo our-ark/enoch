@@ -72,6 +72,7 @@ from enoch.evolve import (
     set_evolve_mode,
     set_evolve_theme,
 )
+from enoch.evolve_events import EvolveEvent, load_evolve_events, record_evolve_event
 from enoch.experience import ExperienceRecord, load_experience_records
 from enoch.feedback import FeedbackSignal, extract_feedback_signals
 from enoch.git_tools import (
@@ -1037,6 +1038,13 @@ class EnochTelegramBot:
             cancelled = cancel_task(cancel_id, self.root)
             if cancelled is None:
                 return f"Enoch could not cancel task #{cancel_id}. It may be running, completed, or missing."
+            cancel_evolve_candidate_for_task(
+                cancelled,
+                self.root,
+                event_actor="human",
+                trigger="/task cancel",
+                reason="Cancelled before running.",
+            )
             message_id = self._work_status_messages.pop(cancelled.id, cancelled.status_message_id)
             if message_id is not None:
                 cancelled_status = WorkStatusMessage(
@@ -1250,7 +1258,7 @@ class EnochTelegramBot:
         return _evolve_usage()
 
     def _propose_evolve(self, chat_id: int, *, trigger: str) -> EvolveProposal:
-        return propose_evolve(
+        proposal = propose_evolve(
             self.root,
             brainstormer=lambda theme: generate_brainstorm_ideas(
                 theme,
@@ -1263,6 +1271,67 @@ class EnochTelegramBot:
                 ),
             ),
         )
+        event_actor = "system" if trigger == "evolve-scheduler" else "human"
+        event_trigger = "evolve-scheduler" if event_actor == "system" else "/propose"
+        self._record_evolve_event(
+            "checked",
+            event_actor=event_actor,
+            trigger=event_trigger,
+            proposal=proposal,
+            reason=_evolve_check_reason(proposal),
+        )
+        if proposal.report.state.mode == MODE_DISABLED:
+            self._record_evolve_event(
+                "skipped",
+                event_actor=event_actor,
+                trigger=event_trigger,
+                proposal=proposal,
+                reason="mode-disabled",
+            )
+        elif proposal.top_candidate is None:
+            self._record_evolve_event(
+                "skipped",
+                event_actor=event_actor,
+                trigger=event_trigger,
+                proposal=proposal,
+                reason=_evolve_skip_reason(proposal),
+            )
+        else:
+            self._record_evolve_event(
+                "proposed",
+                event_actor=event_actor,
+                trigger=event_trigger,
+                proposal=proposal,
+                candidate=proposal.top_candidate,
+            )
+        return proposal
+
+    def _record_evolve_event(
+        self,
+        event: str,
+        *,
+        event_actor: str,
+        trigger: str,
+        proposal: EvolveProposal | None = None,
+        candidate: EvolveCandidate | None = None,
+        task_id: int | None = None,
+        reason: str = "",
+    ) -> None:
+        state = proposal.report.state if proposal is not None else load_evolve_state(self.root)
+        try:
+            record_evolve_event(
+                event,
+                self.root,
+                event_actor=event_actor,
+                trigger=trigger,
+                mode=state.mode,
+                theme=state.theme,
+                candidate=candidate,
+                task_id=task_id,
+                reason=reason,
+            )
+        except (OSError, ValueError):
+            return
 
     def _evolve_approve(self, candidate_id: str) -> str:
         chat_id = self.client.config.allowed_chat_id
@@ -1275,6 +1344,12 @@ class EnochTelegramBot:
             return str(error)
         if candidate.status != "candidate":
             return f"Evolve candidate {candidate.id} cannot be approved from status {candidate.status}."
+        self._record_evolve_event(
+            "selected",
+            event_actor="human",
+            trigger="/evolve approve",
+            candidate=candidate,
+        )
         try:
             job = enqueue_task(
                 chat_id,
@@ -1289,8 +1364,22 @@ class EnochTelegramBot:
                 candidate_id=candidate.id,
             )
         except (OSError, ValueError):
+            self._record_evolve_event(
+                "skipped",
+                event_actor="human",
+                trigger="/evolve approve",
+                candidate=candidate,
+                reason="queue-failed",
+            )
             return "Enoch could not approve and queue that evolve candidate."
         candidate = run_evolve_candidate(candidate.id, self.root, theme=state.theme)
+        self._record_evolve_event(
+            "queued",
+            event_actor="human",
+            trigger="/evolve approve",
+            candidate=candidate,
+            task_id=job.id,
+        )
         return f"Approved evolve candidate {candidate.id} and queued task #{job.id}.\n\n" + "\n".join(
             _format_evolve_candidate(candidate)
         )
@@ -1545,16 +1634,58 @@ class EnochTelegramBot:
         if claimed is None:
             return None
         chat_id = self.client.config.allowed_chat_id
-        if chat_id is None or claimed.mode == MODE_DISABLED:
+        if chat_id is None:
+            self._record_evolve_event(
+                "checked",
+                event_actor="system",
+                trigger="evolve-scheduler",
+                reason="schedule-due",
+            )
+            self._record_evolve_event(
+                "skipped",
+                event_actor="system",
+                trigger="evolve-scheduler",
+                reason="chat-not-locked",
+            )
+            return None
+        if claimed.mode == MODE_DISABLED:
+            self._record_evolve_event(
+                "checked",
+                event_actor="system",
+                trigger="evolve-scheduler",
+                reason="schedule-due",
+            )
+            self._record_evolve_event(
+                "skipped",
+                event_actor="system",
+                trigger="evolve-scheduler",
+                reason="mode-disabled",
+            )
             return None
         proposal = self._propose_evolve(chat_id, trigger="evolve-scheduler")
         if claimed.mode == MODE_CO_EVOLVE:
+            if proposal.top_candidate is not None:
+                self._record_evolve_event(
+                    "skipped",
+                    event_actor="system",
+                    trigger="evolve-scheduler",
+                    proposal=proposal,
+                    candidate=proposal.top_candidate,
+                    reason="awaiting-human-approval",
+                )
             self._safe_send_message(chat_id, "Scheduled evolve check\n\n" + _format_evolve_proposal(proposal))
             return None
         if claimed.mode != MODE_AUTO_EVOLVE or proposal.top_candidate is None:
             return None
         report = proposal.report
         candidate = proposal.top_candidate
+        self._record_evolve_event(
+            "selected",
+            event_actor="system",
+            trigger="evolve-scheduler",
+            proposal=proposal,
+            candidate=candidate,
+        )
         request = _evolve_task_request(candidate, report.state.theme)
         context = _evolve_task_context(candidate)
         try:
@@ -1571,8 +1702,24 @@ class EnochTelegramBot:
                 candidate_id=candidate.id,
             )
         except (OSError, ValueError):
+            self._record_evolve_event(
+                "skipped",
+                event_actor="system",
+                trigger="evolve-scheduler",
+                proposal=proposal,
+                candidate=candidate,
+                reason="queue-failed",
+            )
             return None
-        run_evolve_candidate(candidate.id, self.root, theme=report.state.theme)
+        candidate = run_evolve_candidate(candidate.id, self.root, theme=report.state.theme)
+        self._record_evolve_event(
+            "queued",
+            event_actor="system",
+            trigger="evolve-scheduler",
+            proposal=proposal,
+            candidate=candidate,
+            task_id=job.id,
+        )
         message = _format_work_status_message(
             WorkStatusMessage(
                 chat_id=chat_id,
@@ -1669,19 +1816,39 @@ class EnochTelegramBot:
                     event_actor="system",
                     trigger="task-runner-cancelled",
                 )
-                cancel_evolve_candidate_for_task(job, self.root)
+                cancel_evolve_candidate_for_task(
+                    job,
+                    self.root,
+                    event_actor="human",
+                    trigger="/stop",
+                    reason=reply,
+                )
             elif completed_status == "failed":
+                failure_actor = "system" if deadline.expired.is_set() else "agent"
+                failure_trigger = "task-timeout" if deadline.expired.is_set() else "task-runner"
                 fail_task(
                     job.id,
                     self.root,
                     result=reply,
-                    event_actor="system" if deadline.expired.is_set() else "agent",
-                    trigger="task-timeout" if deadline.expired.is_set() else "task-runner",
+                    event_actor=failure_actor,
+                    trigger=failure_trigger,
                 )
-                fail_evolve_candidate_for_task(job, self.root)
+                fail_evolve_candidate_for_task(
+                    job,
+                    self.root,
+                    event_actor=failure_actor,
+                    trigger=failure_trigger,
+                    reason=reply,
+                )
             else:
                 complete_task(job.id, self.root, result=reply)
-                complete_evolve_candidate_for_task(job, self.root)
+                complete_evolve_candidate_for_task(
+                    job,
+                    self.root,
+                    event_actor="agent",
+                    trigger="task-runner",
+                    reason=reply,
+                )
         completed_job = _history_task(job.id, self.root)
         summary_job = completed_job or job
         if completed_status == "completed":
@@ -2213,10 +2380,22 @@ def _recover_running_task_from_direct_action_log(root: Path) -> None:
         return
     if _work_reply_failed(result):
         fail_task(running.id, root, result=result, event_actor="system", trigger="recovery")
-        fail_evolve_candidate_for_task(running, root)
+        fail_evolve_candidate_for_task(
+            running,
+            root,
+            event_actor="system",
+            trigger="recovery",
+            reason=result,
+        )
     else:
         complete_task(running.id, root, result=result, event_actor="system", trigger="recovery")
-        complete_evolve_candidate_for_task(running, root)
+        complete_evolve_candidate_for_task(
+            running,
+            root,
+            event_actor="system",
+            trigger="recovery",
+            reason=result,
+        )
 
 
 def _latest_direct_action_result_for_task(job: TaskJob, root: Path) -> str:
@@ -2388,6 +2567,7 @@ def _format_feedback_signal(signal: FeedbackSignal) -> list[str]:
 def _format_experience_report(root: Path) -> str:
     state = load_evolve_state(root)
     records = load_experience_records(root, limit=10_000)
+    evolve_events = load_evolve_events(root, limit=10_000)
     candidates = rank_evolve_candidates(collect_experience_candidates(root), theme=state.theme)
     lines = ["Experience:", "", "Task statistics:"]
     if records:
@@ -2406,10 +2586,48 @@ def _format_experience_report(root: Path) -> str:
         )
     else:
         lines.append("- none")
+    lines.extend(["", "Evolution statistics:"])
+    if evolve_events:
+        queued = [event for event in evolve_events if event.event == "queued"]
+        outcomes = Counter(
+            event.event
+            for event in evolve_events
+            if event.event in {"completed", "failed", "cancelled"}
+        )
+        origins = Counter({"human": 0, "agent": 0})
+        origins.update(event.candidate_initiated_by for event in queued)
+        autonomous = sum(
+            event.event_actor == "system" and event.trigger == "evolve-scheduler"
+            for event in queued
+        )
+        human_approved = sum(
+            event.event_actor == "human" and event.trigger == "/evolve approve"
+            for event in queued
+        )
+        lines.extend(
+            [
+                f"- Checks: {sum(event.event == 'checked' for event in evolve_events)}",
+                f"- Proposed: {sum(event.event == 'proposed' for event in evolve_events)}",
+                (
+                    f"- Queued: {len(queued)} "
+                    f"(autonomous {autonomous}, human-approved {human_approved})"
+                ),
+                f"- Queued candidate origins: {_format_counter(origins)}",
+                f"- Outcomes: {_format_counter(outcomes)}",
+            ]
+        )
+    else:
+        lines.append("- none")
     lines.extend(["", "Recent tasks:"])
     if records:
         for record in records[:10]:
             lines.extend(_format_experience_record(record))
+    else:
+        lines.append("- none")
+    lines.extend(["", "Recent evolution events:"])
+    if evolve_events:
+        for event in evolve_events[-10:][::-1]:
+            lines.extend(_format_evolve_event(event))
     else:
         lines.append("- none")
     lines.extend(["", "Current evolve candidates:"])
@@ -2444,8 +2662,47 @@ def _format_experience_record(record: ExperienceRecord) -> list[str]:
     return lines
 
 
+def _format_evolve_event(event: EvolveEvent) -> list[str]:
+    target = event.candidate_id or "no candidate"
+    if event.task_id is not None:
+        target += f" -> task-{event.task_id}"
+    lines = [f"- {event.event} [{event.event_actor}] {target}"]
+    details = [f"trigger {event.trigger or 'unknown'}"]
+    if event.source:
+        details.append(f"source {event.source}")
+    if event.candidate_initiated_by:
+        details.append(f"candidate initiated by {event.candidate_initiated_by}")
+    if event.mode:
+        details.append(f"mode {event.mode}")
+    lines.append(f"  {'; '.join(details)}")
+    if event.reason:
+        lines.append(f"  Reason: {_clip_activity_text(event.reason, limit=180)}")
+    return lines
+
+
 def _format_counter(counts: Counter[str]) -> str:
     return ", ".join(f"{key} {counts[key]}" for key in sorted(counts)) or "none"
+
+
+def _evolve_check_reason(proposal: EvolveProposal) -> str:
+    parts = [f"ranked-{len(proposal.candidates)}-candidate(s)"]
+    if proposal.brainstorm_attempted:
+        parts.append(f"fallback-brainstorm-added-{proposal.brainstorm_added}")
+    elif proposal.brainstorm_skip_reason:
+        parts.append(f"fallback-{proposal.brainstorm_skip_reason}")
+    if proposal.brainstorm_error:
+        parts.append(f"fallback-error-{proposal.brainstorm_error}")
+    return "; ".join(parts)
+
+
+def _evolve_skip_reason(proposal: EvolveProposal) -> str:
+    if proposal.brainstorm_error:
+        return f"brainstorm-failed: {proposal.brainstorm_error}"
+    if proposal.brainstorm_skip_reason:
+        return proposal.brainstorm_skip_reason
+    if proposal.brainstorm_attempted:
+        return "no-candidate-after-brainstorm"
+    return "no-candidate"
 
 
 def _format_evolve_proposal(proposal: EvolveProposal) -> str:

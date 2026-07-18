@@ -35,6 +35,7 @@ from enoch.evolve import (
     set_evolve_theme,
     sync_evolve_candidates,
 )
+from enoch.evolve_events import load_evolve_events
 from enoch.experience import record_task_experience
 from enoch.identity import load_identity
 from enoch.learn import LearnRequest, record_peer_learning_observation
@@ -383,12 +384,16 @@ class EnochEvolveTests(unittest.TestCase):
             completed = complete_evolve_candidate_for_task(job, root)
             visible = load_evolve_candidates(root)
             all_candidates = load_evolve_candidates(root, include_inactive=True)
+            events = load_evolve_events(root, task_id=job.id)
 
         assert completed is not None
         self.assertEqual(completed.status, "done")
         self.assertNotIn("backlog-1", {candidate.id for candidate in visible})
         self.assertEqual(all_candidates[0].id, "backlog-1")
         self.assertEqual(all_candidates[0].status, "done")
+        self.assertEqual([event.event for event in events], ["completed"])
+        self.assertEqual(events[0].event_actor, "agent")
+        self.assertEqual(events[0].trigger, "task-runner")
 
     def test_failed_and_cancelled_evolve_tasks_mark_candidates_inactive(self) -> None:
         with TemporaryDirectory() as temp:
@@ -416,6 +421,8 @@ class EnochEvolveTests(unittest.TestCase):
             cancelled = cancel_evolve_candidate_for_task(cancelled_job, root)
             visible = load_evolve_candidates(root)
             all_candidates = load_evolve_candidates(root, include_inactive=True)
+            failed_events = load_evolve_events(root, task_id=failed_job.id)
+            cancelled_events = load_evolve_events(root, task_id=cancelled_job.id)
 
         assert failed is not None
         assert cancelled is not None
@@ -425,6 +432,8 @@ class EnochEvolveTests(unittest.TestCase):
         statuses = {candidate.id: candidate.status for candidate in all_candidates}
         self.assertEqual(statuses["backlog-1"], "failed")
         self.assertEqual(statuses["backlog-2"], "cancelled")
+        self.assertEqual(failed_events[0].event, "failed")
+        self.assertEqual(cancelled_events[0].event, "cancelled")
 
     def test_schedule_can_be_set_claimed_and_disabled(self) -> None:
         with TemporaryDirectory() as temp:

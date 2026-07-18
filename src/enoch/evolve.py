@@ -12,6 +12,7 @@ from enoch.automatic_learning import LearningArtifact, learning_index_path
 from enoch.brainstorming import BrainstormIdea, load_brainstorm_ideas
 from enoch.cron import CronJob, cron_status, format_cron_interval
 from enoch.experience import ExperienceRecord, load_experience_records
+from enoch.evolve_events import record_evolve_event
 from enoch.feedback import FeedbackSignal, extract_feedback_signals
 from enoch.learn import PeerLearningObservation, load_peer_learning_observations
 from enoch.lineage.core import LineageCandidate, load_parent_inbox_candidates
@@ -471,11 +472,27 @@ def get_evolve_candidate(candidate_id: str, root: Path | None = None, *, theme: 
     raise ValueError(f"No evolve candidate found for {candidate_id}.")
 
 
-def remove_evolve_candidate(candidate_id: str, root: Path | None = None, *, theme: str = "") -> EvolveCandidate:
+def remove_evolve_candidate(
+    candidate_id: str,
+    root: Path | None = None,
+    *,
+    theme: str = "",
+    event_actor: str = "human",
+    trigger: str = "/evolve remove",
+) -> EvolveCandidate:
     candidate = get_evolve_candidate(candidate_id, root, theme=theme)
     if candidate.status != "candidate":
         raise ValueError(f"Evolve candidate {candidate.id} cannot be removed from status {candidate.status}.")
-    return _set_candidate_status(candidate.id, "removed", root, theme=theme)
+    removed = _set_candidate_status(candidate.id, "removed", root, theme=theme)
+    _record_candidate_event_safely(
+        "removed",
+        removed,
+        root,
+        event_actor=event_actor,
+        trigger=trigger,
+        theme=theme,
+    )
+    return removed
 
 
 def run_evolve_candidate(candidate_id: str, root: Path | None = None, *, theme: str = "") -> EvolveCandidate:
@@ -502,14 +519,28 @@ def complete_evolve_candidate_for_task(
     root: Path | None = None,
     *,
     theme: str = "",
+    event_actor: str = "agent",
+    trigger: str = "task-runner",
+    reason: str = "",
 ) -> EvolveCandidate | None:
     candidate_id = _evolve_candidate_id_from_task(job)
     if not candidate_id:
         return None
     try:
-        return complete_evolve_candidate(candidate_id, root, theme=theme)
+        candidate = complete_evolve_candidate(candidate_id, root, theme=theme)
     except ValueError:
         return None
+    _record_candidate_event_safely(
+        "completed",
+        candidate,
+        root,
+        event_actor=event_actor,
+        trigger=trigger,
+        theme=theme,
+        task_id=job.id,
+        reason=reason,
+    )
+    return candidate
 
 
 def fail_evolve_candidate_for_task(
@@ -517,14 +548,28 @@ def fail_evolve_candidate_for_task(
     root: Path | None = None,
     *,
     theme: str = "",
+    event_actor: str = "agent",
+    trigger: str = "task-runner",
+    reason: str = "",
 ) -> EvolveCandidate | None:
     candidate_id = _evolve_candidate_id_from_task(job)
     if not candidate_id:
         return None
     try:
-        return fail_evolve_candidate(candidate_id, root, theme=theme)
+        candidate = fail_evolve_candidate(candidate_id, root, theme=theme)
     except ValueError:
         return None
+    _record_candidate_event_safely(
+        "failed",
+        candidate,
+        root,
+        event_actor=event_actor,
+        trigger=trigger,
+        theme=theme,
+        task_id=job.id,
+        reason=reason,
+    )
+    return candidate
 
 
 def cancel_evolve_candidate_for_task(
@@ -532,14 +577,56 @@ def cancel_evolve_candidate_for_task(
     root: Path | None = None,
     *,
     theme: str = "",
+    event_actor: str = "human",
+    trigger: str = "/stop",
+    reason: str = "",
 ) -> EvolveCandidate | None:
     candidate_id = _evolve_candidate_id_from_task(job)
     if not candidate_id:
         return None
     try:
-        return cancel_evolve_candidate(candidate_id, root, theme=theme)
+        candidate = cancel_evolve_candidate(candidate_id, root, theme=theme)
     except ValueError:
         return None
+    _record_candidate_event_safely(
+        "cancelled",
+        candidate,
+        root,
+        event_actor=event_actor,
+        trigger=trigger,
+        theme=theme,
+        task_id=job.id,
+        reason=reason,
+    )
+    return candidate
+
+
+def _record_candidate_event_safely(
+    event: str,
+    candidate: EvolveCandidate,
+    root: Path | None,
+    *,
+    event_actor: str,
+    trigger: str,
+    theme: str,
+    task_id: int | None = None,
+    reason: str = "",
+) -> None:
+    state = load_evolve_state(root)
+    try:
+        record_evolve_event(
+            event,
+            root,
+            event_actor=event_actor,
+            trigger=trigger,
+            mode=state.mode,
+            theme=theme or state.theme,
+            candidate=candidate,
+            task_id=task_id,
+            reason=reason,
+        )
+    except (OSError, ValueError):
+        return
 
 
 def rank_evolve_candidates(

@@ -1,5 +1,5 @@
 name: evolve
-version: 0.2.0
+version: 0.3.0
 summary: Collect, rank, and propose bounded self-evolution candidates under human-visible guardrails.
 owner: Enoch
 status: active
@@ -8,6 +8,7 @@ entrypoint: src/enoch/evolve.py
 capabilities:
   state: src/enoch/evolve.py
   scheduler: src/enoch/evolve.py
+  event_journal: src/enoch/evolve_events.py
   candidate_collection:
     - src/enoch/backlog.py
     - src/enoch/feedback.py
@@ -26,11 +27,13 @@ permissions:
       - .enoch/cron.json
       - .enoch/learning/artifacts.jsonl
       - .enoch/learning/peers.jsonl
+      - .enoch/evolve_events.jsonl
       - .agent/lineage_inbox.json
     write:
       - .enoch/evolve.json
       - .enoch/evolve_candidates.json
       - .enoch/evolve_brainstorms.jsonl
+      - .enoch/evolve_events.jsonl
   git:
     merge: false
 validation:

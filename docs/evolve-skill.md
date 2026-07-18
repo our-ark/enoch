@@ -74,6 +74,13 @@ Schedulers, cron, recovery, approvals, and promotions are recorded as triggers,
 not additional sources. The journal keeps successful work visible without turning
 every success into an evolve candidate.
 
+Evolution decisions have a separate append-only journal at
+`.enoch/evolve_events.jsonl`. It records `checked`, `proposed`, `selected`,
+`queued`, `completed`, `failed`, `cancelled`, `skipped`, and `removed` events.
+Each event links candidate provenance, decision actor, trigger, mode, theme,
+score, and task id without conflating an agent-origin idea with an autonomous
+scheduler decision.
+
 Experience candidates come from failures, repeated manual steps, confusing flows, missing commands, test failures, recovery friction, and places where Enoch notices she needed human help for something she could safely automate next time.
 
 ### brainstorm

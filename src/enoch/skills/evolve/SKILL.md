@@ -35,6 +35,11 @@ remains available during the cooldown.
 
 Candidates are persisted in `.enoch/evolve_candidates.json` so Enoch can remember whether a candidate is available, running, done, failed, cancelled, or removed. Normal candidate views hide done, failed, cancelled, and removed candidates.
 
+Evolution decisions are appended to `.enoch/evolve_events.jsonl`. The funnel
+records checks, proposals, selections, queueing, terminal outcomes, skips, and
+removals. `candidate_initiated_by` identifies the idea's origin, while
+`event_actor` and `trigger` identify who caused each decision.
+
 ## Scheduler
 
 The evolve scheduler stores its frequency and next run time in `.enoch/evolve.json`.
