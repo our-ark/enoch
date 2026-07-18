@@ -34,6 +34,20 @@ ENOCH_PYTHON=/Users/garyzhao/.cache/codex-runtimes/codex-primary-runtime/depende
 
 Then open the bot in Telegram and send `/status`.
 
+## Codex configuration
+
+Enoch has her own local runtime configuration in `.enoch/config.yaml`. For the
+Codex model and reasoning effort, settings are resolved in this order:
+
+1. `ENOCH_CODEX_MODEL` or `ENOCH_CODEX_REASONING_EFFORT`
+2. `codex.model` or `codex.reasoning_effort` in `.enoch/config.yaml`
+3. The user-level Codex configuration in `$CODEX_HOME/config.toml` (normally
+   `~/.codex/config.toml`)
+4. The Codex CLI default
+
+Use `/config` in Telegram to inspect the effective settings and `/config model`
+or `/config reasoning-effort` to change Enoch's local overrides.
+
 ## Lineage
 
 - created by: Genesis

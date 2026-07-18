@@ -138,7 +138,10 @@ def model_summary(root: Path | None = None) -> str:
         model_source = str(config_path)
     else:
         model = "Codex CLI default"
-        model_source = "Codex, because ENOCH_CODEX_MODEL and Codex config model are not set"
+        model_source = (
+            "Codex, because ENOCH_CODEX_MODEL, Enoch config codex.model, "
+            "and Codex config model are not set"
+        )
 
     lines = [
         f"AI model: {model}",
