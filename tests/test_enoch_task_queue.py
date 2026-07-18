@@ -20,6 +20,8 @@ from enoch.task_queue import (
     recover_interrupted_task,
     record_task_result,
     record_task_status_message,
+    regress_task,
+    resolve_regressed_task,
     revert_task,
     task_result_has_pull_request,
     task_queue_status,
@@ -306,7 +308,7 @@ class EnochTaskQueueTests(unittest.TestCase):
         self.assertEqual(events[-1].event_actor, "system")
         self.assertEqual(events[-1].trigger, "recovery")
 
-    def test_reverted_task_keeps_completed_and_reverted_events(self) -> None:
+    def test_reverted_task_keeps_completed_regressed_and_reverted_events(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
             queued = enqueue_task(42, "ship reversible work", root)
@@ -324,9 +326,57 @@ class EnochTaskQueueTests(unittest.TestCase):
             events = load_task_events(root, task_id=queued.id)
 
         self.assertEqual(reverted.status, "reverted")
-        self.assertEqual([event.event for event in events[-2:]], ["completed", "reverted"])
+        self.assertEqual(
+            [event.event for event in events[-3:]],
+            ["completed", "regressed", "reverted"],
+        )
         self.assertEqual(events[-1].event_actor, "human")
         self.assertEqual(events[-1].related_task_id, 7)
+
+    def test_regressed_task_can_be_resolved_by_completed_forward_fix(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            original = enqueue_task(42, "ship risky work", root)
+            complete_task(begin_next_task(root).id, root, result="Shipped.")
+            regressed = regress_task(original.id, root, result="Broke recovery.")
+            fix = enqueue_task(42, "repair recovery", root, parent_task_id=original.id)
+            complete_task(begin_next_task(root).id, root, result="Recovery fixed.")
+
+            resolved = resolve_regressed_task(
+                original.id,
+                "forward-fixed",
+                root,
+                result="Fixed by follow-up.",
+                related_task_id=fix.id,
+            )
+            events = load_task_events(root, task_id=original.id)
+
+        self.assertEqual(regressed.status, "regressed")
+        self.assertEqual(resolved.status, "forward-fixed")
+        self.assertEqual(
+            [event.event for event in events[-3:]],
+            ["completed", "regressed", "forward-fixed"],
+        )
+        self.assertEqual(events[-1].related_task_id, fix.id)
+
+    def test_forward_fix_must_reference_another_completed_task(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            original = enqueue_task(42, "ship risky work", root)
+            complete_task(begin_next_task(root).id, root)
+            regress_task(original.id, root, result="Regression.")
+            pending_fix = enqueue_task(42, "repair it", root)
+
+            unresolved = resolve_regressed_task(
+                original.id,
+                "forward-fixed",
+                root,
+                related_task_id=pending_fix.id,
+            )
+            status = task_queue_status(root)
+
+        self.assertIsNone(unresolved)
+        self.assertEqual(status.history[-1].status, "regressed")
 
 
 if __name__ == "__main__":

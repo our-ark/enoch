@@ -56,9 +56,24 @@ Proposal selection only considers candidates whose status is `candidate`. Runnin
 Scheduled co-evolve and auto-evolve checks use the same empty-candidate fallback
 and cooldown as `/propose`.
 
+Each top candidate returned by `/propose` or the evolve scheduler receives a
+unique `proposal_id` in `.enoch/evolve_events.jsonl`. Proposal dispositions are
+tracked independently as `selected`, `removed`, or `no-action`; an unresolved
+proposal remains pending, and a newer proposal closes the previous pending one
+as `no-action` with reason `superseded-by-new-proposal`. Queued task outcomes
+retain the same `proposal_id`, including completion, failure, cancellation, and
+regression resolution. `/experience` reports proposal disposition, acceptance
+rate, source and trigger distribution, and selected proposal outcomes.
+
 Every tracked task writes append-only lifecycle events to `.enoch/task_events.jsonl`.
 Events include `created`, `queued`, `started`, `completed`, `failed`, `cancelled`,
-and `reverted`. Each event keeps three independent provenance dimensions:
+`regressed`, `reverted`, and `forward-fixed`. A regression is recorded after a
+task was completed; `reverted` and `forward-fixed` are separate resolution
+events so regression counts remain durable. Enoch owns this bookkeeping:
+the agent emits an internal structured signal when evidence identifies the
+original task, and the Telegram wrapper records it after validating task state.
+A human can report a problem naturally and does not maintain lifecycle status
+with `/task` commands. Each event keeps three independent provenance dimensions:
 
 - `source` is one of `backlog`, `feedback`, `experience`, `inheritance`, `learning`, `brainstorming`, `task`, or `chat-task`;
 - `initiated_by` is `human` or `agent` and remains stable for the task; and

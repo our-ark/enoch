@@ -13,7 +13,14 @@ if TYPE_CHECKING:
     from enoch.task_queue import TaskJob
 
 
-TERMINAL_OUTCOMES = {"completed", "failed", "cancelled", "reverted"}
+TERMINAL_OUTCOMES = {
+    "completed",
+    "failed",
+    "cancelled",
+    "regressed",
+    "reverted",
+    "forward-fixed",
+}
 
 
 @dataclass(frozen=True)
@@ -34,6 +41,9 @@ class ExperienceRecord:
     pr_urls: tuple[str, ...]
     changed_files: tuple[str, ...]
     started: bool
+    regressed: bool = False
+    regression_resolution: str = ""
+    regression_related_task_id: int | None = None
 
 
 def experience_path(root: Path | None = None) -> Path:
@@ -49,7 +59,10 @@ def record_task_experience(
 ) -> ExperienceRecord:
     outcome = clean_text(job.status).lower()
     if outcome not in TERMINAL_OUTCOMES:
-        raise ValueError("Experience can only record completed, failed, cancelled, or reverted tasks.")
+        raise ValueError(
+            "Experience can only record completed, failed, cancelled, regressed, reverted, "
+            "or forward-fixed tasks."
+        )
     existing = next((record for record in load_experience_records(root) if record.task_id == job.id), None)
     if existing is not None and existing.outcome == outcome:
         return existing
@@ -108,6 +121,21 @@ def _records_from_events(events: tuple[TaskEvent, ...]) -> tuple[ExperienceRecor
         first = task_events[0]
         latest = task_events[-1]
         result_event = next((event for event in reversed(task_events) if event.result_summary), latest)
+        regression = next(
+            (event for event in reversed(task_events) if event.event == "regressed"),
+            None,
+        )
+        resolution = None
+        if regression is not None:
+            resolution = next(
+                (
+                    event
+                    for event in reversed(task_events)
+                    if event.event in {"reverted", "forward-fixed"}
+                    and event.occurred_at >= regression.occurred_at
+                ),
+                None,
+            )
         records.append(
             ExperienceRecord(
                 id=f"task-{first.task_id}",
@@ -126,6 +154,9 @@ def _records_from_events(events: tuple[TaskEvent, ...]) -> tuple[ExperienceRecor
                 pr_urls=_merge_tuples(event.pr_urls for event in task_events),
                 changed_files=_merge_tuples(event.changed_files for event in task_events),
                 started=any(event.event == "started" for event in task_events),
+                regressed=regression is not None,
+                regression_resolution=resolution.event if resolution is not None else "",
+                regression_related_task_id=resolution.related_task_id if resolution is not None else None,
             )
         )
     return tuple(records)
@@ -180,6 +211,9 @@ def _legacy_record_from_line(line: str) -> ExperienceRecord | None:
         pr_urls=_string_tuple(raw.get("pr_urls")),
         changed_files=_string_tuple(raw.get("changed_files")),
         started=bool(raw.get("started", False)),
+        regressed=bool(raw.get("regressed", False)),
+        regression_resolution=clean_text(str(raw.get("regression_resolution") or "")).lower(),
+        regression_related_task_id=_positive_int(raw.get("regression_related_task_id")),
     )
 
 

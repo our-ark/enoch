@@ -108,6 +108,7 @@ def update_token_usage(
 def model_summary(root: Path | None = None) -> str:
     env_model = os.environ.get("ENOCH_CODEX_MODEL", "").strip()
     env_reasoning = os.environ.get("ENOCH_CODEX_REASONING_EFFORT", "").strip()
+    enoch_model = _enoch_model(root)
     enoch_reasoning = _enoch_reasoning_effort(root)
     config_path = _codex_config_path()
     config = _read_codex_config(config_path)
@@ -117,6 +118,9 @@ def model_summary(root: Path | None = None) -> str:
     if env_model:
         model = env_model
         model_source = "ENOCH_CODEX_MODEL"
+    elif enoch_model:
+        model = enoch_model
+        model_source = "Enoch config codex.model"
     elif config_model:
         model = config_model
         model_source = str(config_path)
@@ -432,7 +436,7 @@ def _run_codex_result(
         )
         prompt_marker = args.pop()
 
-        model = os.environ.get("ENOCH_CODEX_MODEL")
+        model = _configured_model(cwd)
         if model:
             args.extend(["--model", model])
         reasoning_effort = _configured_reasoning_effort(cwd)
@@ -535,6 +539,19 @@ def _configured_reasoning_effort(root: Path | None = None) -> str:
     if env_reasoning:
         return env_reasoning
     return _enoch_reasoning_effort(root)
+
+
+def _configured_model(root: Path | None = None) -> str:
+    env_model = os.environ.get("ENOCH_CODEX_MODEL", "").strip()
+    if env_model:
+        return env_model
+    return _enoch_model(root)
+
+
+def _enoch_model(root: Path | None = None) -> str:
+    if root is None:
+        return ""
+    return read_section("codex", root).get("model", "").strip()
 
 
 def _enoch_reasoning_effort(root: Path | None = None) -> str:

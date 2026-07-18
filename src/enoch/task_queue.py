@@ -278,6 +278,103 @@ def fail_task(
     )
 
 
+def regress_task(
+    task_id: int,
+    root: Path | None = None,
+    result: str = "",
+    *,
+    event_actor: str = "agent",
+    trigger: str = "agent-regression-signal",
+) -> TaskJob | None:
+    with _queue_transaction(root):
+        data = _load_queue(root)
+        history = _history_jobs(data)
+        regressed: TaskJob | None = None
+        updated: list[TaskJob] = []
+        for job in history:
+            if job.id == task_id and regressed is None:
+                if job.status != "completed":
+                    return None
+                regressed = _replace_job(
+                    job,
+                    status="regressed",
+                    completed_at=current_time(),
+                    result=result or job.result,
+                )
+                updated.append(regressed)
+            else:
+                updated.append(job)
+        if regressed is None:
+            return None
+        data["history"] = [_job_to_dict(job) for job in updated[-20:]]
+        _write_queue(data, root)
+        _record_task_event_safely(
+            regressed,
+            "regressed",
+            root,
+            event_actor=event_actor,
+            trigger=trigger,
+            result=result,
+        )
+        return regressed
+
+
+def resolve_regressed_task(
+    task_id: int,
+    resolution: str,
+    root: Path | None = None,
+    result: str = "",
+    *,
+    event_actor: str = "agent",
+    trigger: str = "agent-regression-signal",
+    related_task_id: int | None = None,
+) -> TaskJob | None:
+    normalized_resolution = resolution.strip().lower()
+    if normalized_resolution not in {"reverted", "forward-fixed"}:
+        raise ValueError("Regression resolution must be reverted or forward-fixed.")
+    normalized_related_task_id = _positive_int(related_task_id)
+    with _queue_transaction(root):
+        data = _load_queue(root)
+        if normalized_resolution == "forward-fixed":
+            related = _find_task(data, normalized_related_task_id)
+            if (
+                related is None
+                or related.id == task_id
+                or related.status != "completed"
+            ):
+                return None
+        history = _history_jobs(data)
+        resolved: TaskJob | None = None
+        updated: list[TaskJob] = []
+        for job in history:
+            if job.id == task_id and resolved is None:
+                if job.status != "regressed":
+                    return None
+                resolved = _replace_job(
+                    job,
+                    status=normalized_resolution,
+                    completed_at=current_time(),
+                    result=result or job.result,
+                )
+                updated.append(resolved)
+            else:
+                updated.append(job)
+        if resolved is None:
+            return None
+        data["history"] = [_job_to_dict(job) for job in updated[-20:]]
+        _write_queue(data, root)
+        _record_task_event_safely(
+            resolved,
+            normalized_resolution,
+            root,
+            event_actor=event_actor,
+            trigger=trigger,
+            result=result,
+            related_task_id=normalized_related_task_id,
+        )
+        return resolved
+
+
 def revert_task(
     task_id: int,
     root: Path | None = None,
@@ -287,38 +384,28 @@ def revert_task(
     trigger: str = "revert",
     related_task_id: int | None = None,
 ) -> TaskJob | None:
-    with _queue_transaction(root):
-        data = _load_queue(root)
-        history = _history_jobs(data)
-        reverted: TaskJob | None = None
-        updated: list[TaskJob] = []
-        for job in history:
-            if job.id == task_id and reverted is None:
-                if job.status not in {"completed", "failed", "cancelled", "reverted"}:
-                    return None
-                reverted = _replace_job(
-                    job,
-                    status="reverted",
-                    completed_at=current_time(),
-                    result=result or job.result,
-                )
-                updated.append(reverted)
-            else:
-                updated.append(job)
-        if reverted is None:
-            return None
-        data["history"] = [_job_to_dict(job) for job in updated[-20:]]
-        _write_queue(data, root)
-        _record_task_event_safely(
-            reverted,
-            "reverted",
+    current = _find_task_in_status(task_id, root)
+    if current is None:
+        return None
+    if current.status == "completed":
+        current = regress_task(
+            task_id,
             root,
+            result=result,
             event_actor=event_actor,
             trigger=trigger,
-            result=result,
-            related_task_id=related_task_id,
         )
-        return reverted
+    if current is None or current.status != "regressed":
+        return None
+    return resolve_regressed_task(
+        task_id,
+        "reverted",
+        root,
+        result=result,
+        event_actor=event_actor,
+        trigger=trigger,
+        related_task_id=related_task_id,
+    )
 
 
 def record_task_result(task_id: int, result: str, root: Path | None = None) -> None:
@@ -574,6 +661,21 @@ def _history_jobs(data: dict) -> list[TaskJob]:
         return []
     jobs = [_parse_job(item) for item in raw]
     return [job for job in jobs if job is not None]
+
+
+def _find_task(data: dict, task_id: int | None) -> TaskJob | None:
+    if task_id is None:
+        return None
+    running = _parse_job(data.get("running"))
+    for job in [*(_pending_jobs(data)), *([running] if running is not None else []), *(_history_jobs(data))]:
+        if job.id == task_id:
+            return job
+    return None
+
+
+def _find_task_in_status(task_id: int, root: Path | None = None) -> TaskJob | None:
+    with _queue_transaction(root):
+        return _find_task(_load_queue(root), task_id)
 
 
 def _parse_job(raw: object) -> TaskJob | None:

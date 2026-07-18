@@ -94,6 +94,25 @@ class EnochBrainTests(unittest.TestCase):
         self.assertIn("Reasoning effort: high", summary)
         self.assertIn("Reasoning source: Enoch config codex.reasoning_effort", summary)
 
+    def test_model_summary_reports_enoch_model_override(self) -> None:
+        with TemporaryDirectory() as temp, TemporaryDirectory() as codex_home:
+            root = Path(temp)
+            config = root / ".enoch" / "config.yaml"
+            config.parent.mkdir()
+            config.write_text(
+                "\n".join(["codex:", "  model: gpt-enoch-local"]),
+                encoding="utf-8",
+            )
+            (Path(codex_home) / "config.toml").write_text(
+                'model = "gpt-global"\n',
+                encoding="utf-8",
+            )
+            with patch.dict("os.environ", {"CODEX_HOME": codex_home}, clear=True):
+                summary = model_summary(root)
+
+        self.assertIn("AI model: gpt-enoch-local", summary)
+        self.assertIn("Model source: Enoch config codex.model", summary)
+
     @patch("enoch.brain.shutil.which", return_value="/usr/local/bin/codex")
     @patch("enoch.brain.subprocess.run")
     def test_responds_through_codex_exec(
@@ -140,6 +159,29 @@ class EnochBrainTests(unittest.TestCase):
         args = run.call_args.args[0]
         self.assertIn("-c", args)
         self.assertIn('model_reasoning_effort="medium"', args)
+
+    @patch("enoch.brain.shutil.which", return_value="/usr/local/bin/codex")
+    @patch("enoch.brain.subprocess.run")
+    def test_respond_passes_enoch_model_to_codex(
+        self, run: MagicMock, _which: MagicMock
+    ) -> None:
+        run.return_value.returncode = 0
+        run.return_value.stdout = ""
+        run.return_value.stderr = ""
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            config = root / ".enoch" / "config.yaml"
+            config.parent.mkdir()
+            config.write_text(
+                "\n".join(["codex:", "  model: gpt-enoch-local"]),
+                encoding="utf-8",
+            )
+            with patch.dict("os.environ", {}, clear=True):
+                respond(load_identity(), "Hello", cwd=root)
+
+        args = run.call_args.args[0]
+        self.assertIn("--model", args)
+        self.assertEqual(args[args.index("--model") + 1], "gpt-enoch-local")
 
     @patch.dict("os.environ", {}, clear=True)
     @patch("enoch.brain.shutil.which", return_value="/usr/local/bin/codex")

@@ -17,7 +17,7 @@ from enoch.memory.paths import clean_text, now as current_time
 from enoch.paths import enoch_home
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 EVOLVE_EVENT_TYPES = {
     "checked",
     "proposed",
@@ -26,6 +26,10 @@ EVOLVE_EVENT_TYPES = {
     "completed",
     "failed",
     "cancelled",
+    "regressed",
+    "reverted",
+    "forward-fixed",
+    "no-action",
     "skipped",
     "removed",
 }
@@ -45,8 +49,13 @@ _CANDIDATE_EVENTS = {
     "completed",
     "failed",
     "cancelled",
+    "regressed",
+    "reverted",
+    "forward-fixed",
+    "no-action",
     "removed",
 }
+PROPOSAL_DISPOSITION_EVENTS = {"selected", "removed", "no-action"}
 _EVOLVE_EVENT_THREAD_LOCK = threading.RLock()
 
 
@@ -66,6 +75,7 @@ class EvolveEvent:
     trigger: str
     mode: str
     theme: str
+    proposal_id: str = ""
     candidate_id: str = ""
     task_id: int | None = None
     source: str = ""
@@ -89,6 +99,7 @@ def record_evolve_event(
     candidate: CandidateLike | None = None,
     task_id: int | None = None,
     reason: str = "",
+    proposal_id: str = "",
 ) -> EvolveEvent:
     normalized_event = clean_text(event).lower()
     normalized_actor = clean_text(event_actor).lower()
@@ -114,8 +125,14 @@ def record_evolve_event(
     if candidate_id and initiated_by not in {"human", "agent"}:
         raise ValueError("Candidate initiator must be human or agent.")
     normalized_task_id = _positive_int(task_id)
+    normalized_proposal_id = clean_text(proposal_id)
+    if normalized_event == "proposed" and not normalized_proposal_id:
+        normalized_proposal_id = f"proposal-{uuid4().hex}"
+    if normalized_event == "no-action" and not normalized_proposal_id:
+        raise ValueError("Evolve event no-action requires a proposal id.")
     if (
-        normalized_event in {"queued", "completed", "failed", "cancelled"}
+        normalized_event
+        in {"queued", "completed", "failed", "cancelled", "regressed", "reverted", "forward-fixed"}
         and normalized_task_id is None
     ):
         raise ValueError(f"Evolve event {normalized_event} requires a task id.")
@@ -127,6 +144,7 @@ def record_evolve_event(
         trigger=clean_text(trigger),
         mode=clean_text(mode).lower(),
         theme=clean_text(theme),
+        proposal_id=normalized_proposal_id,
         candidate_id=candidate_id,
         task_id=normalized_task_id,
         source=source,
@@ -154,12 +172,14 @@ def load_evolve_events(
     limit: int = 5000,
     candidate_id: str = "",
     task_id: int | None = None,
+    proposal_id: str = "",
 ) -> tuple[EvolveEvent, ...]:
     path = evolve_event_path(root)
     if not path.exists() or limit <= 0:
         return ()
     wanted_candidate = clean_text(candidate_id).lower()
     wanted_task = _positive_int(task_id)
+    wanted_proposal = clean_text(proposal_id)
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
     except OSError:
@@ -173,11 +193,89 @@ def load_evolve_events(
             continue
         if wanted_task is not None and event.task_id != wanted_task:
             continue
+        if wanted_proposal and event.proposal_id != wanted_proposal:
+            continue
         events.append(event)
         if len(events) >= limit:
             break
     events.reverse()
     return tuple(events)
+
+
+def load_open_proposals(root: Path | None = None) -> tuple[EvolveEvent, ...]:
+    proposed: dict[str, EvolveEvent] = {}
+    closed: set[str] = set()
+    for event in load_evolve_events(root):
+        if event.event == "proposed" and event.proposal_id:
+            proposed[event.proposal_id] = event
+        elif event.event in PROPOSAL_DISPOSITION_EVENTS and event.proposal_id:
+            closed.add(event.proposal_id)
+    return tuple(
+        event
+        for proposal_id, event in proposed.items()
+        if proposal_id not in closed
+        and not proposal_id.startswith("legacy-proposal-")
+    )
+
+
+def latest_open_proposal_id(
+    candidate_id: str,
+    root: Path | None = None,
+) -> str:
+    normalized_candidate_id = clean_text(candidate_id).lower()
+    for event in reversed(load_open_proposals(root)):
+        if event.candidate_id.lower() == normalized_candidate_id:
+            return event.proposal_id
+    return ""
+
+
+def linked_proposal_id(
+    root: Path | None = None,
+    *,
+    candidate_id: str = "",
+    task_id: int | None = None,
+) -> str:
+    normalized_candidate_id = clean_text(candidate_id).lower()
+    normalized_task_id = _positive_int(task_id)
+    for event in reversed(load_evolve_events(root)):
+        if not event.proposal_id:
+            continue
+        if normalized_task_id is not None and event.task_id == normalized_task_id:
+            return event.proposal_id
+        if normalized_candidate_id and event.candidate_id.lower() == normalized_candidate_id:
+            if event.event in {"selected", "queued"}:
+                return event.proposal_id
+    return ""
+
+
+def close_open_proposals(
+    root: Path | None = None,
+    *,
+    event_actor: str,
+    trigger: str,
+    reason: str,
+) -> tuple[EvolveEvent, ...]:
+    closed = []
+    for proposal in load_open_proposals(root):
+        closed.append(
+            record_evolve_event(
+                "no-action",
+                root,
+                event_actor=event_actor,
+                trigger=trigger,
+                mode=proposal.mode,
+                theme=proposal.theme,
+                candidate=_CandidateSnapshot(
+                    id=proposal.candidate_id,
+                    source=proposal.source,
+                    initiated_by=proposal.candidate_initiated_by,
+                    score=proposal.score,
+                ),
+                reason=reason,
+                proposal_id=proposal.proposal_id,
+            )
+        )
+    return tuple(closed)
 
 
 def _event_from_line(line: str) -> EvolveEvent | None:
@@ -201,18 +299,33 @@ def _event_from_line(line: str) -> EvolveEvent | None:
         source not in EVOLVE_SOURCES or initiated_by not in {"human", "agent"}
     ):
         return None
-    if event in {"queued", "completed", "failed", "cancelled"} and task_id is None:
+    if event in {
+        "queued",
+        "completed",
+        "failed",
+        "cancelled",
+        "regressed",
+        "reverted",
+        "forward-fixed",
+    } and task_id is None:
         return None
     occurred_at = str(raw.get("occurred_at") or "")
+    event_id = clean_text(str(raw.get("id") or ""))
     legacy_id = f"legacy-evolve-event-{event}-{candidate_id or task_id or occurred_at}"
+    proposal_id = clean_text(str(raw.get("proposal_id") or ""))
+    if event == "proposed" and not proposal_id:
+        proposal_id = f"legacy-proposal-{event_id or legacy_id}"
+    if event == "no-action" and not proposal_id:
+        return None
     return EvolveEvent(
-        id=clean_text(str(raw.get("id") or "")) or legacy_id,
+        id=event_id or legacy_id,
         occurred_at=occurred_at,
         event=event,
         event_actor=actor,
         trigger=clean_text(str(raw.get("trigger") or "")),
         mode=clean_text(str(raw.get("mode") or "")).lower(),
         theme=clean_text(str(raw.get("theme") or "")),
+        proposal_id=proposal_id,
         candidate_id=candidate_id,
         task_id=task_id,
         source=source,
@@ -220,6 +333,14 @@ def _event_from_line(line: str) -> EvolveEvent | None:
         score=_int(raw.get("score")),
         reason=_clip(clean_text(str(raw.get("reason") or ""))),
     )
+
+
+@dataclass(frozen=True)
+class _CandidateSnapshot:
+    id: str
+    source: str
+    initiated_by: str
+    score: int
 
 
 def _positive_int(value: object) -> int | None:

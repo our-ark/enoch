@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import Counter
 from contextvars import ContextVar
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import json
 from pathlib import Path
 import re
@@ -55,8 +55,10 @@ from enoch.evolve import (
     load_evolve_candidates,
     load_evolve_state,
     propose_evolve,
+    regress_evolve_candidate_for_task,
     remove_evolve_candidate,
     rank_evolve_candidates,
+    resolve_evolve_candidate_regression_for_task,
     run_evolve_candidate,
     set_evolve_cron_schedule,
     set_evolve_daily_schedule,
@@ -64,7 +66,14 @@ from enoch.evolve import (
     set_evolve_mode,
     set_evolve_theme,
 )
-from enoch.evolve_events import EvolveEvent, load_evolve_events, record_evolve_event
+from enoch.evolve_events import (
+    EVOLVE_SOURCES,
+    EvolveEvent,
+    close_open_proposals,
+    latest_open_proposal_id,
+    load_evolve_events,
+    record_evolve_event,
+)
 from enoch.experience import ExperienceRecord, load_experience_records
 from enoch.feedback import FeedbackSignal, extract_feedback_signals
 from enoch.git_tools import (
@@ -122,8 +131,10 @@ from enoch.logs import log_conversation_turn, log_system_event, system_log_dir
 from enoch.memory.prompt import memory_for_prompt
 from enoch.memory.store import ensure_long_term_memory, remember_memory
 from enoch.prompt_append import (
+    TaskRegressionSignal,
     extract_edit_request,
     extract_memory_requests,
+    extract_task_regression_signals,
     read_only_turn_prompt,
     repository_handoff_note,
     startup_context_note,
@@ -145,9 +156,11 @@ from enoch.task_queue import (
     enqueue_task,
     enqueue_task_front,
     fail_task,
+    regress_task,
     recover_interrupted_task,
     record_task_result,
     record_task_status_message,
+    resolve_regressed_task,
     task_result_has_pull_request,
     task_queue_status,
 )
@@ -241,6 +254,10 @@ NEEDS_CLARIFICATION_PREFIX = "NEEDS_CLARIFICATION:"
 NO_EXTRA_TASK_CONTEXT = "No extra context needed."
 _CURRENT_WORK_STATUS: ContextVar[WorkStatusMessage | None] = ContextVar("enoch_work_status", default=None)
 _CURRENT_TASK_ID: ContextVar[int | None] = ContextVar("enoch_task_id", default=None)
+_CURRENT_REGRESSION_SIGNALS: ContextVar[tuple[TaskRegressionSignal, ...]] = ContextVar(
+    "enoch_regression_signals",
+    default=(),
+)
 
 
 class EnochTelegramBot:
@@ -418,6 +435,9 @@ class EnochTelegramBot:
 
     def _natural_with_session(self, chat_id: int, text: str, *, session_key: str) -> str:
         reply = self._respond_read_only_turn(chat_id, text, session_key=session_key)
+        regression_result = extract_task_regression_signals(reply)
+        self._apply_task_regression_signals(regression_result.signals)
+        reply = regression_result.visible_reply
         memory_result = extract_memory_requests(reply)
         reply = memory_result.visible_reply
         edit_request = extract_edit_request(reply)
@@ -538,12 +558,15 @@ class EnochTelegramBot:
         except (OSError, ValueError):
             return "Enoch could not create a tracked task for that work."
         task_token = _CURRENT_TASK_ID.set(job.id)
+        regression_token = _CURRENT_REGRESSION_SIGNALS.set(())
         cancellation_event = threading.Event()
         self._task_cancellations[job.id] = cancellation_event
         deadline = _start_task_deadline(self.root, cancellation_event)
         completed_status = "completed"
+        regression_signals: tuple[TaskRegressionSignal, ...] = ()
         try:
             reply = self._run_direct_work(chat_id, request, session_key=session_key)
+            reply = self._capture_task_regression_signals(reply)
             if deadline.expired.is_set():
                 reply = _task_timeout_message(deadline.timeout_seconds)
                 completed_status = "failed"
@@ -561,6 +584,8 @@ class EnochTelegramBot:
             completed_status = "failed"
         finally:
             deadline.cancel()
+            regression_signals = _CURRENT_REGRESSION_SIGNALS.get()
+            _CURRENT_REGRESSION_SIGNALS.reset(regression_token)
             _CURRENT_TASK_ID.reset(task_token)
             self._task_cancellations.pop(job.id, None)
             if completed_status == "cancelled":
@@ -580,6 +605,11 @@ class EnochTelegramBot:
                 )
             else:
                 complete_task(job.id, self.root, result=reply, event_actor="agent", trigger=trigger)
+        self._apply_task_regression_signals(
+            regression_signals,
+            current_task_id=job.id if completed_status == "completed" else None,
+            allow_resolution=completed_status == "completed",
+        )
         completed = _history_task(job.id, self.root) or job
         if completed_status == "completed":
             self._record_automatic_learning(completed, command=trigger, result=reply)
@@ -672,6 +702,7 @@ class EnochTelegramBot:
                 cancellation_event=self._current_task_cancellation_event(),
             )
             self._raise_if_current_task_cancelled()
+            result = self._capture_task_regression_signals(result)
             memory_result = extract_memory_requests(result)
             result = memory_result.visible_reply
             memory_note = self._save_memory_requests(memory_result.requests)
@@ -1012,8 +1043,9 @@ class EnochTelegramBot:
         command, argument = _parse_telegram_command(text)
         if command != "/task" or not argument:
             return "Use /task <request> to queue background work."
+        subcommand = argument.split(maxsplit=1)[0].lower()
         cancel_id = _task_cancel_id(argument)
-        if argument.split(maxsplit=1)[0].lower() == "cancel" and cancel_id is None:
+        if subcommand == "cancel" and cancel_id is None:
             return "Use /task cancel <id> to cancel a queued task."
         if cancel_id is not None:
             cancelled = cancel_task(cancel_id, self.root)
@@ -1075,6 +1107,74 @@ class EnochTelegramBot:
             record_task_status_message(job.id, message_id, self.root)
             return ""
         return f"Queued task #{job.id}. Enoch will work on it in the background when idle."
+
+    def _capture_task_regression_signals(self, reply: str) -> str:
+        result = extract_task_regression_signals(reply)
+        if result.signals:
+            _CURRENT_REGRESSION_SIGNALS.set(
+                (*_CURRENT_REGRESSION_SIGNALS.get(), *result.signals)
+            )
+        return result.visible_reply
+
+    def _apply_task_regression_signals(
+        self,
+        signals: tuple[TaskRegressionSignal, ...],
+        *,
+        current_task_id: int | None = None,
+        allow_resolution: bool = True,
+    ) -> None:
+        for signal in signals:
+            if signal.task_id == current_task_id:
+                continue
+            task = _task_by_id(signal.task_id, self.root)
+            if task is None:
+                continue
+            if task.status == "completed":
+                task = regress_task(
+                    signal.task_id,
+                    self.root,
+                    result=signal.reason,
+                    event_actor="agent",
+                    trigger="agent-regression-signal",
+                )
+                if task is None:
+                    continue
+                regress_evolve_candidate_for_task(
+                    task,
+                    self.root,
+                    event_actor="agent",
+                    trigger="agent-regression-signal",
+                    reason=signal.reason,
+                )
+            elif task.status != "regressed":
+                continue
+            if not allow_resolution or not signal.resolution:
+                continue
+            related_task_id = signal.fix_task_id
+            if signal.resolution == "forward-fixed" and related_task_id is None:
+                related_task_id = current_task_id
+            resolved = resolve_regressed_task(
+                signal.task_id,
+                signal.resolution,
+                self.root,
+                result=signal.reason,
+                event_actor="agent",
+                trigger="agent-regression-signal",
+                related_task_id=related_task_id,
+            )
+            if resolved is None:
+                continue
+            reason = signal.reason
+            if signal.resolution == "forward-fixed" and related_task_id is not None:
+                reason = f"Forward-fixed by task #{related_task_id}. {reason}"
+            resolve_evolve_candidate_regression_for_task(
+                resolved,
+                signal.resolution,
+                self.root,
+                event_actor="agent",
+                trigger="agent-regression-signal",
+                reason=reason,
+            )
 
     def _stop_running_job(self) -> str:
         running = task_queue_status(self.root).running
@@ -1278,13 +1378,21 @@ class EnochTelegramBot:
                 reason=_evolve_skip_reason(proposal),
             )
         else:
-            self._record_evolve_event(
+            close_open_proposals(
+                self.root,
+                event_actor=event_actor,
+                trigger=event_trigger,
+                reason="superseded-by-new-proposal",
+            )
+            proposed_event = self._record_evolve_event(
                 "proposed",
                 event_actor=event_actor,
                 trigger=event_trigger,
                 proposal=proposal,
                 candidate=proposal.top_candidate,
             )
+            if proposed_event is not None:
+                proposal = replace(proposal, proposal_id=proposed_event.proposal_id)
         return proposal
 
     def _record_evolve_event(
@@ -1297,10 +1405,11 @@ class EnochTelegramBot:
         candidate: EvolveCandidate | None = None,
         task_id: int | None = None,
         reason: str = "",
-    ) -> None:
+        proposal_id: str = "",
+    ) -> EvolveEvent | None:
         state = proposal.report.state if proposal is not None else load_evolve_state(self.root)
         try:
-            record_evolve_event(
+            return record_evolve_event(
                 event,
                 self.root,
                 event_actor=event_actor,
@@ -1310,9 +1419,10 @@ class EnochTelegramBot:
                 candidate=candidate,
                 task_id=task_id,
                 reason=reason,
+                proposal_id=proposal_id or (proposal.proposal_id if proposal is not None else ""),
             )
         except (OSError, ValueError):
-            return
+            return None
 
     def _evolve_approve(self, candidate_id: str) -> str:
         chat_id = self.client.config.allowed_chat_id
@@ -1325,11 +1435,13 @@ class EnochTelegramBot:
             return str(error)
         if candidate.status != "candidate":
             return f"Evolve candidate {candidate.id} cannot be approved from status {candidate.status}."
+        proposal_id = latest_open_proposal_id(candidate.id, self.root)
         self._record_evolve_event(
             "selected",
             event_actor="human",
             trigger="/evolve approve",
             candidate=candidate,
+            proposal_id=proposal_id,
         )
         try:
             job = enqueue_task(
@@ -1351,6 +1463,7 @@ class EnochTelegramBot:
                 trigger="/evolve approve",
                 candidate=candidate,
                 reason="queue-failed",
+                proposal_id=proposal_id,
             )
             return "Enoch could not approve and queue that evolve candidate."
         candidate = run_evolve_candidate(candidate.id, self.root, theme=state.theme)
@@ -1360,6 +1473,7 @@ class EnochTelegramBot:
             trigger="/evolve approve",
             candidate=candidate,
             task_id=job.id,
+            proposal_id=proposal_id,
         )
         return f"Approved evolve candidate {candidate.id} and queued task #{job.id}.\n\n" + "\n".join(
             _format_evolve_candidate(candidate)
@@ -1754,6 +1868,7 @@ class EnochTelegramBot:
         )
         token = _CURRENT_WORK_STATUS.set(task_status)
         task_token = _CURRENT_TASK_ID.set(job.id)
+        regression_token = _CURRENT_REGRESSION_SIGNALS.set(())
         cancellation_event = threading.Event()
         self._task_cancellations[job.id] = cancellation_event
         deadline = _start_task_deadline(self.root, cancellation_event)
@@ -1762,6 +1877,7 @@ class EnochTelegramBot:
         else:
             self._send_step_update(job.chat_id, start_update)
         completed_status = "completed"
+        regression_signals: tuple[TaskRegressionSignal, ...] = ()
         try:
             if task_result_has_pull_request(job.result):
                 reply = job.result
@@ -1770,6 +1886,7 @@ class EnochTelegramBot:
                 completed_status = "failed"
             else:
                 reply = self._run_direct_work(job.chat_id, job.text, context=job.context, session_key=session_key)
+            reply = self._capture_task_regression_signals(reply)
             if deadline.expired.is_set():
                 reply = _task_timeout_message(deadline.timeout_seconds)
                 completed_status = "failed"
@@ -1787,6 +1904,8 @@ class EnochTelegramBot:
             completed_status = "failed"
         finally:
             deadline.cancel()
+            regression_signals = _CURRENT_REGRESSION_SIGNALS.get()
+            _CURRENT_REGRESSION_SIGNALS.reset(regression_token)
             _CURRENT_WORK_STATUS.reset(token)
             _CURRENT_TASK_ID.reset(task_token)
             self._task_cancellations.pop(job.id, None)
@@ -1830,6 +1949,11 @@ class EnochTelegramBot:
                     trigger="task-runner",
                     reason=reply,
                 )
+        self._apply_task_regression_signals(
+            regression_signals,
+            current_task_id=job.id if completed_status == "completed" else None,
+            allow_resolution=completed_status == "completed",
+        )
         completed_job = _history_task(job.id, self.root)
         summary_job = completed_job or job
         if completed_status == "completed":
@@ -2490,10 +2614,36 @@ def _format_experience_report(root: Path) -> str:
         sources.update(record.source for record in records)
         initiators = Counter({"human": 0, "agent": 0})
         initiators.update(record.initiated_by for record in records)
+        regressions = [record for record in records if record.regressed]
+        completed_tasks = sum(
+            record.outcome in {"completed", "regressed", "reverted", "forward-fixed"}
+            for record in records
+        )
+        regression_resolutions = Counter(
+            {"unresolved": 0, "reverted": 0, "forward-fixed": 0}
+        )
+        regression_resolutions.update(
+            record.regression_resolution or "unresolved"
+            for record in regressions
+        )
+        regression_sources = Counter({source: 0 for source in TASK_SOURCES})
+        regression_sources.update(record.source for record in regressions)
+        regression_initiators = Counter({"human": 0, "agent": 0})
+        regression_initiators.update(record.initiated_by for record in regressions)
+        regression_rate = (
+            f"{len(regressions) / completed_tasks:.1%}" if completed_tasks else "0.0%"
+        )
         lines.extend(
             [
                 f"- Total tasks: {len(records)}",
                 f"- Outcomes: {_format_counter(outcomes)}",
+                (
+                    f"- Regressions: {len(regressions)}/{completed_tasks} completed tasks "
+                    f"({regression_rate})"
+                ),
+                f"- Regression resolution: {_format_counter(regression_resolutions)}",
+                f"- Regression sources: {_format_counter(regression_sources)}",
+                f"- Regression initiated by: {_format_counter(regression_initiators)}",
                 f"- Sources: {_format_counter(sources)}",
                 f"- Initiated by: {_format_counter(initiators)}",
             ]
@@ -2502,11 +2652,98 @@ def _format_experience_report(root: Path) -> str:
         lines.append("- none")
     lines.extend(["", "Evolution statistics:"])
     if evolve_events:
+        proposals = {
+            event.proposal_id: event
+            for event in evolve_events
+            if event.event == "proposed" and event.proposal_id
+        }
+        proposal_dispositions = {
+            event.proposal_id: event.event
+            for event in evolve_events
+            if event.proposal_id
+            and event.event in {"selected", "removed", "no-action"}
+        }
+        disposition_counts = Counter(
+            {
+                "selected": 0,
+                "removed": 0,
+                "no-action": 0,
+                "pending": 0,
+                "untracked": 0,
+            }
+        )
+        for proposal_id in proposals:
+            if proposal_id.startswith("legacy-proposal-"):
+                disposition_counts["untracked"] += 1
+            else:
+                disposition_counts[
+                    proposal_dispositions.get(proposal_id, "pending")
+                ] += 1
+        tracked_proposals = len(proposals) - disposition_counts["untracked"]
+        accepted_proposals = disposition_counts["selected"]
+        acceptance_rate = (
+            f"{accepted_proposals / tracked_proposals:.1%}"
+            if tracked_proposals
+            else "0.0%"
+        )
+        proposal_sources = Counter({source: 0 for source in EVOLVE_SOURCES})
+        proposal_sources.update(event.source for event in proposals.values())
+        proposal_triggers = Counter(event.trigger or "unknown" for event in proposals.values())
+        selected_outcomes = Counter(
+            {
+                "pending": 0,
+                "completed": 0,
+                "failed": 0,
+                "cancelled": 0,
+                "regressed": 0,
+                "reverted": 0,
+                "forward-fixed": 0,
+                "queue-failed": 0,
+            }
+        )
+        for proposal_id, disposition in proposal_dispositions.items():
+            if disposition != "selected":
+                continue
+            proposal_events = [
+                event
+                for event in evolve_events
+                if event.proposal_id == proposal_id
+            ]
+            outcome = next(
+                (
+                    event.event
+                    for event in reversed(proposal_events)
+                    if event.event
+                    in {
+                        "completed",
+                        "failed",
+                        "cancelled",
+                        "regressed",
+                        "reverted",
+                        "forward-fixed",
+                    }
+                ),
+                "pending",
+            )
+            if outcome == "pending" and any(
+                event.event == "skipped" and event.reason == "queue-failed"
+                for event in proposal_events
+            ):
+                outcome = "queue-failed"
+            selected_outcomes[outcome] += 1
         queued = [event for event in evolve_events if event.event == "queued"]
         outcomes = Counter(
             event.event
             for event in evolve_events
-            if event.event in {"completed", "failed", "cancelled"}
+            if event.event
+            in {
+                "completed",
+                "failed",
+                "cancelled",
+                "regressed",
+                "reverted",
+                "forward-fixed",
+            }
         )
         origins = Counter({"human": 0, "agent": 0})
         origins.update(event.candidate_initiated_by for event in queued)
@@ -2521,7 +2758,15 @@ def _format_experience_report(root: Path) -> str:
         lines.extend(
             [
                 f"- Checks: {sum(event.event == 'checked' for event in evolve_events)}",
-                f"- Proposed: {sum(event.event == 'proposed' for event in evolve_events)}",
+                f"- Proposed: {len(proposals)}",
+                f"- Proposal disposition: {_format_counter(disposition_counts)}",
+                (
+                    f"- Proposal acceptance: {accepted_proposals}/{tracked_proposals} "
+                    f"({acceptance_rate})"
+                ),
+                f"- Proposal sources: {_format_counter(proposal_sources)}",
+                f"- Proposal triggers: {_format_counter(proposal_triggers)}",
+                f"- Selected proposal outcomes: {_format_counter(selected_outcomes)}",
                 (
                     f"- Queued: {len(queued)} "
                     f"(autonomous {autonomous}, human-approved {human_approved})"
@@ -2570,6 +2815,12 @@ def _format_experience_record(record: ExperienceRecord) -> list[str]:
         details.append(f"{len(record.changed_files)} changed file(s)")
     if record.pr_urls:
         details.append(f"{len(record.pr_urls)} PR(s)")
+    if record.regressed:
+        resolution = record.regression_resolution or "unresolved"
+        regression_detail = f"regression {resolution}"
+        if record.regression_related_task_id is not None:
+            regression_detail += f" by task-{record.regression_related_task_id}"
+        details.append(regression_detail)
     lines.append(f"  {'; '.join(details)}")
     if record.result_summary:
         lines.append(f"  Result: {_clip_activity_text(record.result_summary, limit=180)}")
@@ -2582,6 +2833,8 @@ def _format_evolve_event(event: EvolveEvent) -> list[str]:
         target += f" -> task-{event.task_id}"
     lines = [f"- {event.event} [{event.event_actor}] {target}"]
     details = [f"trigger {event.trigger or 'unknown'}"]
+    if event.proposal_id:
+        details.append(f"proposal {_short_proposal_id(event.proposal_id)}")
     if event.source:
         details.append(f"source {event.source}")
     if event.candidate_initiated_by:
@@ -2592,6 +2845,12 @@ def _format_evolve_event(event: EvolveEvent) -> list[str]:
     if event.reason:
         lines.append(f"  Reason: {_clip_activity_text(event.reason, limit=180)}")
     return lines
+
+
+def _short_proposal_id(proposal_id: str) -> str:
+    if proposal_id.startswith("proposal-"):
+        return proposal_id[:21]
+    return proposal_id
 
 
 def _format_counter(counts: Counter[str]) -> str:
@@ -2837,6 +3096,14 @@ def _task_cancel_id(argument: str) -> int | None:
     except ValueError:
         return None
     return task_id if task_id > 0 else None
+
+
+def _task_by_id(task_id: int, root: Path) -> TaskJob | None:
+    status = task_queue_status(root)
+    jobs = [*status.pending, *status.history]
+    if status.running is not None:
+        jobs.append(status.running)
+    return next((job for job in jobs if job.id == task_id), None)
 
 
 def _backlog_usage() -> str:

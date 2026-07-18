@@ -35,6 +35,9 @@ telegram:
   bot_token: "..."
   allowed_chat_id: 123456789
   poll_timeout: 30
+codex:
+  model: "gpt-5.6-terra"
+  reasoning_effort: "medium"
 task:
   timeout_seconds: 600
 ```
@@ -54,6 +57,7 @@ Optional:
 
 - `telegram.allowed_chat_id`
 - `telegram.poll_timeout`
+- `codex.model`
 - `codex.reasoning_effort`
 - `task.timeout_seconds` (defaults to 600 seconds and can be set with `/config task-timeout <duration>`)
 
@@ -64,3 +68,6 @@ Optional:
 - Use `telegram.allowed_chat_id` before enabling code-changing natural agency.
 - Keep remote writes behind explicit human approval.
 - Keep a finite task timeout so a stuck agent run cannot consume tokens indefinitely.
+- Record discovered task regressions and their revert or forward-fix resolution
+  through the internal regression signal; never ask the human to maintain those
+  statuses with commands.

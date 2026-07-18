@@ -45,7 +45,14 @@ from enoch.lineage.core import (
     load_inbox_candidates,
 )
 from enoch.logs import log_conversation_turn, log_system_event
-from enoch.prompt_append import EDIT_REQUEST_END, EDIT_REQUEST_START, MEMORY_REQUEST_END, MEMORY_REQUEST_START
+from enoch.prompt_append import (
+    EDIT_REQUEST_END,
+    EDIT_REQUEST_START,
+    MEMORY_REQUEST_END,
+    MEMORY_REQUEST_START,
+    TASK_REGRESSION_END,
+    TASK_REGRESSION_START,
+)
 from enoch.task_queue import (
     TaskJob,
     begin_next_task,
@@ -653,6 +660,10 @@ class EnochTelegramTests(unittest.TestCase):
 
         reply = client.sent[0][1]
         self.assertIn("Config commands:", reply)
+        self.assertIn("/config model <name>", reply)
+        self.assertIn("/config model default", reply)
+        self.assertIn("/config reasoning-effort low|medium|high", reply)
+        self.assertIn("/config reasoning-effort default", reply)
         self.assertIn("/config task-timeout <duration>", reply)
         self.assertIn("/config task-timeout default", reply)
         self.assertNotIn("Enoch Telegram commands:", reply)
@@ -676,6 +687,66 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("Task timeout set to 10m (default).", client.sent[2][1])
         self.assertNotIn("timeout_seconds", reset)
         self.assertIn("must look like 10m, 30m, or 2h", client.sent[3][1])
+
+    def test_config_shows_sets_and_resets_codex_model_and_reasoning(self) -> None:
+        with TemporaryDirectory() as temp, TemporaryDirectory() as codex_home:
+            root = Path(temp)
+            (Path(codex_home) / "config.toml").write_text(
+                "\n".join(
+                    [
+                        'model = "gpt-global"',
+                        'model_reasoning_effort = "medium"',
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            client = FakeTelegramClient(allowed_chat_id=42)
+            bot = EnochTelegramBot(load_identity(), root, client)
+
+            with patch.dict("os.environ", {"CODEX_HOME": codex_home}, clear=True):
+                bot.handle_update(_message_update(chat_id=42, text="/config"))
+                bot.handle_update(
+                    _message_update(
+                        update_id=2,
+                        chat_id=42,
+                        text="/config model gpt-enoch-local",
+                    )
+                )
+                bot.handle_update(
+                    _message_update(
+                        update_id=3,
+                        chat_id=42,
+                        text="/config reasoning-effort high",
+                    )
+                )
+                configured = read_section("codex", root)
+                bot.handle_update(
+                    _message_update(
+                        update_id=4,
+                        chat_id=42,
+                        text="/config model default",
+                    )
+                )
+                bot.handle_update(
+                    _message_update(
+                        update_id=5,
+                        chat_id=42,
+                        text="/config reasoning_effort default",
+                    )
+                )
+                reset = read_section("codex", root)
+
+        self.assertIn("AI model: gpt-global", client.sent[0][1])
+        self.assertIn("Reasoning effort: medium", client.sent[0][1])
+        self.assertIn("AI model: gpt-enoch-local", client.sent[1][1])
+        self.assertIn("Model source: Enoch config codex.model", client.sent[1][1])
+        self.assertIn("Reasoning effort: high", client.sent[2][1])
+        self.assertEqual(configured["model"], "gpt-enoch-local")
+        self.assertEqual(configured["reasoning_effort"], "high")
+        self.assertIn("AI model: gpt-global", client.sent[3][1])
+        self.assertIn("Reasoning effort: medium", client.sent[4][1])
+        self.assertNotIn("model", reset)
+        self.assertNotIn("reasoning_effort", reset)
 
     def test_help_inherit_shows_inherit_usage(self) -> None:
         client = FakeTelegramClient(allowed_chat_id=42)
@@ -701,6 +772,8 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("Task commands:", reply)
         self.assertIn("/task <request> - queue background work for Enoch", reply)
         self.assertIn("/task cancel <id> - cancel a queued background task", reply)
+        self.assertNotIn("/task regress", reply)
+        self.assertNotIn("/task resolve", reply)
         self.assertNotIn("Enoch Telegram commands:", reply)
 
     def test_help_topic_supports_work_command_aliases(self) -> None:
@@ -943,6 +1016,120 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("Cancelled task #1.", client.sent[-1][1])
         self.assertIn("Status: cancelled", client.edited[-1][2])
         self.assertIn("Latest update: Cancelled before running.", client.edited[-1][2])
+
+    @patch(
+        "enoch.telegram.bot.respond",
+        return_value=(
+            "I found the regression and rolled it back.\n"
+            f"{TASK_REGRESSION_START}\n"
+            '{"task_id": 1, "reason": "Recovery broke after deployment.", '
+            '"resolution": "reverted"}\n'
+            f"{TASK_REGRESSION_END}"
+        ),
+    )
+    def test_agent_records_reverted_regression_from_natural_turn(
+        self,
+        respond: MagicMock,
+    ) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            original = enqueue_task(42, "ship risky work", root)
+            complete_task(begin_next_task(root).id, root, result="Shipped.")
+            client = FakeTelegramClient(allowed_chat_id=42)
+            bot = EnochTelegramBot(load_identity(), root, client)
+
+            bot.handle_update(_message_update(chat_id=42, text="the last deploy broke recovery"))
+            status = task_queue_status(root)
+            events = load_task_events(root, task_id=original.id)
+            record = next(
+                item
+                for item in load_experience_records(root)
+                if item.task_id == original.id
+            )
+
+        self.assertEqual(status.history[0].status, "reverted")
+        self.assertEqual(
+            [event.event for event in events[-3:]],
+            ["completed", "regressed", "reverted"],
+        )
+        self.assertTrue(record.regressed)
+        self.assertEqual(record.regression_resolution, "reverted")
+        self.assertEqual(client.sent[0][1], "I found the regression and rolled it back.")
+        self.assertNotIn(TASK_REGRESSION_START, client.sent[0][1])
+        self.assertEqual(events[-1].event_actor, "agent")
+        self.assertEqual(events[-1].trigger, "agent-regression-signal")
+        self.assertIn("Enoch owns regression bookkeeping", respond.call_args.args[1])
+
+    def test_completed_fix_task_automatically_resolves_original_regression(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            original = enqueue_task(42, "ship risky work", root)
+            complete_task(begin_next_task(root).id, root, result="Shipped.")
+            client = FakeTelegramClient(allowed_chat_id=42)
+            bot = EnochTelegramBot(load_identity(), root, client)
+            fix = enqueue_task(42, "repair recovery", root, parent_task_id=original.id)
+            running_fix = begin_next_task(root)
+            assert running_fix is not None
+
+            result = (
+                "Recovery is fixed and verified.\n"
+                f"{TASK_REGRESSION_START}\n"
+                '{"task_id": 1, "reason": "Original recovery path failed.", '
+                '"resolution": "forward-fixed"}\n'
+                f"{TASK_REGRESSION_END}"
+            )
+            with patch.object(bot, "_run_direct_work", return_value=result):
+                bot._run_task_job(running_fix)
+            bot.handle_update(
+                _message_update(update_id=2, chat_id=42, text="/experience")
+            )
+            status = task_queue_status(root)
+            record = next(
+                item
+                for item in load_experience_records(root)
+                if item.task_id == original.id
+            )
+            events = load_task_events(root, task_id=original.id)
+
+        self.assertEqual(status.history[0].status, "forward-fixed")
+        self.assertEqual(record.regression_related_task_id, fix.id)
+        self.assertNotIn(TASK_REGRESSION_START, client.sent[0][1])
+        self.assertIn("Regressions: 1/2 completed tasks (50.0%)", client.sent[-1][1])
+        self.assertIn(
+            "Regression resolution: forward-fixed 1, reverted 0, unresolved 0",
+            client.sent[-1][1],
+        )
+        self.assertIn("Regression sources:", client.sent[-1][1])
+        self.assertIn("task 1", client.sent[-1][1])
+        self.assertIn("Regression initiated by: agent 0, human 1", client.sent[-1][1])
+        self.assertIn("regression forward-fixed by task-2", client.sent[-1][1])
+        self.assertEqual(events[-1].event_actor, "agent")
+        self.assertEqual(events[-1].trigger, "agent-regression-signal")
+
+    def test_failed_fix_task_leaves_original_regression_unresolved(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            original = enqueue_task(42, "ship risky work", root)
+            complete_task(begin_next_task(root).id, root)
+            client = FakeTelegramClient(allowed_chat_id=42)
+            bot = EnochTelegramBot(load_identity(), root, client)
+            enqueue_task(42, "repair recovery", root, parent_task_id=original.id)
+            running_fix = begin_next_task(root)
+            assert running_fix is not None
+
+            result = (
+                "Enoch could not complete the requested work yet: tests failed.\n"
+                f"{TASK_REGRESSION_START}\n"
+                '{"task_id": 1, "reason": "Original recovery path failed.", '
+                '"resolution": "forward-fixed"}\n'
+                f"{TASK_REGRESSION_END}"
+            )
+            with patch.object(bot, "_run_direct_work", return_value=result):
+                bot._run_task_job(running_fix)
+            status = task_queue_status(root)
+
+        self.assertEqual(status.history[0].status, "regressed")
+        self.assertEqual(status.history[1].status, "failed")
 
     @patch("enoch.telegram.bot.ensure_long_term_memory")
     @patch("enoch.telegram.bot.log_conversation_turn")
@@ -1426,6 +1613,55 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual([event.event_actor for event in events], ["human", "human"])
         self.assertEqual(events[-1].trigger, "/propose")
         self.assertEqual(events[-1].candidate_id, "backlog-1")
+        self.assertTrue(events[-1].proposal_id.startswith("proposal-"))
+
+    def test_repeated_proposal_marks_previous_one_no_action(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            add_backlog_item(42, "improve Telegram work UX", root, priority="p0")
+            client = FakeTelegramClient(allowed_chat_id=42)
+            bot = EnochTelegramBot(load_identity(), root, client)
+
+            bot.handle_update(_message_update(chat_id=42, text="/propose"))
+            bot.handle_update(
+                _message_update(update_id=2, chat_id=42, text="/propose")
+            )
+            bot.handle_update(
+                _message_update(update_id=3, chat_id=42, text="/experience")
+            )
+            events = load_evolve_events(root)
+
+        proposed = [event for event in events if event.event == "proposed"]
+        no_action = [event for event in events if event.event == "no-action"]
+        self.assertEqual(len(proposed), 2)
+        self.assertNotEqual(proposed[0].proposal_id, proposed[1].proposal_id)
+        self.assertEqual(no_action[0].proposal_id, proposed[0].proposal_id)
+        self.assertEqual(no_action[0].reason, "superseded-by-new-proposal")
+        self.assertIn(
+            "Proposal disposition: no-action 1, pending 1, removed 0, selected 0, untracked 0",
+            client.sent[2][1],
+        )
+        self.assertIn("Proposal acceptance: 0/2 (0.0%)", client.sent[2][1])
+
+    def test_removed_candidate_closes_latest_proposal(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            add_backlog_item(42, "remove proposed cleanup", root, priority="p1")
+            client = FakeTelegramClient(allowed_chat_id=42)
+            bot = EnochTelegramBot(load_identity(), root, client)
+
+            bot.handle_update(_message_update(chat_id=42, text="/propose"))
+            bot.handle_update(
+                _message_update(
+                    update_id=2,
+                    chat_id=42,
+                    text="/evolve remove backlog-1",
+                )
+            )
+            events = load_evolve_events(root, candidate_id="backlog-1")
+
+        self.assertEqual([event.event for event in events], ["proposed", "removed"])
+        self.assertEqual(events[0].proposal_id, events[1].proposal_id)
 
     def test_propose_fallback_brainstorms_when_no_candidate_exists(self) -> None:
         response = json.dumps(
@@ -1581,6 +1817,52 @@ class EnochTelegramTests(unittest.TestCase):
 
     @patch("enoch.telegram.bot.ensure_long_term_memory")
     @patch("enoch.telegram.bot.log_conversation_turn")
+    def test_selected_proposal_tracks_task_completion_and_funnel(
+        self,
+        _log_conversation_turn: MagicMock,
+        _update_memory: MagicMock,
+    ) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            add_backlog_item(42, "ship tracked proposal", root, priority="p1")
+            client = FakeTelegramClient(allowed_chat_id=42)
+            bot = EnochTelegramBot(load_identity(), root, client)
+
+            bot.handle_update(_message_update(chat_id=42, text="/propose"))
+            bot.handle_update(
+                _message_update(
+                    update_id=2,
+                    chat_id=42,
+                    text="/evolve approve backlog-1",
+                )
+            )
+            job = begin_next_task(root)
+            assert job is not None
+            with patch.object(bot, "_run_direct_work", return_value="Done with evolve work."):
+                bot._run_task_job(job)
+            bot.handle_update(
+                _message_update(update_id=3, chat_id=42, text="/experience")
+            )
+            events = load_evolve_events(root, candidate_id="backlog-1")
+
+        proposal_id = next(
+            event.proposal_id for event in events if event.event == "proposed"
+        )
+        tracked = [
+            event.event
+            for event in events
+            if event.proposal_id == proposal_id
+        ]
+        self.assertEqual(
+            tracked,
+            ["proposed", "selected", "queued", "completed"],
+        )
+        self.assertIn("Proposal acceptance: 1/1 (100.0%)", client.sent[-1][1])
+        self.assertIn("Selected proposal outcomes:", client.sent[-1][1])
+        self.assertIn("completed 1", client.sent[-1][1])
+
+    @patch("enoch.telegram.bot.ensure_long_term_memory")
+    @patch("enoch.telegram.bot.log_conversation_turn")
     def test_evolve_approved_candidate_is_marked_failed_after_task_failure(
         self,
         _log_conversation_turn: MagicMock,
@@ -1606,6 +1888,54 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual(statuses["backlog-1"], "failed")
         self.assertIn("experience", report.counts_by_source)
         self.assertIn("Final status: failed", client.sent[-1][1])
+
+    @patch("enoch.telegram.bot.ensure_long_term_memory")
+    @patch("enoch.telegram.bot.log_conversation_turn")
+    def test_evolve_task_regression_and_resolution_are_journaled(
+        self,
+        _log_conversation_turn: MagicMock,
+        _update_memory: MagicMock,
+    ) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            add_backlog_item(42, "ship regressing evolve work", root, priority="p1")
+            client = FakeTelegramClient(allowed_chat_id=42)
+            bot = EnochTelegramBot(load_identity(), root, client)
+
+            bot.handle_update(
+                _message_update(chat_id=42, text="/evolve approve backlog-1")
+            )
+            job = begin_next_task(root)
+            assert job is not None
+            with patch.object(bot, "_run_direct_work", return_value="Done with evolve work."):
+                bot._run_task_job(job)
+            regression_reply = (
+                "The evolve change regressed behavior, so I rolled it back.\n"
+                f"{TASK_REGRESSION_START}\n"
+                '{"task_id": 1, "reason": "Introduced a regression.", '
+                '"resolution": "reverted"}\n'
+                f"{TASK_REGRESSION_END}"
+            )
+            with patch("enoch.telegram.bot.respond", return_value=regression_reply):
+                bot.handle_update(
+                    _message_update(
+                        update_id=2,
+                        chat_id=42,
+                        text="that evolve change regressed behavior; revert it",
+                    )
+                )
+            events = load_evolve_events(root, candidate_id="backlog-1")
+            candidate = next(
+                item
+                for item in load_evolve_candidates(root, include_inactive=True)
+                if item.id == "backlog-1"
+            )
+
+        self.assertEqual(
+            [event.event for event in events[-3:]],
+            ["completed", "regressed", "reverted"],
+        )
+        self.assertEqual(candidate.status, "reverted")
 
     def test_evolve_can_set_theme_and_mode(self) -> None:
         with TemporaryDirectory() as temp:
@@ -1811,6 +2141,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("backlog-1 [candidate backlog] improve Telegram work UX", client.sent[0][1])
         self.assertEqual([event.event for event in events], ["checked", "proposed", "skipped"])
         self.assertEqual(events[-1].reason, "awaiting-human-approval")
+        self.assertEqual(events[-1].proposal_id, events[-2].proposal_id)
 
     def test_due_evolve_schedule_auto_mode_queues_top_candidate(self) -> None:
         with TemporaryDirectory() as temp:
@@ -1846,6 +2177,12 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertTrue(all(event.event_actor == "system" for event in events))
         self.assertEqual(events[-1].trigger, "evolve-scheduler")
         self.assertEqual(events[-1].task_id, queued.pending[0].id)
+        proposal_ids = {
+            event.proposal_id
+            for event in events
+            if event.event in {"proposed", "selected", "queued"}
+        }
+        self.assertEqual(len(proposal_ids), 1)
 
     def test_due_auto_evolve_schedule_does_not_requeue_running_candidate(self) -> None:
         with TemporaryDirectory() as temp:

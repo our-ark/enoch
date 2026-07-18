@@ -31,7 +31,17 @@ TASK_SOURCES = {
 }
 TASK_INITIATORS = {"human", "agent"}
 TASK_EVENT_ACTORS = {"human", "agent", "system"}
-TASK_EVENT_TYPES = {"created", "queued", "started", "completed", "failed", "cancelled", "reverted"}
+TASK_EVENT_TYPES = {
+    "created",
+    "queued",
+    "started",
+    "completed",
+    "failed",
+    "cancelled",
+    "regressed",
+    "reverted",
+    "forward-fixed",
+}
 _TASK_EVENT_THREAD_LOCK = threading.RLock()
 
 
@@ -212,7 +222,7 @@ def _event_time(job: TaskLike, event: str) -> str:
         value = str(getattr(job, "created_at", "") or "")
     elif event == "started":
         value = str(getattr(job, "started_at", "") or "")
-    elif event in {"completed", "failed", "cancelled", "reverted"}:
+    elif event in {"completed", "failed", "cancelled", "regressed", "reverted", "forward-fixed"}:
         value = str(getattr(job, "completed_at", "") or "")
     else:
         value = ""

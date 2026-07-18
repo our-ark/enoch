@@ -12,7 +12,11 @@ from enoch.automatic_learning import LearningArtifact, learning_index_path
 from enoch.brainstorming import BrainstormIdea, load_brainstorm_ideas
 from enoch.cron import CronJob, cron_status, format_cron_interval
 from enoch.experience import ExperienceRecord, load_experience_records
-from enoch.evolve_events import record_evolve_event
+from enoch.evolve_events import (
+    latest_open_proposal_id,
+    linked_proposal_id,
+    record_evolve_event,
+)
 from enoch.feedback import FeedbackSignal, extract_feedback_signals
 from enoch.learn import PeerLearningObservation, load_peer_learning_observations
 from enoch.lineage.core import LineageCandidate, load_parent_inbox_candidates
@@ -28,7 +32,17 @@ MODE_CO_EVOLVE = "co-evolve"
 MODE_AUTO_EVOLVE = "auto-evolve"
 MODES = {MODE_DISABLED, MODE_CO_EVOLVE, MODE_AUTO_EVOLVE}
 DEFAULT_MODE = MODE_CO_EVOLVE
-CANDIDATE_STATUSES = {"candidate", "running", "done", "failed", "cancelled", "removed"}
+CANDIDATE_STATUSES = {
+    "candidate",
+    "running",
+    "done",
+    "failed",
+    "cancelled",
+    "regressed",
+    "reverted",
+    "forward-fixed",
+    "removed",
+}
 VISIBLE_CANDIDATE_STATUSES = {"candidate", "running"}
 AUTO_BRAINSTORM_COOLDOWN_SECONDS = 24 * 60 * 60
 BrainstormFallback = Callable[[str], Iterable[object]]
@@ -75,6 +89,7 @@ class EvolveProposal:
     report: EvolveReport
     candidates: tuple[EvolveCandidate, ...]
     top_candidate: EvolveCandidate | None
+    proposal_id: str = ""
     brainstorm_attempted: bool = False
     brainstorm_added: int = 0
     brainstorm_skip_reason: str = ""
@@ -491,6 +506,7 @@ def remove_evolve_candidate(
         event_actor=event_actor,
         trigger=trigger,
         theme=theme,
+        proposal_id=latest_open_proposal_id(removed.id, root),
     )
     return removed
 
@@ -601,6 +617,80 @@ def cancel_evolve_candidate_for_task(
     return candidate
 
 
+def regress_evolve_candidate_for_task(
+    job: TaskJob,
+    root: Path | None = None,
+    *,
+    theme: str = "",
+    event_actor: str = "agent",
+    trigger: str = "agent-regression-signal",
+    reason: str = "",
+) -> EvolveCandidate | None:
+    return _transition_evolve_candidate_for_task(
+        job,
+        "regressed",
+        root,
+        theme=theme,
+        event_actor=event_actor,
+        trigger=trigger,
+        reason=reason,
+    )
+
+
+def resolve_evolve_candidate_regression_for_task(
+    job: TaskJob,
+    resolution: str,
+    root: Path | None = None,
+    *,
+    theme: str = "",
+    event_actor: str = "agent",
+    trigger: str = "agent-regression-signal",
+    reason: str = "",
+) -> EvolveCandidate | None:
+    normalized_resolution = resolution.strip().lower()
+    if normalized_resolution not in {"reverted", "forward-fixed"}:
+        raise ValueError("Evolve regression resolution must be reverted or forward-fixed.")
+    return _transition_evolve_candidate_for_task(
+        job,
+        normalized_resolution,
+        root,
+        theme=theme,
+        event_actor=event_actor,
+        trigger=trigger,
+        reason=reason,
+    )
+
+
+def _transition_evolve_candidate_for_task(
+    job: TaskJob,
+    status: str,
+    root: Path | None,
+    *,
+    theme: str,
+    event_actor: str,
+    trigger: str,
+    reason: str,
+) -> EvolveCandidate | None:
+    candidate_id = _evolve_candidate_id_from_task(job)
+    if not candidate_id:
+        return None
+    try:
+        candidate = _set_candidate_status(candidate_id, status, root, theme=theme)
+    except ValueError:
+        return None
+    _record_candidate_event_safely(
+        status,
+        candidate,
+        root,
+        event_actor=event_actor,
+        trigger=trigger,
+        theme=theme,
+        task_id=job.id,
+        reason=reason,
+    )
+    return candidate
+
+
 def _record_candidate_event_safely(
     event: str,
     candidate: EvolveCandidate,
@@ -611,8 +701,14 @@ def _record_candidate_event_safely(
     theme: str,
     task_id: int | None = None,
     reason: str = "",
+    proposal_id: str = "",
 ) -> None:
     state = load_evolve_state(root)
+    linked_id = proposal_id or linked_proposal_id(
+        root,
+        candidate_id=candidate.id,
+        task_id=task_id,
+    )
     try:
         record_evolve_event(
             event,
@@ -624,6 +720,7 @@ def _record_candidate_event_safely(
             candidate=candidate,
             task_id=task_id,
             reason=reason,
+            proposal_id=linked_id,
         )
     except (OSError, ValueError):
         return
@@ -766,7 +863,10 @@ def _candidate_status_order(status: str) -> int:
         "done": 2,
         "failed": 3,
         "cancelled": 4,
-        "removed": 5,
+        "regressed": 5,
+        "reverted": 6,
+        "forward-fixed": 7,
+        "removed": 8,
     }.get(status, 1)
 
 
@@ -846,12 +946,13 @@ def _feedback_candidates(items: Iterable[FeedbackSignal]) -> list[EvolveCandidat
 def _task_history_candidates(items: Iterable[TaskJob]) -> list[EvolveCandidate]:
     candidates = []
     for item in items:
-        if item.status not in {"failed", "cancelled"}:
+        if item.status not in {"failed", "cancelled", "regressed", "reverted"}:
             continue
         if item.status == "cancelled" and not item.started_at:
             continue
         result = clean_text(item.result)
         is_failed = item.status == "failed"
+        is_regression = item.status in {"regressed", "reverted"}
         candidates.append(
             EvolveCandidate(
                 id=f"task-{item.id}",
@@ -869,7 +970,7 @@ def _task_history_candidates(items: Iterable[TaskJob]) -> list[EvolveCandidate]:
                 risk="The original task may have failed for transient reasons, so avoid broad changes without evidence.",
                 test_plan="Reproduce the failed or cancelled path if possible, then run focused tests around the changed workflow.",
                 initiated_by="agent",
-                score=30 if is_failed else 18,
+                score=40 if is_regression else (30 if is_failed else 18),
             )
         )
     return candidates
@@ -878,18 +979,20 @@ def _task_history_candidates(items: Iterable[TaskJob]) -> list[EvolveCandidate]:
 def _experience_record_candidates(items: Iterable[ExperienceRecord]) -> list[EvolveCandidate]:
     candidates = []
     for item in items:
-        if item.outcome not in {"failed", "cancelled"}:
+        is_actionable_regression = item.regressed and item.regression_resolution != "forward-fixed"
+        if item.outcome not in {"failed", "cancelled"} and not is_actionable_regression:
             continue
         if item.outcome == "cancelled" and not item.started:
             continue
         is_failed = item.outcome == "failed"
+        outcome = item.regression_resolution or "regressed" if is_actionable_regression else item.outcome
         candidates.append(
             EvolveCandidate(
                 id=f"task-{item.task_id}",
                 source="experience",
-                title=f"Improve reliability after {item.outcome} task #{item.task_id}: {item.request}",
+                title=f"Improve reliability after {outcome} task #{item.task_id}: {item.request}",
                 rationale=(
-                    f"Experience journal recorded task #{item.task_id} as {item.outcome}."
+                    f"Experience journal recorded task #{item.task_id} as {outcome}."
                     + (f" Result: {clean_text(item.result_summary)}" if item.result_summary else "")
                 ),
                 proposed_change=(
@@ -900,7 +1003,7 @@ def _experience_record_candidates(items: Iterable[ExperienceRecord]) -> list[Evo
                 risk="The task may have failed for transient reasons, so confirm the lesson before changing behavior.",
                 test_plan="Reproduce the recorded failure if possible, then run focused tests around the changed workflow.",
                 initiated_by="agent",
-                score=30 if is_failed else 18,
+                score=42 if is_actionable_regression else (30 if is_failed else 18),
             )
         )
     return candidates

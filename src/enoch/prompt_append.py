@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 import re
 
 
@@ -8,6 +9,8 @@ EDIT_REQUEST_START = "[ENOCH_EDIT_REQUEST]"
 EDIT_REQUEST_END = "[/ENOCH_EDIT_REQUEST]"
 MEMORY_REQUEST_START = "[ENOCH_MEMORY_REQUEST]"
 MEMORY_REQUEST_END = "[/ENOCH_MEMORY_REQUEST]"
+TASK_REGRESSION_START = "[ENOCH_TASK_REGRESSION]"
+TASK_REGRESSION_END = "[/ENOCH_TASK_REGRESSION]"
 
 
 @dataclass(frozen=True)
@@ -22,6 +25,20 @@ class MemoryRequests:
     requests: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class TaskRegressionSignal:
+    task_id: int
+    reason: str
+    resolution: str = ""
+    fix_task_id: int | None = None
+
+
+@dataclass(frozen=True)
+class TaskRegressionSignals:
+    visible_reply: str
+    signals: tuple[TaskRegressionSignal, ...]
+
+
 def read_only_turn_prompt(message: str) -> str:
     return _with_blocks(
         message,
@@ -29,6 +46,7 @@ def read_only_turn_prompt(message: str) -> str:
             _read_only_wrapper_block(),
             _state_freshness_block(),
             _memory_request_block(),
+            _task_regression_block(),
         ],
     )
 
@@ -40,6 +58,7 @@ def work_request_prompt(request: str) -> str:
             _work_request_wrapper_block(),
             _state_freshness_block(),
             _memory_request_block(),
+            _task_regression_block(),
         ],
     )
 
@@ -63,6 +82,37 @@ def extract_memory_requests(reply: str) -> MemoryRequests:
     )
     visible = _memory_request_pattern().sub("", reply).strip()
     return MemoryRequests(visible_reply=visible, requests=requests)
+
+
+def extract_task_regression_signals(reply: str) -> TaskRegressionSignals:
+    signals = []
+    for payload in _task_regression_pattern().findall(reply):
+        try:
+            raw = json.loads(payload)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(raw, dict):
+            continue
+        task_id = _positive_int(raw.get("task_id"))
+        reason = " ".join(str(raw.get("reason") or "").split())
+        resolution = str(raw.get("resolution") or "").strip().lower()
+        fix_task_id = _positive_int(raw.get("fix_task_id"))
+        if (
+            task_id is None
+            or not reason
+            or resolution not in {"", "reverted", "forward-fixed"}
+        ):
+            continue
+        signals.append(
+            TaskRegressionSignal(
+                task_id=task_id,
+                reason=reason,
+                resolution=resolution,
+                fix_task_id=fix_task_id,
+            )
+        )
+    visible = _task_regression_pattern().sub("", reply).strip()
+    return TaskRegressionSignals(visible_reply=visible, signals=tuple(signals))
 
 
 def repository_handoff_note(branch: str, pr_url: str) -> str:
@@ -148,6 +198,31 @@ def _memory_request_block() -> str:
     )
 
 
+def _task_regression_block() -> str:
+    return "\n".join(
+        [
+            "Task regression journal:",
+            "Enoch owns regression bookkeeping; never ask the human to maintain task statuses or use a regression command.",
+            "When there is clear evidence that a previously completed Enoch task introduced a regression, inspect the local task history to identify the original task id.",
+            "Include exactly one internal JSON signal for that original task:",
+            (
+                f'{TASK_REGRESSION_START}\n'
+                '{"task_id": <original-task-id>, "reason": "<concise evidence>", '
+                '"resolution": "<empty, reverted, or forward-fixed>", '
+                '"fix_task_id": <completed-fix-task-id or null>}\n'
+                f"{TASK_REGRESSION_END}"
+            ),
+            "Use an empty resolution when the regression is only identified and remains unresolved.",
+            "Use reverted only after the change was actually rolled back.",
+            "Use forward-fixed only after the corrective work is complete.",
+            "During a work request, leave fix_task_id null so the wrapper links the current task after it completes.",
+            "Outside a work request, provide the already completed fix task id; otherwise leave the regression unresolved.",
+            "Emit no signal when the task id or regression evidence is uncertain.",
+            "Do not edit task_events.jsonl, task_queue.json, or evolve_events.jsonl directly.",
+        ]
+    )
+
+
 def _edit_request_pattern() -> re.Pattern[str]:
     return re.compile(
         rf"{re.escape(EDIT_REQUEST_START)}(.*?){re.escape(EDIT_REQUEST_END)}",
@@ -160,3 +235,18 @@ def _memory_request_pattern() -> re.Pattern[str]:
         rf"{re.escape(MEMORY_REQUEST_START)}(.*?){re.escape(MEMORY_REQUEST_END)}",
         re.DOTALL,
     )
+
+
+def _task_regression_pattern() -> re.Pattern[str]:
+    return re.compile(
+        rf"{re.escape(TASK_REGRESSION_START)}(.*?){re.escape(TASK_REGRESSION_END)}",
+        re.DOTALL,
+    )
+
+
+def _positive_int(value: object) -> int | None:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None

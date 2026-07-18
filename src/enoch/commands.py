@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 from typing import Callable
 
 from enoch.brain import REASONING_EFFORTS, model_summary
@@ -33,11 +34,16 @@ from enoch.task_config import (
 )
 
 
+_CODEX_MODEL_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
+
+
 ModelSummaryFn = Callable[[Path], str]
 DoctorFn = Callable[[Path], ImmuneResult]
 ResolveLineageFn = Callable[[Path], LineageResolution]
 RefreshLineageFn = Callable[..., LineageInboxReport]
 FormatDoctorFn = Callable[[ImmuneResult], str]
+
+
 def status_message(
     identity: Identity,
     root: Path,
@@ -186,29 +192,60 @@ def config_command(text: str, root: Path, *, prefix: str = "/") -> str:
     parts = text.split()
     if len(parts) == 1:
         return config_status(root, prefix=prefix)
-    if parts[1].lower() != "task-timeout":
-        return config_usage(prefix=prefix)
-    if len(parts) == 2:
-        return config_status(root, prefix=prefix)
-    if len(parts) != 3:
-        return config_usage(prefix=prefix)
-    value = parts[2].lower()
-    if value in {"default", "reset"}:
-        settings = save_task_timeout(None, root)
-    else:
-        try:
-            timeout = parse_task_timeout(value)
-        except ValueError as error:
-            return str(error)
-        settings = save_task_timeout(timeout, root)
-    return "\n".join(
-        [
-            f"Task timeout set to {format_task_timeout(settings.timeout_seconds)}"
-            + (" (default)." if settings.uses_default_timeout else "."),
-            "",
-            config_status(root, prefix=prefix),
-        ]
-    )
+    setting = parts[1].lower().replace("_", "-")
+    if setting == "task-timeout":
+        if len(parts) == 2:
+            return config_status(root, prefix=prefix)
+        if len(parts) != 3:
+            return config_usage(prefix=prefix)
+        value = parts[2].lower()
+        if value in {"default", "reset"}:
+            settings = save_task_timeout(None, root)
+        else:
+            try:
+                timeout = parse_task_timeout(value)
+            except ValueError as error:
+                return str(error)
+            settings = save_task_timeout(timeout, root)
+        return "\n".join(
+            [
+                f"Task timeout set to {format_task_timeout(settings.timeout_seconds)}"
+                + (" (default)." if settings.uses_default_timeout else "."),
+                "",
+                config_status(root, prefix=prefix),
+            ]
+        )
+    if setting == "model":
+        if len(parts) == 2:
+            return config_status(root, prefix=prefix)
+        if len(parts) != 3:
+            return config_usage(prefix=prefix)
+        value = parts[2].strip()
+        if value.lower() in {"default", "reset"}:
+            write_section_value("codex", "model", None, root)
+            message = "Enoch cleared her local Codex model override."
+        elif not _CODEX_MODEL_PATTERN.fullmatch(value):
+            return "Codex model must be one model identifier without spaces."
+        else:
+            write_section_value("codex", "model", value, root)
+            message = f"Enoch Codex model set to {value}."
+        return "\n\n".join([message, config_status(root, prefix=prefix)])
+    if setting == "reasoning-effort":
+        if len(parts) == 2:
+            return config_status(root, prefix=prefix)
+        if len(parts) != 3:
+            return config_usage(prefix=prefix)
+        value = parts[2].strip().lower()
+        if value in {"default", "reset"}:
+            write_section_value("codex", "reasoning_effort", None, root)
+            message = "Enoch cleared her local Codex reasoning effort override."
+        elif value not in REASONING_EFFORTS:
+            return "Codex reasoning effort must be low, medium, high, or default."
+        else:
+            write_section_value("codex", "reasoning_effort", value, root)
+            message = f"Enoch Codex reasoning effort set to {value}."
+        return "\n\n".join([message, config_status(root, prefix=prefix)])
+    return config_usage(prefix=prefix)
 
 
 def config_status(root: Path, *, prefix: str = "/") -> str:
@@ -220,7 +257,15 @@ def config_status(root: Path, *, prefix: str = "/") -> str:
             "Enoch config:",
             f"- Task timeout: {format_task_timeout(settings.timeout_seconds)}{default}",
             "",
-            f"Set with {command} task-timeout <duration> or reset with {command} task-timeout default.",
+            "Codex:",
+            model_summary(root),
+            "",
+            f"Set the model with {command} model <name> or {command} model default.",
+            (
+                f"Set reasoning with {command} reasoning-effort low|medium|high "
+                f"or {command} reasoning-effort default."
+            ),
+            f"Set task timeout with {command} task-timeout <duration> or {command} task-timeout default.",
         ]
     )
 
@@ -231,6 +276,12 @@ def config_usage(prefix: str = "/") -> str:
         [
             "Config commands:",
             f"{command} - show local system settings",
+            f"{command} model - show the effective Codex model",
+            f"{command} model <name> - set a local Codex model override",
+            f"{command} model default - inherit the Codex model",
+            f"{command} reasoning-effort - show the effective reasoning effort",
+            f"{command} reasoning-effort low|medium|high - set local reasoning effort",
+            f"{command} reasoning-effort default - inherit Codex reasoning effort",
             f"{command} task-timeout - show the task timeout",
             f"{command} task-timeout <duration> - set a timeout between 1m and 2h",
             f"{command} task-timeout default - restore the 10m default",

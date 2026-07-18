@@ -9,7 +9,14 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from enoch.experience import experience_path, load_experience_records, record_task_experience
 from enoch.task_events import TASK_EVENT_TYPES, TASK_SOURCES, load_task_events, task_event_path
-from enoch.task_queue import TaskJob
+from enoch.task_queue import (
+    TaskJob,
+    begin_next_task,
+    complete_task,
+    enqueue_task,
+    regress_task,
+    resolve_regressed_task,
+)
 
 
 class EnochExperienceTests(unittest.TestCase):
@@ -27,7 +34,17 @@ class EnochExperienceTests(unittest.TestCase):
                 "chat-task",
             },
         )
-        self.assertTrue({"completed", "failed", "cancelled", "reverted"} <= TASK_EVENT_TYPES)
+        self.assertTrue(
+            {
+                "completed",
+                "failed",
+                "cancelled",
+                "regressed",
+                "reverted",
+                "forward-fixed",
+            }
+            <= TASK_EVENT_TYPES
+        )
 
     def test_records_structured_terminal_task_experience(self) -> None:
         with TemporaryDirectory() as temp:
@@ -76,8 +93,32 @@ class EnochExperienceTests(unittest.TestCase):
 
     def test_rejects_non_terminal_task(self) -> None:
         with TemporaryDirectory() as temp:
-            with self.assertRaisesRegex(ValueError, "completed, failed, cancelled, or reverted"):
+            with self.assertRaisesRegex(ValueError, "regressed, reverted, or forward-fixed"):
                 record_task_experience(_task_job(1, status="running"), Path(temp))
+
+    def test_preserves_regression_fact_after_forward_fix_resolution(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            original = enqueue_task(42, "ship risky work", root)
+            complete_task(begin_next_task(root).id, root, result="Shipped.")
+            regress_task(original.id, root, result="Broke recovery.")
+            fix = enqueue_task(42, "repair recovery", root, parent_task_id=original.id)
+            complete_task(begin_next_task(root).id, root, result="Fixed.")
+            resolve_regressed_task(
+                original.id,
+                "forward-fixed",
+                root,
+                result="Verified repaired.",
+                related_task_id=fix.id,
+            )
+
+            records = {record.task_id: record for record in load_experience_records(root)}
+            original_record = records[original.id]
+
+        self.assertEqual(original_record.outcome, "forward-fixed")
+        self.assertTrue(original_record.regressed)
+        self.assertEqual(original_record.regression_resolution, "forward-fixed")
+        self.assertEqual(original_record.regression_related_task_id, fix.id)
 
     def test_reads_legacy_experience_records_when_event_log_is_absent(self) -> None:
         with TemporaryDirectory() as temp:

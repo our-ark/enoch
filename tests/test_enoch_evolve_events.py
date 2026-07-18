@@ -9,8 +9,11 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from enoch.evolve import EvolveCandidate
 from enoch.evolve_events import (
+    close_open_proposals,
     evolve_event_path,
+    latest_open_proposal_id,
     load_evolve_events,
+    load_open_proposals,
     record_evolve_event,
 )
 
@@ -90,6 +93,49 @@ class EnochEvolveEventTests(unittest.TestCase):
                     trigger="evolve-scheduler",
                     candidate=_candidate(),
                 )
+            with self.assertRaises(ValueError):
+                record_evolve_event(
+                    "no-action",
+                    root,
+                    event_actor="system",
+                    trigger="/propose",
+                    candidate=_candidate(),
+                )
+
+    def test_tracks_each_proposal_and_closes_open_disposition(self) -> None:
+        candidate = _candidate()
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            proposed = record_evolve_event(
+                "proposed",
+                root,
+                event_actor="human",
+                trigger="/propose",
+                mode="co-evolve",
+                candidate=candidate,
+            )
+            open_before = load_open_proposals(root)
+            closed = close_open_proposals(
+                root,
+                event_actor="human",
+                trigger="/propose",
+                reason="superseded-by-new-proposal",
+            )
+            open_after = latest_open_proposal_id(candidate.id, root)
+            proposal_events = load_evolve_events(
+                root,
+                proposal_id=proposed.proposal_id,
+            )
+
+        self.assertTrue(proposed.proposal_id.startswith("proposal-"))
+        self.assertEqual(open_before, (proposed,))
+        self.assertEqual(open_after, "")
+        self.assertEqual(closed[0].proposal_id, proposed.proposal_id)
+        self.assertEqual(
+            [event.event for event in proposal_events],
+            ["proposed", "no-action"],
+        )
+        self.assertEqual(proposal_events[-1].reason, "superseded-by-new-proposal")
 
 
 def _candidate() -> EvolveCandidate:
