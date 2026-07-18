@@ -17,7 +17,7 @@ from enoch.memory.paths import clean_text, now as current_time
 from enoch.paths import enoch_home
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 EVOLVE_EVENT_TYPES = {
     "checked",
     "proposed",
@@ -67,6 +67,11 @@ class CandidateLike(Protocol):
     id: str
     source: str
     initiated_by: str
+    evidence_source: str
+    signal_actor: str
+    candidate_actor: str
+    parent_candidate_id: str
+    source_task_id: int | None
     score: int
 
 
@@ -84,6 +89,13 @@ class EvolveEvent:
     task_id: int | None = None
     source: str = ""
     candidate_initiated_by: str = ""
+    evidence_source: str = ""
+    signal_actor: str = ""
+    candidate_actor: str = ""
+    approval_actor: str = ""
+    parent_candidate_id: str = ""
+    source_task_id: int | None = None
+    retry_of_task_id: int | None = None
     score: int = 0
     reason: str = ""
 
@@ -102,6 +114,8 @@ def record_evolve_event(
     theme: str = "",
     candidate: CandidateLike | None = None,
     task_id: int | None = None,
+    approval_actor: str = "",
+    retry_of_task_id: int | None = None,
     reason: str = "",
     proposal_id: str = "",
 ) -> EvolveEvent:
@@ -120,14 +134,47 @@ def record_evolve_event(
     initiated_by = clean_text(
         str(getattr(candidate, "initiated_by", "") or "")
     ).lower()
+    evidence_source = clean_text(
+        str(getattr(candidate, "evidence_source", "") or source)
+    ).lower()
+    signal_actor = _actor(getattr(candidate, "signal_actor", ""))
+    candidate_actor = _actor(getattr(candidate, "candidate_actor", ""))
+    normalized_approval_actor = _actor(approval_actor)
+    parent_candidate_id = clean_text(
+        str(getattr(candidate, "parent_candidate_id", "") or "")
+    )
+    source_task_id = _positive_int(getattr(candidate, "source_task_id", None))
+    if candidate_id:
+        signal_actor = signal_actor or _legacy_signal_actor(evidence_source)
+        candidate_actor = candidate_actor or "agent"
+        if normalized_event in {"selected", "queued"} and not normalized_approval_actor:
+            normalized_approval_actor = _legacy_approval_actor(
+                clean_text(trigger),
+                normalized_actor,
+            )
+        initiated_by = (
+            candidate_actor
+            if candidate_actor in {"human", "agent"}
+            else initiated_by
+        )
     if normalized_event in _CANDIDATE_EVENTS and not candidate_id:
         raise ValueError(f"Evolve event {normalized_event} requires a candidate.")
     if candidate_id and source not in EVOLVE_SOURCES:
         raise ValueError(
             f"Evolve source must be one of: {', '.join(sorted(EVOLVE_SOURCES))}."
         )
+    if candidate_id and evidence_source not in EVOLVE_SOURCES:
+        raise ValueError(
+            f"Evolution evidence source must be one of: {', '.join(sorted(EVOLVE_SOURCES))}."
+        )
     if candidate_id and initiated_by not in {"human", "agent"}:
         raise ValueError("Candidate initiator must be human or agent.")
+    if candidate_id and signal_actor not in EVOLVE_EVENT_ACTORS:
+        raise ValueError("Signal actor must be human, agent, or system.")
+    if candidate_id and candidate_actor not in EVOLVE_EVENT_ACTORS:
+        raise ValueError("Candidate actor must be human, agent, or system.")
+    if approval_actor and not normalized_approval_actor:
+        raise ValueError("Approval actor must be human, agent, or system.")
     normalized_task_id = _positive_int(task_id)
     normalized_proposal_id = clean_text(proposal_id)
     if normalized_event == "proposed" and not normalized_proposal_id:
@@ -153,6 +200,13 @@ def record_evolve_event(
         task_id=normalized_task_id,
         source=source,
         candidate_initiated_by=initiated_by,
+        evidence_source=evidence_source,
+        signal_actor=signal_actor,
+        candidate_actor=candidate_actor,
+        approval_actor=normalized_approval_actor,
+        parent_candidate_id=parent_candidate_id,
+        source_task_id=source_task_id,
+        retry_of_task_id=_positive_int(retry_of_task_id),
         score=_int(getattr(candidate, "score", 0)),
         reason=_clip(clean_text(reason)),
     )
@@ -273,6 +327,11 @@ def close_open_proposals(
                     id=proposal.candidate_id,
                     source=proposal.source,
                     initiated_by=proposal.candidate_initiated_by,
+                    evidence_source=proposal.evidence_source,
+                    signal_actor=proposal.signal_actor,
+                    candidate_actor=proposal.candidate_actor,
+                    parent_candidate_id=proposal.parent_candidate_id,
+                    source_task_id=proposal.source_task_id,
                     score=proposal.score,
                 ),
                 reason=reason,
@@ -294,6 +353,12 @@ def _event_from_line(line: str) -> EvolveEvent | None:
     candidate_id = clean_text(str(raw.get("candidate_id") or ""))
     source = clean_text(str(raw.get("source") or "")).lower()
     initiated_by = clean_text(str(raw.get("candidate_initiated_by") or "")).lower()
+    evidence_source = clean_text(str(raw.get("evidence_source") or source)).lower()
+    if evidence_source not in EVOLVE_SOURCES:
+        evidence_source = source
+    signal_actor = _actor(raw.get("signal_actor"))
+    candidate_actor = _actor(raw.get("candidate_actor"))
+    approval_actor = _actor(raw.get("approval_actor"))
     task_id = _positive_int(raw.get("task_id"))
     if event not in EVOLVE_EVENT_TYPES or actor not in EVOLVE_EVENT_ACTORS:
         return None
@@ -303,6 +368,14 @@ def _event_from_line(line: str) -> EvolveEvent | None:
         source not in EVOLVE_SOURCES or initiated_by not in {"human", "agent"}
     ):
         return None
+    if candidate_id:
+        signal_actor = signal_actor or _legacy_signal_actor(evidence_source)
+        candidate_actor = candidate_actor or "agent"
+        if event in {"selected", "queued"} and not approval_actor:
+            approval_actor = _legacy_approval_actor(
+                clean_text(str(raw.get("trigger") or "")),
+                actor,
+            )
     if event in {
         "queued",
         "completed",
@@ -334,6 +407,13 @@ def _event_from_line(line: str) -> EvolveEvent | None:
         task_id=task_id,
         source=source,
         candidate_initiated_by=initiated_by,
+        evidence_source=evidence_source,
+        signal_actor=signal_actor,
+        candidate_actor=candidate_actor,
+        approval_actor=approval_actor,
+        parent_candidate_id=clean_text(str(raw.get("parent_candidate_id") or "")),
+        source_task_id=_positive_int(raw.get("source_task_id")),
+        retry_of_task_id=_positive_int(raw.get("retry_of_task_id")),
         score=_int(raw.get("score")),
         reason=_clip(clean_text(str(raw.get("reason") or ""))),
     )
@@ -344,6 +424,11 @@ class _CandidateSnapshot:
     id: str
     source: str
     initiated_by: str
+    evidence_source: str
+    signal_actor: str
+    candidate_actor: str
+    parent_candidate_id: str
+    source_task_id: int | None
     score: int
 
 
@@ -360,6 +445,25 @@ def _int(value: object) -> int:
         return int(value)
     except (TypeError, ValueError):
         return 0
+
+
+def _actor(value: object) -> str:
+    actor = clean_text(str(value or "")).lower()
+    return actor if actor in EVOLVE_EVENT_ACTORS else ""
+
+
+def _legacy_signal_actor(source: str) -> str:
+    if source in {"backlog", "feedback", "learning"}:
+        return "human"
+    if source in {"inheritance", "brainstorming"}:
+        return "agent"
+    return "system"
+
+
+def _legacy_approval_actor(trigger: str, event_actor: str) -> str:
+    if trigger == "evolve-scheduler":
+        return "agent"
+    return event_actor
 
 
 def _clip(value: str, limit: int = 1000) -> str:

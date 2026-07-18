@@ -59,6 +59,7 @@ from enoch.task_queue import (
     begin_next_task,
     complete_task,
     enqueue_task,
+    fail_task,
     record_task_result,
     task_queue_path,
     task_queue_status,
@@ -1938,16 +1939,26 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual(queued.pending[0].source, "backlog")
         self.assertEqual(queued.pending[0].initiated_by, "human")
         self.assertEqual(queued.pending[0].candidate_id, "backlog-1")
+        self.assertEqual(queued.pending[0].evidence_source, "backlog")
+        self.assertEqual(queued.pending[0].signal_actor, "human")
+        self.assertEqual(queued.pending[0].candidate_actor, "agent")
+        self.assertEqual(queued.pending[0].approval_actor, "human")
         self.assertIn("Evolve candidate context:", queued.pending[0].context)
         worker_context = telegram._task_worker_context(queued.pending[0])
         self.assertIn("## Evolution provenance", worker_context)
         self.assertIn("- Candidate: `backlog-1`", worker_context)
-        self.assertIn("- Source: backlog", worker_context)
+        self.assertIn("- Evidence source: backlog", worker_context)
+        self.assertIn("- Signal actor: human", worker_context)
+        self.assertIn("- Candidate actor: agent", worker_context)
+        self.assertIn("- Approval actor: human", worker_context)
         self.assertIn("- Task: #1", worker_context)
         self.assertNotIn("Retry of task", worker_context)
         self.assertEqual([event.event for event in events], ["selected", "queued"])
         self.assertEqual([event.event_actor for event in events], ["human", "human"])
         self.assertEqual(events[-1].task_id, queued.pending[0].id)
+        self.assertEqual(events[-1].signal_actor, "human")
+        self.assertEqual(events[-1].candidate_actor, "agent")
+        self.assertEqual(events[-1].approval_actor, "human")
 
     @patch("enoch.telegram.bot.create_pull_request")
     def test_evolve_pr_helper_passes_current_task_provenance(
@@ -1979,9 +1990,46 @@ class EnochTelegramTests(unittest.TestCase):
 
         provenance = create_pull_request.call_args.kwargs["evolution_provenance"]
         self.assertEqual(provenance.candidate_id, "feedback-c3ed71fd1d2d")
-        self.assertEqual(provenance.source, "feedback")
+        self.assertEqual(provenance.evidence_source, "feedback")
+        self.assertEqual(provenance.signal_actor, "human")
+        self.assertEqual(provenance.candidate_actor, "agent")
+        self.assertEqual(provenance.approval_actor, "human")
         self.assertEqual(provenance.task_id, retry.id)
         self.assertEqual(provenance.retry_of_task_id, original.id)
+
+    def test_experience_candidate_pr_context_preserves_feedback_causal_chain(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            original = enqueue_task(
+                42,
+                "apply human feedback",
+                root,
+                source="feedback",
+                initiated_by="human",
+                candidate_id="feedback-c3ed71fd1d2d",
+                evidence_source="feedback",
+                signal_actor="human",
+                candidate_actor="agent",
+                approval_actor="human",
+            )
+            begin_next_task(root)
+            fail_task(original.id, root, result="Worktree branch failed.")
+            client = FakeTelegramClient(allowed_chat_id=42)
+            bot = EnochTelegramBot(load_identity(), root, client)
+
+            bot.handle_update(_message_update(chat_id=42, text="/evolve approve task-1"))
+            queued = task_queue_status(root).pending[0]
+            worker_context = telegram._task_worker_context(queued)
+
+        self.assertEqual(queued.candidate_id, "task-1")
+        self.assertEqual(queued.evidence_source, "experience")
+        self.assertEqual(queued.signal_actor, "system")
+        self.assertEqual(queued.candidate_actor, "agent")
+        self.assertEqual(queued.approval_actor, "human")
+        self.assertEqual(queued.parent_candidate_id, "feedback-c3ed71fd1d2d")
+        self.assertEqual(queued.source_task_id, original.id)
+        self.assertIn("- Parent candidate: `feedback-c3ed71fd1d2d`", worker_context)
+        self.assertIn("- Source task: #1", worker_context)
 
     def test_evolve_cannot_approve_removed_candidate(self) -> None:
         with TemporaryDirectory() as temp:
@@ -2161,7 +2209,10 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual(queued.pending[0].context_source, "evolve-retry")
         worker_context = telegram._task_worker_context(queued.pending[0])
         self.assertIn("- Candidate: `backlog-1`", worker_context)
-        self.assertIn("- Source: backlog", worker_context)
+        self.assertIn("- Evidence source: backlog", worker_context)
+        self.assertIn("- Signal actor: human", worker_context)
+        self.assertIn("- Candidate actor: agent", worker_context)
+        self.assertIn("- Approval actor: human", worker_context)
         self.assertIn("- Task: #2", worker_context)
         self.assertIn("- Retry of task: #1", worker_context)
         self.assertEqual(candidates[0].status, "running")
@@ -2172,6 +2223,8 @@ class EnochTelegramTests(unittest.TestCase):
             ["proposed", "selected", "queued"],
         )
         self.assertEqual(evolve_events[-1].task_id, 2)
+        self.assertEqual(evolve_events[-1].retry_of_task_id, 1)
+        self.assertEqual(evolve_events[-1].approval_actor, "human")
         self.assertEqual(evolve_events[-1].reason, "retry-of-task-1")
         self.assertIn(
             "Retrying evolve candidate backlog-1 as task #2, linked to failed task #1.",
@@ -2455,8 +2508,12 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("Evolve candidate backlog-1", queued.pending[0].text)
         self.assertEqual(queued.pending[0].context_source, "evolve-scheduler")
         self.assertEqual(queued.pending[0].source, "backlog")
-        self.assertEqual(queued.pending[0].initiated_by, "human")
+        self.assertEqual(queued.pending[0].initiated_by, "agent")
         self.assertEqual(queued.pending[0].candidate_id, "backlog-1")
+        self.assertEqual(queued.pending[0].evidence_source, "backlog")
+        self.assertEqual(queued.pending[0].signal_actor, "human")
+        self.assertEqual(queued.pending[0].candidate_actor, "agent")
+        self.assertEqual(queued.pending[0].approval_actor, "agent")
         self.assertEqual(report.top_candidate.status, "running")
         self.assertIn("Latest update: Scheduled by evolve auto-evolve.", client.sent[0][1])
         self.assertEqual(
@@ -2466,6 +2523,9 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertTrue(all(event.event_actor == "system" for event in events))
         self.assertEqual(events[-1].trigger, "evolve-scheduler")
         self.assertEqual(events[-1].task_id, queued.pending[0].id)
+        self.assertEqual(events[-1].signal_actor, "human")
+        self.assertEqual(events[-1].candidate_actor, "agent")
+        self.assertEqual(events[-1].approval_actor, "agent")
         proposal_ids = {
             event.proposal_id
             for event in events
@@ -2571,9 +2631,11 @@ class EnochTelegramTests(unittest.TestCase):
         experience_reply = client.sent[-1][1]
         self.assertIn("Evolution statistics:", experience_reply)
         self.assertIn("Queued: 1 (autonomous 1, human-approved 0)", experience_reply)
-        self.assertIn("Queued candidate origins: agent 1, human 0", experience_reply)
+        self.assertIn("Queued signal actors: agent 1, human 0, system 0", experience_reply)
+        self.assertIn("Queued candidate actors: agent 1, human 0, system 0", experience_reply)
+        self.assertIn("Queued approval actors: agent 1, human 0, system 0", experience_reply)
         self.assertIn("queued [system]", experience_reply)
-        self.assertIn("candidate initiated by agent", experience_reply)
+        self.assertIn("candidate by agent", experience_reply)
         self.assertEqual(respond.call_args.kwargs["session_key"], "telegram:42:evolve-scheduler")
 
     @patch("enoch.telegram.bot.ensure_long_term_memory")

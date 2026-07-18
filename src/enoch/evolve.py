@@ -26,7 +26,7 @@ from enoch.task_queue import TaskJob, task_queue_status
 
 
 SCHEMA_VERSION = 1
-CANDIDATE_SCHEMA_VERSION = 3
+CANDIDATE_SCHEMA_VERSION = 4
 MODE_DISABLED = "disabled"
 MODE_CO_EVOLVE = "co-evolve"
 MODE_AUTO_EVOLVE = "auto-evolve"
@@ -74,6 +74,11 @@ class EvolveCandidate:
     risk: str
     test_plan: str
     initiated_by: str = "agent"
+    evidence_source: str = ""
+    signal_actor: str = "system"
+    candidate_actor: str = "agent"
+    parent_candidate_id: str = ""
+    source_task_id: int | None = None
     status: str = "candidate"
     score: int = 0
 
@@ -585,6 +590,7 @@ def complete_evolve_candidate_for_task(
         trigger=trigger,
         theme=theme,
         task_id=job.id,
+        retry_of_task_id=job.parent_task_id,
         reason=reason,
     )
     return candidate
@@ -614,6 +620,7 @@ def fail_evolve_candidate_for_task(
         trigger=trigger,
         theme=theme,
         task_id=job.id,
+        retry_of_task_id=job.parent_task_id,
         reason=reason,
     )
     return candidate
@@ -643,6 +650,7 @@ def cancel_evolve_candidate_for_task(
         trigger=trigger,
         theme=theme,
         task_id=job.id,
+        retry_of_task_id=job.parent_task_id,
         reason=reason,
     )
     return candidate
@@ -713,6 +721,7 @@ def _record_evolve_candidate_task_event(
         trigger=trigger,
         theme=theme,
         task_id=job.id,
+        retry_of_task_id=job.parent_task_id,
         reason=reason,
     )
     return candidate
@@ -787,6 +796,7 @@ def _transition_evolve_candidate_for_task(
         trigger=trigger,
         theme=theme,
         task_id=job.id,
+        retry_of_task_id=job.parent_task_id,
         reason=reason,
     )
     return candidate
@@ -801,6 +811,7 @@ def _record_candidate_event_safely(
     trigger: str,
     theme: str,
     task_id: int | None = None,
+    retry_of_task_id: int | None = None,
     reason: str = "",
     proposal_id: str = "",
 ) -> None:
@@ -820,6 +831,7 @@ def _record_candidate_event_safely(
             theme=theme or state.theme,
             candidate=candidate,
             task_id=task_id,
+            retry_of_task_id=retry_of_task_id,
             reason=reason,
             proposal_id=linked_id,
         )
@@ -899,7 +911,14 @@ def _candidate_to_json(candidate: EvolveCandidate) -> dict[str, object]:
         "expected_benefit": candidate.expected_benefit,
         "risk": candidate.risk,
         "test_plan": candidate.test_plan,
-        "initiated_by": candidate.initiated_by if candidate.initiated_by in {"human", "agent"} else "agent",
+        "initiated_by": candidate.candidate_actor
+        if candidate.candidate_actor in {"human", "agent"}
+        else "agent",
+        "evidence_source": candidate.evidence_source or candidate.source,
+        "signal_actor": candidate.signal_actor,
+        "candidate_actor": candidate.candidate_actor,
+        "parent_candidate_id": candidate.parent_candidate_id,
+        "source_task_id": candidate.source_task_id,
         "status": candidate.status if candidate.status in CANDIDATE_STATUSES else "candidate",
         "score": int(candidate.score),
     }
@@ -922,9 +941,29 @@ def _candidate_from_json(raw: dict[str, object]) -> EvolveCandidate | None:
         source = "experience"
     if source == "learning" and not candidate_id.startswith("learning-peer-"):
         source = "experience"
-    initiated_by = clean_text(str(raw.get("initiated_by") or "")).lower()
-    if initiated_by not in {"human", "agent"}:
-        initiated_by = _candidate_initiator(source)
+    legacy_initiated_by = clean_text(str(raw.get("initiated_by") or "")).lower()
+    if legacy_initiated_by not in {"human", "agent"}:
+        legacy_initiated_by = _candidate_initiator(source)
+    evidence_source = clean_text(str(raw.get("evidence_source") or source)).lower()
+    if evidence_source not in {
+        "backlog",
+        "feedback",
+        "experience",
+        "inheritance",
+        "learning",
+        "brainstorming",
+    }:
+        evidence_source = source
+    signal_actor = _provenance_actor(
+        raw.get("signal_actor"),
+        default=_candidate_signal_actor(evidence_source),
+    )
+    candidate_actor = _provenance_actor(raw.get("candidate_actor"), default="agent")
+    initiated_by = (
+        candidate_actor
+        if candidate_actor in {"human", "agent"}
+        else legacy_initiated_by
+    )
     return EvolveCandidate(
         id=candidate_id,
         source=source,
@@ -935,6 +974,11 @@ def _candidate_from_json(raw: dict[str, object]) -> EvolveCandidate | None:
         risk=clean_text(str(raw.get("risk") or "")),
         test_plan=clean_text(str(raw.get("test_plan") or "")),
         initiated_by=initiated_by,
+        evidence_source=evidence_source,
+        signal_actor=signal_actor,
+        candidate_actor=candidate_actor,
+        parent_candidate_id=clean_text(str(raw.get("parent_candidate_id") or "")),
+        source_task_id=_positive_int(raw.get("source_task_id")),
         status=status,
         score=_int(raw.get("score"), default=0),
     )
@@ -972,7 +1016,20 @@ def _candidate_status_order(status: str) -> int:
 
 
 def _candidate_initiator(source: str) -> str:
-    return "human" if source in {"backlog", "feedback", "learning"} else "agent"
+    return "agent"
+
+
+def _candidate_signal_actor(source: str) -> str:
+    if source in {"backlog", "feedback", "learning"}:
+        return "human"
+    if source in {"inheritance", "brainstorming"}:
+        return "agent"
+    return "system"
+
+
+def _provenance_actor(value: object, *, default: str) -> str:
+    actor = clean_text(str(value or "")).lower()
+    return actor if actor in {"human", "agent", "system"} else default
 
 
 def _backlog_candidates(items: Iterable[BacklogItem]) -> list[EvolveCandidate]:
@@ -989,7 +1046,10 @@ def _backlog_candidates(items: Iterable[BacklogItem]) -> list[EvolveCandidate]:
                 expected_benefit="Completes deferred human-visible work that may improve Enoch's body or workflow.",
                 risk="Backlog item may need clarification before implementation.",
                 test_plan="Run focused tests for the changed behavior and Enoch doctor if code changes.",
-                initiated_by="human",
+                initiated_by="agent",
+                evidence_source="backlog",
+                signal_actor="human",
+                candidate_actor="agent",
                 score=priority_score.get(item.priority, 10),
             )
         )
@@ -1011,6 +1071,9 @@ def _inheritance_candidates(items: Iterable[LineageCandidate]) -> list[EvolveCan
                 risk="Parent change may not apply cleanly to Enoch or may duplicate existing behavior.",
                 test_plan="Inspect changed files, adapt only relevant pieces, then run affected tests.",
                 initiated_by="agent",
+                evidence_source="inheritance",
+                signal_actor="agent",
+                candidate_actor="agent",
                 score=relevance_score.get(item.relevance, 8),
             )
         )
@@ -1037,7 +1100,10 @@ def _feedback_candidates(items: Iterable[FeedbackSignal]) -> list[EvolveCandidat
                 expected_benefit="Turns explicit human feedback into an accountable, testable improvement candidate.",
                 risk="Heuristic feedback extraction can misclassify ordinary conversation; confirm intent before editing.",
                 test_plan="Add or update focused tests for the affected behavior and verify the feedback is addressed.",
-                initiated_by="human",
+                initiated_by="agent",
+                evidence_source="feedback",
+                signal_actor="human",
+                candidate_actor="agent",
                 score=kind_score.get(item.kind, 20) + min(item.occurrences, 3) * 2,
             )
         )
@@ -1071,6 +1137,11 @@ def _task_history_candidates(items: Iterable[TaskJob]) -> list[EvolveCandidate]:
                 risk="The original task may have failed for transient reasons, so avoid broad changes without evidence.",
                 test_plan="Reproduce the failed or cancelled path if possible, then run focused tests around the changed workflow.",
                 initiated_by="agent",
+                evidence_source="experience",
+                signal_actor="system",
+                candidate_actor="agent",
+                parent_candidate_id=item.candidate_id,
+                source_task_id=item.id,
                 score=40 if is_regression else (30 if is_failed else 18),
             )
         )
@@ -1104,6 +1175,11 @@ def _experience_record_candidates(items: Iterable[ExperienceRecord]) -> list[Evo
                 risk="The task may have failed for transient reasons, so confirm the lesson before changing behavior.",
                 test_plan="Reproduce the recorded failure if possible, then run focused tests around the changed workflow.",
                 initiated_by="agent",
+                evidence_source="experience",
+                signal_actor="system",
+                candidate_actor="agent",
+                parent_candidate_id=item.candidate_id,
+                source_task_id=item.task_id,
                 score=42 if is_actionable_regression else (30 if is_failed else 18),
             )
         )
@@ -1143,6 +1219,11 @@ def _repeated_success_candidates(items: Iterable[ExperienceRecord]) -> list[Evol
                 risk="Repeated requests may still differ in important context; do not automate away necessary judgment.",
                 test_plan="Add focused tests for any extracted reusable behavior and verify existing task execution remains intact.",
                 initiated_by="agent",
+                evidence_source="experience",
+                signal_actor="system",
+                candidate_actor="agent",
+                parent_candidate_id=latest.candidate_id,
+                source_task_id=latest.task_id,
                 score=18 + min(len(records), 5),
             )
         )
@@ -1170,6 +1251,10 @@ def _cron_candidates(items: Iterable[CronJob]) -> list[EvolveCandidate]:
                 risk="Recurring jobs are user-facing automation; changes should not silently disable or broaden their behavior.",
                 test_plan="Run cron parsing/status tests and verify the scheduled request still renders clearly in Telegram.",
                 initiated_by="agent",
+                evidence_source="experience",
+                signal_actor="system",
+                candidate_actor="agent",
+                source_task_id=item.last_task_id,
                 score=12,
             )
         )
@@ -1194,6 +1279,10 @@ def _learning_candidates(items: Iterable[LearningArtifact]) -> list[EvolveCandid
                 risk="The artifact may be too context-specific to generalize; adapt only reusable pieces.",
                 test_plan="Run skill discovery tests and focused tests for any adapted skill behavior.",
                 initiated_by="agent",
+                evidence_source="experience",
+                signal_actor="agent",
+                candidate_actor="agent",
+                source_task_id=item.task_id,
                 score=20,
             )
         )
@@ -1216,7 +1305,10 @@ def _peer_learning_candidates(items: Iterable[PeerLearningObservation]) -> list[
                 expected_benefit="Allows horizontal capability learning without treating a peer as an ancestor.",
                 risk="The peer skill may be incompatible, stale, or too specific to the source agent.",
                 test_plan="Verify skill discovery and run focused tests for every adapted behavior.",
-                initiated_by="human",
+                initiated_by="agent",
+                evidence_source="learning",
+                signal_actor="human",
+                candidate_actor="agent",
                 score=22,
             )
         )
@@ -1235,6 +1327,9 @@ def _brainstorm_candidates(items: Iterable[BrainstormIdea]) -> list[EvolveCandid
             risk=item.risk,
             test_plan=item.test_plan,
             initiated_by="agent",
+            evidence_source="brainstorming",
+            signal_actor="agent",
+            candidate_actor="agent",
             score=16,
         )
         for item in items
@@ -1366,6 +1461,11 @@ def _int(value: object, *, default: int) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _positive_int(value: object) -> int | None:
+    parsed = _int(value, default=0)
+    return parsed if parsed > 0 else None
 
 
 def _next_scheduled_run(state: EvolveState, current: datetime) -> datetime:

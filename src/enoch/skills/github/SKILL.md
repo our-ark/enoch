@@ -62,5 +62,5 @@ The helper:
 - Refuse to publish from main unless the human explicitly asks for a direct main push.
 - Publish completed, validated work as ready for review by default.
 - Use a draft PR only when work is intentionally incomplete or the human explicitly requests a draft.
-- When an evolve task supplies an `## Evolution provenance` section, include it verbatim in the PR body.
+- When an evolve task supplies an `## Evolution provenance` section, include it verbatim in the PR body. It separates evidence source, signal actor, candidate actor, approval actor, task id, and any available candidate/task causal links.
 - Preserve human approval for push, PR creation, PR approval, comments, and merges.

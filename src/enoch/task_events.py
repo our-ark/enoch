@@ -17,7 +17,7 @@ from enoch.memory.paths import clean_text, now as current_time
 from enoch.paths import enoch_home
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 SUMMARY_LIMIT = 4000
 TASK_SOURCES = {
     "backlog",
@@ -61,6 +61,12 @@ class TaskLike(Protocol):
     trigger: str
     candidate_id: str
     parent_task_id: int | None
+    evidence_source: str
+    signal_actor: str
+    candidate_actor: str
+    approval_actor: str
+    parent_candidate_id: str
+    source_task_id: int | None
 
 
 @dataclass(frozen=True)
@@ -78,6 +84,12 @@ class TaskEvent:
     context_source: str = ""
     candidate_id: str = ""
     parent_task_id: int | None = None
+    evidence_source: str = ""
+    signal_actor: str = ""
+    candidate_actor: str = ""
+    approval_actor: str = ""
+    parent_candidate_id: str = ""
+    source_task_id: int | None = None
     related_task_id: int | None = None
     pr_urls: tuple[str, ...] = ()
     changed_files: tuple[str, ...] = ()
@@ -125,6 +137,12 @@ def record_task_event(
         context_source=clean_text(str(getattr(job, "context_source", "") or "")),
         candidate_id=clean_text(str(getattr(job, "candidate_id", "") or "")),
         parent_task_id=_positive_int(getattr(job, "parent_task_id", None)),
+        evidence_source=clean_text(str(getattr(job, "evidence_source", "") or "")).lower(),
+        signal_actor=_provenance_actor(getattr(job, "signal_actor", "")),
+        candidate_actor=_provenance_actor(getattr(job, "candidate_actor", "")),
+        approval_actor=_provenance_actor(getattr(job, "approval_actor", "")),
+        parent_candidate_id=clean_text(str(getattr(job, "parent_candidate_id", "") or "")),
+        source_task_id=_positive_int(getattr(job, "source_task_id", None)),
         related_task_id=_positive_int(related_task_id),
         pr_urls=_dedupe(tuple(getattr(job, "pr_urls", ()) or ())),
         changed_files=_changed_files(summary),
@@ -199,6 +217,25 @@ def _event_from_line(line: str) -> TaskEvent | None:
         or not request
     ):
         return None
+    trigger = clean_text(str(raw.get("trigger") or ""))
+    context_source = clean_text(str(raw.get("context_source") or ""))
+    candidate_id = clean_text(str(raw.get("candidate_id") or ""))
+    evidence_source = (
+        clean_text(str(raw.get("evidence_source") or source)).lower()
+        if candidate_id
+        else ""
+    )
+    signal_actor = _provenance_actor(raw.get("signal_actor"))
+    candidate_actor = _provenance_actor(raw.get("candidate_actor"))
+    approval_actor = _provenance_actor(raw.get("approval_actor"))
+    if candidate_id:
+        signal_actor = signal_actor or _legacy_signal_actor(evidence_source)
+        candidate_actor = candidate_actor or "agent"
+        approval_actor = approval_actor or _legacy_approval_actor(
+            trigger,
+            context_source,
+            initiated_by,
+        )
     return TaskEvent(
         id=clean_text(str(raw.get("id") or "")) or f"legacy-event-{task_id}-{event}",
         task_id=task_id,
@@ -207,12 +244,18 @@ def _event_from_line(line: str) -> TaskEvent | None:
         source=source,
         initiated_by=initiated_by,
         event_actor=event_actor,
-        trigger=clean_text(str(raw.get("trigger") or "")),
+        trigger=trigger,
         request=request,
         result_summary=str(raw.get("result_summary") or "").strip(),
-        context_source=clean_text(str(raw.get("context_source") or "")),
-        candidate_id=clean_text(str(raw.get("candidate_id") or "")),
+        context_source=context_source,
+        candidate_id=candidate_id,
         parent_task_id=_positive_int(raw.get("parent_task_id")),
+        evidence_source=evidence_source,
+        signal_actor=signal_actor,
+        candidate_actor=candidate_actor,
+        approval_actor=approval_actor,
+        parent_candidate_id=clean_text(str(raw.get("parent_candidate_id") or "")),
+        source_task_id=_positive_int(raw.get("source_task_id")),
         related_task_id=_positive_int(raw.get("related_task_id")),
         pr_urls=_string_tuple(raw.get("pr_urls")),
         changed_files=_string_tuple(raw.get("changed_files")),
@@ -278,6 +321,27 @@ def _positive_int(value: object) -> int | None:
     except (TypeError, ValueError):
         return None
     return parsed if parsed > 0 else None
+
+
+def _provenance_actor(value: object) -> str:
+    actor = clean_text(str(value or "")).lower()
+    return actor if actor in TASK_EVENT_ACTORS else ""
+
+
+def _legacy_signal_actor(source: str) -> str:
+    if source in {"backlog", "feedback", "learning"}:
+        return "human"
+    if source in {"inheritance", "brainstorming"}:
+        return "agent"
+    return "system"
+
+
+def _legacy_approval_actor(trigger: str, context_source: str, initiated_by: str) -> str:
+    if trigger.startswith("/evolve ") or context_source in {"evolve-approve", "evolve-retry"}:
+        return "human"
+    if context_source == "evolve-scheduler":
+        return "agent"
+    return initiated_by
 
 
 @contextmanager

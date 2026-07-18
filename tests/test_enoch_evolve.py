@@ -18,6 +18,7 @@ from enoch.evolve import (
     cancel_evolve_candidate_for_task,
     claim_due_evolve_schedule,
     collect_evolve_candidates,
+    collect_experience_candidates,
     disable_evolve_schedule,
     evolve_report,
     complete_evolve_candidate_for_task,
@@ -169,12 +170,46 @@ class EnochEvolveTests(unittest.TestCase):
             {"backlog", "feedback", "experience", "inheritance", "learning", "brainstorming"},
         )
         initiators = {candidate.source: candidate.initiated_by for candidate in candidates}
-        self.assertEqual(initiators["backlog"], "human")
-        self.assertEqual(initiators["feedback"], "human")
-        self.assertEqual(initiators["learning"], "human")
-        self.assertEqual(initiators["experience"], "agent")
-        self.assertEqual(initiators["inheritance"], "agent")
-        self.assertEqual(initiators["brainstorming"], "agent")
+        self.assertEqual(set(initiators.values()), {"agent"})
+        signals = {candidate.source: candidate.signal_actor for candidate in candidates}
+        self.assertEqual(signals["backlog"], "human")
+        self.assertEqual(signals["feedback"], "human")
+        self.assertEqual(signals["experience"], "system")
+        self.assertEqual(signals["inheritance"], "agent")
+        self.assertEqual(signals["learning"], "human")
+        self.assertEqual(signals["brainstorming"], "agent")
+        self.assertTrue(all(candidate.candidate_actor == "agent" for candidate in candidates))
+        self.assertTrue(all(candidate.evidence_source == candidate.source for candidate in candidates))
+
+    def test_experience_candidate_links_to_failed_evolve_candidate_and_task(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            queued = enqueue_task(
+                42,
+                "apply feedback candidate",
+                root,
+                source="feedback",
+                initiated_by="human",
+                candidate_id="feedback-c3ed71fd1d2d",
+                evidence_source="feedback",
+                signal_actor="human",
+                candidate_actor="agent",
+                approval_actor="human",
+            )
+            begin_next_task(root)
+            fail_task(queued.id, root, result="Worktree branch failed.")
+
+            candidate = next(
+                item
+                for item in collect_experience_candidates(root)
+                if item.id == f"task-{queued.id}"
+            )
+
+        self.assertEqual(candidate.evidence_source, "experience")
+        self.assertEqual(candidate.signal_actor, "system")
+        self.assertEqual(candidate.candidate_actor, "agent")
+        self.assertEqual(candidate.parent_candidate_id, "feedback-c3ed71fd1d2d")
+        self.assertEqual(candidate.source_task_id, queued.id)
 
     def test_brainstorm_candidates_are_scoped_to_current_theme(self) -> None:
         response = json.dumps(
@@ -262,6 +297,35 @@ class EnochEvolveTests(unittest.TestCase):
         statuses = {candidate.id: candidate.status for candidate in candidates}
         self.assertEqual(statuses["legacy-selected"], "candidate")
         self.assertEqual(statuses["legacy-rejected"], "removed")
+
+    def test_legacy_feedback_candidate_infers_split_provenance(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            path = root / ".enoch" / "evolve_candidates.json"
+            path.parent.mkdir(parents=True)
+            path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 3,
+                        "candidates": [
+                            {
+                                "id": "feedback-legacy",
+                                "source": "feedback",
+                                "title": "Legacy feedback",
+                                "initiated_by": "human",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            candidate = load_evolve_candidates(root, include_inactive=True)[0]
+
+        self.assertEqual(candidate.evidence_source, "feedback")
+        self.assertEqual(candidate.signal_actor, "human")
+        self.assertEqual(candidate.candidate_actor, "agent")
+        self.assertEqual(candidate.initiated_by, "agent")
 
     def test_run_candidate_marks_it_running(self) -> None:
         with TemporaryDirectory() as temp:

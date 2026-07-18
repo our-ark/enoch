@@ -1597,6 +1597,8 @@ class EnochTelegramBot:
         proposal: EvolveProposal | None = None,
         candidate: EvolveCandidate | None = None,
         task_id: int | None = None,
+        approval_actor: str = "",
+        retry_of_task_id: int | None = None,
         reason: str = "",
         proposal_id: str = "",
     ) -> EvolveEvent | None:
@@ -1611,6 +1613,8 @@ class EnochTelegramBot:
                 theme=state.theme,
                 candidate=candidate,
                 task_id=task_id,
+                approval_actor=approval_actor,
+                retry_of_task_id=retry_of_task_id,
                 reason=reason,
                 proposal_id=proposal_id or (proposal.proposal_id if proposal is not None else ""),
             )
@@ -1634,6 +1638,7 @@ class EnochTelegramBot:
             event_actor="human",
             trigger="/evolve approve",
             candidate=candidate,
+            approval_actor="human",
             proposal_id=proposal_id,
         )
         try:
@@ -1644,10 +1649,16 @@ class EnochTelegramBot:
                 context=_evolve_task_context(candidate),
                 context_source="evolve-approve",
                 source=candidate.source,
-                initiated_by=candidate.initiated_by,
+                initiated_by="human",
                 event_actor="human",
                 trigger="/evolve approve",
                 candidate_id=candidate.id,
+                evidence_source=candidate.evidence_source or candidate.source,
+                signal_actor=candidate.signal_actor,
+                candidate_actor=candidate.candidate_actor,
+                approval_actor="human",
+                parent_candidate_id=candidate.parent_candidate_id,
+                source_task_id=candidate.source_task_id,
             )
         except (OSError, ValueError):
             self._record_evolve_event(
@@ -1666,6 +1677,7 @@ class EnochTelegramBot:
             trigger="/evolve approve",
             candidate=candidate,
             task_id=job.id,
+            approval_actor="human",
             proposal_id=proposal_id,
         )
         return f"Approved evolve candidate {candidate.id} and queued task #{job.id}.\n\n" + "\n".join(
@@ -1692,6 +1704,7 @@ class EnochTelegramBot:
             event_actor="human",
             trigger="/evolve retry",
             candidate=candidate,
+            approval_actor="human",
             proposal_id=proposal_id,
         )
         try:
@@ -1702,11 +1715,17 @@ class EnochTelegramBot:
                 context=_evolve_task_context(candidate),
                 context_source="evolve-retry",
                 source=candidate.source,
-                initiated_by=candidate.initiated_by,
+                initiated_by="human",
                 event_actor="human",
                 trigger="/evolve retry",
                 candidate_id=candidate.id,
                 parent_task_id=failed_job.id,
+                evidence_source=candidate.evidence_source or candidate.source,
+                signal_actor=candidate.signal_actor,
+                candidate_actor=candidate.candidate_actor,
+                approval_actor="human",
+                parent_candidate_id=candidate.parent_candidate_id,
+                source_task_id=candidate.source_task_id,
             )
         except (OSError, ValueError):
             self._record_evolve_event(
@@ -1725,6 +1744,8 @@ class EnochTelegramBot:
             trigger="/evolve retry",
             candidate=candidate,
             task_id=job.id,
+            approval_actor="human",
+            retry_of_task_id=failed_job.id,
             reason=f"retry-of-task-{failed_job.id}",
             proposal_id=proposal_id,
         )
@@ -2051,6 +2072,7 @@ class EnochTelegramBot:
             trigger="evolve-scheduler",
             proposal=proposal,
             candidate=candidate,
+            approval_actor="agent",
         )
         request = _evolve_task_request(candidate, report.state.theme)
         context = _evolve_task_context(candidate)
@@ -2062,10 +2084,16 @@ class EnochTelegramBot:
                 context=context,
                 context_source="evolve-scheduler",
                 source=candidate.source,
-                initiated_by=candidate.initiated_by,
+                initiated_by="agent",
                 event_actor="system",
                 trigger="evolve-scheduler",
                 candidate_id=candidate.id,
+                evidence_source=candidate.evidence_source or candidate.source,
+                signal_actor=candidate.signal_actor,
+                candidate_actor=candidate.candidate_actor,
+                approval_actor="agent",
+                parent_candidate_id=candidate.parent_candidate_id,
+                source_task_id=candidate.source_task_id,
             )
         except (OSError, ValueError):
             self._record_evolve_event(
@@ -2085,6 +2113,7 @@ class EnochTelegramBot:
             proposal=proposal,
             candidate=candidate,
             task_id=job.id,
+            approval_actor="agent",
         )
         message = _format_work_status_message(
             WorkStatusMessage(
@@ -3072,8 +3101,12 @@ def _format_experience_report(root: Path) -> str:
                 "forward-fixed",
             }
         )
-        origins = Counter({"human": 0, "agent": 0})
-        origins.update(event.candidate_initiated_by for event in queued)
+        signal_actors = Counter({"human": 0, "agent": 0, "system": 0})
+        signal_actors.update(event.signal_actor for event in queued if event.signal_actor)
+        candidate_actors = Counter({"human": 0, "agent": 0, "system": 0})
+        candidate_actors.update(event.candidate_actor for event in queued if event.candidate_actor)
+        approval_actors = Counter({"human": 0, "agent": 0, "system": 0})
+        approval_actors.update(event.approval_actor for event in queued if event.approval_actor)
         autonomous = sum(
             event.event_actor == "system" and event.trigger == "evolve-scheduler"
             for event in queued
@@ -3098,7 +3131,9 @@ def _format_experience_report(root: Path) -> str:
                     f"- Queued: {len(queued)} "
                     f"(autonomous {autonomous}, human-approved {human_approved})"
                 ),
-                f"- Queued candidate origins: {_format_counter(origins)}",
+                f"- Queued signal actors: {_format_counter(signal_actors)}",
+                f"- Queued candidate actors: {_format_counter(candidate_actors)}",
+                f"- Queued approval actors: {_format_counter(approval_actors)}",
                 f"- Outcomes: {_format_counter(outcomes)}",
             ]
         )
@@ -3138,6 +3173,19 @@ def _format_experience_record(record: ExperienceRecord) -> list[str]:
     ]
     if record.context_source:
         details.append(f"context {record.context_source}")
+    if record.candidate_id:
+        details.extend(
+            [
+                f"evidence {record.evidence_source or record.source}",
+                f"signal by {record.signal_actor or 'unknown'}",
+                f"candidate by {record.candidate_actor or 'unknown'}",
+                f"approved by {record.approval_actor or 'unknown'}",
+            ]
+        )
+    if record.parent_candidate_id:
+        details.append(f"parent candidate {record.parent_candidate_id}")
+    if record.source_task_id is not None:
+        details.append(f"source task-{record.source_task_id}")
     if record.changed_files:
         details.append(f"{len(record.changed_files)} changed file(s)")
     if record.pr_urls:
@@ -3163,9 +3211,19 @@ def _format_evolve_event(event: EvolveEvent) -> list[str]:
     if event.proposal_id:
         details.append(f"proposal {_short_proposal_id(event.proposal_id)}")
     if event.source:
-        details.append(f"source {event.source}")
-    if event.candidate_initiated_by:
-        details.append(f"candidate initiated by {event.candidate_initiated_by}")
+        details.append(f"evidence {event.evidence_source or event.source}")
+    if event.signal_actor:
+        details.append(f"signal by {event.signal_actor}")
+    if event.candidate_actor:
+        details.append(f"candidate by {event.candidate_actor}")
+    if event.approval_actor:
+        details.append(f"approved by {event.approval_actor}")
+    if event.parent_candidate_id:
+        details.append(f"parent candidate {event.parent_candidate_id}")
+    if event.source_task_id is not None:
+        details.append(f"source task-{event.source_task_id}")
+    if event.retry_of_task_id is not None:
+        details.append(f"retry of task-{event.retry_of_task_id}")
     if event.mode:
         details.append(f"mode {event.mode}")
     lines.append(f"  {'; '.join(details)}")
@@ -3290,6 +3348,10 @@ def _format_evolve_theme(state: EvolveState) -> str:
 def _format_evolve_candidate(candidate: EvolveCandidate) -> list[str]:
     return [
         f"- {candidate.id} [{candidate.status} {candidate.source}] {_clip_activity_text(candidate.title, limit=100)}",
+        (
+            f"  Provenance: evidence {candidate.evidence_source or candidate.source}; "
+            f"signal by {candidate.signal_actor}; candidate by {candidate.candidate_actor}"
+        ),
         f"  Score: {candidate.score}",
         f"  Rationale: {_clip_activity_text(candidate.rationale, limit=180)}",
         f"  Proposed change: {_clip_activity_text(candidate.proposed_change, limit=180)}",
@@ -3328,7 +3390,9 @@ def _evolve_task_request(candidate: EvolveCandidate, theme: str) -> str:
     lines = [
         f"Evolve candidate {candidate.id}: {candidate.title}",
         "",
-        f"Source: {candidate.source}",
+        f"Evidence source: {candidate.evidence_source or candidate.source}",
+        f"Signal actor: {candidate.signal_actor}",
+        f"Candidate actor: {candidate.candidate_actor}",
         f"Theme: {theme or 'not set'}",
         f"Proposed change: {candidate.proposed_change}",
         f"Expected benefit: {candidate.expected_benefit}",
@@ -3348,7 +3412,11 @@ def _evolve_task_context(candidate: EvolveCandidate) -> str:
         [
             "Evolve candidate context:",
             f"ID: {candidate.id}",
-            f"Source: {candidate.source}",
+            f"Evidence source: {candidate.evidence_source or candidate.source}",
+            f"Signal actor: {candidate.signal_actor}",
+            f"Candidate actor: {candidate.candidate_actor}",
+            f"Parent candidate: {candidate.parent_candidate_id or 'none'}",
+            f"Source task: {f'#{candidate.source_task_id}' if candidate.source_task_id is not None else 'none'}",
             f"Score: {candidate.score}",
             f"Rationale: {candidate.rationale}",
             f"Proposed change: {candidate.proposed_change}",
@@ -3378,10 +3446,31 @@ def _evolution_provenance_for_job(job: TaskJob) -> EvolutionProvenance | None:
         return None
     return EvolutionProvenance(
         candidate_id=job.candidate_id,
-        source=job.source,
+        evidence_source=job.evidence_source or job.source,
+        signal_actor=job.signal_actor or _legacy_candidate_signal_actor(job.source),
+        candidate_actor=job.candidate_actor or "agent",
+        approval_actor=job.approval_actor or _legacy_task_approval_actor(job),
         task_id=job.id,
+        parent_candidate_id=job.parent_candidate_id,
+        source_task_id=job.source_task_id,
         retry_of_task_id=job.parent_task_id,
     )
+
+
+def _legacy_candidate_signal_actor(source: str) -> str:
+    if source in {"backlog", "feedback", "learning"}:
+        return "human"
+    if source in {"inheritance", "brainstorming"}:
+        return "agent"
+    return "system"
+
+
+def _legacy_task_approval_actor(job: TaskJob) -> str:
+    if job.trigger.startswith("/evolve ") or job.context_source in {"evolve-approve", "evolve-retry"}:
+        return "human"
+    if job.context_source == "evolve-scheduler":
+        return "agent"
+    return job.initiated_by
 
 
 def _create_pull_request_for_current_task(root: Path) -> PullRequestResult:

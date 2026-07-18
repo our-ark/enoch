@@ -41,6 +41,8 @@ class EnochEvolveEventTests(unittest.TestCase):
                 theme="reliable evolution",
                 candidate=candidate,
                 task_id=7,
+                approval_actor="agent",
+                retry_of_task_id=3,
             )
 
             events = load_evolve_events(root)
@@ -52,6 +54,11 @@ class EnochEvolveEventTests(unittest.TestCase):
         self.assertEqual(candidate_events[0].candidate_id, candidate.id)
         self.assertEqual(candidate_events[0].source, "brainstorming")
         self.assertEqual(candidate_events[0].candidate_initiated_by, "agent")
+        self.assertEqual(candidate_events[0].evidence_source, "brainstorming")
+        self.assertEqual(candidate_events[0].signal_actor, "agent")
+        self.assertEqual(candidate_events[0].candidate_actor, "agent")
+        self.assertEqual(candidate_events[0].approval_actor, "agent")
+        self.assertEqual(candidate_events[0].retry_of_task_id, 3)
         self.assertEqual(candidate_events[0].event_actor, "system")
         self.assertEqual(candidate_events[0].trigger, "evolve-scheduler")
         self.assertEqual(candidate_events[0].task_id, 7)
@@ -74,6 +81,23 @@ class EnochEvolveEventTests(unittest.TestCase):
 
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0].event, "checked")
+
+    def test_legacy_feedback_event_infers_split_provenance(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            path = evolve_event_path(root)
+            path.parent.mkdir(parents=True)
+            path.write_text(
+                """{"event":"queued","event_actor":"human","trigger":"/evolve approve","candidate_id":"feedback-legacy","task_id":3,"source":"feedback","candidate_initiated_by":"human"}\n""",
+                encoding="utf-8",
+            )
+
+            event = load_evolve_events(root)[0]
+
+        self.assertEqual(event.evidence_source, "feedback")
+        self.assertEqual(event.signal_actor, "human")
+        self.assertEqual(event.candidate_actor, "agent")
+        self.assertEqual(event.approval_actor, "human")
 
     def test_candidate_and_task_requirements_are_validated(self) -> None:
         with TemporaryDirectory() as temp:
@@ -149,6 +173,9 @@ def _candidate() -> EvolveCandidate:
         risk="Adds local state.",
         test_plan="Verify journal lifecycle events.",
         initiated_by="agent",
+        evidence_source="brainstorming",
+        signal_actor="agent",
+        candidate_actor="agent",
         score=42,
     )
 

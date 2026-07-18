@@ -17,7 +17,7 @@ from enoch.paths import enoch_home
 from enoch.task_events import normalize_task_initiator, normalize_task_source, record_task_event
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 PULL_REQUEST_URL_PATTERN = re.compile(r"https://github\.com/[^/\s]+/[^/\s]+/pull/\d+")
 _QUEUE_THREAD_LOCK = threading.RLock()
 
@@ -41,6 +41,12 @@ class TaskJob:
     trigger: str = ""
     candidate_id: str = ""
     parent_task_id: int | None = None
+    evidence_source: str = ""
+    signal_actor: str = ""
+    candidate_actor: str = ""
+    approval_actor: str = ""
+    parent_candidate_id: str = ""
+    source_task_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -70,6 +76,12 @@ def enqueue_task(
     trigger: str = "/task",
     candidate_id: str = "",
     parent_task_id: int | None = None,
+    evidence_source: str = "",
+    signal_actor: str = "",
+    candidate_actor: str = "",
+    approval_actor: str = "",
+    parent_candidate_id: str = "",
+    source_task_id: int | None = None,
 ) -> TaskJob:
     cleaned = " ".join(text.split())
     if not cleaned:
@@ -90,6 +102,12 @@ def enqueue_task(
             trigger=trigger.strip(),
             candidate_id=candidate_id.strip(),
             parent_task_id=_positive_int(parent_task_id),
+            evidence_source=evidence_source.strip().lower(),
+            signal_actor=_normalize_provenance_actor(signal_actor),
+            candidate_actor=_normalize_provenance_actor(candidate_actor),
+            approval_actor=_normalize_provenance_actor(approval_actor),
+            parent_candidate_id=parent_candidate_id.strip(),
+            source_task_id=_positive_int(source_task_id),
         )
         pending = data.setdefault("pending", [])
         pending.append(_job_to_dict(job))
@@ -113,6 +131,12 @@ def enqueue_task_front(
     trigger: str = "/do",
     candidate_id: str = "",
     parent_task_id: int | None = None,
+    evidence_source: str = "",
+    signal_actor: str = "",
+    candidate_actor: str = "",
+    approval_actor: str = "",
+    parent_candidate_id: str = "",
+    source_task_id: int | None = None,
 ) -> TaskJob:
     cleaned = " ".join(text.split())
     if not cleaned:
@@ -133,6 +157,12 @@ def enqueue_task_front(
             trigger=trigger.strip(),
             candidate_id=candidate_id.strip(),
             parent_task_id=_positive_int(parent_task_id),
+            evidence_source=evidence_source.strip().lower(),
+            signal_actor=_normalize_provenance_actor(signal_actor),
+            candidate_actor=_normalize_provenance_actor(candidate_actor),
+            approval_actor=_normalize_provenance_actor(approval_actor),
+            parent_candidate_id=parent_candidate_id.strip(),
+            source_task_id=_positive_int(source_task_id),
         )
         pending = data.setdefault("pending", [])
         pending.insert(0, _job_to_dict(job))
@@ -156,6 +186,12 @@ def begin_direct_task(
     trigger: str = "/do",
     candidate_id: str = "",
     parent_task_id: int | None = None,
+    evidence_source: str = "",
+    signal_actor: str = "",
+    candidate_actor: str = "",
+    approval_actor: str = "",
+    parent_candidate_id: str = "",
+    source_task_id: int | None = None,
 ) -> TaskJob:
     cleaned = " ".join(text.split())
     if not cleaned:
@@ -180,6 +216,12 @@ def begin_direct_task(
             trigger=trigger.strip(),
             candidate_id=candidate_id.strip(),
             parent_task_id=_positive_int(parent_task_id),
+            evidence_source=evidence_source.strip().lower(),
+            signal_actor=_normalize_provenance_actor(signal_actor),
+            candidate_actor=_normalize_provenance_actor(candidate_actor),
+            approval_actor=_normalize_provenance_actor(approval_actor),
+            parent_candidate_id=parent_candidate_id.strip(),
+            source_task_id=_positive_int(source_task_id),
         )
         data["running"] = _job_to_dict(job)
         data["next_id"] = job.id + 1
@@ -243,6 +285,12 @@ def begin_next_task(root: Path | None = None) -> TaskJob | None:
             trigger=job.trigger,
             candidate_id=job.candidate_id,
             parent_task_id=job.parent_task_id,
+            evidence_source=job.evidence_source,
+            signal_actor=job.signal_actor,
+            candidate_actor=job.candidate_actor,
+            approval_actor=job.approval_actor,
+            parent_candidate_id=job.parent_candidate_id,
+            source_task_id=job.source_task_id,
         )
         data["pending"] = [_job_to_dict(item) for item in pending[1:]]
         data["running"] = _job_to_dict(running)
@@ -826,6 +874,17 @@ def _parse_job(raw: object) -> TaskJob | None:
     trigger = str(raw.get("trigger") or "").strip()
     candidate_id = str(raw.get("candidate_id") or "").strip()
     parent_task_id = _positive_int(raw.get("parent_task_id"))
+    evidence_source = str(raw.get("evidence_source") or "").strip().lower()
+    signal_actor = _normalize_provenance_actor(str(raw.get("signal_actor") or ""))
+    candidate_actor = _normalize_provenance_actor(str(raw.get("candidate_actor") or ""))
+    approval_actor = _normalize_provenance_actor(str(raw.get("approval_actor") or ""))
+    parent_candidate_id = str(raw.get("parent_candidate_id") or "").strip()
+    source_task_id = _positive_int(raw.get("source_task_id"))
+    if candidate_id:
+        evidence_source = evidence_source or source
+        signal_actor = signal_actor or _legacy_signal_actor(evidence_source)
+        candidate_actor = candidate_actor or "agent"
+        approval_actor = approval_actor or _legacy_approval_actor(trigger, context_source, initiated_by)
     if task_id <= 0 or not isinstance(chat_id, int) or not text:
         return None
     return TaskJob(
@@ -846,6 +905,12 @@ def _parse_job(raw: object) -> TaskJob | None:
         trigger=trigger,
         candidate_id=candidate_id,
         parent_task_id=parent_task_id,
+        evidence_source=evidence_source,
+        signal_actor=signal_actor,
+        candidate_actor=candidate_actor,
+        approval_actor=approval_actor,
+        parent_candidate_id=parent_candidate_id,
+        source_task_id=source_task_id,
     )
 
 
@@ -870,6 +935,12 @@ def _job_to_dict(job: TaskJob | None) -> dict:
         "trigger": job.trigger,
         "candidate_id": job.candidate_id,
         "parent_task_id": job.parent_task_id,
+        "evidence_source": job.evidence_source,
+        "signal_actor": job.signal_actor,
+        "candidate_actor": job.candidate_actor,
+        "approval_actor": job.approval_actor,
+        "parent_candidate_id": job.parent_candidate_id,
+        "source_task_id": job.source_task_id,
     }
 
 
@@ -892,6 +963,12 @@ def _replace_job(job: TaskJob, **changes: object) -> TaskJob:
         "trigger": job.trigger,
         "candidate_id": job.candidate_id,
         "parent_task_id": job.parent_task_id,
+        "evidence_source": job.evidence_source,
+        "signal_actor": job.signal_actor,
+        "candidate_actor": job.candidate_actor,
+        "approval_actor": job.approval_actor,
+        "parent_candidate_id": job.parent_candidate_id,
+        "source_task_id": job.source_task_id,
     }
     values.update(changes)
     return TaskJob(**values)
@@ -912,6 +989,27 @@ def _int(value: object, *, default: int = 0) -> int:
 def _optional_int(value: object) -> int | None:
     parsed = _int(value)
     return parsed if parsed > 0 else None
+
+
+def _normalize_provenance_actor(value: str) -> str:
+    normalized = " ".join(value.split()).lower()
+    return normalized if normalized in {"human", "agent", "system"} else ""
+
+
+def _legacy_signal_actor(source: str) -> str:
+    if source in {"backlog", "feedback", "learning"}:
+        return "human"
+    if source in {"inheritance", "brainstorming"}:
+        return "agent"
+    return "system"
+
+
+def _legacy_approval_actor(trigger: str, context_source: str, initiated_by: str) -> str:
+    if trigger.startswith("/evolve ") or context_source in {"evolve-approve", "evolve-retry"}:
+        return "human"
+    if context_source == "evolve-scheduler":
+        return "agent"
+    return initiated_by
 
 
 def _positive_int(value: object) -> int | None:

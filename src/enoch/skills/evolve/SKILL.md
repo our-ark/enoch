@@ -37,8 +37,11 @@ Candidates are persisted in `.enoch/evolve_candidates.json` so Enoch can remembe
 
 Evolution decisions are appended to `.enoch/evolve_events.jsonl`. The funnel
 records checks, proposals, selections, queueing, terminal outcomes, skips, and
-removals. `candidate_initiated_by` identifies the idea's origin, while
-`event_actor` and `trigger` identify who caused each decision.
+removals. Candidate provenance separates `evidence_source`, `signal_actor`, and
+`candidate_actor`; execution records `approval_actor`, while `event_actor` and
+`trigger` identify who caused each lifecycle decision. `parent_candidate_id`
+and `source_task_id` preserve causal links for candidates learned from prior
+work, and task `parent_task_id` remains the retry relationship.
 
 ## Scheduler
 
@@ -78,11 +81,17 @@ events so regression counts remain durable. Enoch owns this bookkeeping:
 the agent emits an internal structured signal when evidence identifies the
 original task, and the Telegram wrapper records it after validating task state.
 A human can report a problem naturally and does not maintain lifecycle status
-with `/task` commands. Each event keeps three independent provenance dimensions:
+with `/task` commands. Task events retain the original source and initiator,
+and evolve-linked tasks add explicit provenance:
 
 - `source` is one of `backlog`, `feedback`, `experience`, `inheritance`, `learning`, `brainstorming`, `task`, or `chat-task`;
 - `initiated_by` is `human` or `agent` and remains stable for the task; and
 - `event_actor` is `human`, `agent`, or `system`, identifying who caused that lifecycle transition.
+- `evidence_source`, `signal_actor`, and `candidate_actor` describe why and by
+  whom the candidate was created;
+- `approval_actor` identifies who approved this execution; and
+- `parent_candidate_id`, `source_task_id`, and `parent_task_id` preserve
+  candidate causality, evidence-task causality, and retry causality respectively.
 
 Cron, recovery, backlog promotion, approval, and evolve scheduling are triggers,
 not extra sources. Legacy `.enoch/experience.jsonl` records remain readable.

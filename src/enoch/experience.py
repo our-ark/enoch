@@ -44,6 +44,12 @@ class ExperienceRecord:
     regressed: bool = False
     regression_resolution: str = ""
     regression_related_task_id: int | None = None
+    evidence_source: str = ""
+    signal_actor: str = ""
+    candidate_actor: str = ""
+    approval_actor: str = ""
+    parent_candidate_id: str = ""
+    source_task_id: int | None = None
 
 
 def experience_path(root: Path | None = None) -> Path:
@@ -157,6 +163,12 @@ def _records_from_events(events: tuple[TaskEvent, ...]) -> tuple[ExperienceRecor
                 regressed=regression is not None,
                 regression_resolution=resolution.event if resolution is not None else "",
                 regression_related_task_id=resolution.related_task_id if resolution is not None else None,
+                evidence_source=first.evidence_source,
+                signal_actor=first.signal_actor,
+                candidate_actor=first.candidate_actor,
+                approval_actor=first.approval_actor,
+                parent_candidate_id=first.parent_candidate_id,
+                source_task_id=first.source_task_id,
             )
         )
     return tuple(records)
@@ -214,6 +226,12 @@ def _legacy_record_from_line(line: str) -> ExperienceRecord | None:
         regressed=bool(raw.get("regressed", False)),
         regression_resolution=clean_text(str(raw.get("regression_resolution") or "")).lower(),
         regression_related_task_id=_positive_int(raw.get("regression_related_task_id")),
+        evidence_source="",
+        signal_actor="",
+        candidate_actor="",
+        approval_actor="",
+        parent_candidate_id="",
+        source_task_id=None,
     )
 
 

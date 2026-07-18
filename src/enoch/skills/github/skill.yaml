@@ -1,5 +1,5 @@
 name: github
-version: 0.3.0
+version: 0.4.0
 summary: Coordinate remote collaboration through GitHub, including branches, pull requests, issues, and review workflows.
 owner: Enoch
 status: active

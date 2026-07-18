@@ -45,6 +45,41 @@ class EnochTaskQueueTests(unittest.TestCase):
         self.assertEqual(status.running, running)
         self.assertEqual(status.pending, ())
 
+    def test_legacy_evolve_task_infers_split_provenance(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            path = task_queue.task_queue_path(root)
+            path.parent.mkdir(parents=True)
+            path.write_text(
+                """{
+  "schema_version": 2,
+  "next_id": 2,
+  "pending": [{
+    "id": 1,
+    "chat_id": 42,
+    "text": "apply feedback",
+    "created_at": "2026-07-18T00:00:00Z",
+    "source": "feedback",
+    "initiated_by": "human",
+    "trigger": "/evolve approve",
+    "context_source": "evolve-approve",
+    "candidate_id": "feedback-legacy"
+  }],
+  "paused": [],
+  "running": null,
+  "history": []
+}
+""",
+                encoding="utf-8",
+            )
+
+            job = task_queue_status(root).pending[0]
+
+        self.assertEqual(job.evidence_source, "feedback")
+        self.assertEqual(job.signal_actor, "human")
+        self.assertEqual(job.candidate_actor, "agent")
+        self.assertEqual(job.approval_actor, "human")
+
     def test_begin_direct_task_refuses_existing_running_job(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
@@ -167,6 +202,10 @@ class EnochTaskQueueTests(unittest.TestCase):
                 event_actor="human",
                 trigger="/evolve approve",
                 candidate_id="brainstorm-1",
+                evidence_source="brainstorming",
+                signal_actor="agent",
+                candidate_actor="agent",
+                approval_actor="human",
             )
             running = begin_next_task(root)
 
@@ -178,6 +217,10 @@ class EnochTaskQueueTests(unittest.TestCase):
         self.assertTrue(all(event.source == "brainstorming" for event in events))
         self.assertTrue(all(event.initiated_by == "agent" for event in events))
         self.assertTrue(all(event.candidate_id == "brainstorm-1" for event in events))
+        self.assertTrue(all(event.evidence_source == "brainstorming" for event in events))
+        self.assertTrue(all(event.signal_actor == "agent" for event in events))
+        self.assertTrue(all(event.candidate_actor == "agent" for event in events))
+        self.assertTrue(all(event.approval_actor == "human" for event in events))
 
     def test_queued_task_preserves_context_snapshot_through_history(self) -> None:
         with TemporaryDirectory() as temp:

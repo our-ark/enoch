@@ -67,8 +67,13 @@ class PullRequestResult:
 @dataclass(frozen=True)
 class EvolutionProvenance:
     candidate_id: str
-    source: str
+    evidence_source: str
+    signal_actor: str
+    candidate_actor: str
+    approval_actor: str
     task_id: int
+    parent_candidate_id: str = ""
+    source_task_id: int | None = None
     retry_of_task_id: int | None = None
 
 
@@ -376,9 +381,16 @@ def format_evolution_provenance(provenance: EvolutionProvenance) -> str:
         "## Evolution provenance",
         "",
         f"- Candidate: `{provenance.candidate_id}`",
-        f"- Source: {provenance.source}",
+        f"- Evidence source: {provenance.evidence_source}",
+        f"- Signal actor: {provenance.signal_actor}",
+        f"- Candidate actor: {provenance.candidate_actor}",
+        f"- Approval actor: {provenance.approval_actor}",
         f"- Task: #{provenance.task_id}",
     ]
+    if provenance.parent_candidate_id:
+        lines.append(f"- Parent candidate: `{provenance.parent_candidate_id}`")
+    if provenance.source_task_id is not None:
+        lines.append(f"- Source task: #{provenance.source_task_id}")
     if provenance.retry_of_task_id is not None:
         lines.append(f"- Retry of task: #{provenance.retry_of_task_id}")
     return "\n".join(lines)

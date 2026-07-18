@@ -347,16 +347,26 @@ class EnochGithubWorkflowTests(unittest.TestCase):
             root=ROOT,
             evolution_provenance=EvolutionProvenance(
                 candidate_id="feedback-c3ed71fd1d2d",
-                source="feedback",
+                evidence_source="feedback",
+                signal_actor="human",
+                candidate_actor="agent",
+                approval_actor="human",
                 task_id=3,
+                parent_candidate_id="feedback-parent",
+                source_task_id=1,
                 retry_of_task_id=1,
             ),
         )
 
         self.assertIn("## Evolution provenance", result.body)
         self.assertIn("- Candidate: `feedback-c3ed71fd1d2d`", result.body)
-        self.assertIn("- Source: feedback", result.body)
+        self.assertIn("- Evidence source: feedback", result.body)
+        self.assertIn("- Signal actor: human", result.body)
+        self.assertIn("- Candidate actor: agent", result.body)
+        self.assertIn("- Approval actor: human", result.body)
         self.assertIn("- Task: #3", result.body)
+        self.assertIn("- Parent candidate: `feedback-parent`", result.body)
+        self.assertIn("- Source task: #1", result.body)
         self.assertIn("- Retry of task: #1", result.body)
         args = run.call_args.args[0]
         self.assertEqual(args[args.index("--body") + 1], result.body)

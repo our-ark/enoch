@@ -63,7 +63,7 @@ Enoch writes every tracked task transition to the append-only
 summary, context source, pull requests, and changed files. Legacy
 `.enoch/experience.jsonl` records remain readable.
 
-Task provenance has three independent dimensions:
+Task provenance retains three general lifecycle dimensions:
 
 - `source`: `backlog`, `feedback`, `experience`, `inheritance`, `learning`,
   `brainstorming`, `task`, or `chat-task`;
@@ -73,6 +73,19 @@ Task provenance has three independent dimensions:
 Schedulers, cron, recovery, approvals, and promotions are recorded as triggers,
 not additional sources. The journal keeps successful work visible without turning
 every success into an evolve candidate.
+
+Evolve-linked candidates and tasks add explicit provenance fields:
+
+- `evidence_source`: which of the six evolve sources supplied the evidence;
+- `signal_actor`: who produced the original signal;
+- `candidate_actor`: who turned that signal into a candidate;
+- `approval_actor`: who approved a particular execution;
+- `parent_candidate_id`: the upstream candidate, when one caused another;
+- `source_task_id`: the task whose outcome supplied candidate evidence; and
+- task `parent_task_id`: the prior task retried by this execution.
+
+`initiated_by` remains readable for legacy data and ordinary task-origin
+statistics, but it does not stand in for these distinct evolve actors.
 
 Evolution decisions have a separate append-only journal at
 `.enoch/evolve_events.jsonl`. It records `checked`, `proposed`, `selected`,
@@ -108,7 +121,11 @@ Each candidate should be stored with enough context to explain why it exists and
 ```yaml
 id: evo_001
 source: backlog|feedback|experience|brainstorming|inheritance|learning
-initiated_by: human|agent
+evidence_source: feedback
+signal_actor: human|agent|system
+candidate_actor: human|agent|system
+parent_candidate_id: optional upstream candidate id
+source_task_id: optional evidence task id
 title: Short candidate title
 rationale: Why this candidate matters
 proposed_change: What Enoch would change
