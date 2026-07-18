@@ -6,6 +6,7 @@ package = "enoch"
 # outside the descent boundary.
 body_paths = [
   ".gitignore",
+  "LICENSE",
   "bin",
   "pyproject.toml",
   "src/enoch",

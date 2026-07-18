@@ -3,6 +3,8 @@ name = "enoch"
 version = "0.1.0"
 description = "Enoch is a Genesis-created local agent."
 readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
 dependencies = []
 
@@ -12,7 +14,7 @@ enoch-daemon = "enoch.daemon:main"
 enoch-telegram = "enoch.telegram:main"
 
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]

@@ -87,3 +87,7 @@ only if validation passes without modifying the staged body.
 - ancestor: Seth
 - codebase: body
 - Git history: lineage
+
+## License
+
+Enoch is licensed under the [Apache License 2.0](LICENSE).
