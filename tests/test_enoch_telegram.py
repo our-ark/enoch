@@ -15,6 +15,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from enoch.identity import load_identity
 from enoch import brain
+from enoch.brain import CodexAccessUnavailable
 from enoch.automatic_learning import learning_index_path
 from enoch.backlog import add_backlog_item, backlog_status
 from enoch.config import read_section
@@ -648,6 +649,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertNotIn("/evolve schedule cron '30 9 * * *' - run evolve with a cron-style daily schedule", client.sent[0][1])
         self.assertIn("/update", client.sent[0][1])
         self.assertIn("/config - show or update local system settings", client.sent[0][1])
+        self.assertIn("/resume - continue tasks paused while Codex access was unavailable", client.sent[0][1])
         self.assertIn("/restart - restart Enoch's Telegram daemon from the locked chat", client.sent[0][1])
         self.assertNotIn("/shutdown", client.sent[0][1])
         self.assertIn("say the request naturally", client.sent[0][1])
@@ -667,6 +669,17 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("/config task-timeout <duration>", reply)
         self.assertIn("/config task-timeout default", reply)
         self.assertNotIn("Enoch Telegram commands:", reply)
+
+    def test_help_resume_shows_only_resume_usage(self) -> None:
+        client = FakeTelegramClient(allowed_chat_id=42)
+        bot = EnochTelegramBot(load_identity(), ROOT, client)
+
+        bot.handle_update(_message_update(chat_id=42, text="/help resume"))
+
+        self.assertEqual(
+            client.sent[0][1],
+            "/resume - continue tasks paused while Codex access was unavailable",
+        )
 
     def test_config_shows_sets_and_resets_task_timeout(self) -> None:
         with TemporaryDirectory() as temp:
@@ -747,6 +760,45 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("Reasoning effort: medium", client.sent[4][1])
         self.assertNotIn("model", reset)
         self.assertNotIn("reasoning_effort", reset)
+
+    def test_config_model_lists_installed_models_and_marks_current(self) -> None:
+        options = (
+            brain.CodexModelOption(
+                slug="gpt-5.6-sol",
+                display_name="GPT-5.6-Sol",
+                description="Latest frontier agentic coding model.",
+            ),
+            brain.CodexModelOption(
+                slug="gpt-5.6-terra",
+                display_name="GPT-5.6-Terra",
+                description="Balanced agentic coding model for everyday work.",
+            ),
+            brain.CodexModelOption(
+                slug="gpt-5.5",
+                display_name="GPT-5.5",
+                description="Previous frontier model.",
+            ),
+        )
+        with TemporaryDirectory() as temp, TemporaryDirectory() as codex_home:
+            root = Path(temp)
+            (Path(codex_home) / "config.toml").write_text(
+                'model = "gpt-5.6-terra"\n',
+                encoding="utf-8",
+            )
+            client = FakeTelegramClient(allowed_chat_id=42)
+            bot = EnochTelegramBot(load_identity(), root, client)
+
+            with patch.dict("os.environ", {"CODEX_HOME": codex_home}, clear=True):
+                with patch("enoch.commands.codex_model_options", return_value=options):
+                    bot.handle_update(_message_update(chat_id=42, text="/config model"))
+
+        reply = client.sent[0][1]
+        self.assertIn("Available GPT-5.6 models:", reply)
+        self.assertIn("- gpt-5.6-sol - Latest frontier", reply)
+        self.assertIn("- gpt-5.6-terra [current]", reply)
+        self.assertNotIn("gpt-5.5", reply)
+        self.assertIn("Example: /config model gpt-5.6-sol", reply)
+        self.assertIn("private or future Codex rollouts", reply)
 
     def test_help_inherit_shows_inherit_usage(self) -> None:
         client = FakeTelegramClient(allowed_chat_id=42)
@@ -1264,6 +1316,84 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual(experiences[0].request, "add queued work")
         self.assertEqual(experiences[0].command, "/task")
         log_conversation_turn.assert_called()
+
+    def test_task_worker_pauses_on_codex_access_error_and_resumes_same_task(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            client = FakeTelegramClient(allowed_chat_id=42)
+            bot = EnochTelegramBot(load_identity(), root, client)
+            bot.handle_update(_message_update(chat_id=42, text="/task add queued work"))
+            job = begin_next_task(root)
+            assert job is not None
+
+            with patch.object(
+                bot,
+                "_run_direct_work",
+                side_effect=CodexAccessUnavailable("Codex authentication is unavailable."),
+            ):
+                bot._run_task_job(job)
+            paused_status = task_queue_status(root)
+            paused_events = load_task_events(root, task_id=job.id)
+
+            with patch.object(bot, "_maybe_start_task_worker") as start_worker:
+                bot.handle_update(_message_update(update_id=2, chat_id=42, text="/resume"))
+            resumed_status = task_queue_status(root)
+            resumed_events = load_task_events(root, task_id=job.id)
+
+        self.assertIsNone(paused_status.running)
+        self.assertEqual(paused_status.history, ())
+        self.assertEqual(paused_status.paused[0].id, job.id)
+        self.assertEqual(paused_status.paused[0].status, "paused")
+        self.assertEqual(paused_events[-1].event, "paused")
+        self.assertEqual(paused_events[-1].trigger, "codex-unavailable")
+        self.assertIn("Status: paused", client.edited[-2][2])
+        self.assertIn("use /resume", client.sent[-2][1])
+        self.assertEqual(resumed_status.paused, ())
+        self.assertEqual(resumed_status.pending[0].id, job.id)
+        self.assertEqual(resumed_events[-1].event, "resumed")
+        self.assertEqual(resumed_events[-1].trigger, "/resume")
+        self.assertIn("Resumed 1 task(s): #1.", client.sent[-1][1])
+        self.assertIn("Status: queued", client.edited[-1][2])
+        start_worker.assert_called_once()
+
+    def test_task_worker_stops_queue_after_codex_access_error(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            client = FakeTelegramClient(allowed_chat_id=42)
+            bot = EnochTelegramBot(load_identity(), root, client)
+            enqueue_task(42, "first task", root)
+            second = enqueue_task(42, "second task", root)
+
+            with patch.object(
+                bot,
+                "_run_direct_work",
+                side_effect=CodexAccessUnavailable("Codex usage quota is currently unavailable."),
+            ) as run_direct_work:
+                bot._run_task_worker()
+            status = task_queue_status(root)
+
+        self.assertEqual(run_direct_work.call_count, 1)
+        self.assertEqual(status.paused_count, 1)
+        self.assertEqual(status.pending, (second,))
+        self.assertEqual(status.history, ())
+
+    def test_task_is_saved_as_paused_when_context_snapshot_has_no_codex_access(self) -> None:
+        self.resolve_task_context_snapshot.return_value = TaskContextSnapshot(
+            codex_unavailable_reason="Codex authentication is unavailable."
+        )
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            client = FakeTelegramClient(allowed_chat_id=42)
+            bot = EnochTelegramBot(load_identity(), root, client)
+
+            bot.handle_update(_message_update(chat_id=42, text="/task preserve this work"))
+            status = task_queue_status(root)
+
+        self.assertEqual(status.pending, ())
+        self.assertEqual(status.paused_count, 1)
+        self.assertEqual(status.paused[0].text, "preserve this work")
+        self.assertIn("Status: paused", client.sent[0][1])
+        self.assertIn("Use /resume", client.sent[0][1])
 
     def test_task_worker_records_learning_only_for_skill_changes(self) -> None:
         with TemporaryDirectory() as temp:
@@ -2408,6 +2538,39 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual(events[-1].event_actor, "system")
         self.assertEqual(events[-1].trigger, "task-timeout")
         self.assertIn("configured 10m timeout", events[-1].reason)
+
+    def test_evolve_task_pause_and_resume_keep_candidate_running(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            add_backlog_item(42, "pause evolution safely", root, priority="p1")
+            client = FakeTelegramClient(allowed_chat_id=42)
+            bot = EnochTelegramBot(load_identity(), root, client)
+            bot.handle_update(_message_update(chat_id=42, text="/evolve approve backlog-1"))
+            job = begin_next_task(root)
+            assert job is not None
+
+            with patch.object(
+                bot,
+                "_run_direct_work",
+                side_effect=CodexAccessUnavailable("Codex authentication is unavailable."),
+            ):
+                bot._run_task_job(job)
+            with patch.object(bot, "_maybe_start_task_worker"):
+                bot.handle_update(_message_update(update_id=2, chat_id=42, text="/resume"))
+            events = load_evolve_events(root, task_id=job.id)
+            candidate = next(
+                item
+                for item in load_evolve_candidates(root, include_inactive=True)
+                if item.id == "backlog-1"
+            )
+
+        self.assertEqual(
+            [event.event for event in events],
+            ["queued", "paused", "resumed"],
+        )
+        self.assertEqual(events[-2].event_actor, "system")
+        self.assertEqual(events[-1].event_actor, "human")
+        self.assertEqual(candidate.status, "running")
 
     @patch("enoch.telegram.bot.ensure_long_term_memory")
     @patch("enoch.telegram.bot.log_conversation_turn")

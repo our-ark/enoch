@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 import sys
 import threading
 import unittest
@@ -9,7 +10,14 @@ from unittest.mock import MagicMock, patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from enoch.brain import BrainCancelled, act, act_in_session, model_summary, respond
+from enoch.brain import (
+    BrainCancelled,
+    CodexAccessUnavailable,
+    act,
+    act_in_session,
+    model_summary,
+    respond,
+)
 from enoch import brain
 from enoch.codex_sessions import CodexSessionState, codex_sessions_path, load_codex_session, save_codex_session
 from enoch.identity import load_identity
@@ -94,6 +102,49 @@ class EnochBrainTests(unittest.TestCase):
         self.assertIn("Reasoning effort: high", summary)
         self.assertIn("Reasoning source: Enoch config codex.reasoning_effort", summary)
 
+    @patch("enoch.brain._codex_binary", return_value="/usr/local/bin/codex")
+    @patch("enoch.brain.subprocess.run")
+    def test_codex_model_options_reads_visible_installed_catalog(
+        self,
+        run: MagicMock,
+        _codex_binary: MagicMock,
+    ) -> None:
+        run.return_value.returncode = 0
+        run.return_value.stdout = json.dumps(
+            {
+                "models": [
+                    {
+                        "slug": "gpt-5.6-sol",
+                        "display_name": "GPT-5.6-Sol",
+                        "description": "Latest frontier model.",
+                        "visibility": "list",
+                    },
+                    {
+                        "slug": "hidden-model",
+                        "display_name": "Hidden",
+                        "visibility": "hidden",
+                    },
+                ]
+            }
+        )
+
+        options = brain.codex_model_options()
+
+        self.assertEqual(
+            options,
+            (
+                brain.CodexModelOption(
+                    slug="gpt-5.6-sol",
+                    display_name="GPT-5.6-Sol",
+                    description="Latest frontier model.",
+                ),
+            ),
+        )
+        self.assertEqual(
+            run.call_args.args[0],
+            ["/usr/local/bin/codex", "debug", "models", "--bundled"],
+        )
+
     def test_model_summary_reports_enoch_model_override(self) -> None:
         with TemporaryDirectory() as temp, TemporaryDirectory() as codex_home:
             root = Path(temp)
@@ -139,6 +190,64 @@ class EnochBrainTests(unittest.TestCase):
         self.assertIn("Who are you?", prompt)
         self.assertNotIn("Branch: main", prompt)
         self.assertNotIn("Memory context:", prompt)
+
+    @patch("enoch.brain.shutil.which", return_value="/usr/local/bin/codex")
+    @patch("enoch.brain.subprocess.run")
+    def test_missing_codex_login_raises_recoverable_access_error(
+        self,
+        run: MagicMock,
+        _which: MagicMock,
+    ) -> None:
+        run.return_value.returncode = 1
+        run.return_value.stdout = ""
+        run.return_value.stderr = "Not logged in. Run codex login to continue."
+
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            save_codex_session(
+                CodexSessionState(
+                    key="telegram:42",
+                    session_id="session-123",
+                    turn_count=3,
+                    created_at="2026-06-18T00:00:00+00:00",
+                    updated_at="2026-06-18T00:00:00+00:00",
+                ),
+                root,
+            )
+            with self.assertRaisesRegex(
+                CodexAccessUnavailable,
+                "authentication is unavailable",
+            ):
+                respond(
+                    load_identity(),
+                    "Hello",
+                    cwd=root,
+                    session_key="telegram:42",
+                )
+            state = load_codex_session("telegram:42", root)
+
+        self.assertEqual(run.call_count, 1)
+        self.assertIsNotNone(state)
+        assert state is not None
+        self.assertEqual(state.session_id, "session-123")
+
+    @patch("enoch.brain.shutil.which", return_value="/usr/local/bin/codex")
+    @patch("enoch.brain.subprocess.run")
+    def test_codex_quota_exhaustion_raises_recoverable_access_error(
+        self,
+        run: MagicMock,
+        _which: MagicMock,
+    ) -> None:
+        run.return_value.returncode = 1
+        run.return_value.stdout = '{"error":{"code":"insufficient_quota"}}'
+        run.return_value.stderr = ""
+
+        with TemporaryDirectory() as temp:
+            with self.assertRaisesRegex(
+                CodexAccessUnavailable,
+                "quota is currently unavailable",
+            ):
+                respond(load_identity(), "Hello", cwd=Path(temp))
 
     @patch("enoch.brain.shutil.which", return_value="/usr/local/bin/codex")
     @patch("enoch.brain.subprocess.run")

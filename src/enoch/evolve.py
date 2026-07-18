@@ -617,6 +617,76 @@ def cancel_evolve_candidate_for_task(
     return candidate
 
 
+def pause_evolve_candidate_for_task(
+    job: TaskJob,
+    root: Path | None = None,
+    *,
+    theme: str = "",
+    event_actor: str = "system",
+    trigger: str = "codex-unavailable",
+    reason: str = "",
+) -> EvolveCandidate | None:
+    return _record_evolve_candidate_task_event(
+        job,
+        "paused",
+        root,
+        theme=theme,
+        event_actor=event_actor,
+        trigger=trigger,
+        reason=reason,
+    )
+
+
+def resume_evolve_candidate_for_task(
+    job: TaskJob,
+    root: Path | None = None,
+    *,
+    theme: str = "",
+    event_actor: str = "human",
+    trigger: str = "/resume",
+    reason: str = "",
+) -> EvolveCandidate | None:
+    return _record_evolve_candidate_task_event(
+        job,
+        "resumed",
+        root,
+        theme=theme,
+        event_actor=event_actor,
+        trigger=trigger,
+        reason=reason,
+    )
+
+
+def _record_evolve_candidate_task_event(
+    job: TaskJob,
+    event: str,
+    root: Path | None,
+    *,
+    theme: str,
+    event_actor: str,
+    trigger: str,
+    reason: str,
+) -> EvolveCandidate | None:
+    candidate_id = _evolve_candidate_id_from_task(job)
+    if not candidate_id:
+        return None
+    try:
+        candidate = get_evolve_candidate(candidate_id, root, theme=theme)
+    except ValueError:
+        return None
+    _record_candidate_event_safely(
+        event,
+        candidate,
+        root,
+        event_actor=event_actor,
+        trigger=trigger,
+        theme=theme,
+        task_id=job.id,
+        reason=reason,
+    )
+    return candidate
+
+
 def regress_evolve_candidate_for_task(
     job: TaskJob,
     root: Path | None = None,

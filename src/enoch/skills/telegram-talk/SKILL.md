@@ -61,6 +61,12 @@ Optional:
 - `codex.reasoning_effort`
 - `task.timeout_seconds` (defaults to 600 seconds and can be set with `/config task-timeout <duration>`)
 
+`/config model` reads the visible model catalog bundled with the installed
+Codex CLI, marks the effective model, and shows only current GPT-5.6 model ids.
+It includes a complete setting example such as
+`/config model gpt-5.6-sol`. Catalog-external ids remain valid for private or
+future rollouts.
+
 ## Safety
 
 - Prefer setting `telegram.allowed_chat_id` after the first `/status` message reveals the chat id.
@@ -68,6 +74,8 @@ Optional:
 - Use `telegram.allowed_chat_id` before enabling code-changing natural agency.
 - Keep remote writes behind explicit human approval.
 - Keep a finite task timeout so a stuck agent run cannot consume tokens indefinitely.
+- Pause work and show `/resume` when Codex authentication, quota, or rate limits
+  are unavailable; do not classify that recoverable condition as task failure.
 - Record discovered task regressions and their revert or forward-fix resolution
   through the internal regression signal; never ask the human to maintain those
   statuses with commands.

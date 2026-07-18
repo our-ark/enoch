@@ -23,7 +23,15 @@ from enoch.backlog import (
     reprioritize_backlog_item,
 )
 from enoch.automatic_learning import record_learning_artifact
-from enoch.brain import BrainCancelled, BrainError, act_in_session, model_summary, reset_token_usage, respond
+from enoch.brain import (
+    BrainCancelled,
+    BrainError,
+    CodexAccessUnavailable,
+    act_in_session,
+    model_summary,
+    reset_token_usage,
+    respond,
+)
 from enoch.brainstorming import generate_brainstorm_ideas
 from enoch.config import read_section
 from enoch.cron import (
@@ -54,11 +62,13 @@ from enoch.evolve import (
     get_evolve_candidate,
     load_evolve_candidates,
     load_evolve_state,
+    pause_evolve_candidate_for_task,
     propose_evolve,
     regress_evolve_candidate_for_task,
     remove_evolve_candidate,
     rank_evolve_candidates,
     resolve_evolve_candidate_regression_for_task,
+    resume_evolve_candidate_for_task,
     run_evolve_candidate,
     set_evolve_cron_schedule,
     set_evolve_daily_schedule,
@@ -156,11 +166,13 @@ from enoch.task_queue import (
     enqueue_task,
     enqueue_task_front,
     fail_task,
+    pause_task,
     regress_task,
     recover_interrupted_task,
     record_task_result,
     record_task_status_message,
     resolve_regressed_task,
+    resume_paused_tasks,
     task_result_has_pull_request,
     task_queue_status,
 )
@@ -226,6 +238,7 @@ class TaskContextSnapshot:
     source: str = ""
     clarification: str = ""
     error: str = ""
+    codex_unavailable_reason: str = ""
 
 
 @dataclass
@@ -353,6 +366,8 @@ class EnochTelegramBot:
             reply = _format_tasks_report(self.root)
         elif command == "/stop":
             reply = self._stop_running_job()
+        elif command == "/resume":
+            reply = self._resume_tasks(argument)
         elif command in {"/backlog", "/backlogs"}:
             reply = self._backlog(chat_id, work_text)
         elif command in {"/cron", "/crons"}:
@@ -452,8 +467,19 @@ class EnochTelegramBot:
             return "Use /do <request> to run work now."
         if not self._action_allowed():
             return _action_lock_message()
-        running = task_queue_status(self.root).running
+        queue_status = task_queue_status(self.root)
+        if queue_status.paused_count:
+            return "Enoch has paused tasks. Restore Codex access and use /resume before starting /do."
+        running = queue_status.running
         snapshot = self._resolve_task_context_snapshot(chat_id, argument)
+        if snapshot.codex_unavailable_reason:
+            return self._queue_paused_request(
+                chat_id,
+                argument,
+                source="chat-task",
+                trigger="/do",
+                reason=snapshot.codex_unavailable_reason,
+            )
         if snapshot.error:
             return f"Enoch could not prepare conversation context for that /do request yet: {snapshot.error}"
         if snapshot.clarification:
@@ -481,6 +507,8 @@ class EnochTelegramBot:
                 cwd=self.root,
                 session_key=f"telegram:{chat_id}",
             )
+        except CodexAccessUnavailable as error:
+            return TaskContextSnapshot(codex_unavailable_reason=str(error))
         except BrainError as error:
             return TaskContextSnapshot(error=str(error))
         return _parse_task_context_snapshot(reply)
@@ -543,6 +571,8 @@ class EnochTelegramBot:
         trigger: str,
         session_key: str,
     ) -> str:
+        if task_queue_status(self.root).paused_count:
+            return "Enoch has paused tasks. Restore Codex access and use /resume before starting more work."
         try:
             job = begin_direct_task(
                 chat_id,
@@ -572,6 +602,9 @@ class EnochTelegramBot:
                 completed_status = "failed"
             elif _work_reply_failed(reply):
                 completed_status = "failed"
+        except CodexAccessUnavailable as error:
+            reply = _codex_pause_warning(job.id, str(error))
+            completed_status = "paused"
         except BrainCancelled as error:
             if deadline.expired.is_set():
                 reply = _task_timeout_message(deadline.timeout_seconds)
@@ -603,6 +636,22 @@ class EnochTelegramBot:
                     event_actor="system" if deadline.expired.is_set() else "agent",
                     trigger="task-timeout" if deadline.expired.is_set() else trigger,
                 )
+            elif completed_status == "paused":
+                paused = pause_task(
+                    job.id,
+                    self.root,
+                    result=reply,
+                    event_actor="system",
+                    trigger="codex-unavailable",
+                )
+                if paused is not None:
+                    pause_evolve_candidate_for_task(
+                        paused,
+                        self.root,
+                        event_actor="system",
+                        trigger="codex-unavailable",
+                        reason=reply,
+                    )
             else:
                 complete_task(job.id, self.root, result=reply, event_actor="agent", trigger=trigger)
         self._apply_task_regression_signals(
@@ -610,7 +659,7 @@ class EnochTelegramBot:
             current_task_id=job.id if completed_status == "completed" else None,
             allow_resolution=completed_status == "completed",
         )
-        completed = _history_task(job.id, self.root) or job
+        completed = _task_by_id(job.id, self.root) or job
         if completed_status == "completed":
             self._record_automatic_learning(completed, command=trigger, result=reply)
         return reply
@@ -710,6 +759,8 @@ class EnochTelegramBot:
             action_files = tuple(sorted(_changed_files_or_empty(self.root)))
             after_action = _worktree_snapshot(self.root)
         except BrainCancelled:
+            raise
+        except CodexAccessUnavailable:
             raise
         except (BrainError, GitError, OSError) as error:
             return f"Enoch could not complete the requested work yet: {error}"
@@ -1073,6 +1124,14 @@ class EnochTelegramBot:
                 self._safe_edit_message(cancelled.chat_id, message_id, _format_work_status_message(cancelled_status))
             return f"Cancelled task #{cancelled.id}."
         snapshot = self._resolve_task_context_snapshot(chat_id, argument)
+        if snapshot.codex_unavailable_reason:
+            return self._queue_paused_request(
+                chat_id,
+                argument,
+                source="task",
+                trigger="/task",
+                reason=snapshot.codex_unavailable_reason,
+            )
         if snapshot.error:
             return f"Enoch could not prepare conversation context for that task yet: {snapshot.error}"
         if snapshot.clarification:
@@ -1107,6 +1166,99 @@ class EnochTelegramBot:
             record_task_status_message(job.id, message_id, self.root)
             return ""
         return f"Queued task #{job.id}. Enoch will work on it in the background when idle."
+
+    def _queue_paused_request(
+        self,
+        chat_id: int,
+        request: str,
+        *,
+        source: str,
+        trigger: str,
+        reason: str,
+    ) -> str:
+        try:
+            enqueue = enqueue_task_front if source == "chat-task" else enqueue_task
+            job = enqueue(
+                chat_id,
+                request,
+                self.root,
+                source=source,
+                initiated_by="human",
+                event_actor="human",
+                trigger=trigger,
+            )
+            paused = pause_task(
+                job.id,
+                self.root,
+                result=_codex_pause_warning(job.id, reason),
+                event_actor="system",
+                trigger="codex-unavailable",
+            )
+        except (OSError, ValueError):
+            return "Enoch could not preserve that task while Codex access is unavailable."
+        if paused is None:
+            return "Enoch could not pause that task safely."
+        return self._publish_paused_task(paused, reason)
+
+    def _publish_paused_task(self, job: TaskJob, reason: str) -> str:
+        warning = _codex_pause_warning(job.id, reason)
+        message_id = self._safe_send_message_id(
+            job.chat_id,
+            _format_work_status_message(
+                WorkStatusMessage(
+                    chat_id=job.chat_id,
+                    message_id=0,
+                    request=job.text,
+                    started_at=time.monotonic(),
+                    task_id=job.id,
+                    status="paused",
+                    latest_update=f"{reason} Use /resume when Codex access is available again.",
+                    context=job.context,
+                )
+            ),
+        )
+        if message_id is not None:
+            self._work_status_messages[job.id] = message_id
+            record_task_status_message(job.id, message_id, self.root)
+            return ""
+        return warning
+
+    def _resume_tasks(self, argument: str) -> str:
+        if argument.strip():
+            return "Use /resume to continue tasks paused because Codex access was unavailable."
+        resumed = resume_paused_tasks(self.root)
+        if not resumed:
+            return "No tasks are paused for Codex access."
+        for job in resumed:
+            resume_evolve_candidate_for_task(
+                job,
+                self.root,
+                event_actor="human",
+                trigger="/resume",
+                reason="User resumed after restoring Codex access.",
+            )
+            message_id = self._work_status_messages.get(job.id) or job.status_message_id
+            if message_id is not None:
+                self._work_status_messages[job.id] = message_id
+                self._safe_edit_message(
+                    job.chat_id,
+                    message_id,
+                    _format_work_status_message(
+                        WorkStatusMessage(
+                            chat_id=job.chat_id,
+                            message_id=message_id,
+                            request=job.text,
+                            started_at=time.monotonic(),
+                            task_id=job.id,
+                            status="queued",
+                            latest_update="Resumed after Codex access was restored.",
+                            context=job.context,
+                        )
+                    ),
+                )
+        self._maybe_start_task_worker()
+        task_ids = ", ".join(f"#{job.id}" for job in resumed)
+        return f"Resumed {len(resumed)} task(s): {task_ids}."
 
     def _capture_task_regression_signals(self, reply: str) -> str:
         result = extract_task_regression_signals(reply)
@@ -1617,7 +1769,7 @@ class EnochTelegramBot:
         if self._task_worker is not None and self._task_worker.is_alive():
             return
         status = task_queue_status(self.root)
-        if status.running is not None:
+        if status.running is not None or status.paused_count:
             return
         if status.pending_count == 0 and self._promote_next_backlog_if_idle() is None:
             return
@@ -1638,10 +1790,12 @@ class EnochTelegramBot:
                 if job is None:
                     return
             self._run_task_job(job)
+            if task_queue_status(self.root).paused_count:
+                return
 
     def _promote_next_backlog_if_idle(self) -> TaskJob | None:
         status = task_queue_status(self.root)
-        if status.running is not None or status.pending_count > 0:
+        if status.running is not None or status.pending_count > 0 or status.paused_count > 0:
             return None
         item = next_backlog_item(self.root)
         if item is None:
@@ -1892,6 +2046,9 @@ class EnochTelegramBot:
                 completed_status = "failed"
             elif _work_reply_failed(reply):
                 completed_status = "failed"
+        except CodexAccessUnavailable as error:
+            reply = _codex_pause_warning(job.id, str(error))
+            completed_status = "paused"
         except BrainCancelled as error:
             if deadline.expired.is_set():
                 reply = _task_timeout_message(deadline.timeout_seconds)
@@ -1940,6 +2097,22 @@ class EnochTelegramBot:
                     trigger=failure_trigger,
                     reason=reply,
                 )
+            elif completed_status == "paused":
+                paused = pause_task(
+                    job.id,
+                    self.root,
+                    result=reply,
+                    event_actor="system",
+                    trigger="codex-unavailable",
+                )
+                if paused is not None:
+                    pause_evolve_candidate_for_task(
+                        paused,
+                        self.root,
+                        event_actor="system",
+                        trigger="codex-unavailable",
+                        reason=reply,
+                    )
             else:
                 complete_task(job.id, self.root, result=reply)
                 complete_evolve_candidate_for_task(
@@ -1954,7 +2127,7 @@ class EnochTelegramBot:
             current_task_id=job.id if completed_status == "completed" else None,
             allow_resolution=completed_status == "completed",
         )
-        completed_job = _history_task(job.id, self.root)
+        completed_job = _task_by_id(job.id, self.root)
         summary_job = completed_job or job
         if completed_status == "completed":
             self._record_automatic_learning(summary_job, command=command, result=reply)
@@ -1968,7 +2141,8 @@ class EnochTelegramBot:
                 )
             finally:
                 _CURRENT_WORK_STATUS.reset(final_token)
-            self._work_status_messages.pop(job.id, None)
+            if completed_status != "paused":
+                self._work_status_messages.pop(job.id, None)
         self._safe_send_message(
             job.chat_id,
             _format_task_final_message(summary_job, completed_status, reply),
@@ -2480,6 +2654,7 @@ def _task_status_message(root: Path) -> str:
     else:
         lines.append(f"- running: #{status.running.id} {_clip_activity_text(status.running.text, limit=80)}")
     lines.append(f"- queued: {status.pending_count}")
+    lines.append(f"- paused: {status.paused_count}")
     lines.append(f"- backlog: {backlog.pending_count}")
     lines.append(f"- cron: {cron.active_count}")
     return "\n".join(lines)
@@ -2499,6 +2674,13 @@ def _format_tasks_report(root: Path) -> str:
     lines.append("Queued:")
     if status.pending:
         lines.extend(f"- {_format_task_list_item(job)}" for job in status.pending)
+    else:
+        lines.append("- none")
+
+    lines.append("")
+    lines.append("Paused:")
+    if status.paused:
+        lines.extend(f"- {_format_task_list_item(job)}" for job in status.paused)
     else:
         lines.append("- none")
 
@@ -3040,6 +3222,8 @@ def _task_result_text(job: TaskJob, result: str) -> str:
 
 
 def _final_task_status_update(final_status: str) -> str:
+    if final_status == "paused":
+        return "Paused. Use /resume after Codex access is restored."
     if final_status == "failed":
         return "Failed. Final summary sent below."
     if final_status == "cancelled":
@@ -3048,6 +3232,13 @@ def _final_task_status_update(final_status: str) -> str:
 
 
 def _format_task_final_message(job: TaskJob, final_status: str, result: str) -> str:
+    if final_status == "paused":
+        return "\n".join(
+            [
+                f"Task #{job.id} paused",
+                _clip_activity_block(_task_result_text(job, result), limit=1200),
+            ]
+        )
     prs = job.pr_urls or ("none",)
     return "\n".join(
         [
@@ -3100,10 +3291,20 @@ def _task_cancel_id(argument: str) -> int | None:
 
 def _task_by_id(task_id: int, root: Path) -> TaskJob | None:
     status = task_queue_status(root)
-    jobs = [*status.pending, *status.history]
+    jobs = [*status.pending, *status.paused, *status.history]
     if status.running is not None:
         jobs.append(status.running)
     return next((job for job in jobs if job.id == task_id), None)
+
+
+def _codex_pause_warning(task_id: int, reason: str) -> str:
+    return "\n".join(
+        [
+            f"Task #{task_id} was paused because Codex access is unavailable.",
+            reason.strip() or "Codex access is unavailable.",
+            "When Codex access is available again, use /resume.",
+        ]
+    )
 
 
 def _backlog_usage() -> str:

@@ -67,8 +67,10 @@ rate, source and trigger distribution, and selected proposal outcomes.
 
 Every tracked task writes append-only lifecycle events to `.enoch/task_events.jsonl`.
 Events include `created`, `queued`, `started`, `completed`, `failed`, `cancelled`,
-`regressed`, `reverted`, and `forward-fixed`. A regression is recorded after a
-task was completed; `reverted` and `forward-fixed` are separate resolution
+`paused`, `resumed`, `regressed`, `reverted`, and `forward-fixed`. Codex access
+interruptions are recorded as `paused` and `/resume` transitions without
+closing the task or its linked evolve proposal. A regression is recorded after
+a task was completed; `reverted` and `forward-fixed` are separate resolution
 events so regression counts remain durable. Enoch owns this bookkeeping:
 the agent emits an internal structured signal when evidence identifies the
 original task, and the Telegram wrapper records it after validating task state.

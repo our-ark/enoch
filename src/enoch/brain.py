@@ -30,6 +30,7 @@ from enoch.task_config import task_timeout_seconds
 
 DEFAULT_TIMEOUT_SECONDS = 600
 DEFAULT_PROGRESS_INTERVAL_SECONDS = 60
+MODEL_CATALOG_TIMEOUT_SECONDS = 5
 DEFAULT_CODEX_PATHS = [
     "/Applications/Codex.app/Contents/Resources/codex",
 ]
@@ -55,6 +56,13 @@ class CodexRunResult:
     session_id: str = ""
 
 
+@dataclass(frozen=True)
+class CodexModelOption:
+    slug: str
+    display_name: str
+    description: str = ""
+
+
 _TOKEN_USAGE: ContextVar[TokenUsage] = ContextVar("enoch_token_usage", default=TokenUsage())
 
 
@@ -64,6 +72,10 @@ class BrainError(RuntimeError):
 
 class BrainCancelled(BrainError):
     """Raised when Enoch's human cancels an active Codex run."""
+
+
+class CodexAccessUnavailable(BrainError):
+    """Raised when Codex authentication, quota, or rate limits block a run."""
 
 
 def reset_token_usage() -> None:
@@ -160,6 +172,48 @@ def model_summary(root: Path | None = None) -> str:
     return "\n".join(lines)
 
 
+def codex_model_options() -> tuple[CodexModelOption, ...]:
+    codex = _codex_binary()
+    if codex is None:
+        return ()
+    try:
+        result = subprocess.run(
+            [codex, "debug", "models", "--bundled"],
+            text=True,
+            capture_output=True,
+            timeout=MODEL_CATALOG_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ()
+    if result.returncode != 0:
+        return ()
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return ()
+    models = payload.get("models") if isinstance(payload, dict) else None
+    if not isinstance(models, list):
+        return ()
+    options = []
+    seen = set()
+    for raw in models:
+        if not isinstance(raw, dict) or raw.get("visibility") != "list":
+            continue
+        slug = str(raw.get("slug") or "").strip()
+        if not slug or slug in seen:
+            continue
+        seen.add(slug)
+        options.append(
+            CodexModelOption(
+                slug=slug,
+                display_name=str(raw.get("display_name") or slug).strip() or slug,
+                description=str(raw.get("description") or "").strip(),
+            )
+        )
+    return tuple(options)
+
+
 def _codex_config_path() -> Path:
     codex_home = os.environ.get("CODEX_HOME", "").strip()
     if codex_home:
@@ -241,6 +295,8 @@ def _respond_with_persistent_session(
             persist_session=True,
             session_id=state.session_id if state else "",
         )
+    except CodexAccessUnavailable:
+        raise
     except BrainError:
         if state is None:
             raise
@@ -319,6 +375,8 @@ def _act_with_persistent_session(
             cancellation_event=cancellation_event,
         )
     except BrainCancelled:
+        raise
+    except CodexAccessUnavailable:
         raise
     except BrainError:
         if state is None:
@@ -486,6 +544,9 @@ def _run_codex_result(
 
         if result.returncode != 0:
             stderr = result.stderr.strip() or result.stdout.strip()
+            access_reason = _codex_access_unavailable_reason(stderr)
+            if access_reason:
+                raise CodexAccessUnavailable(access_reason)
             raise BrainError(f"Codex did not answer successfully: {stderr}")
 
         return CodexRunResult(
@@ -539,6 +600,54 @@ def _configured_reasoning_effort(root: Path | None = None) -> str:
     if env_reasoning:
         return env_reasoning
     return _enoch_reasoning_effort(root)
+
+
+def _codex_access_unavailable_reason(details: str) -> str:
+    normalized = " ".join(details.lower().split())
+    authentication_markers = (
+        "not logged in",
+        "codex login",
+        "authentication required",
+        "unauthorized",
+        "401 unauthorized",
+        "invalid_api_key",
+        "incorrect api key",
+        "missing api key",
+        "api key is missing",
+        "access token is missing",
+        "access token has expired",
+        "access token expired",
+        "no access token",
+        "token is missing",
+        "token has expired",
+        "login expired",
+        "authentication failed",
+        "missing bearer or basic authentication",
+        "credentials are missing",
+        "refresh token",
+    )
+    if any(marker in normalized for marker in authentication_markers):
+        return "Codex authentication is unavailable."
+    quota_markers = (
+        "insufficient_quota",
+        "quota exceeded",
+        "usage limit",
+        "billing hard limit",
+        "credit balance",
+        "out of credits",
+        "no credits remaining",
+    )
+    if any(marker in normalized for marker in quota_markers):
+        return "Codex usage quota is currently unavailable."
+    rate_limit_markers = (
+        "rate limit",
+        "rate_limit",
+        "too many requests",
+        "429 too many requests",
+    )
+    if any(marker in normalized for marker in rate_limit_markers):
+        return "Codex is temporarily rate-limited."
+    return ""
 
 
 def _configured_model(root: Path | None = None) -> str:

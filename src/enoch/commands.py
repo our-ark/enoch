@@ -4,7 +4,7 @@ from pathlib import Path
 import re
 from typing import Callable
 
-from enoch.brain import REASONING_EFFORTS, model_summary
+from enoch.brain import REASONING_EFFORTS, codex_model_options, model_summary
 from enoch.command_surface import lineage_usage
 from enoch.config import write_section_value
 from enoch.identity import Identity, identity_file_path, load_identity, update_mission
@@ -217,7 +217,7 @@ def config_command(text: str, root: Path, *, prefix: str = "/") -> str:
         )
     if setting == "model":
         if len(parts) == 2:
-            return config_status(root, prefix=prefix)
+            return model_config_status(root, prefix=prefix)
         if len(parts) != 3:
             return config_usage(prefix=prefix)
         value = parts[2].strip()
@@ -229,7 +229,7 @@ def config_command(text: str, root: Path, *, prefix: str = "/") -> str:
         else:
             write_section_value("codex", "model", value, root)
             message = f"Enoch Codex model set to {value}."
-        return "\n\n".join([message, config_status(root, prefix=prefix)])
+        return "\n\n".join([message, model_config_status(root, prefix=prefix)])
     if setting == "reasoning-effort":
         if len(parts) == 2:
             return config_status(root, prefix=prefix)
@@ -260,7 +260,7 @@ def config_status(root: Path, *, prefix: str = "/") -> str:
             "Codex:",
             model_summary(root),
             "",
-            f"Set the model with {command} model <name> or {command} model default.",
+            f"Use {command} model to see available models or set one with {command} model <name>.",
             (
                 f"Set reasoning with {command} reasoning-effort low|medium|high "
                 f"or {command} reasoning-effort default."
@@ -270,13 +270,49 @@ def config_status(root: Path, *, prefix: str = "/") -> str:
     )
 
 
+def model_config_status(root: Path, *, prefix: str = "/") -> str:
+    command = f"{prefix}config"
+    summary = model_summary(root)
+    current = _model_name_from_summary(summary)
+    lines = ["Codex model:", summary, "", "Available GPT-5.6 models:"]
+    options = tuple(
+        option
+        for option in codex_model_options()
+        if option.slug == "gpt-5.6" or option.slug.startswith("gpt-5.6-")
+    )
+    if options:
+        for option in options:
+            current_label = " [current]" if option.slug == current else ""
+            description = f" - {option.description}" if option.description else ""
+            lines.append(f"- {option.slug}{current_label}{description}")
+    else:
+        lines.append("- unavailable; Enoch could not find GPT-5.6 models in the installed Codex catalog")
+    lines.extend(
+        [
+            "",
+            f"Example: {command} model gpt-5.6-sol",
+            f"Use {command} model default to inherit the Codex default.",
+            "Other valid model ids are accepted for private or future Codex rollouts.",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _model_name_from_summary(summary: str) -> str:
+    prefix = "AI model: "
+    return next(
+        (line[len(prefix) :].strip() for line in summary.splitlines() if line.startswith(prefix)),
+        "",
+    )
+
+
 def config_usage(prefix: str = "/") -> str:
     command = f"{prefix}config"
     return "\n".join(
         [
             "Config commands:",
             f"{command} - show local system settings",
-            f"{command} model - show the effective Codex model",
+            f"{command} model - show the effective and available Codex models",
             f"{command} model <name> - set a local Codex model override",
             f"{command} model default - inherit the Codex model",
             f"{command} reasoning-effort - show the effective reasoning effort",
@@ -404,6 +440,7 @@ def help_message(topic: str = "") -> str:
             "",
             "System:",
             "/config - show or update local system settings",
+            "/resume - continue tasks paused while Codex access was unavailable",
             "/doctor - run local health checks",
             "/update - pull latest main, run doctor, and restart if safe",
             "/restart - restart Enoch's Telegram daemon from the locked chat",
@@ -492,6 +529,7 @@ def _help_topic_message(topic: str) -> str:
         "skills": "/skills [agent-or-path] - show declared skills",
         "learn": "/learn <skill> from <agent> - adapt a published skill from another Our-Ark agent",
         "doctor": "/doctor - run local health checks",
+        "resume": "/resume - continue tasks paused while Codex access was unavailable",
         "update": "/update - pull latest main, run doctor, and restart if safe",
         "restart": "/restart - restart Enoch's Telegram daemon from the locked chat",
         "thinking": thinking_usage("/"),

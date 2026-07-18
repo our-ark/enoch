@@ -38,6 +38,8 @@ TASK_EVENT_TYPES = {
     "completed",
     "failed",
     "cancelled",
+    "paused",
+    "resumed",
     "regressed",
     "reverted",
     "forward-fixed",

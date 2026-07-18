@@ -32,10 +32,15 @@ When work is queued:
 
 1. Preserve the request and any conversation context snapshot.
 2. Keep task execution non-blocking for Telegram conversation.
-3. Update one Telegram status message with queued, running, completed, failed, elapsed time, latest update, and PR URLs.
+3. Update one Telegram status message with queued, running, paused, completed,
+   failed, elapsed time, latest update, and PR URLs.
 4. Run queued work through the same authorized repository workflow as foreground `/do` work.
 5. Promote backlog items only when the task queue is idle.
 6. Claim due cron jobs atomically before enqueueing them, so one due event creates one task.
+7. When Codex authentication, quota, or rate limits are unavailable, move the
+   active task to `paused`, stop the worker before it consumes later tasks, and
+   warn the human. `/resume` moves paused tasks back to the front with the same
+   ids and context after access is available again.
 
 ## Inheritance
 

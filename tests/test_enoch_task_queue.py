@@ -17,11 +17,13 @@ from enoch.task_queue import (
     enqueue_task,
     enqueue_task_front,
     fail_task,
+    pause_task,
     recover_interrupted_task,
     record_task_result,
     record_task_status_message,
     regress_task,
     resolve_regressed_task,
+    resume_paused_tasks,
     revert_task,
     task_result_has_pull_request,
     task_queue_status,
@@ -67,6 +69,53 @@ class EnochTaskQueueTests(unittest.TestCase):
         self.assertEqual(status.history[-1].status, "cancelled")
         self.assertEqual(events[-1].event, "cancelled")
         self.assertEqual(events[-1].event_actor, "human")
+
+    def test_pause_running_task_preserves_it_outside_terminal_history(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            first = enqueue_task(42, "needs Codex", root, context="Keep this context.")
+            second = enqueue_task(42, "wait behind it", root)
+            running = begin_next_task(root)
+
+            paused = pause_task(
+                running.id,
+                root,
+                result="Codex authentication is unavailable.",
+            )
+            status = task_queue_status(root)
+            events = load_task_events(root, task_id=first.id)
+
+        self.assertEqual(paused.id, first.id)
+        self.assertEqual(paused.status, "paused")
+        self.assertEqual(paused.context, "Keep this context.")
+        self.assertIsNone(status.running)
+        self.assertEqual(status.paused, (paused,))
+        self.assertEqual(status.paused_count, 1)
+        self.assertEqual(status.pending, (second,))
+        self.assertEqual(status.history, ())
+        self.assertEqual(events[-1].event, "paused")
+        self.assertEqual(events[-1].event_actor, "system")
+        self.assertEqual(events[-1].trigger, "codex-unavailable")
+
+    def test_resume_moves_paused_tasks_to_front_with_same_ids(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            first = enqueue_task(42, "resume me", root)
+            second = enqueue_task(42, "already queued", root)
+            pause_task(begin_next_task(root).id, root, result="No Codex access.")
+
+            resumed = resume_paused_tasks(root)
+            status = task_queue_status(root)
+            events = load_task_events(root, task_id=first.id)
+
+        self.assertEqual([job.id for job in resumed], [first.id])
+        self.assertEqual([job.id for job in status.pending], [first.id, second.id])
+        self.assertEqual(status.paused, ())
+        self.assertEqual(status.paused_count, 0)
+        self.assertEqual(resumed[0].status, "pending")
+        self.assertEqual([event.event for event in events[-2:]], ["paused", "resumed"])
+        self.assertEqual(events[-1].event_actor, "human")
+        self.assertEqual(events[-1].trigger, "/resume")
 
     def test_enqueue_task_front_runs_before_existing_pending_tasks(self) -> None:
         with TemporaryDirectory() as temp:
