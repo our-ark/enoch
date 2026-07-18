@@ -7,6 +7,7 @@ from typing import Callable
 from enoch.brain import REASONING_EFFORTS, codex_model_options, model_summary
 from enoch.command_surface import lineage_usage
 from enoch.config import write_section_value
+from enoch.github.workflow import PullRequestMergeResult, PublishError, merge_pull_request
 from enoch.identity import Identity, identity_file_path, load_identity, update_mission
 from enoch.identity_context import display_ancestor
 from enoch.immune import ImmuneResult, run_immune_system
@@ -42,6 +43,7 @@ DoctorFn = Callable[[Path], ImmuneResult]
 ResolveLineageFn = Callable[[Path], LineageResolution]
 RefreshLineageFn = Callable[..., LineageInboxReport]
 FormatDoctorFn = Callable[[ImmuneResult], str]
+MergePullRequestFn = Callable[[str, Path], PullRequestMergeResult]
 
 
 def status_message(
@@ -399,6 +401,44 @@ def doctor_command(
     return format_doctor(run_doctor(root))
 
 
+def pr_command(
+    text: str,
+    root: Path,
+    *,
+    allowed_chat_id: int | None,
+    chat_id: int,
+    merge_pull_request_fn: MergePullRequestFn | None = None,
+) -> str:
+    parts = text.split()
+    if len(parts) != 3 or parts[1].lower() != "merge":
+        return pr_usage()
+    if allowed_chat_id is None or chat_id != allowed_chat_id:
+        return "Enoch only merges pull requests from her locked Telegram chat."
+    try:
+        result = (merge_pull_request_fn or merge_pull_request)(parts[2], root)
+    except PublishError as error:
+        return f"Enoch could not merge the pull request: {error}"
+    lines = [
+        f"Pull request #{result.number} merged.",
+        f"PR: {result.url}",
+        f"Merge method: {result.method}",
+    ]
+    if result.merge_commit:
+        lines.append(f"Merge commit: {result.merge_commit}")
+    lines.append(f"GitHub result: {result.message}")
+    return "\n".join(lines)
+
+
+def pr_usage() -> str:
+    return "\n".join(
+        [
+            "Pull request commands:",
+            "/pr merge <PR number or GitHub PR URL> - inspect and merge exactly one PR",
+            "A PR target is required; Enoch will not infer one from the current branch.",
+        ]
+    )
+
+
 def help_message(topic: str = "") -> str:
     normalized_topic = _normalize_help_topic(topic)
     if normalized_topic:
@@ -442,6 +482,7 @@ def help_message(topic: str = "") -> str:
             "/config - show or update local system settings",
             "/resume - continue tasks paused while Codex access was unavailable",
             "/doctor - run local health checks",
+            "/pr merge <number-or-URL> - inspect and merge exactly one pull request",
             "/update - pull latest main, run doctor, and restart if safe",
             "/restart - restart Enoch's Telegram daemon from the locked chat",
             "",
@@ -510,6 +551,8 @@ def _help_topic_message(topic: str) -> str:
         )
     if topic == "config":
         return config_usage("/")
+    if topic == "pr":
+        return pr_usage()
     topics = {
         "start": "/start - start Enoch and point to /help",
         "self": "/self - show Enoch's identity, role, ancestor, and mission",

@@ -204,6 +204,7 @@ from enoch.commands import (
     inherit_command,
     lineage_command,
     mission_command,
+    pr_command,
     skills_command,
     status_message,
 )
@@ -426,6 +427,13 @@ class EnochTelegramBot:
             reply = self._status(chat_id)
         elif command == "/doctor":
             reply = self._doctor()
+        elif command == "/pr":
+            reply = pr_command(
+                text,
+                self.root,
+                allowed_chat_id=self.client.config.allowed_chat_id,
+                chat_id=chat_id,
+            )
         elif command == "/update":
             reply = self._update()
             self._queue_session_sync(

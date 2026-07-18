@@ -35,6 +35,7 @@ from enoch.evolve_events import load_evolve_events
 from enoch.git_tools import GitError
 from enoch.github.workflow import (
     LocalPublishResult,
+    PullRequestMergeResult,
     PullRequestCloseResult,
     PullRequestResult,
     RemotePublishResult,
@@ -686,6 +687,75 @@ class EnochTelegramTests(unittest.TestCase):
             client.sent[0][1],
             "/resume - continue tasks paused while Codex access was unavailable",
         )
+
+    def test_help_lists_and_explains_pr_merge_command(self) -> None:
+        client = FakeTelegramClient(allowed_chat_id=42)
+        bot = EnochTelegramBot(load_identity(), ROOT, client)
+
+        bot.handle_update(_message_update(chat_id=42, text="/help"))
+        bot.handle_update(_message_update(update_id=2, chat_id=42, text="/help pr"))
+
+        self.assertIn(
+            "/pr merge <number-or-URL> - inspect and merge exactly one pull request",
+            client.sent[0][1],
+        )
+        self.assertIn("/pr merge <PR number or GitHub PR URL>", client.sent[1][1])
+        self.assertIn("will not infer one", client.sent[1][1])
+
+    @patch("enoch.commands.merge_pull_request")
+    def test_pr_merge_requires_explicit_target(self, merge_pull_request: MagicMock) -> None:
+        client = FakeTelegramClient(allowed_chat_id=42)
+        bot = EnochTelegramBot(load_identity(), ROOT, client)
+
+        bot.handle_update(_message_update(chat_id=42, text="/pr merge"))
+
+        merge_pull_request.assert_not_called()
+        self.assertIn("/pr merge <PR number or GitHub PR URL>", client.sent[0][1])
+        self.assertIn("will not infer one", client.sent[0][1])
+
+    @patch("enoch.commands.merge_pull_request")
+    def test_pr_merge_requires_locked_chat(self, merge_pull_request: MagicMock) -> None:
+        client = FakeTelegramClient(allowed_chat_id=None)
+        bot = EnochTelegramBot(load_identity(), ROOT, client)
+
+        bot.handle_update(_message_update(chat_id=7, text="/pr merge 12"))
+
+        merge_pull_request.assert_not_called()
+        self.assertEqual(
+            client.sent[0][1],
+            "Enoch only merges pull requests from her locked Telegram chat.",
+        )
+
+    @patch("enoch.telegram.bot.pr_command")
+    def test_pr_merge_ignores_unauthorized_chat(self, pr_command: MagicMock) -> None:
+        client = FakeTelegramClient(allowed_chat_id=42)
+        bot = EnochTelegramBot(load_identity(), ROOT, client)
+
+        bot.handle_update(_message_update(chat_id=7, text="/pr merge 12"))
+
+        pr_command.assert_not_called()
+        self.assertEqual(client.sent, [])
+
+    @patch("enoch.commands.merge_pull_request")
+    def test_pr_merge_reports_success(self, merge_pull_request: MagicMock) -> None:
+        merge_pull_request.return_value = PullRequestMergeResult(
+            number=12,
+            url="https://github.com/our-ark/enoch/pull/12",
+            method="squash",
+            merge_commit="abc123merge",
+            message="Pull Request successfully merged",
+        )
+        client = FakeTelegramClient(allowed_chat_id=42)
+        bot = EnochTelegramBot(load_identity(), ROOT, client)
+
+        bot.handle_update(_message_update(chat_id=42, text="/pr merge 12"))
+
+        merge_pull_request.assert_called_once_with("12", ROOT)
+        reply = client.sent[0][1]
+        self.assertIn("Pull request #12 merged.", reply)
+        self.assertIn("https://github.com/our-ark/enoch/pull/12", reply)
+        self.assertIn("Merge method: squash", reply)
+        self.assertIn("Merge commit: abc123merge", reply)
 
     def test_config_shows_sets_and_resets_task_timeout(self) -> None:
         with TemporaryDirectory() as temp:
