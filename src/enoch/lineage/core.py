@@ -38,6 +38,7 @@ class ParentLink:
     name: str
     repo: str
     branch: str = DEFAULT_BRANCH
+    commit_at_birth: str = ""
 
 
 @dataclass(frozen=True)
@@ -47,6 +48,7 @@ class AncestorLink:
     branch: str
     depth: int
     skills: tuple[str, ...] = ()
+    commit_at_birth: str = ""
 
 
 @dataclass(frozen=True)
@@ -196,6 +198,14 @@ def load_parent(root: Path | None = None) -> ParentLink | None:
         return None
 
 
+def load_birth_commit(root: Path | None = None) -> str:
+    path = lineage_file(root)
+    try:
+        return parse_lineage_birth_commit(path.read_text(encoding="utf-8"))
+    except OSError:
+        return ""
+
+
 def load_current_agent_profile(root: Path | None = None) -> CurrentAgentProfile | None:
     path = Path(root or Path.cwd()) / CURRENT_IDENTITY_PATH
     try:
@@ -207,25 +217,7 @@ def load_current_agent_profile(root: Path | None = None) -> CurrentAgentProfile 
 
 
 def parse_lineage_parent(text: str) -> ParentLink | None:
-    parent: dict[str, str] = {}
-    in_parent = False
-    for raw_line in text.splitlines():
-        line = raw_line.split("#", 1)[0].rstrip()
-        if not line.strip():
-            continue
-        stripped = line.strip()
-        if stripped in {"parent: null", "parent: none", "parent:"}:
-            in_parent = stripped == "parent:"
-            if stripped != "parent:":
-                return None
-            continue
-        if not line.startswith((" ", "\t")):
-            in_parent = stripped == "parent:"
-            continue
-        if not in_parent or ":" not in line:
-            continue
-        key, _separator, value = line.partition(":")
-        parent[key.strip()] = _clean_yaml_value(value)
+    parent = _parse_lineage_section(text, "parent")
     name = parent.get("name", "").strip()
     repo = parent.get("repo", "").strip()
     if not name or not repo:
@@ -234,7 +226,42 @@ def parse_lineage_parent(text: str) -> ParentLink | None:
         name=name,
         repo=_normalize_repo(repo),
         branch=parent.get("branch", DEFAULT_BRANCH).strip() or DEFAULT_BRANCH,
+        commit_at_birth=_commit_identifier(parent.get("commit_at_birth", "")),
     )
+
+
+def parse_lineage_birth_commit(text: str) -> str:
+    descendant = _parse_lineage_section(text, "descendant")
+    return _commit_identifier(descendant.get("birth_commit", ""))
+
+
+def _parse_lineage_section(text: str, section: str) -> dict[str, str]:
+    values: dict[str, str] = {}
+    in_section = False
+    for raw_line in text.splitlines():
+        line = raw_line.split("#", 1)[0].rstrip()
+        if not line.strip():
+            continue
+        stripped = line.strip()
+        if not line.startswith((" ", "\t")):
+            if stripped in {f"{section}: null", f"{section}: none"}:
+                return {}
+            in_section = stripped == f"{section}:"
+            continue
+        if not in_section or ":" not in line:
+            continue
+        key, _separator, value = line.partition(":")
+        values[key.strip()] = _clean_yaml_value(value)
+    return values
+
+
+def _commit_identifier(value: str) -> str:
+    candidate = value.strip().lower()
+    if len(candidate) not in {40, 64}:
+        return ""
+    if any(character not in "0123456789abcdef" for character in candidate):
+        return ""
+    return candidate
 
 
 def resolve_lineage(
@@ -260,13 +287,23 @@ def resolve_lineage(
             skills = github.declared_skills(current.repo, branch)
         except LineageError:
             skills = ()
-        chain.append(AncestorLink(current.name, current.repo, branch, depth, skills))
+        chain.append(
+            AncestorLink(
+                name=current.name,
+                repo=current.repo,
+                branch=branch,
+                depth=depth,
+                skills=skills,
+                commit_at_birth=current.commit_at_birth,
+            )
+        )
         if _is_root_ancestor(current):
             break
+        lineage_ref = current.commit_at_birth or current.branch or DEFAULT_BRANCH
         try:
-            current = github.remote_parent(current.repo, current.branch or DEFAULT_BRANCH)
+            current = github.remote_parent(current.repo, lineage_ref)
         except LineageError as error:
-            warnings.append(f"Could not read parent lineage from {current.repo}@{current.branch}: {error}")
+            warnings.append(f"Could not read parent lineage from {current.repo}@{lineage_ref}: {error}")
             current = None
         depth += 1
     return LineageResolution(ancestors=tuple(chain), warnings=tuple(warnings))
@@ -516,6 +553,12 @@ def format_lineage(
                 f"{index}. {ancestor.name}",
                 f"   Relation: {relation}",
                 f"   Repo: {ancestor.repo}@{ancestor.branch}",
+            ]
+        )
+        if ancestor.commit_at_birth:
+            lines.append(f"   Parent at birth: {ancestor.commit_at_birth[:12]}")
+        lines.extend(
+            [
                 f"   New skills: {skill_label}",
                 f"   Pending: {change_label}",
             ]

@@ -20,12 +20,14 @@ from enoch.lineage.core import (
     format_refresh_report,
     lineage_adopt_prompt,
     lineage_inbox_file,
+    load_birth_commit,
     load_current_agent_profile,
     load_inbox_candidates,
     load_parent,
     mark_inbox_candidate,
     parse_declared_skills,
     parse_identity_name,
+    parse_lineage_birth_commit,
     parse_lineage_parent,
     refresh_lineage_inbox,
     resolve_lineage,
@@ -66,6 +68,33 @@ class EnochLineageTests(unittest.TestCase):
 
         self.assertEqual(parent, ParentLink(name="Lucy", repo="our-ark/lucy", branch="main"))
 
+    def test_parse_lineage_birth_provenance(self) -> None:
+        parent_commit = "a" * 40
+        birth_commit = "b" * 40
+        text = "\n".join(
+            [
+                "schema_version: 1",
+                "parent:",
+                "  name: Seth",
+                "  repo: https://github.com/our-ark/seth",
+                "  branch: main",
+                f"  commit_at_birth: {parent_commit}",
+                "descendant:",
+                f"  birth_commit: {birth_commit}",
+            ]
+        )
+
+        self.assertEqual(
+            parse_lineage_parent(text),
+            ParentLink(
+                name="Seth",
+                repo="our-ark/seth",
+                branch="main",
+                commit_at_birth=parent_commit,
+            ),
+        )
+        self.assertEqual(parse_lineage_birth_commit(text), birth_commit)
+
     def test_load_parent_from_agent_lineage_file(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
@@ -79,6 +108,29 @@ class EnochLineageTests(unittest.TestCase):
             parent = load_parent(root)
 
         self.assertEqual(parent, ParentLink(name="Enoch", repo="our-ark/enoch", branch="main"))
+
+    def test_load_birth_commit_from_agent_lineage_file(self) -> None:
+        birth_commit = "b" * 40
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            path = root / ".agent" / "lineage.yaml"
+            path.parent.mkdir()
+            path.write_text(
+                "\n".join(
+                    [
+                        "parent:",
+                        "  name: Seth",
+                        "  repo: our-ark/seth",
+                        "descendant:",
+                        f"  birth_commit: {birth_commit}",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            loaded = load_birth_commit(root)
+
+        self.assertEqual(loaded, birth_commit)
 
     def test_resolves_ancestor_chain_recursively(self) -> None:
         with TemporaryDirectory() as temp:
@@ -100,6 +152,19 @@ class EnochLineageTests(unittest.TestCase):
         self.assertEqual([item.name for item in resolution.ancestors], ["Enoch", "Lucy"])
         self.assertEqual(client.remote_parent_calls, [("our-ark/enoch", "main")])
         self.assertEqual(resolution.warnings, ())
+
+    def test_resolve_lineage_reads_parent_metadata_at_immutable_birth_commit(self) -> None:
+        parent_commit = "a" * 40
+        client = RecordingLineageClient()
+        with TemporaryDirectory() as temp:
+            root = _root_with_parent(Path(temp), commit_at_birth=parent_commit)
+
+            resolution = resolve_lineage(root, client=client)
+            formatted = format_lineage(resolution.ancestors)
+
+        self.assertEqual(client.remote_parent_calls, [("our-ark/enoch", parent_commit)])
+        self.assertEqual(resolution.ancestors[0].commit_at_birth, parent_commit)
+        self.assertIn(f"Parent at birth: {parent_commit[:12]}", formatted)
 
     def test_format_lineage_includes_pending_change_counts(self) -> None:
         with TemporaryDirectory() as temp:
@@ -455,11 +520,14 @@ class BlockedLineageClient(FakeLineageClient):
         raise LineageError("private repo or missing permissions")
 
 
-def _root_with_parent(root: Path) -> Path:
+def _root_with_parent(root: Path, *, commit_at_birth: str = "") -> Path:
     path = root / ".agent" / "lineage.yaml"
     path.parent.mkdir()
+    lines = ["parent:", "  name: Enoch", "  repo: our-ark/enoch"]
+    if commit_at_birth:
+        lines.append(f"  commit_at_birth: {commit_at_birth}")
     path.write_text(
-        "\n".join(["parent:", "  name: Enoch", "  repo: our-ark/enoch"]),
+        "\n".join(lines),
         encoding="utf-8",
     )
     return root
