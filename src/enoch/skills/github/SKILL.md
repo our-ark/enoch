@@ -27,7 +27,7 @@ Use this skill when Enoch needs to coordinate work with GitHub: branches, pull r
 6. Create or update the PR with a clear summary and validation notes.
 7. Approve a PR only when the human explicitly asks for approval.
 8. Treat the PR as the human review boundary.
-9. Never merge without explicit human approval.
+9. Merge only when the human sends `/pr merge <PR number or GitHub PR URL>` from the locked Telegram chat.
 
 ## Natural Workflow
 
@@ -62,5 +62,7 @@ The helper:
 - Refuse to publish from main unless the human explicitly asks for a direct main push.
 - Publish completed, validated work as ready for review by default.
 - Use a draft PR only when work is intentionally incomplete or the human explicitly requests a draft.
+- Treat `/pr merge <target>` as approval for exactly that inspected PR. Never infer a missing target or merge a different PR.
+- Refuse drafts, closed or already-merged PRs, conflicts, and other unmergeable states. Do not approve, mark ready, enable auto-merge, alter PR content, delete branches, or update local branches as part of the merge.
 - When an evolve task supplies an `## Evolution provenance` section, include it verbatim in the PR body. It separates evidence source, signal actor, candidate actor, approval actor, task id, and any available candidate/task causal links.
 - Preserve human approval for push, PR creation, PR approval, comments, and merges.

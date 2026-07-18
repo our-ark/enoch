@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 import os
 from pathlib import Path
 import shutil
@@ -83,6 +84,195 @@ class PullRequestCloseResult:
     closed: bool
     url: str
     note: str | None = None
+
+
+@dataclass(frozen=True)
+class PullRequestTarget:
+    value: str
+    number: int
+    repository: str | None = None
+
+
+@dataclass(frozen=True)
+class PullRequestMergeResult:
+    number: int
+    url: str
+    merged: bool
+    merge_method: str
+    commit_sha: str | None = None
+    message: str = ""
+
+
+def parse_pull_request_target(value: str) -> PullRequestTarget:
+    target = value.strip()
+    if target.isdecimal():
+        number = int(target)
+        if number > 0:
+            return PullRequestTarget(value=str(number), number=number)
+        raise PublishError("Pull request number must be positive.")
+
+    parsed = urlparse(target)
+    if (
+        parsed.scheme.lower() != "https"
+        or parsed.netloc.lower() != "github.com"
+        or parsed.params
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise PublishError("Use a positive pull request number or a full https://github.com/.../pull/... URL.")
+    parts = parsed.path.strip("/").split("/")
+    if len(parts) != 4 or parts[2].lower() != "pull" or not parts[3].isdecimal():
+        raise PublishError("Use a positive pull request number or a full https://github.com/.../pull/... URL.")
+    owner, repository, _pull, number_text = parts
+    number = int(number_text)
+    if not owner or not repository or number <= 0:
+        raise PublishError("Use a positive pull request number or a full https://github.com/.../pull/... URL.")
+    canonical_url = f"https://github.com/{owner}/{repository}/pull/{number}"
+    return PullRequestTarget(
+        value=canonical_url,
+        number=number,
+        repository=f"{owner}/{repository}",
+    )
+
+
+def merge_pull_request(
+    target_value: str,
+    root: Path | None = None,
+) -> PullRequestMergeResult:
+    target = parse_pull_request_target(target_value)
+    gh = shutil.which("gh")
+    if gh is None:
+        raise PublishError("GitHub CLI is not available.")
+
+    inspection = _run_gh_json(
+        [
+            gh,
+            "pr",
+            "view",
+            target.value,
+            "--json",
+            "number,url,state,isDraft,mergedAt,mergeable,mergeStateStatus,headRefOid",
+        ],
+        root,
+        f"Could not inspect pull request {target.value}.",
+    )
+    number = inspection.get("number")
+    url = str(inspection.get("url") or "")
+    if not isinstance(number, int) or not url:
+        raise PublishError(f"GitHub returned incomplete details for pull request {target.value}.")
+    inspected_target = parse_pull_request_target(url)
+    if target.repository is not None and (
+        inspected_target.repository.lower() != target.repository.lower() or number != target.number
+    ):
+        raise PublishError(f"GitHub resolved {target.value} to a different pull request; refusing to merge it.")
+    if number != inspected_target.number:
+        raise PublishError(f"GitHub returned inconsistent details for pull request {target.value}.")
+
+    merged_at = inspection.get("mergedAt")
+    state = str(inspection.get("state") or "").upper()
+    if merged_at or state == "MERGED":
+        raise PublishError(f"Pull request #{number} is already merged: {url}")
+    if state != "OPEN":
+        description = state.lower() or "not open"
+        raise PublishError(f"Pull request #{number} is {description}: {url}")
+    if inspection.get("isDraft") is True:
+        raise PublishError(f"Pull request #{number} is a draft and cannot be merged: {url}")
+
+    mergeable = str(inspection.get("mergeable") or "UNKNOWN").upper()
+    merge_state = str(inspection.get("mergeStateStatus") or "UNKNOWN").upper()
+    if mergeable == "CONFLICTING" or merge_state == "DIRTY":
+        raise PublishError(f"Pull request #{number} has merge conflicts: {url}")
+    if mergeable != "MERGEABLE" or merge_state != "CLEAN":
+        state_description = merge_state.lower().replace("_", " ")
+        raise PublishError(
+            f"Pull request #{number} is not currently mergeable "
+            f"(merge state: {state_description}): {url}"
+        )
+
+    head_sha = str(inspection.get("headRefOid") or "").strip()
+    if not head_sha:
+        raise PublishError(f"GitHub did not return the head commit for pull request #{number}.")
+    repository = inspected_target.repository
+    if repository is None:
+        raise PublishError(f"Could not identify the repository for pull request #{number}.")
+    merge_method = _repository_merge_method(gh, repository, root)
+    merge_response = _run_gh_json(
+        [
+            gh,
+            "api",
+            "--method",
+            "PUT",
+            f"repos/{repository}/pulls/{number}/merge",
+            "-f",
+            f"sha={head_sha}",
+            "-f",
+            f"merge_method={merge_method}",
+        ],
+        root,
+        f"GitHub could not merge pull request #{number}.",
+    )
+    merged = merge_response.get("merged") is True
+    message = str(merge_response.get("message") or "").strip()
+    if not merged:
+        detail = message or "GitHub declined the merge."
+        raise PublishError(f"Pull request #{number} was not merged: {detail}")
+    commit_sha = str(merge_response.get("sha") or "").strip() or None
+    return PullRequestMergeResult(
+        number=number,
+        url=url,
+        merged=True,
+        merge_method=merge_method,
+        commit_sha=commit_sha,
+        message=message or "Pull request successfully merged.",
+    )
+
+
+def _repository_merge_method(gh: str, repository: str, root: Path | None) -> str:
+    settings = _run_gh_json(
+        [
+            gh,
+            "repo",
+            "view",
+            repository,
+            "--json",
+            "mergeCommitAllowed,squashMergeAllowed,rebaseMergeAllowed",
+        ],
+        root,
+        f"Could not inspect merge methods for {repository}.",
+    )
+    supported = (
+        ("merge", settings.get("mergeCommitAllowed")),
+        ("squash", settings.get("squashMergeAllowed")),
+        ("rebase", settings.get("rebaseMergeAllowed")),
+    )
+    for method, allowed in supported:
+        if allowed is True:
+            return method
+    raise PublishError(f"Repository {repository} does not allow a supported pull request merge method.")
+
+
+def _run_gh_json(
+    command: list[str],
+    root: Path | None,
+    fallback: str,
+) -> dict[str, object]:
+    result = subprocess.run(
+        command,
+        cwd=root,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip()
+        raise PublishError(f"{fallback} {detail}".strip())
+    try:
+        payload = json.loads(result.stdout)
+    except (json.JSONDecodeError, TypeError) as error:
+        raise PublishError(f"{fallback} GitHub returned invalid JSON.") from error
+    if not isinstance(payload, dict):
+        raise PublishError(f"{fallback} GitHub returned an unexpected response.")
+    return payload
 
 
 def prepare_local_publish(

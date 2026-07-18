@@ -114,12 +114,14 @@ from enoch.github.workflow import (
     LocalPublishResult,
     PublishError,
     PullRequestCloseResult,
+    PullRequestMergeResult,
     PullRequestResult,
     RemotePublishResult,
     close_pull_request,
     create_pull_request,
     feature_title,
     format_evolution_provenance,
+    merge_pull_request,
     prepare_local_publish,
     push_current_branch,
 )
@@ -393,6 +395,8 @@ class EnochTelegramBot:
             reply = self._status(chat_id)
         elif command == "/doctor":
             reply = self._doctor()
+        elif command == "/pr":
+            reply = self._pr(chat_id, argument)
         elif command == "/update":
             reply = self._update()
             self._queue_session_sync(
@@ -2428,6 +2432,20 @@ class EnochTelegramBot:
             format_doctor=_format_doctor_result,
         )
 
+    def _pr(self, chat_id: int, argument: str) -> str:
+        if not self._action_allowed() or self.client.config.allowed_chat_id != chat_id:
+            return _action_lock_message()
+        parts = argument.split()
+        if len(parts) != 2 or parts[0].lower() != "merge":
+            return _pr_merge_usage()
+        try:
+            result = merge_pull_request(parts[1], root=self.root)
+        except PublishError as error:
+            return f"Enoch could not merge the pull request: {error}"
+        reply = _format_pull_request_merge(result)
+        _record_direct_action(f"/pr merge {result.url}", reply, self.root)
+        return reply
+
     def _update(self) -> str:
         if not self._action_allowed():
             return _action_lock_message()
@@ -3618,6 +3636,10 @@ def _evolve_usage() -> str:
     )
 
 
+def _pr_merge_usage() -> str:
+    return "Use /pr merge <PR number or GitHub PR URL> to inspect and merge one pull request."
+
+
 def _unquote_schedule_text(text: str) -> str:
     stripped = text.strip()
     if len(stripped) >= 2 and stripped[0] == stripped[-1] and stripped[0] in {"'", '"'}:
@@ -3855,6 +3877,18 @@ def _format_remote_publish_result(result: RemotePublishResult) -> str:
 
 def _format_pr_result(result: PullRequestResult) -> str:
     return format_pr_result(result)
+
+
+def _format_pull_request_merge(result: PullRequestMergeResult) -> str:
+    lines = [
+        f"Merged pull request #{result.number}.",
+        f"URL: {result.url}",
+        f"Merge method: {result.merge_method}",
+        f"Result: {result.message}",
+    ]
+    if result.commit_sha:
+        lines.append(f"Merge commit: {result.commit_sha}")
+    return "\n".join(lines)
 
 
 def _pr_step_update(result: PullRequestResult) -> str:

@@ -442,6 +442,7 @@ def help_message(topic: str = "") -> str:
             "/config - show or update local system settings",
             "/resume - continue tasks paused while Codex access was unavailable",
             "/doctor - run local health checks",
+            "/pr merge <number-or-url> - merge one inspected GitHub pull request",
             "/update - pull latest main, run doctor, and restart if safe",
             "/restart - restart Enoch's Telegram daemon from the locked chat",
             "",
@@ -509,6 +510,14 @@ def _help_topic_message(topic: str) -> str:
         )
     if topic == "config":
         return config_usage("/")
+    if topic == "pr":
+        return "\n".join(
+            [
+                "Pull request commands:",
+                "/pr merge <PR number or GitHub PR URL> - inspect and merge one pull request",
+                "The explicit target is required and counts as human approval for that merge only.",
+            ]
+        )
     topics = {
         "start": "/start - start Enoch and point to /help",
         "self": "/self - show Enoch's identity, role, ancestor, and mission",
