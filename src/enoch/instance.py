@@ -68,6 +68,29 @@ def format_instance_init_result(result: InstanceInitResult) -> str:
     )
 
 
+def instance_branch(root: Path) -> str:
+    path = root / ".agent" / "instance.yaml"
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return ""
+
+    in_worktree = False
+    for raw_line in lines:
+        line = raw_line.split("#", 1)[0].rstrip()
+        if not line.strip():
+            continue
+        if not line.startswith((" ", "\t")):
+            in_worktree = line.strip() == "worktree:"
+            continue
+        if not in_worktree or ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        if key.strip() == "branch":
+            return _clean_yaml_value(value)
+    return ""
+
+
 def _create_git_worktree(root: Path, target: Path, branch: str) -> None:
     if target.exists() and any(target.iterdir()):
         raise InstanceError(f"Worktree target is not empty: {target}")
@@ -163,6 +186,13 @@ def _git(args: list[str], root: Path) -> None:
 def _yaml_quote(value: str) -> str:
     escaped = value.replace("\\", "\\\\").replace('"', '\\"')
     return f'"{escaped}"'
+
+
+def _clean_yaml_value(value: str) -> str:
+    cleaned = value.strip()
+    if len(cleaned) >= 2 and cleaned[0] == cleaned[-1] and cleaned[0] in {"'", '"'}:
+        return cleaned[1:-1]
+    return cleaned
 
 
 def _now() -> str:

@@ -108,6 +108,23 @@ def ensure_local_main_current(root: Path) -> None:
         pull_origin_main(root)
 
 
+def task_branch_base(root: Path) -> str:
+    fetch_error: GitError | None = None
+    try:
+        fetch_origin_main(root)
+    except GitError as error:
+        fetch_error = error
+
+    remote = f"{DEFAULT_REMOTE}/{DEFAULT_BRANCH}"
+    if rev_parse(remote, root):
+        return remote
+    if rev_parse(DEFAULT_BRANCH, root):
+        return DEFAULT_BRANCH
+    if fetch_error is not None:
+        raise GitError(f"Could not prepare a task branch base: {fetch_error}") from fetch_error
+    raise GitError(f"Could not find {remote} or local {DEFAULT_BRANCH}.")
+
+
 def current_branch_name(root: Path | None = None) -> str:
     result = run_git(["branch", "--show-current"], root)
     if result.returncode != 0:

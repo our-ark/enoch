@@ -41,6 +41,10 @@ When work is queued:
    active task to `paused`, stop the worker before it consumes later tasks, and
    warn the human. `/resume` moves paused tasks back to the front with the same
    ids and context after access is available again.
+8. In an agent-instance worktree, keep the instance branch as the resident
+   branch. Create each task branch directly from the latest available
+   `origin/main` or local `main` commit without checking out `main`, then return
+   to the resident branch after publishing or cleanup.
 
 ## Inheritance
 

@@ -120,6 +120,7 @@ from enoch.github.workflow import (
     push_current_branch,
 )
 from enoch.identity import Identity, identity_file_path, load_identity
+from enoch.instance import instance_branch
 from enoch.immune import ImmuneResult, run_immune_system
 from enoch.learn import (
     LearnError,
@@ -153,7 +154,6 @@ from enoch.prompt_append import (
 from enoch.runtime import (
     ACTION_SANDBOX_FULL_ACCESS,
     DEFAULT_BRANCH,
-    PROTECTED_BRANCHES,
     WORKSPACE_WRITE_SANDBOX,
 )
 from enoch.task_queue import (
@@ -201,8 +201,8 @@ from enoch.telegram.lifecycle import (
     startup_message as _startup_message,
 )
 from enoch.update_tools import (
-    ensure_local_main_current as _ensure_local_main_current,
     schedule_daemon_restart as _schedule_daemon_restart,
+    task_branch_base as _task_branch_base,
 )
 from enoch.updater import update_from_main
 
@@ -290,6 +290,7 @@ class EnochTelegramBot:
         self._pending_session_syncs: list[tuple[int, str]] = []
         self._task_worker: threading.Thread | None = None
         self._task_cancellations: dict[int, threading.Event] = {}
+        self._resident_branch = instance_branch(root)
         _recover_running_task_from_direct_action_log(root)
         recover_interrupted_task(root)
         self._work_status_messages: dict[int, int] = _load_task_status_messages(root)
@@ -768,7 +769,7 @@ class EnochTelegramBot:
         parts = [branch_note, result or "Enoch completed the requested work.", memory_note]
         if before_action == after_action:
             try:
-                cleanup = self._return_to_main_and_delete_branch(branch)
+                cleanup = self._return_to_resident_and_delete_branch(branch)
                 parts.append("No files changed.")
                 parts.append(cleanup)
             except GitError as error:
@@ -830,6 +831,7 @@ class EnochTelegramBot:
 
     def _publish_existing_branch(self, chat_id: int, branch: str) -> str:
         original_branch = current_branch(self.root)
+        resident_branch = self._remember_resident_branch(original_branch)
         outputs: list[str] = []
         try:
             ensure_clean_worktree(self.root)
@@ -849,12 +851,15 @@ class EnochTelegramBot:
                 _record_current_task_result("\n\n".join(outputs), self.root)
             self._send_step_update(chat_id, _pr_step_update(pr))
 
-            self._send_step_update(chat_id, "Returning local checkout to main.")
-            switch_branch(DEFAULT_BRANCH, self.root)
-            outputs.append(f"Enoch switched local checkout back to {DEFAULT_BRANCH}.")
-            self._send_step_update(chat_id, "Local checkout is back on main.")
+            self._send_step_update(chat_id, f"Returning local checkout to {resident_branch}.")
+            switch_branch(resident_branch, self.root)
+            outputs.append(f"Enoch switched local checkout back to {resident_branch}.")
+            self._send_step_update(chat_id, f"Local checkout is back on {resident_branch}.")
             if pr.url:
-                self._queue_session_sync(chat_id, repository_handoff_note(pr.branch, pr.url))
+                self._queue_session_sync(
+                    chat_id,
+                    repository_handoff_note(pr.branch, pr.url, resident_branch),
+                )
         except (GitError, PublishError) as error:
             failure = f"Enoch could not publish existing branch {branch}: {error}"
             self._send_step_update(chat_id, failure)
@@ -920,13 +925,17 @@ class EnochTelegramBot:
                 _record_current_task_result("\n\n".join(outputs), self.root)
             self._send_step_update(chat_id, _pr_step_update(pr))
 
-            self._send_step_update(chat_id, "Returning local checkout to main.")
-            handoff = self._return_to_main_after_handoff()
+            resident_branch = self._resident_branch_name()
+            self._send_step_update(chat_id, f"Returning local checkout to {resident_branch}.")
+            handoff = self._return_to_resident_after_handoff()
             outputs.append(handoff)
             summaries.append(handoff)
-            self._send_step_update(chat_id, "Local checkout is back on main.")
+            self._send_step_update(chat_id, f"Local checkout is back on {resident_branch}.")
             if pr.url:
-                self._queue_session_sync(chat_id, repository_handoff_note(pr.branch, pr.url))
+                self._queue_session_sync(
+                    chat_id,
+                    repository_handoff_note(pr.branch, pr.url, resident_branch),
+                )
         except (GitError, PublishError) as error:
             failure = f"Enoch could not publish this edit as a pull request: {error}"
             self._send_step_update(chat_id, failure)
@@ -944,35 +953,57 @@ class EnochTelegramBot:
         )
         return reply
 
-    def _return_to_main_after_handoff(self) -> str:
+    def _return_to_resident_after_handoff(self) -> str:
         branch = current_branch(self.root)
-        if branch == DEFAULT_BRANCH:
-            return f"Local checkout is already on {DEFAULT_BRANCH}."
+        resident_branch = self._resident_branch_name(branch)
+        if branch == resident_branch:
+            return f"Local checkout is already on {resident_branch}."
         ensure_clean_worktree(self.root)
-        switch_branch(DEFAULT_BRANCH, self.root)
-        cleanup = _delete_local_branch_if_enabled(branch, self.root)
+        switch_branch(resident_branch, self.root)
+        cleanup = _delete_local_branch_if_enabled(
+            branch,
+            self.root,
+            protected_branch=resident_branch,
+        )
         if cleanup:
             return "\n".join(
                 [
-                    f"Enoch switched local checkout back to {DEFAULT_BRANCH}.",
+                    f"Enoch switched local checkout back to {resident_branch}.",
                     cleanup,
                     "The change remains on the pushed GitHub branch.",
                 ]
             )
         return (
-            f"Enoch switched local checkout back to {DEFAULT_BRANCH}. "
+            f"Enoch switched local checkout back to {resident_branch}. "
             "The change remains on the pushed GitHub branch."
         )
 
-    def _return_to_main_and_delete_branch(self, branch: str) -> str:
-        if branch == DEFAULT_BRANCH:
-            return f"Local checkout is already on {DEFAULT_BRANCH}."
+    def _return_to_resident_and_delete_branch(self, branch: str) -> str:
+        resident_branch = self._resident_branch_name(branch)
+        if branch == resident_branch:
+            return f"Local checkout is already on {resident_branch}."
         ensure_clean_worktree(self.root)
-        switch_branch(DEFAULT_BRANCH, self.root)
-        cleanup = _delete_local_branch_if_enabled(branch, self.root)
+        switch_branch(resident_branch, self.root)
+        cleanup = _delete_local_branch_if_enabled(
+            branch,
+            self.root,
+            protected_branch=resident_branch,
+        )
         if cleanup:
-            return "\n".join([f"Enoch switched local checkout back to {DEFAULT_BRANCH}.", cleanup])
-        return f"Enoch switched local checkout back to {DEFAULT_BRANCH}."
+            return "\n".join([f"Enoch switched local checkout back to {resident_branch}.", cleanup])
+        return f"Enoch switched local checkout back to {resident_branch}."
+
+    def _remember_resident_branch(self, fallback: str) -> str:
+        if not self._resident_branch:
+            self._resident_branch = fallback
+        return self._resident_branch
+
+    def _resident_branch_name(self, fallback: str = "") -> str:
+        if self._resident_branch:
+            return self._resident_branch
+        if fallback:
+            return self._remember_resident_branch(fallback)
+        return self._remember_resident_branch(DEFAULT_BRANCH)
 
     def _send_step_update(self, chat_id: int | None, message: str) -> None:
         if chat_id is None:
@@ -2273,15 +2304,17 @@ class EnochTelegramBot:
 
     def _ensure_action_branch(self, request_text: str) -> str | None:
         branch = current_branch(self.root)
+        resident_branch = self._remember_resident_branch(branch)
         ensure_clean_worktree(self.root)
-        if branch not in PROTECTED_BRANCHES:
-            switch_branch(DEFAULT_BRANCH, self.root)
-        _ensure_local_main_current(self.root)
+        if branch != resident_branch:
+            switch_branch(resident_branch, self.root)
+        base = _task_branch_base(self.root)
         branch_name = _branch_name(request_text)
-        create_branch(branch_name, self.root)
-        if branch in PROTECTED_BRANCHES:
-            return f"Enoch created and switched to branch {branch_name} before editing."
-        return f"Enoch switched from {branch} to main, then created branch {branch_name} before editing."
+        create_branch(branch_name, self.root, start_point=base)
+        return (
+            f"Enoch created and switched to branch {branch_name} from {base} before editing. "
+            f"Resident branch: {resident_branch}."
+        )
 
     def _send_progress(self, chat_id: int, elapsed_seconds: int, sandbox: str) -> None:
         mode = _sandbox_description(sandbox)
@@ -2442,10 +2475,15 @@ def _changed_files_or_empty(root: Path) -> tuple[str, ...]:
         return ()
 
 
-def _delete_local_branch_if_enabled(branch: str, root: Path) -> str:
+def _delete_local_branch_if_enabled(
+    branch: str,
+    root: Path,
+    *,
+    protected_branch: str = "",
+) -> str:
     if not _cleanup_local_branches(root):
         return ""
-    if not branch or branch == DEFAULT_BRANCH:
+    if not branch or branch in {DEFAULT_BRANCH, protected_branch}:
         return ""
     delete_branch(branch, root, force=True)
     return f"Deleted local branch {branch}."

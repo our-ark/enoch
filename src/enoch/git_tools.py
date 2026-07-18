@@ -44,8 +44,16 @@ def ensure_clean_worktree(root: Path | None = None) -> None:
         raise GitError("Worktree is not clean. Commit, stash, or discard changes before evolving.")
 
 
-def create_branch(branch: str, root: Path | None = None) -> None:
-    result = run_git(["switch", "-c", branch], root)
+def create_branch(
+    branch: str,
+    root: Path | None = None,
+    *,
+    start_point: str = "",
+) -> None:
+    args = ["switch", "-c", branch]
+    if start_point:
+        args.append(start_point)
+    result = run_git(args, root)
     if result.returncode != 0:
         raise GitError(result.stderr or f"Could not create branch {branch}.")
 

@@ -86,7 +86,10 @@ from enoch.telegram.lifecycle import (
     previous_shutdown_warning as _previous_shutdown_warning,
     save_telegram_offset as _real_save_telegram_offset,
 )
-from enoch.update_tools import main_pull_summary as _main_pull_summary
+from enoch.update_tools import (
+    ensure_local_main_current,
+    main_pull_summary as _main_pull_summary,
+)
 
 
 _REAL_TASK_CONTEXT_RESOLVER = EnochTelegramBot._resolve_task_context_snapshot
@@ -2701,7 +2704,7 @@ class EnochTelegramTests(unittest.TestCase):
     @patch("enoch.telegram.bot.push_current_branch")
     @patch("enoch.telegram.bot.switch_branch")
     @patch("enoch.telegram.bot.ensure_clean_worktree")
-    @patch("enoch.telegram.bot.current_branch", return_value="main")
+    @patch("enoch.telegram.bot.current_branch", return_value="agent/enoch-gary")
     @patch("enoch.telegram.bot.act_in_session")
     @patch("enoch.telegram.bot.respond")
     @patch("enoch.telegram.bot.ensure_long_term_memory")
@@ -2735,6 +2738,12 @@ class EnochTelegramTests(unittest.TestCase):
         )
         with TemporaryDirectory() as temp:
             root = Path(temp)
+            metadata = root / ".agent" / "instance.yaml"
+            metadata.parent.mkdir()
+            metadata.write_text(
+                'worktree:\n  branch: "agent/enoch-gary"\n',
+                encoding="utf-8",
+            )
             client = FakeTelegramClient(allowed_chat_id=42)
             bot = EnochTelegramBot(load_identity(), root, client)
             bot.handle_update(
@@ -3268,7 +3277,7 @@ class EnochTelegramTests(unittest.TestCase):
     @patch("enoch.telegram.bot.push_current_branch")
     @patch("enoch.telegram.bot.switch_branch")
     @patch("enoch.telegram.bot.ensure_clean_worktree")
-    @patch("enoch.telegram.bot.current_branch", return_value="main")
+    @patch("enoch.telegram.bot.current_branch", return_value="agent/enoch-gary")
     @patch("enoch.telegram.bot.act_in_session")
     @patch("enoch.telegram.bot.respond")
     @patch("enoch.telegram.bot.ensure_long_term_memory")
@@ -3302,6 +3311,12 @@ class EnochTelegramTests(unittest.TestCase):
         )
         with TemporaryDirectory() as temp:
             root = Path(temp)
+            metadata = root / ".agent" / "instance.yaml"
+            metadata.parent.mkdir()
+            metadata.write_text(
+                'worktree:\n  branch: "agent/enoch-gary"\n',
+                encoding="utf-8",
+            )
             client = FakeTelegramClient(allowed_chat_id=42)
             bot = EnochTelegramBot(load_identity(), root, client)
 
@@ -3321,7 +3336,7 @@ class EnochTelegramTests(unittest.TestCase):
         current_branch.assert_called_once_with(root)
         ensure_clean_worktree.assert_called_once_with(root)
         switch_branch.assert_any_call("enoch/existing", root)
-        switch_branch.assert_any_call("main", root)
+        switch_branch.assert_any_call("agent/enoch-gary", root)
         push_current_branch.assert_called_once_with(root=root)
         create_pull_request.assert_called_once_with(root=root)
         self.assertEqual(len(client.sent), 2)
@@ -3336,7 +3351,7 @@ class EnochTelegramTests(unittest.TestCase):
     @patch("enoch.telegram.bot.delete_branch")
     @patch("enoch.telegram.bot.switch_branch")
     @patch("enoch.telegram.bot.create_branch")
-    @patch("enoch.telegram.bot._ensure_local_main_current")
+    @patch("enoch.telegram.bot._task_branch_base", return_value="origin/main")
     @patch("enoch.telegram.bot.ensure_clean_worktree")
     @patch("enoch.telegram.bot.current_branch", side_effect=["main", "enoch/readme", "enoch/readme"])
     @patch("enoch.telegram.bot.changed_files", return_value=["README.md"])
@@ -3357,7 +3372,7 @@ class EnochTelegramTests(unittest.TestCase):
         _changed_files: MagicMock,
         _current_branch: MagicMock,
         _ensure_clean_worktree: MagicMock,
-        _ensure_local_main_current: MagicMock,
+        task_branch_base: MagicMock,
         _create_branch: MagicMock,
         _switch_branch: MagicMock,
         _delete_branch: MagicMock,
@@ -3417,6 +3432,9 @@ class EnochTelegramTests(unittest.TestCase):
         prepare_local_publish.assert_called_once()
         push_current_branch.assert_called_once_with(root=root)
         create_pull_request.assert_called_once_with(root=root)
+        task_branch_base.assert_called_once_with(root)
+        self.assertEqual(_create_branch.call_args.args[1], root)
+        self.assertEqual(_create_branch.call_args.kwargs, {"start_point": "origin/main"})
         self.assertEqual(len(client.sent), 2)
         self.assertIn("Task #1", client.sent[0][1])
         self.assertIn("Use the earlier README scope decision.", client.sent[0][1])
@@ -3670,6 +3688,7 @@ class EnochTelegramTests(unittest.TestCase):
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
             bot = EnochTelegramBot(load_identity(), root, client)
+            bot._resident_branch = "agent/enoch-gary"
             bot.handle_update(_message_update(chat_id=42, text="/task Update README directly."))
             job = begin_next_task(root)
             assert job is not None
@@ -3689,6 +3708,7 @@ class EnochTelegramTests(unittest.TestCase):
             status = task_queue_status(root)
 
         self.assertIsNotNone(status.running)
+        _switch_branch.assert_called_once_with("agent/enoch-gary", root)
         self.assertIn("https://github.com/our-ark/enoch/pull/2", status.running.result)
         self.assertIn("Enoch opened a pull request.", status.running.result)
 
@@ -3863,7 +3883,7 @@ class EnochTelegramTests(unittest.TestCase):
             MagicMock(returncode=0, stdout="Updating aaa111..bbb222", stderr=""),
         ]
 
-        telegram._ensure_local_main_current(ROOT)
+        ensure_local_main_current(ROOT)
 
         run_git.assert_any_call(["pull", "--ff-only", "origin", "main"], ROOT)
 

@@ -120,7 +120,7 @@ def format_pr_result(result: PullRequestResult) -> str:
         [
             f"Branch: {result.branch}",
             f"Title: {result.title}",
-            "Local checkout will return to main after the GitHub handoff.",
+            "Local checkout will return to its resident branch after the GitHub handoff.",
         ]
     )
     return "\n".join(lines)

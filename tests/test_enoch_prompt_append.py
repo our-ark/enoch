@@ -97,11 +97,15 @@ class EnochPromptAppendTests(unittest.TestCase):
         self.assertEqual(result.signals, ())
 
     def test_repository_handoff_note_warns_not_to_assume_merge(self) -> None:
-        note = repository_handoff_note("enoch/turn-readme", "https://github.com/our-ark/enoch/pull/1")
+        note = repository_handoff_note(
+            "enoch/turn-readme",
+            "https://github.com/our-ark/enoch/pull/1",
+            "agent/enoch-gary",
+        )
 
         self.assertIn("enoch/turn-readme", note)
         self.assertIn("Do not assume the PR was merged.", note)
-        self.assertIn("Local checkout is back on `main`.", note)
+        self.assertIn("Local checkout is back on resident branch `agent/enoch-gary`.", note)
 
 
 if __name__ == "__main__":
