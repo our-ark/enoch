@@ -27,6 +27,12 @@ Enoch collects exactly six semantic candidate sources:
 
 The theme is ranking pressure, not a seventh source. `/evolve brainstorm` requires a non-empty theme, asks the reasoning engine for a small JSON list, validates the result, and persists only structured candidates in `.enoch/evolve_brainstorms.jsonl`.
 
+`/propose` first refreshes and ranks all six sources. If no active candidate
+exists and a theme is set, it runs one bounded fallback brainstorm and ranks
+again. Automatic fallback attempts have a per-theme 24-hour cooldown persisted
+in `.enoch/evolve_brainstorm_fallback.json`; explicit `/evolve brainstorm`
+remains available during the cooldown.
+
 Candidates are persisted in `.enoch/evolve_candidates.json` so Enoch can remember whether a candidate is available, running, done, failed, cancelled, or removed. Normal candidate views hide done, failed, cancelled, and removed candidates.
 
 ## Scheduler
@@ -42,6 +48,8 @@ When the scheduler is due:
 - `auto-evolve` mode runs the same proposal selection as `/propose` and turns its top new candidate into a queued task for review-oriented implementation.
 
 Proposal selection only considers candidates whose status is `candidate`. Running candidates are not proposed again.
+Scheduled co-evolve and auto-evolve checks use the same empty-candidate fallback
+and cooldown as `/propose`.
 
 Every tracked task writes append-only lifecycle events to `.enoch/task_events.jsonl`.
 Events include `created`, `queued`, `started`, `completed`, `failed`, `cancelled`,

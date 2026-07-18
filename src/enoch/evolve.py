@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable
 
 from enoch.backlog import BacklogItem, backlog_status
 from enoch.automatic_learning import LearningArtifact, learning_index_path
@@ -29,6 +29,8 @@ MODES = {MODE_DISABLED, MODE_CO_EVOLVE, MODE_AUTO_EVOLVE}
 DEFAULT_MODE = MODE_CO_EVOLVE
 CANDIDATE_STATUSES = {"candidate", "running", "done", "failed", "cancelled", "removed"}
 VISIBLE_CANDIDATE_STATUSES = {"candidate", "running"}
+AUTO_BRAINSTORM_COOLDOWN_SECONDS = 24 * 60 * 60
+BrainstormFallback = Callable[[str], Iterable[object]]
 
 
 @dataclass(frozen=True)
@@ -72,6 +74,10 @@ class EvolveProposal:
     report: EvolveReport
     candidates: tuple[EvolveCandidate, ...]
     top_candidate: EvolveCandidate | None
+    brainstorm_attempted: bool = False
+    brainstorm_added: int = 0
+    brainstorm_skip_reason: str = ""
+    brainstorm_error: str = ""
 
 
 def evolve_state_path(root: Path | None = None) -> Path:
@@ -80,6 +86,10 @@ def evolve_state_path(root: Path | None = None) -> Path:
 
 def evolve_candidates_path(root: Path | None = None) -> Path:
     return enoch_home(root) / "evolve_candidates.json"
+
+
+def evolve_brainstorm_fallback_path(root: Path | None = None) -> Path:
+    return enoch_home(root) / "evolve_brainstorm_fallback.json"
 
 
 def load_evolve_state(root: Path | None = None) -> EvolveState:
@@ -311,14 +321,80 @@ def evolve_report(root: Path | None = None) -> EvolveReport:
     )
 
 
-def propose_evolve(root: Path | None = None) -> EvolveProposal:
+def propose_evolve(
+    root: Path | None = None,
+    *,
+    brainstormer: BrainstormFallback | None = None,
+    now: datetime | None = None,
+) -> EvolveProposal:
     report = evolve_report(root)
     candidates = tuple(candidate for candidate in report.candidates if candidate.status == "candidate")
+    attempted = False
+    added = 0
+    skip_reason = ""
+    error = ""
+    if report.state.mode != MODE_DISABLED and not candidates:
+        if any(candidate.status == "running" for candidate in report.candidates):
+            skip_reason = "candidate-running"
+        elif not report.state.theme:
+            skip_reason = "theme-not-set"
+        elif brainstormer is None:
+            skip_reason = "brainstormer-unavailable"
+        elif not _claim_auto_brainstorm(report.state.theme, root, now=now):
+            skip_reason = "cooldown"
+        else:
+            attempted = True
+            try:
+                added = len(tuple(brainstormer(report.state.theme)))
+            except (OSError, RuntimeError, ValueError) as brainstorm_error:
+                error = clean_text(str(brainstorm_error)) or brainstorm_error.__class__.__name__
+            report = evolve_report(root)
+            candidates = tuple(candidate for candidate in report.candidates if candidate.status == "candidate")
     return EvolveProposal(
         report=report,
         candidates=candidates,
         top_candidate=candidates[0] if candidates else None,
+        brainstorm_attempted=attempted,
+        brainstorm_added=added,
+        brainstorm_skip_reason=skip_reason,
+        brainstorm_error=error,
     )
+
+
+def _claim_auto_brainstorm(
+    theme: str,
+    root: Path | None = None,
+    *,
+    now: datetime | None = None,
+) -> bool:
+    normalized_theme = clean_text(theme).casefold()
+    if not normalized_theme:
+        return False
+    path = evolve_brainstorm_fallback_path(root)
+    attempts: dict[str, str] = {}
+    if path.exists():
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            raw = {}
+        raw_attempts = raw.get("attempts") if isinstance(raw, dict) else None
+        if isinstance(raw_attempts, dict):
+            attempts = {
+                clean_text(str(key)).casefold(): str(value)
+                for key, value in raw_attempts.items()
+                if clean_text(str(key))
+            }
+    current = _coerce_utc(now) if now is not None else _utc_now()
+    previous = _parse_time(attempts.get(normalized_theme, ""))
+    if previous is not None and current - previous < timedelta(seconds=AUTO_BRAINSTORM_COOLDOWN_SECONDS):
+        return False
+    attempts[normalized_theme] = _iso(current)
+    payload = {
+        "schema_version": 1,
+        "attempts": attempts,
+    }
+    atomic_write(path, json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    return True
 
 
 def collect_evolve_candidates(

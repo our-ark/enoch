@@ -35,6 +35,8 @@ telegram:
   bot_token: "..."
   allowed_chat_id: 123456789
   poll_timeout: 30
+task:
+  timeout_seconds: 600
 ```
 
 `.enoch/config.yaml` is local and gitignored.
@@ -53,6 +55,7 @@ Optional:
 - `telegram.allowed_chat_id`
 - `telegram.poll_timeout`
 - `codex.reasoning_effort`
+- `task.timeout_seconds` (defaults to 600 seconds and can be set with `/config task-timeout <duration>`)
 
 ## Safety
 
@@ -60,3 +63,4 @@ Optional:
 - Do not send secrets through Telegram.
 - Use `telegram.allowed_chat_id` and `/mode work` before enabling code-changing natural agency.
 - Keep remote writes behind explicit human approval.
+- Keep a finite task timeout so a stuck agent run cannot consume tokens indefinitely.

@@ -141,6 +141,25 @@ class EnochBrainTests(unittest.TestCase):
         self.assertIn("-c", args)
         self.assertIn('model_reasoning_effort="medium"', args)
 
+    @patch.dict("os.environ", {}, clear=True)
+    @patch("enoch.brain.shutil.which", return_value="/usr/local/bin/codex")
+    @patch("enoch.brain.subprocess.run")
+    def test_respond_uses_configured_task_timeout(
+        self, run: MagicMock, _which: MagicMock
+    ) -> None:
+        run.return_value.returncode = 0
+        run.return_value.stdout = ""
+        run.return_value.stderr = ""
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            config = root / ".enoch" / "config.yaml"
+            config.parent.mkdir()
+            config.write_text("task:\n  timeout_seconds: 1800\n", encoding="utf-8")
+
+            respond(load_identity(), "Hello", cwd=root)
+
+        self.assertEqual(run.call_args.kwargs["timeout"], 1800)
+
     @patch("enoch.brain.shutil.which", return_value="/usr/local/bin/codex")
     @patch("enoch.brain.subprocess.run")
     def test_respond_records_last_completed_turn_token_usage(
@@ -319,6 +338,37 @@ class EnochBrainTests(unittest.TestCase):
         self.assertIsNotNone(state)
         assert state is not None
         self.assertEqual(state.turn_count, 2)
+
+    @patch(
+        "enoch.brain._run_codex_result",
+        side_effect=BrainCancelled("Enoch cancelled the active Codex run."),
+    )
+    def test_act_in_session_does_not_retry_cancelled_session(
+        self, run_codex: MagicMock
+    ) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            save_codex_session(
+                CodexSessionState(
+                    key="telegram:42",
+                    session_id="session-123",
+                    turn_count=1,
+                    created_at="2026-06-18T00:00:00+00:00",
+                    updated_at="2026-06-18T00:00:00+00:00",
+                ),
+                root,
+            )
+
+            with self.assertRaises(BrainCancelled):
+                act_in_session(
+                    load_identity(),
+                    "Implement the requested edit.",
+                    cwd=root,
+                    session_key="telegram:42",
+                    cancellation_event=threading.Event(),
+                )
+
+        run_codex.assert_called_once()
 
     @patch("enoch.brain.shutil.which", return_value="/usr/local/bin/codex")
     @patch("enoch.brain.subprocess.run")

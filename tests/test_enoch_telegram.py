@@ -20,7 +20,14 @@ from enoch.backlog import add_backlog_item, backlog_status
 from enoch.config import read_section
 from enoch.command_surface import checktree as _checktree
 from enoch.cron import add_cron_job, cron_status
-from enoch.evolve import MODE_AUTO_EVOLVE, evolve_report, load_evolve_candidates, set_evolve_mode, set_evolve_schedule
+from enoch.evolve import (
+    MODE_AUTO_EVOLVE,
+    evolve_report,
+    load_evolve_candidates,
+    set_evolve_mode,
+    set_evolve_schedule,
+    set_evolve_theme,
+)
 from enoch.experience import load_experience_records, record_task_experience
 from enoch.git_tools import GitError
 from enoch.github.workflow import (
@@ -75,6 +82,18 @@ from enoch.update_tools import main_pull_summary as _main_pull_summary
 
 
 _REAL_TASK_CONTEXT_RESOLVER = EnochTelegramBot._resolve_task_context_snapshot
+
+
+class _ImmediateTimer:
+    def __init__(self, _seconds, callback) -> None:
+        self.callback = callback
+        self.daemon = False
+
+    def start(self) -> None:
+        self.callback()
+
+    def cancel(self) -> None:
+        return None
 
 
 class EnochTelegramTests(unittest.TestCase):
@@ -568,14 +587,14 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertLess(reply.index("Learn:"), reply.index("/skills"))
         self.assertLess(reply.index("Learn:"), reply.index("Evolve:"))
         self.assertLess(reply.index("Evolve:"), reply.index("/evolve"))
-        self.assertLess(reply.index("Evolve:"), reply.index("Operations:"))
+        self.assertLess(reply.index("Evolve:"), reply.index("System:"))
         self.assertIn("Common:", client.sent[0][1])
         self.assertNotIn("Memory:", client.sent[0][1])
         self.assertIn("Inherit:", client.sent[0][1])
         self.assertIn("Learn:", client.sent[0][1])
         self.assertIn("Evolve:", client.sent[0][1])
         self.assertIn("Work:", client.sent[0][1])
-        self.assertIn("Operations:", client.sent[0][1])
+        self.assertIn("System:", client.sent[0][1])
         self.assertNotIn("Mode:", client.sent[0][1])
         self.assertIn("/doctor", client.sent[0][1])
         self.assertNotIn("/debug", client.sent[0][1])
@@ -623,9 +642,42 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertNotIn("/evolve schedule daily HH:MM - run evolve once per day at local time", client.sent[0][1])
         self.assertNotIn("/evolve schedule cron '30 9 * * *' - run evolve with a cron-style daily schedule", client.sent[0][1])
         self.assertIn("/update", client.sent[0][1])
+        self.assertIn("/config - show or update local system settings", client.sent[0][1])
         self.assertIn("/restart - restart Enoch's Telegram daemon from the locked chat", client.sent[0][1])
-        self.assertLess(client.sent[0][1].index("Operations:"), client.sent[0][1].index("/shutdown"))
+        self.assertLess(client.sent[0][1].index("System:"), client.sent[0][1].index("/shutdown"))
         self.assertIn("say the request naturally", client.sent[0][1])
+
+    def test_help_config_shows_only_config_commands(self) -> None:
+        client = FakeTelegramClient(allowed_chat_id=42)
+        bot = EnochTelegramBot(load_identity(), ROOT, client)
+
+        bot.handle_update(_message_update(chat_id=42, text="/help config"))
+
+        reply = client.sent[0][1]
+        self.assertIn("Config commands:", reply)
+        self.assertIn("/config task-timeout <duration>", reply)
+        self.assertIn("/config task-timeout default", reply)
+        self.assertNotIn("Enoch Telegram commands:", reply)
+
+    def test_config_shows_sets_and_resets_task_timeout(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            client = FakeTelegramClient(allowed_chat_id=42)
+            bot = EnochTelegramBot(load_identity(), root, client)
+
+            bot.handle_update(_message_update(chat_id=42, text="/config"))
+            bot.handle_update(_message_update(update_id=2, chat_id=42, text="/config task-timeout 30m"))
+            configured = read_section("task", root)
+            bot.handle_update(_message_update(update_id=3, chat_id=42, text="/config task-timeout default"))
+            reset = read_section("task", root)
+            bot.handle_update(_message_update(update_id=4, chat_id=42, text="/config task-timeout off"))
+
+        self.assertIn("Task timeout: 10m (default)", client.sent[0][1])
+        self.assertIn("Task timeout set to 30m.", client.sent[1][1])
+        self.assertEqual(configured["timeout_seconds"], "1800")
+        self.assertIn("Task timeout set to 10m (default).", client.sent[2][1])
+        self.assertNotIn("timeout_seconds", reset)
+        self.assertIn("must look like 10m, 30m, or 2h", client.sent[3][1])
 
     def test_help_inherit_shows_inherit_usage(self) -> None:
         client = FakeTelegramClient(allowed_chat_id=42)
@@ -1364,6 +1416,35 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("Remove with /evolve remove backlog-1.", reply)
         self.assertEqual(candidates[0].status, "candidate")
 
+    def test_propose_fallback_brainstorms_when_no_candidate_exists(self) -> None:
+        response = json.dumps(
+            [
+                {
+                    "title": "Improve fallback observability",
+                    "rationale": "No stronger candidate exists.",
+                    "proposed_change": "Expose fallback brainstorm outcomes.",
+                    "expected_benefit": "Makes proposals easier to audit.",
+                    "risk": "Adds output.",
+                    "test_plan": "Add proposal tests.",
+                }
+            ]
+        )
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            set_evolve_theme("proposal observability", root)
+            client = FakeTelegramClient(allowed_chat_id=42)
+            bot = EnochTelegramBot(load_identity(), root, client)
+
+            with patch.object(bot, "_respond_read_only_turn", return_value=response) as respond:
+                bot.handle_update(_message_update(chat_id=42, text="/propose"))
+            candidates = load_evolve_candidates(root)
+
+        self.assertIn("Fallback brainstorm added 1 candidate(s).", client.sent[0][1])
+        self.assertIn("[candidate brainstorming] Improve fallback observability", client.sent[0][1])
+        self.assertEqual(candidates[0].source, "brainstorming")
+        self.assertEqual(candidates[0].initiated_by, "agent")
+        self.assertEqual(respond.call_args.kwargs["session_key"], "telegram:42:propose-fallback")
+
     def test_evolve_can_list_and_remove_candidates(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
@@ -1737,6 +1818,41 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIsNone(second)
         self.assertEqual(queued.pending_count, 1)
 
+    def test_due_auto_evolve_schedule_brainstorms_when_no_candidate_exists(self) -> None:
+        response = json.dumps(
+            [
+                {
+                    "title": "Improve scheduled fallback",
+                    "rationale": "The scheduled proposal had no candidate.",
+                    "proposed_change": "Add bounded scheduled fallback coverage.",
+                    "expected_benefit": "Keeps scheduled evolution useful.",
+                    "risk": "The idea is speculative.",
+                    "test_plan": "Add scheduler tests.",
+                }
+            ]
+        )
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            set_evolve_theme("scheduled reliability", root)
+            set_evolve_mode(MODE_AUTO_EVOLVE, root)
+            set_evolve_schedule(60, root, now=datetime(2020, 1, 1, tzinfo=timezone.utc))
+            client = FakeTelegramClient(allowed_chat_id=42)
+            bot = EnochTelegramBot(load_identity(), root, client)
+
+            with patch.object(bot, "_respond_read_only_turn", return_value=response) as respond:
+                job = bot._run_due_evolve_schedule()
+            queued = task_queue_status(root)
+            events = load_task_events(root, task_id=queued.pending[0].id)
+            candidate_id = load_evolve_candidates(root)[0].id
+
+        self.assertIsNotNone(job)
+        self.assertEqual(queued.pending[0].source, "brainstorming")
+        self.assertEqual(queued.pending[0].initiated_by, "agent")
+        self.assertEqual(queued.pending[0].candidate_id, candidate_id)
+        self.assertEqual(events[0].event_actor, "system")
+        self.assertEqual(events[0].trigger, "evolve-scheduler")
+        self.assertEqual(respond.call_args.kwargs["session_key"], "telegram:42:evolve-scheduler")
+
     @patch("enoch.telegram.bot.ensure_long_term_memory")
     @patch("enoch.telegram.bot.log_conversation_turn")
     def test_cron_command_schedules_recurring_work_with_context(
@@ -1856,6 +1972,27 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("PR URL:\n- none", client.sent[-1][1])
         self.assertIn("GH007", client.sent[-1][1])
         log_conversation_turn.assert_called()
+
+    def test_task_worker_timeout_is_logged_as_system_failure(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            client = FakeTelegramClient(allowed_chat_id=42)
+            bot = EnochTelegramBot(load_identity(), root, client)
+            bot.handle_update(_message_update(chat_id=42, text="/task long queued work"))
+            job = begin_next_task(root)
+            assert job is not None
+
+            with patch("enoch.telegram.bot.threading.Timer", _ImmediateTimer):
+                with patch.object(bot, "_run_direct_work", return_value="Done."):
+                    bot._run_task_job(job)
+            status = task_queue_status(root)
+            events = load_task_events(root, task_id=job.id)
+
+        self.assertEqual(status.history[-1].status, "failed")
+        self.assertIn("configured 10m timeout", status.history[-1].result)
+        self.assertEqual(events[-1].event, "failed")
+        self.assertEqual(events[-1].event_actor, "system")
+        self.assertEqual(events[-1].trigger, "task-timeout")
 
     @patch("enoch.telegram.bot.ensure_long_term_memory")
     @patch("enoch.telegram.bot.log_conversation_turn")
@@ -2163,6 +2300,30 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual(history[-1].initiated_by, "human")
         self.assertEqual([event.event for event in events], ["created", "started", "completed"])
         self.assertEqual(events[0].trigger, "/learn")
+
+    def test_tracked_inline_timeout_is_logged_as_system_failure(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            client = FakeTelegramClient(allowed_chat_id=42)
+            bot = EnochTelegramBot(load_identity(), root, client)
+
+            with patch("enoch.telegram.bot.threading.Timer", _ImmediateTimer):
+                with patch.object(bot, "_run_direct_work", return_value="Done."):
+                    reply = bot._run_tracked_inline_work(
+                        42,
+                        "adapt the research skill",
+                        source="learning",
+                        initiated_by="human",
+                        trigger="/learn",
+                        session_key="telegram:42",
+                    )
+            history = task_queue_status(root).history
+            events = load_task_events(root, task_id=1)
+
+        self.assertIn("configured 10m timeout", reply)
+        self.assertEqual(history[-1].status, "failed")
+        self.assertEqual(events[-1].event_actor, "system")
+        self.assertEqual(events[-1].trigger, "task-timeout")
 
     @patch("enoch.telegram.bot.model_summary", return_value="AI model: gpt-5-codex")
     def test_self_reports_identity_without_runtime_status(self, model_summary: MagicMock) -> None:

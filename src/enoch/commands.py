@@ -25,6 +25,12 @@ from enoch.lineage.core import (
     resolve_lineage,
 )
 from enoch.skills import skills_command
+from enoch.task_config import (
+    format_task_timeout,
+    parse_task_timeout,
+    save_task_timeout,
+    task_settings,
+)
 
 
 ModelSummaryFn = Callable[[Path], str]
@@ -178,6 +184,62 @@ def thinking_lock_message() -> str:
     return "Enoch needs Telegram to be locked to one chat before changing her thinking level."
 
 
+def config_command(text: str, root: Path, *, prefix: str = "/") -> str:
+    parts = text.split()
+    if len(parts) == 1:
+        return config_status(root, prefix=prefix)
+    if parts[1].lower() != "task-timeout":
+        return config_usage(prefix=prefix)
+    if len(parts) == 2:
+        return config_status(root, prefix=prefix)
+    if len(parts) != 3:
+        return config_usage(prefix=prefix)
+    value = parts[2].lower()
+    if value in {"default", "reset"}:
+        settings = save_task_timeout(None, root)
+    else:
+        try:
+            timeout = parse_task_timeout(value)
+        except ValueError as error:
+            return str(error)
+        settings = save_task_timeout(timeout, root)
+    return "\n".join(
+        [
+            f"Task timeout set to {format_task_timeout(settings.timeout_seconds)}"
+            + (" (default)." if settings.uses_default_timeout else "."),
+            "",
+            config_status(root, prefix=prefix),
+        ]
+    )
+
+
+def config_status(root: Path, *, prefix: str = "/") -> str:
+    settings = task_settings(root)
+    default = " (default)" if settings.uses_default_timeout else ""
+    command = f"{prefix}config"
+    return "\n".join(
+        [
+            "Enoch config:",
+            f"- Task timeout: {format_task_timeout(settings.timeout_seconds)}{default}",
+            "",
+            f"Set with {command} task-timeout <duration> or reset with {command} task-timeout default.",
+        ]
+    )
+
+
+def config_usage(prefix: str = "/") -> str:
+    command = f"{prefix}config"
+    return "\n".join(
+        [
+            "Config commands:",
+            f"{command} - show local system settings",
+            f"{command} task-timeout - show the task timeout",
+            f"{command} task-timeout <duration> - set a timeout between 1m and 2h",
+            f"{command} task-timeout default - restore the 10m default",
+        ]
+    )
+
+
 def lineage_command(
     text: str,
     root: Path,
@@ -292,7 +354,8 @@ def help_message(topic: str = "") -> str:
             "/propose - rank all evolve sources and propose the strongest candidate",
             "/evolve - show self-evolution mode, theme, and top candidate",
             "",
-            "Operations:",
+            "System:",
+            "/config - show or update local system settings",
             "/doctor - run local health checks",
             "/update - pull latest main, run doctor, and restart if safe",
             "/restart - restart Enoch's Telegram daemon from the locked chat",
@@ -359,6 +422,8 @@ def _help_topic_message(topic: str) -> str:
                 "/evolve schedule <text> - let Enoch interpret common schedule text",
             ]
         )
+    if topic == "config":
+        return config_usage("/")
     topics = {
         "start": "/start - start Enoch and point to /help",
         "self": "/self - show Enoch's identity, role, ancestor, and mission",

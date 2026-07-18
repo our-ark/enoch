@@ -9,6 +9,12 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from enoch.config import read_section, write_section_value
 from enoch.memory.config import DEFAULT_MEMORY_SETTINGS, memory_settings
+from enoch.task_config import (
+    DEFAULT_TASK_TIMEOUT_SECONDS,
+    parse_task_timeout,
+    save_task_timeout,
+    task_settings,
+)
 
 
 class EnochConfigTests(unittest.TestCase):
@@ -87,6 +93,46 @@ class EnochConfigTests(unittest.TestCase):
             DEFAULT_MEMORY_SETTINGS.long_term_memory_text_max_chars,
             500,
         )
+
+    def test_task_timeout_defaults_to_ten_minutes(self) -> None:
+        with TemporaryDirectory() as temp:
+            settings = task_settings(Path(temp))
+
+        self.assertEqual(settings.timeout_seconds, DEFAULT_TASK_TIMEOUT_SECONDS)
+        self.assertTrue(settings.uses_default_timeout)
+
+    def test_task_timeout_can_be_configured_and_reset(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+
+            configured = save_task_timeout(parse_task_timeout("30m"), root)
+            self.assertEqual(read_section("task", root)["timeout_seconds"], "1800")
+            reset = save_task_timeout(None, root)
+
+        self.assertEqual(configured.timeout_seconds, 1800)
+        self.assertFalse(configured.uses_default_timeout)
+        self.assertEqual(reset.timeout_seconds, DEFAULT_TASK_TIMEOUT_SECONDS)
+        self.assertTrue(reset.uses_default_timeout)
+
+    def test_invalid_task_timeout_config_falls_back_to_default(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            write_section_value("task", "timeout_seconds", "invalid", root)
+
+            settings = task_settings(root)
+
+        self.assertEqual(settings.timeout_seconds, DEFAULT_TASK_TIMEOUT_SECONDS)
+        self.assertTrue(settings.uses_default_timeout)
+
+    def test_task_timeout_parser_enforces_bounds(self) -> None:
+        self.assertEqual(parse_task_timeout("1m"), 60)
+        self.assertEqual(parse_task_timeout("2h"), 7200)
+        with self.assertRaises(ValueError):
+            parse_task_timeout("59s")
+        with self.assertRaises(ValueError):
+            parse_task_timeout("3h")
+        with self.assertRaises(ValueError):
+            parse_task_timeout("off")
 
 if __name__ == "__main__":
     unittest.main()

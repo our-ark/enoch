@@ -217,9 +217,13 @@ Candidate selection and control:
 `/feedback` shows the human feedback signals available to evolution. `/experience`
 shows candidates derived from Enoch's task history, recurring workflows, and
 successful skill work. `/propose` refreshes all six sources, ranks the available
-candidates, and presents the strongest new candidate without selecting or running it.
+candidates, and presents the strongest new candidate without selecting or running
+it. When no active candidate exists and a theme is set, `/propose` runs one
+bounded fallback brainstorm and ranks again. Automatic fallback attempts have a
+per-theme 24-hour cooldown; explicit `/evolve brainstorm` bypasses that cooldown.
 Scheduled co-evolve and auto-evolve checks use the same proposal selection, so
-running candidates are not proposed or queued again.
+running candidates are not proposed or queued again, and empty scheduled
+proposals use the same fallback brainstorm policy.
 
 ## Principle
 

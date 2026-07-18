@@ -25,6 +25,7 @@ from enoch.last_codex_input import record_last_codex_input
 from enoch.memory.prompt import memory_for_prompt
 from enoch.prompt_append import startup_context_note
 from enoch.runtime import ACTION_SANDBOX_READ_ONLY, WORKSPACE_WRITE_SANDBOX
+from enoch.task_config import task_timeout_seconds
 
 
 DEFAULT_TIMEOUT_SECONDS = 600
@@ -313,6 +314,8 @@ def _act_with_persistent_session(
             session_id=state.session_id if state else "",
             cancellation_event=cancellation_event,
         )
+    except BrainCancelled:
+        raise
     except BrainError:
         if state is None:
             raise
@@ -446,7 +449,7 @@ def _run_codex_result(
             resumed=bool(session_id),
         )
 
-        timeout = int(os.environ.get("ENOCH_CODEX_TIMEOUT", DEFAULT_TIMEOUT_SECONDS))
+        timeout = int(os.environ.get("ENOCH_CODEX_TIMEOUT", task_timeout_seconds(cwd)))
         if progress_callback is not None:
             result_stdout, result_stderr, returncode = _run_with_progress(
                 args=args,

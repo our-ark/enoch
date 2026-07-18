@@ -163,6 +163,7 @@ from enoch.task_events import TASK_SOURCES
 from enoch.telegram.client import TelegramClient, TelegramError, load_config
 from enoch.commands import (
     action_lock_message as _action_lock_message,
+    config_command,
     doctor_command,
     help_message as _help_message,
     identity_summary,
@@ -172,6 +173,7 @@ from enoch.commands import (
     skills_command,
     status_message,
 )
+from enoch.task_config import format_task_timeout, task_timeout_seconds
 from enoch.telegram.lifecycle import (
     begin_lifecycle_run as _begin_lifecycle_run,
     load_telegram_offset as _load_telegram_offset,
@@ -220,6 +222,27 @@ class TaskContextSnapshot:
     source: str = ""
     clarification: str = ""
     error: str = ""
+
+
+@dataclass
+class TaskDeadline:
+    timeout_seconds: int
+    cancellation_event: threading.Event
+    expired: threading.Event = field(default_factory=threading.Event)
+    timer: threading.Timer | None = None
+
+    def start(self) -> None:
+        self.timer = threading.Timer(self.timeout_seconds, self._expire)
+        self.timer.daemon = True
+        self.timer.start()
+
+    def cancel(self) -> None:
+        if self.timer is not None:
+            self.timer.cancel()
+
+    def _expire(self) -> None:
+        self.expired.set()
+        self.cancellation_event.set()
 
 
 TASK_CONTEXT_SOURCE_CHAT = "chat-snapshot"
@@ -332,11 +355,13 @@ class EnochTelegramBot:
         elif command == "/experience":
             reply = _format_experience_report(self.root)
         elif command == "/propose":
-            reply = _format_evolve_proposal(propose_evolve(self.root))
+            reply = _format_evolve_proposal(self._propose_evolve(chat_id, trigger="propose-fallback"))
         elif command == "/evolve":
             reply = self._evolve(chat_id, argument)
         elif command == "/mode":
             reply = self._mode(text)
+        elif command == "/config":
+            reply = config_command(text, self.root)
         elif command == "/shutdown":
             reply = self._shutdown_from_telegram()
         elif command == "/self":
@@ -531,19 +556,31 @@ class EnochTelegramBot:
         except (OSError, ValueError):
             return "Enoch could not create a tracked task for that work."
         task_token = _CURRENT_TASK_ID.set(job.id)
+        cancellation_event = threading.Event()
+        self._task_cancellations[job.id] = cancellation_event
+        deadline = _start_task_deadline(self.root, cancellation_event)
         completed_status = "completed"
         try:
             reply = self._run_direct_work(chat_id, request, session_key=session_key)
-            if _work_reply_failed(reply):
+            if deadline.expired.is_set():
+                reply = _task_timeout_message(deadline.timeout_seconds)
+                completed_status = "failed"
+            elif _work_reply_failed(reply):
                 completed_status = "failed"
         except BrainCancelled as error:
-            reply = str(error)
-            completed_status = "cancelled"
+            if deadline.expired.is_set():
+                reply = _task_timeout_message(deadline.timeout_seconds)
+                completed_status = "failed"
+            else:
+                reply = str(error)
+                completed_status = "cancelled"
         except Exception as error:
             reply = f"Enoch could not complete task #{job.id}: {error}"
             completed_status = "failed"
         finally:
+            deadline.cancel()
             _CURRENT_TASK_ID.reset(task_token)
+            self._task_cancellations.pop(job.id, None)
             if completed_status == "cancelled":
                 cancel_running_task(
                     self.root,
@@ -552,7 +589,13 @@ class EnochTelegramBot:
                     trigger=trigger,
                 )
             elif completed_status == "failed":
-                fail_task(job.id, self.root, result=reply, event_actor="agent", trigger=trigger)
+                fail_task(
+                    job.id,
+                    self.root,
+                    result=reply,
+                    event_actor="system" if deadline.expired.is_set() else "agent",
+                    trigger="task-timeout" if deadline.expired.is_set() else trigger,
+                )
             else:
                 complete_task(job.id, self.root, result=reply, event_actor="agent", trigger=trigger)
         completed = _history_task(job.id, self.root) or job
@@ -617,13 +660,18 @@ class EnochTelegramBot:
         )
 
     def _run_direct_work(self, chat_id: int, request: str, *, context: str = "", session_key: str) -> str:
+        self._raise_if_current_task_cancelled()
         github_maintenance = _github_maintenance_request(request)
         if github_maintenance is not None:
-            return self._run_github_maintenance(github_maintenance)
+            reply = self._run_github_maintenance(github_maintenance)
+            self._raise_if_current_task_cancelled()
+            return reply
 
         publish_branch = _existing_branch_publish_request(request)
         if publish_branch is not None:
-            return self._publish_existing_branch(chat_id, publish_branch)
+            reply = self._publish_existing_branch(chat_id, publish_branch)
+            self._raise_if_current_task_cancelled()
+            return reply
 
         try:
             sandbox = _action_sandbox(self.root)
@@ -641,6 +689,7 @@ class EnochTelegramBot:
                 progress_callback=lambda elapsed, sandbox: self._send_progress(chat_id, elapsed, sandbox),
                 cancellation_event=self._current_task_cancellation_event(),
             )
+            self._raise_if_current_task_cancelled()
             memory_result = extract_memory_requests(result)
             result = memory_result.visible_reply
             memory_note = self._save_memory_requests(memory_result.requests)
@@ -663,14 +712,18 @@ class EnochTelegramBot:
             return "\n\n".join(part for part in parts if part)
 
         self._send_step_update(chat_id, "Running doctor.")
+        self._raise_if_current_task_cancelled()
         doctor = run_immune_system(self.root)
+        self._raise_if_current_task_cancelled()
         parts.append(_format_doctor_result(doctor))
         self._send_step_update(chat_id, "Doctor passed." if doctor.passed else "Doctor failed.")
         if not doctor.passed:
             parts.append("I did not open a PR because doctor failed. Enoch is still on the feature branch for inspection.")
             return "\n\n".join(part for part in parts if part)
 
+        self._raise_if_current_task_cancelled()
         parts.append(self._publish_feature_pr(chat_id, request, action_files))
+        self._raise_if_current_task_cancelled()
         return "\n\n".join(part for part in parts if part)
 
     def _run_github_maintenance(self, request: "GithubMaintenanceRequest") -> str:
@@ -1196,6 +1249,21 @@ class EnochTelegramBot:
             return self._evolve_schedule(rest)
         return _evolve_usage()
 
+    def _propose_evolve(self, chat_id: int, *, trigger: str) -> EvolveProposal:
+        return propose_evolve(
+            self.root,
+            brainstormer=lambda theme: generate_brainstorm_ideas(
+                theme,
+                self.root,
+                mission=self.identity.mission,
+                generator=lambda prompt: self._respond_read_only_turn(
+                    chat_id,
+                    prompt,
+                    session_key=f"telegram:{chat_id}:{trigger}",
+                ),
+            ),
+        )
+
     def _evolve_approve(self, candidate_id: str) -> str:
         chat_id = self.client.config.allowed_chat_id
         if chat_id is None:
@@ -1479,7 +1547,7 @@ class EnochTelegramBot:
         chat_id = self.client.config.allowed_chat_id
         if chat_id is None or claimed.mode == MODE_DISABLED:
             return None
-        proposal = propose_evolve(self.root)
+        proposal = self._propose_evolve(chat_id, trigger="evolve-scheduler")
         if claimed.mode == MODE_CO_EVOLVE:
             self._safe_send_message(chat_id, "Scheduled evolve check\n\n" + _format_evolve_proposal(proposal))
             return None
@@ -1560,6 +1628,7 @@ class EnochTelegramBot:
         task_token = _CURRENT_TASK_ID.set(job.id)
         cancellation_event = threading.Event()
         self._task_cancellations[job.id] = cancellation_event
+        deadline = _start_task_deadline(self.root, cancellation_event)
         if task_status is not None:
             self._update_work_status(start_update, status="running")
         else:
@@ -1573,15 +1642,23 @@ class EnochTelegramBot:
                 completed_status = "failed"
             else:
                 reply = self._run_direct_work(job.chat_id, job.text, context=job.context, session_key=session_key)
-            if _work_reply_failed(reply):
+            if deadline.expired.is_set():
+                reply = _task_timeout_message(deadline.timeout_seconds)
+                completed_status = "failed"
+            elif _work_reply_failed(reply):
                 completed_status = "failed"
         except BrainCancelled as error:
-            reply = str(error)
-            completed_status = "cancelled"
+            if deadline.expired.is_set():
+                reply = _task_timeout_message(deadline.timeout_seconds)
+                completed_status = "failed"
+            else:
+                reply = str(error)
+                completed_status = "cancelled"
         except Exception as error:
             reply = f"{failure_prefix}: {error}"
             completed_status = "failed"
         finally:
+            deadline.cancel()
             _CURRENT_WORK_STATUS.reset(token)
             _CURRENT_TASK_ID.reset(task_token)
             self._task_cancellations.pop(job.id, None)
@@ -1594,7 +1671,13 @@ class EnochTelegramBot:
                 )
                 cancel_evolve_candidate_for_task(job, self.root)
             elif completed_status == "failed":
-                fail_task(job.id, self.root, result=reply)
+                fail_task(
+                    job.id,
+                    self.root,
+                    result=reply,
+                    event_actor="system" if deadline.expired.is_set() else "agent",
+                    trigger="task-timeout" if deadline.expired.is_set() else "task-runner",
+                )
                 fail_evolve_candidate_for_task(job, self.root)
             else:
                 complete_task(job.id, self.root, result=reply)
@@ -1627,6 +1710,11 @@ class EnochTelegramBot:
         if task_id is None:
             return None
         return self._task_cancellations.get(task_id)
+
+    def _raise_if_current_task_cancelled(self) -> None:
+        cancellation_event = self._current_task_cancellation_event()
+        if cancellation_event is not None and cancellation_event.is_set():
+            raise BrainCancelled("Enoch cancelled the active task.")
 
     def _record_automatic_learning(self, job: TaskJob, *, command: str, result: str) -> None:
         try:
@@ -2011,6 +2099,19 @@ def _work_reply_failed(reply: str) -> bool:
     )
 
 
+def _start_task_deadline(root: Path, cancellation_event: threading.Event) -> TaskDeadline:
+    deadline = TaskDeadline(
+        timeout_seconds=task_timeout_seconds(root),
+        cancellation_event=cancellation_event,
+    )
+    deadline.start()
+    return deadline
+
+
+def _task_timeout_message(timeout_seconds: int) -> str:
+    return f"Task exceeded the configured {format_task_timeout(timeout_seconds)} timeout."
+
+
 def _with_replied_message_context(text: str, message: dict[str, Any]) -> str:
     command, argument = _parse_telegram_command(text)
     if command not in {"/do", "/task", "/backlog", "/cron"} or not argument:
@@ -2353,13 +2454,25 @@ def _format_evolve_proposal(proposal: EvolveProposal) -> str:
         return "Evolve is disabled. Use /evolve mode co-evolve or /evolve mode auto-evolve before proposing."
     candidate = proposal.top_candidate
     if candidate is None:
+        if proposal.brainstorm_skip_reason == "candidate-running":
+            return "Enoch found no new evolve candidate because evolve work is already running."
+        if proposal.brainstorm_skip_reason == "theme-not-set":
+            return "Enoch found no new evolve candidate. Set a theme with /evolve theme <text> to enable fallback brainstorming."
+        if proposal.brainstorm_skip_reason == "cooldown":
+            return "Enoch found no new evolve candidate. Fallback brainstorming for this theme is on a 24-hour cooldown."
+        if proposal.brainstorm_error:
+            return f"Enoch found no new evolve candidate. Fallback brainstorming failed: {proposal.brainstorm_error}"
+        if proposal.brainstorm_attempted:
+            return "Enoch found no new evolve candidate after fallback brainstorming."
         return "Enoch found no new evolve candidate to propose."
     lines = [
         "Enoch proposes:",
         f"Theme: {report.state.theme or 'not set'}",
         f"Ranked {len(proposal.candidates)} new candidate(s) from the six evolve sources.",
-        "",
     ]
+    if proposal.brainstorm_attempted:
+        lines.append(f"Fallback brainstorm added {proposal.brainstorm_added} candidate(s).")
+    lines.append("")
     lines.extend(_format_evolve_candidate(candidate))
     lines.extend(
         [

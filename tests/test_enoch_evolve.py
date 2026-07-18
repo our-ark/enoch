@@ -1,5 +1,5 @@
 from pathlib import Path
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 import sys
 from tempfile import TemporaryDirectory
@@ -285,6 +285,87 @@ class EnochEvolveTests(unittest.TestCase):
         assert proposal.top_candidate is not None
         self.assertEqual(proposal.top_candidate.id, "backlog-1")
         self.assertEqual(proposal.top_candidate.status, "candidate")
+
+    def test_proposal_does_not_brainstorm_when_candidate_exists(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            add_backlog_item(1, "existing work", root, priority="p1")
+            calls = []
+
+            proposal = propose_evolve(root, brainstormer=lambda theme: calls.append(theme) or ())
+
+        self.assertEqual(calls, [])
+        self.assertFalse(proposal.brainstorm_attempted)
+        self.assertEqual(proposal.top_candidate.source, "backlog")
+
+    def test_proposal_does_not_brainstorm_while_candidate_is_running(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            add_backlog_item(1, "running evolve work", root, priority="p1")
+            set_evolve_theme("reliable evolution", root)
+            run_evolve_candidate("backlog-1", root, theme="reliable evolution")
+            calls = []
+
+            proposal = propose_evolve(root, brainstormer=lambda theme: calls.append(theme) or ())
+
+        self.assertEqual(calls, [])
+        self.assertFalse(proposal.brainstorm_attempted)
+        self.assertEqual(proposal.brainstorm_skip_reason, "candidate-running")
+
+    def test_empty_proposal_requires_theme_before_fallback_brainstorm(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            calls = []
+
+            proposal = propose_evolve(root, brainstormer=lambda theme: calls.append(theme) or ())
+
+        self.assertEqual(calls, [])
+        self.assertFalse(proposal.brainstorm_attempted)
+        self.assertEqual(proposal.brainstorm_skip_reason, "theme-not-set")
+
+    def test_empty_proposal_brainstorms_once_per_theme_per_day(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            set_evolve_theme("reliable task telemetry", root)
+            calls = []
+
+            def brainstorm(theme: str):
+                calls.append(theme)
+                title = f"Improve telemetry fallback {len(calls)}"
+                response = json.dumps(
+                    [
+                        {
+                            "title": title,
+                            "rationale": "No stronger candidate exists.",
+                            "proposed_change": "Add a bounded telemetry improvement.",
+                            "expected_benefit": "Keeps evolution moving.",
+                            "risk": "The idea may be speculative.",
+                            "test_plan": "Add focused tests.",
+                        }
+                    ]
+                )
+                return generate_brainstorm_ideas(
+                    theme,
+                    root,
+                    mission="Evolve safely",
+                    generator=lambda _prompt: response,
+                )
+
+            start = datetime(2026, 7, 18, 9, 0, tzinfo=timezone.utc)
+            first = propose_evolve(root, brainstormer=brainstorm, now=start)
+            assert first.top_candidate is not None
+            remove_evolve_candidate(first.top_candidate.id, root, theme="reliable task telemetry")
+            second = propose_evolve(root, brainstormer=brainstorm, now=start + timedelta(hours=1))
+            third = propose_evolve(root, brainstormer=brainstorm, now=start + timedelta(hours=25))
+
+        self.assertTrue(first.brainstorm_attempted)
+        self.assertEqual(first.brainstorm_added, 1)
+        self.assertEqual(first.top_candidate.source, "brainstorming")
+        self.assertEqual(first.top_candidate.initiated_by, "agent")
+        self.assertFalse(second.brainstorm_attempted)
+        self.assertEqual(second.brainstorm_skip_reason, "cooldown")
+        self.assertTrue(third.brainstorm_attempted)
+        self.assertEqual(len(calls), 2)
 
     def test_completed_evolve_task_marks_candidate_done(self) -> None:
         with TemporaryDirectory() as temp:
