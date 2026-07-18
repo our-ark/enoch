@@ -20,14 +20,14 @@ Enoch collects exactly six semantic candidate sources:
 
 - **backlog** from `.enoch/backlog.json`;
 - **feedback** extracted conservatively from local conversation logs, including corrections, preferences, complaints, and repeated requests;
-- **experience** from failed or cancelled tasks, recurring workflows, and successful skill-work artifacts;
+- **experience** from the durable task experience journal, failed tasks, recurring workflows, repeated successful user workflows, and successful skill-work artifacts;
 - **inheritance** from direct-parent changes in `.agent/lineage_inbox.json`;
-- **learning** from skills discovered with `/evolve explore <agent>` or inspected with `/learn`, recorded in `.enoch/learning/peers.jsonl`; and
+- **learning** from skills explicitly inspected with `/learn`, recorded in `.enoch/learning/peers.jsonl`; and
 - **brainstorming** from bounded, structured LLM ideas generated under the current mission and evolution theme.
 
 The theme is ranking pressure, not a seventh source. `/evolve brainstorm` requires a non-empty theme, asks the reasoning engine for a small JSON list, validates the result, and persists only structured candidates in `.enoch/evolve_brainstorms.jsonl`.
 
-Candidates are persisted in `.enoch/evolve_candidates.json` so Enoch can remember whether a candidate has been selected, is running, is done, failed, cancelled, or has been rejected. Normal candidate views hide done, failed, cancelled, and rejected candidates.
+Candidates are persisted in `.enoch/evolve_candidates.json` so Enoch can remember whether a candidate is available, running, done, failed, cancelled, or removed. Normal candidate views hide done, failed, cancelled, and removed candidates.
 
 ## Scheduler
 
@@ -41,7 +41,9 @@ When the scheduler is due:
 - `co-evolve` mode runs the same proposal selection as `/propose` and sends that proposal to the locked Telegram chat.
 - `auto-evolve` mode runs the same proposal selection as `/propose` and turns its top new candidate into a queued task for review-oriented implementation.
 
-Proposal selection only considers candidates whose status is `candidate`. Already selected or running candidates are not proposed again.
+Proposal selection only considers candidates whose status is `candidate`. Running candidates are not proposed again.
+
+Every terminal `/do` or `/task` writes a structured record to `.enoch/experience.jsonl`. The journal records completed, failed, and cancelled outcomes, but only actionable failures, started cancellations, repeated successful user workflows, recurring jobs, and skill-work artifacts become evolve candidates.
 
 ## Guardrails
 
@@ -56,14 +58,12 @@ Enoch must require human direction before changing identity, mission, secrets, p
 - `/propose`
 - `/evolve`
 - `/evolve mode <mode>`
-- `/evolve theme <text>`
+- `/evolve theme [text]`
 - `/evolve brainstorm`
-- `/evolve explore <agent>`
-- `/evolve candidates`
-- `/evolve candidates all`
-- `/evolve select <id>`
-- `/evolve run <id>`
-- `/evolve reject <id>`
+- `/evolve list`
+- `/evolve list all`
+- `/evolve approve <id>`
+- `/evolve remove <id>`
 - `/evolve schedule <text>`
 - `/evolve schedule once a day`
 - `/evolve schedule every <interval>`

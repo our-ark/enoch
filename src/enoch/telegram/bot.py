@@ -62,16 +62,16 @@ from enoch.evolve import (
     load_evolve_candidates,
     load_evolve_state,
     propose_evolve,
-    reject_evolve_candidate,
+    remove_evolve_candidate,
     rank_evolve_candidates,
     run_evolve_candidate,
-    select_evolve_candidate,
     set_evolve_cron_schedule,
     set_evolve_daily_schedule,
     set_evolve_schedule,
     set_evolve_mode,
     set_evolve_theme,
 )
+from enoch.experience import ExperienceRecord, load_experience_records, record_task_experience
 from enoch.feedback import FeedbackSignal, extract_feedback_signals
 from enoch.git_tools import (
     GitError,
@@ -110,7 +110,6 @@ from enoch.identity import Identity, identity_file_path, load_identity
 from enoch.immune import ImmuneResult, run_immune_system
 from enoch.learn import (
     LearnError,
-    explore_peer_skills,
     learn_command,
     learn_skill_prompt,
     parse_learn_request,
@@ -143,7 +142,6 @@ from enoch.runtime import (
     PROTECTED_BRANCHES,
     WORKSPACE_WRITE_SANDBOX,
 )
-from enoch.skills import SkillsError
 from enoch.task_queue import (
     TaskJob,
     begin_direct_task,
@@ -927,6 +925,7 @@ class EnochTelegramBot:
             cancelled = cancel_task(cancel_id, self.root)
             if cancelled is None:
                 return f"Enoch could not cancel task #{cancel_id}. It may be running, completed, or missing."
+            self._record_task_experience(cancelled, command="/task cancel", result="Cancelled before running.")
             message_id = self._work_status_messages.pop(cancelled.id, cancelled.status_message_id)
             if message_id is not None:
                 cancelled_status = WorkStatusMessage(
@@ -988,6 +987,7 @@ class EnochTelegramBot:
         cancelled = cancel_running_task(self.root, result=result)
         if cancelled is None:
             return "No running task to stop."
+        self._record_task_experience(cancelled, command="/stop", result=result)
         message_id = self._work_status_messages.pop(cancelled.id, cancelled.status_message_id)
         if message_id is not None:
             stopped_status = WorkStatusMessage(
@@ -1093,7 +1093,7 @@ class EnochTelegramBot:
             return _format_evolve_report(evolve_report(self.root))
         if subcommand == "theme":
             if not rest.strip():
-                return "Use /evolve theme <text> to set Enoch's current evolution theme."
+                return _format_evolve_theme(load_evolve_state(self.root))
             set_evolve_theme(rest, self.root)
             return _format_evolve_report(evolve_report(self.root))
         if subcommand == "brainstorm":
@@ -1113,17 +1113,7 @@ class EnochTelegramBot:
                 return f"Enoch could not brainstorm evolution candidates: {error}"
             report = evolve_report(self.root)
             return f"Added {len(ideas)} theme-guided brainstorming candidate(s).\n\n" + _format_evolve_report(report)
-        if subcommand == "explore":
-            agent = rest.strip()
-            if not agent:
-                return "Use /evolve explore <agent> to inspect a non-parent agent's published skills."
-            try:
-                observations = explore_peer_skills(agent, self.root)
-            except (OSError, SkillsError, ValueError) as error:
-                return f"Enoch could not explore that peer agent: {error}"
-            report = evolve_report(self.root)
-            return f"Added {len(observations)} peer-learning candidate(s) from {agent}.\n\n" + _format_evolve_report(report)
-        if subcommand in {"candidate", "candidates"}:
+        if subcommand == "list":
             report = evolve_report(self.root)
             include_inactive = rest.strip().lower() in {"all", "inactive"}
             candidates = (
@@ -1132,53 +1122,46 @@ class EnochTelegramBot:
                 else report.candidates
             )
             return _format_evolve_candidates(candidates, include_inactive=include_inactive)
-        if subcommand == "select":
+        if subcommand == "remove":
             if not rest.strip():
-                return "Use /evolve select <id> to select a self-evolution candidate."
+                return "Use /evolve remove <id> to remove a self-evolution candidate."
             state = evolve_report(self.root).state
             try:
-                candidate = select_evolve_candidate(rest, self.root, theme=state.theme)
+                candidate = remove_evolve_candidate(rest, self.root, theme=state.theme)
             except ValueError as error:
                 return str(error)
-            return "Selected evolve candidate.\n\n" + "\n".join(_format_evolve_candidate(candidate))
-        if subcommand == "reject":
+            return "Removed evolve candidate.\n\n" + "\n".join(_format_evolve_candidate(candidate))
+        if subcommand == "approve":
             if not rest.strip():
-                return "Use /evolve reject <id> to reject a self-evolution candidate."
-            state = evolve_report(self.root).state
-            try:
-                candidate = reject_evolve_candidate(rest, self.root, theme=state.theme)
-            except ValueError as error:
-                return str(error)
-            return "Rejected evolve candidate.\n\n" + "\n".join(_format_evolve_candidate(candidate))
-        if subcommand == "run":
-            if not rest.strip():
-                return "Use /evolve run <id> to queue a self-evolution candidate."
-            return self._evolve_run(rest)
+                return "Use /evolve approve <id> to approve and queue a self-evolution candidate."
+            return self._evolve_approve(rest)
         if subcommand == "schedule":
             return self._evolve_schedule(rest)
         return _evolve_usage()
 
-    def _evolve_run(self, candidate_id: str) -> str:
+    def _evolve_approve(self, candidate_id: str) -> str:
         chat_id = self.client.config.allowed_chat_id
         if chat_id is None:
-            return "Enoch needs a locked Telegram chat before queueing evolve work."
+            return "Enoch needs a locked Telegram chat before approving evolve work."
         state = evolve_report(self.root).state
         try:
             candidate = get_evolve_candidate(candidate_id, self.root, theme=state.theme)
         except ValueError as error:
             return str(error)
+        if candidate.status != "candidate":
+            return f"Evolve candidate {candidate.id} cannot be approved from status {candidate.status}."
         try:
             job = enqueue_task(
                 chat_id,
                 _evolve_task_request(candidate, state.theme),
                 self.root,
                 context=_evolve_task_context(candidate),
-                context_source="evolve-run",
+                context_source="evolve-approve",
             )
         except (OSError, ValueError):
-            return "Enoch could not queue that evolve candidate."
+            return "Enoch could not approve and queue that evolve candidate."
         candidate = run_evolve_candidate(candidate.id, self.root, theme=state.theme)
-        return f"Queued evolve candidate {candidate.id} as task #{job.id}.\n\n" + "\n".join(
+        return f"Approved evolve candidate {candidate.id} and queued task #{job.id}.\n\n" + "\n".join(
             _format_evolve_candidate(candidate)
         )
 
@@ -1395,7 +1378,7 @@ class EnochTelegramBot:
                     cron.text,
                     self.root,
                     context=cron.context,
-                    context_source=cron.context_source or "cron",
+                    context_source=f"cron:{cron.context_source}" if cron.context_source else "cron",
                 )
             except (OSError, ValueError):
                 continue
@@ -1538,6 +1521,7 @@ class EnochTelegramBot:
                 complete_evolve_candidate_for_task(job, self.root)
         completed_job = _history_task(job.id, self.root)
         summary_job = completed_job or job
+        self._record_task_experience(summary_job, command=command, result=reply)
         if completed_status == "completed":
             self._record_automatic_learning(summary_job, command=command, result=reply)
         if task_status is not None:
@@ -1577,6 +1561,12 @@ class EnochTelegramBot:
                 context_source=job.context_source,
                 pr_urls=job.pr_urls,
             )
+        except (OSError, ValueError):
+            return
+
+    def _record_task_experience(self, job: TaskJob, *, command: str, result: str) -> None:
+        try:
+            record_task_experience(job, self.root, command=command, result=result)
         except (OSError, ValueError):
             return
 
@@ -2050,6 +2040,12 @@ def _recover_running_task_from_direct_action_log(root: Path) -> None:
     else:
         complete_task(running.id, root, result=result)
         complete_evolve_candidate_for_task(running, root)
+    completed = _history_task(running.id, root)
+    if completed is not None:
+        try:
+            record_task_experience(completed, root, command="/recovery", result=result)
+        except (OSError, ValueError):
+            pass
 
 
 def _latest_direct_action_result_for_task(job: TaskJob, root: Path) -> str:
@@ -2220,16 +2216,40 @@ def _format_feedback_signal(signal: FeedbackSignal) -> list[str]:
 
 def _format_experience_report(root: Path) -> str:
     state = load_evolve_state(root)
+    records = load_experience_records(root)
     candidates = rank_evolve_candidates(collect_experience_candidates(root), theme=state.theme)
-    lines = ["Experience:"]
-    if not candidates:
+    lines = ["Experience:", "", "Recent task experiences:"]
+    if records:
+        for record in records[:10]:
+            lines.extend(_format_experience_record(record))
+    else:
         lines.append("- none")
-        return "\n".join(lines)
-    for candidate in candidates[:10]:
-        lines.extend(_format_evolve_candidate(candidate))
-    if len(candidates) > 10:
-        lines.append(f"- {len(candidates) - 10} more")
+    lines.extend(["", "Current evolve candidates:"])
+    if candidates:
+        for candidate in candidates[:10]:
+            lines.extend(_format_evolve_candidate(candidate))
+        if len(candidates) > 10:
+            lines.append(f"- {len(candidates) - 10} more")
+    else:
+        lines.append("- none")
     return "\n".join(lines)
+
+
+def _format_experience_record(record: ExperienceRecord) -> list[str]:
+    lines = [
+        f"- task-{record.task_id} [{record.outcome}] {_clip_activity_text(record.request, limit=120)}",
+    ]
+    details = [record.command or "unknown command"]
+    if record.context_source:
+        details.append(f"context {record.context_source}")
+    if record.changed_files:
+        details.append(f"{len(record.changed_files)} changed file(s)")
+    if record.pr_urls:
+        details.append(f"{len(record.pr_urls)} PR(s)")
+    lines.append(f"  {'; '.join(details)}")
+    if record.result_summary:
+        lines.append(f"  Result: {_clip_activity_text(record.result_summary, limit=180)}")
+    return lines
 
 
 def _format_evolve_proposal(proposal: EvolveProposal) -> str:
@@ -2246,7 +2266,13 @@ def _format_evolve_proposal(proposal: EvolveProposal) -> str:
         "",
     ]
     lines.extend(_format_evolve_candidate(candidate))
-    lines.extend(["", f"Approve with /evolve run {candidate.id}."])
+    lines.extend(
+        [
+            "",
+            f"Approve with /evolve approve {candidate.id}.",
+            f"Remove with /evolve remove {candidate.id}.",
+        ]
+    )
     return "\n".join(lines)
 
 
@@ -2286,6 +2312,17 @@ def _format_evolve_schedule(state: EvolveState) -> str:
     return f"every {format_cron_interval(state.schedule_interval_seconds)}; next {next_run}{last_run}"
 
 
+def _format_evolve_theme(state: EvolveState) -> str:
+    return "\n".join(
+        [
+            "Evolve theme:",
+            state.theme or "not set",
+            "",
+            "Set with /evolve theme <text>.",
+        ]
+    )
+
+
 def _format_evolve_candidate(candidate: EvolveCandidate) -> list[str]:
     return [
         f"- {candidate.id} [{candidate.status} {candidate.source}] {_clip_activity_text(candidate.title, limit=100)}",
@@ -2323,7 +2360,7 @@ def _evolve_next_action(report: EvolveReport) -> str:
 
 def _evolve_task_request(candidate: EvolveCandidate, theme: str) -> str:
     lines = [
-        f"Evolve selected candidate {candidate.id}: {candidate.title}",
+        f"Evolve candidate {candidate.id}: {candidate.title}",
         "",
         f"Source: {candidate.source}",
         f"Theme: {theme or 'not set'}",
@@ -2340,7 +2377,7 @@ def _evolve_task_request(candidate: EvolveCandidate, theme: str) -> str:
 def _evolve_task_context(candidate: EvolveCandidate) -> str:
     return "\n".join(
         [
-            "Scheduled evolve candidate context:",
+            "Evolve candidate context:",
             f"ID: {candidate.id}",
             f"Source: {candidate.source}",
             f"Score: {candidate.score}",
@@ -2451,13 +2488,11 @@ def _evolve_usage() -> str:
             "Use /evolve to show Enoch's self-evolution status.",
             "Use /evolve mode <mode> to set self-evolution behavior.",
             "Modes: disabled, co-evolve, auto-evolve.",
-            "Use /evolve theme <text> to set the current evolution theme.",
+            "Use /evolve theme [text] to show or set the current evolution theme.",
             "Use /evolve brainstorm to generate bounded candidates under the current theme.",
-            "Use /evolve explore <agent> to discover skills from a non-parent agent.",
-            "Use /evolve candidates to show current candidates.",
-            "Use /evolve select <id> to select a candidate.",
-            "Use /evolve run <id> to queue a candidate as a task.",
-            "Use /evolve reject <id> to reject a candidate.",
+            "Use /evolve list to show current candidates.",
+            "Use /evolve approve <id> to approve and queue a candidate as a task.",
+            "Use /evolve remove <id> to remove a candidate from future proposals.",
             "Use /evolve schedule <text> to let Enoch interpret common schedule text.",
         ]
     )

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+import hashlib
 import json
 from pathlib import Path
 from typing import Iterable
@@ -10,6 +11,7 @@ from enoch.backlog import BacklogItem, backlog_status
 from enoch.automatic_learning import LearningArtifact, learning_index_path
 from enoch.brainstorming import BrainstormIdea, load_brainstorm_ideas
 from enoch.cron import CronJob, cron_status, format_cron_interval
+from enoch.experience import ExperienceRecord, load_experience_records
 from enoch.feedback import FeedbackSignal, extract_feedback_signals
 from enoch.learn import PeerLearningObservation, load_peer_learning_observations
 from enoch.lineage.core import LineageCandidate, load_parent_inbox_candidates
@@ -19,14 +21,14 @@ from enoch.task_queue import TaskJob, task_queue_status
 
 
 SCHEMA_VERSION = 1
-CANDIDATE_SCHEMA_VERSION = 1
+CANDIDATE_SCHEMA_VERSION = 2
 MODE_DISABLED = "disabled"
 MODE_CO_EVOLVE = "co-evolve"
 MODE_AUTO_EVOLVE = "auto-evolve"
 MODES = {MODE_DISABLED, MODE_CO_EVOLVE, MODE_AUTO_EVOLVE}
 DEFAULT_MODE = MODE_CO_EVOLVE
-CANDIDATE_STATUSES = {"candidate", "selected", "running", "done", "failed", "cancelled", "rejected"}
-VISIBLE_CANDIDATE_STATUSES = {"candidate", "selected", "running"}
+CANDIDATE_STATUSES = {"candidate", "running", "done", "failed", "cancelled", "removed"}
+VISIBLE_CANDIDATE_STATUSES = {"candidate", "running"}
 
 
 @dataclass(frozen=True)
@@ -335,7 +337,15 @@ def collect_evolve_candidates(
 
 def collect_experience_candidates(root: Path | None = None) -> tuple[EvolveCandidate, ...]:
     candidates: list[EvolveCandidate] = []
-    candidates.extend(_task_history_candidates(task_queue_status(root).history))
+    records = load_experience_records(root)
+    candidates.extend(_experience_record_candidates(records))
+    recorded_task_ids = {record.task_id for record in records}
+    candidates.extend(
+        _task_history_candidates(
+            job for job in task_queue_status(root).history if job.id not in recorded_task_ids
+        )
+    )
+    candidates.extend(_repeated_success_candidates(records))
     candidates.extend(_cron_candidates(cron_status(root).active))
     candidates.extend(_learning_candidates(_load_learning_artifacts(root)))
     return tuple(candidates)
@@ -384,16 +394,18 @@ def get_evolve_candidate(candidate_id: str, root: Path | None = None, *, theme: 
     raise ValueError(f"No evolve candidate found for {candidate_id}.")
 
 
-def select_evolve_candidate(candidate_id: str, root: Path | None = None, *, theme: str = "") -> EvolveCandidate:
-    return _set_candidate_status(candidate_id, "selected", root, theme=theme)
-
-
-def reject_evolve_candidate(candidate_id: str, root: Path | None = None, *, theme: str = "") -> EvolveCandidate:
-    return _set_candidate_status(candidate_id, "rejected", root, theme=theme)
+def remove_evolve_candidate(candidate_id: str, root: Path | None = None, *, theme: str = "") -> EvolveCandidate:
+    candidate = get_evolve_candidate(candidate_id, root, theme=theme)
+    if candidate.status != "candidate":
+        raise ValueError(f"Evolve candidate {candidate.id} cannot be removed from status {candidate.status}.")
+    return _set_candidate_status(candidate.id, "removed", root, theme=theme)
 
 
 def run_evolve_candidate(candidate_id: str, root: Path | None = None, *, theme: str = "") -> EvolveCandidate:
-    return _set_candidate_status(candidate_id, "running", root, theme=theme)
+    candidate = get_evolve_candidate(candidate_id, root, theme=theme)
+    if candidate.status != "candidate":
+        raise ValueError(f"Evolve candidate {candidate.id} cannot run from status {candidate.status}.")
+    return _set_candidate_status(candidate.id, "running", root, theme=theme)
 
 
 def complete_evolve_candidate(candidate_id: str, root: Path | None = None, *, theme: str = "") -> EvolveCandidate:
@@ -536,6 +548,10 @@ def _candidate_from_json(raw: dict[str, object]) -> EvolveCandidate | None:
     if not candidate_id or not title:
         return None
     status = clean_text(str(raw.get("status") or "candidate")).lower()
+    if status == "selected":
+        status = "candidate"
+    if status == "rejected":
+        status = "removed"
     if status not in CANDIDATE_STATUSES:
         status = "candidate"
     source = clean_text(str(raw.get("source") or "unknown")) or "unknown"
@@ -563,7 +579,7 @@ def _candidate_matches_id(candidate: EvolveCandidate, candidate_id: str) -> bool
 
 
 def _evolve_candidate_id_from_task(job: TaskJob) -> str:
-    if job.context_source not in {"evolve-run", "evolve-scheduler"}:
+    if job.context_source not in {"evolve-approve", "evolve-run", "evolve-scheduler"}:
         return ""
     for raw_line in job.context.splitlines():
         label, separator, value = raw_line.partition(":")
@@ -574,14 +590,13 @@ def _evolve_candidate_id_from_task(job: TaskJob) -> str:
 
 def _candidate_status_order(status: str) -> int:
     return {
-        "selected": 0,
-        "running": 1,
-        "candidate": 2,
-        "done": 3,
-        "failed": 4,
-        "cancelled": 5,
-        "rejected": 6,
-    }.get(status, 2)
+        "running": 0,
+        "candidate": 1,
+        "done": 2,
+        "failed": 3,
+        "cancelled": 4,
+        "removed": 5,
+    }.get(status, 1)
 
 
 def _backlog_candidates(items: Iterable[BacklogItem]) -> list[EvolveCandidate]:
@@ -655,6 +670,8 @@ def _task_history_candidates(items: Iterable[TaskJob]) -> list[EvolveCandidate]:
     for item in items:
         if item.status not in {"failed", "cancelled"}:
             continue
+        if item.status == "cancelled" and not item.started_at:
+            continue
         result = clean_text(item.result)
         is_failed = item.status == "failed"
         candidates.append(
@@ -674,6 +691,74 @@ def _task_history_candidates(items: Iterable[TaskJob]) -> list[EvolveCandidate]:
                 risk="The original task may have failed for transient reasons, so avoid broad changes without evidence.",
                 test_plan="Reproduce the failed or cancelled path if possible, then run focused tests around the changed workflow.",
                 score=30 if is_failed else 18,
+            )
+        )
+    return candidates
+
+
+def _experience_record_candidates(items: Iterable[ExperienceRecord]) -> list[EvolveCandidate]:
+    candidates = []
+    for item in items:
+        if item.outcome not in {"failed", "cancelled"}:
+            continue
+        if item.outcome == "cancelled" and not item.started:
+            continue
+        is_failed = item.outcome == "failed"
+        candidates.append(
+            EvolveCandidate(
+                id=f"task-{item.task_id}",
+                source="experience",
+                title=f"Improve reliability after {item.outcome} task #{item.task_id}: {item.request}",
+                rationale=(
+                    f"Experience journal recorded task #{item.task_id} as {item.outcome}."
+                    + (f" Result: {clean_text(item.result_summary)}" if item.result_summary else "")
+                ),
+                proposed_change=(
+                    "Inspect the recorded task experience and add the smallest fix or guardrail that prevents "
+                    "similar work from failing again."
+                ),
+                expected_benefit="Turns a durable operational experience into a concrete reliability improvement.",
+                risk="The task may have failed for transient reasons, so confirm the lesson before changing behavior.",
+                test_plan="Reproduce the recorded failure if possible, then run focused tests around the changed workflow.",
+                score=30 if is_failed else 18,
+            )
+        )
+    return candidates
+
+
+def _repeated_success_candidates(items: Iterable[ExperienceRecord]) -> list[EvolveCandidate]:
+    grouped: dict[str, list[ExperienceRecord]] = {}
+    for item in items:
+        if item.outcome != "completed":
+            continue
+        if item.context_source.startswith("cron") or item.context_source in {
+            "evolve-approve",
+            "evolve-run",
+            "evolve-scheduler",
+        }:
+            continue
+        key = clean_text(item.request).lower()
+        grouped.setdefault(key, []).append(item)
+    candidates = []
+    for key, records in grouped.items():
+        if len(records) < 2:
+            continue
+        latest = records[0]
+        digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:12]
+        candidates.append(
+            EvolveCandidate(
+                id=f"experience-repeat-{digest}",
+                source="experience",
+                title=f"Review repeated successful workflow: {latest.request}",
+                rationale=f"The experience journal records this workflow completing successfully {len(records)} times.",
+                proposed_change=(
+                    "Inspect the successful runs and decide whether a reusable command, skill, template, or automation "
+                    "would preserve the proven pattern without overfitting."
+                ),
+                expected_benefit="Converts repeated successful work into reusable capability when the evidence supports it.",
+                risk="Repeated requests may still differ in important context; do not automate away necessary judgment.",
+                test_plan="Add focused tests for any extracted reusable behavior and verify existing task execution remains intact.",
+                score=18 + min(len(records), 5),
             )
         )
     return candidates

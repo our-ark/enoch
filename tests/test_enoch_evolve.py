@@ -26,9 +26,8 @@ from enoch.evolve import (
     load_evolve_state,
     propose_evolve,
     rank_evolve_candidates,
-    reject_evolve_candidate,
+    remove_evolve_candidate,
     run_evolve_candidate,
-    select_evolve_candidate,
     set_evolve_cron_schedule,
     set_evolve_daily_schedule,
     set_evolve_schedule,
@@ -36,11 +35,12 @@ from enoch.evolve import (
     set_evolve_theme,
     sync_evolve_candidates,
 )
+from enoch.experience import record_task_experience
 from enoch.identity import load_identity
 from enoch.learn import LearnRequest, record_peer_learning_observation
 from enoch.lineage.core import LineageCandidate
 from enoch.logs import log_conversation_turn
-from enoch.task_queue import begin_next_task, enqueue_task, fail_task
+from enoch.task_queue import TaskJob, begin_next_task, enqueue_task, fail_task
 
 
 class EnochEvolveTests(unittest.TestCase):
@@ -87,6 +87,43 @@ class EnochEvolveTests(unittest.TestCase):
         sources = {candidate.source for candidate in candidates}
         self.assertEqual(sources, {"experience"})
         self.assertEqual(report.counts_by_source["experience"], 3)
+
+    def test_repeated_successful_experiences_become_one_reuse_candidate(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            for task_id in (1, 2):
+                record_task_experience(
+                    _experience_task(task_id, "summarize repository health"),
+                    root,
+                    command="/task",
+                )
+
+            candidates = collect_evolve_candidates(root)
+
+        repeated = [candidate for candidate in candidates if candidate.id.startswith("experience-repeat-")]
+        self.assertEqual(len(repeated), 1)
+        self.assertIn("completing successfully 2 times", repeated[0].rationale)
+
+    def test_unstarted_cancellation_is_journaled_but_not_an_evolve_candidate(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            record_task_experience(
+                TaskJob(
+                    id=3,
+                    chat_id=42,
+                    text="cancel this before it starts",
+                    created_at="2026-07-18T00:00:00+00:00",
+                    completed_at="2026-07-18T00:01:00+00:00",
+                    status="cancelled",
+                    result="Cancelled before running.",
+                ),
+                root,
+                command="/task cancel",
+            )
+
+            candidates = collect_evolve_candidates(root)
+
+        self.assertNotIn("task-3", {candidate.id for candidate in candidates})
 
     def test_collects_exactly_the_six_declared_evolution_sources(self) -> None:
         brainstorm_response = json.dumps(
@@ -178,24 +215,43 @@ class EnochEvolveTests(unittest.TestCase):
         self.assertEqual(state.theme, "improve Telegram work UX")
         self.assertEqual(loaded.theme, "improve Telegram work UX")
 
-    def test_candidate_status_is_persisted_across_reports(self) -> None:
+    def test_removed_candidate_status_is_persisted_across_reports(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
             add_backlog_item(1, "low value cleanup", root, priority="p2")
-            add_backlog_item(2, "important Telegram recovery", root, priority="p0")
 
-            selected = select_evolve_candidate("backlog-1", root)
-            report = evolve_report(root)
-            rejected = reject_evolve_candidate("backlog-1", root)
+            removed = remove_evolve_candidate("backlog-1", root)
             visible = load_evolve_candidates(root)
             all_candidates = load_evolve_candidates(root, include_inactive=True)
 
-        self.assertEqual(selected.status, "selected")
-        self.assertEqual(report.top_candidate.id, "backlog-1")
-        self.assertEqual(report.top_candidate.status, "selected")
-        self.assertEqual(rejected.status, "rejected")
+        self.assertEqual(removed.status, "removed")
         self.assertNotIn("backlog-1", {candidate.id for candidate in visible})
-        self.assertIn("backlog-1", {candidate.id for candidate in all_candidates})
+        statuses = {candidate.id: candidate.status for candidate in all_candidates}
+        self.assertEqual(statuses["backlog-1"], "removed")
+
+    def test_legacy_selected_and_rejected_statuses_are_migrated(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            path = root / ".enoch" / "evolve_candidates.json"
+            path.parent.mkdir(parents=True)
+            path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "candidates": [
+                            {"id": "legacy-selected", "title": "Selected", "status": "selected"},
+                            {"id": "legacy-rejected", "title": "Rejected", "status": "rejected"},
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            candidates = load_evolve_candidates(root, include_inactive=True)
+
+        statuses = {candidate.id: candidate.status for candidate in candidates}
+        self.assertEqual(statuses["legacy-selected"], "candidate")
+        self.assertEqual(statuses["legacy-rejected"], "removed")
 
     def test_run_candidate_marks_it_running(self) -> None:
         with TemporaryDirectory() as temp:
@@ -230,10 +286,10 @@ class EnochEvolveTests(unittest.TestCase):
             run_evolve_candidate("backlog-1", root)
             job = enqueue_task(
                 42,
-                "Evolve selected candidate backlog-1",
+                "Evolve approved candidate backlog-1",
                 root,
-                context="\n".join(["Scheduled evolve candidate context:", "ID: backlog-1"]),
-                context_source="evolve-run",
+                context="\n".join(["Evolve candidate context:", "ID: backlog-1"]),
+                context_source="evolve-approve",
             )
 
             completed = complete_evolve_candidate_for_task(job, root)
@@ -255,17 +311,17 @@ class EnochEvolveTests(unittest.TestCase):
             run_evolve_candidate("backlog-2", root)
             failed_job = enqueue_task(
                 42,
-                "Evolve selected candidate backlog-1",
+                "Evolve approved candidate backlog-1",
                 root,
-                context="\n".join(["Scheduled evolve candidate context:", "ID: backlog-1"]),
-                context_source="evolve-run",
+                context="\n".join(["Evolve candidate context:", "ID: backlog-1"]),
+                context_source="evolve-approve",
             )
             cancelled_job = enqueue_task(
                 42,
-                "Evolve selected candidate backlog-2",
+                "Evolve approved candidate backlog-2",
                 root,
-                context="\n".join(["Scheduled evolve candidate context:", "ID: backlog-2"]),
-                context_source="evolve-run",
+                context="\n".join(["Evolve candidate context:", "ID: backlog-2"]),
+                context_source="evolve-approve",
             )
 
             failed = fail_evolve_candidate_for_task(failed_job, root)
@@ -371,6 +427,19 @@ def _lineage_candidate() -> LineageCandidate:
         confidence="high",
         reason="PR has an inheritance label.",
         body_excerpt="Adds a recovery command.",
+    )
+
+
+def _experience_task(task_id: int, text: str) -> TaskJob:
+    return TaskJob(
+        id=task_id,
+        chat_id=42,
+        text=text,
+        created_at=f"2026-07-18T00:0{task_id}:00+00:00",
+        started_at=f"2026-07-18T00:0{task_id}:10+00:00",
+        completed_at=f"2026-07-18T00:0{task_id}:20+00:00",
+        status="completed",
+        result="Completed successfully.",
     )
 
 

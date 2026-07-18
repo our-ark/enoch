@@ -57,7 +57,10 @@ Feedback includes corrections, frustrations, repeated requests, UX complaints, a
 
 ### experience
 
-Enoch can learn from her own work experience.
+Enoch writes terminal task outcomes to `.enoch/experience.jsonl`, including the
+request, outcome, result summary, context source, pull requests, and changed files.
+The journal keeps successful work visible without turning every success into an
+evolve candidate.
 
 Experience candidates come from failures, repeated manual steps, confusing flows, missing commands, test failures, recovery friction, and places where Enoch notices she needed human help for something she could safely automate next time.
 
@@ -65,7 +68,7 @@ Experience candidates come from failures, repeated manual steps, confusing flows
 
 Enoch can use an LLM brainstorming pass to generate new self-improvement ideas.
 
-Brainstorm candidates should be treated as speculative. They need ranking and risk checks before becoming selected work.
+Brainstorm candidates should be treated as speculative. They need ranking and risk checks before becoming approved work.
 
 ### inheritance
 
@@ -93,7 +96,7 @@ expected_benefit: What improves if this lands
 risk: What could go wrong
 test_plan: How Enoch will verify the change
 requires_human_approval: true
-status: candidate|selected|running|done|rejected
+status: candidate|running|done|failed|cancelled|removed
 ```
 
 ## Selection
@@ -116,7 +119,7 @@ score(candidate) =
 - requires_human_decision
 ```
 
-The selected candidate should usually be:
+The proposed candidate should usually be:
 
 - aligned with the current theme
 - small enough to review
@@ -190,13 +193,11 @@ Candidate selection and control:
 /propose
 /evolve
 /evolve mode <mode>
-/evolve theme <text>
+/evolve theme [text]
 /evolve brainstorm
-/evolve explore <agent>
-/evolve candidates
-/evolve select <id>
-/evolve run <id>
-/evolve reject <id>
+/evolve list
+/evolve approve <id>
+/evolve remove <id>
 /evolve schedule <text>
 ```
 
@@ -205,7 +206,7 @@ shows candidates derived from Enoch's task history, recurring workflows, and
 successful skill work. `/propose` refreshes all six sources, ranks the available
 candidates, and presents the strongest new candidate without selecting or running it.
 Scheduled co-evolve and auto-evolve checks use the same proposal selection, so
-selected or running candidates are not proposed or queued again.
+running candidates are not proposed or queued again.
 
 ## Principle
 

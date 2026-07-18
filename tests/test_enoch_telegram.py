@@ -21,6 +21,7 @@ from enoch.config import read_section
 from enoch.command_surface import checktree as _checktree
 from enoch.cron import add_cron_job, cron_status
 from enoch.evolve import MODE_AUTO_EVOLVE, evolve_report, load_evolve_candidates, set_evolve_mode, set_evolve_schedule
+from enoch.experience import load_experience_records, record_task_experience
 from enoch.git_tools import GitError
 from enoch.github.workflow import (
     LocalPublishResult,
@@ -605,12 +606,12 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("/cron - show scheduled jobs", client.sent[0][1])
         self.assertIn("/evolve - show self-evolution mode, theme, and top candidate", client.sent[0][1])
         self.assertIn("/feedback - show feedback signals available to self-evolution", client.sent[0][1])
-        self.assertIn("/experience - show experience candidates from Enoch's work history", client.sent[0][1])
+        self.assertIn("/experience - show the task experience journal and evolution candidates", client.sent[0][1])
         self.assertIn("/propose - rank all evolve sources and propose the strongest candidate", client.sent[0][1])
         self.assertNotIn("/evolve mode <mode> - set self-evolution behavior", client.sent[0][1])
         self.assertNotIn("/evolve mode disabled|co-evolve|auto-evolve", client.sent[0][1])
         self.assertNotIn("/evolve theme <text> - set the current self-evolution theme", client.sent[0][1])
-        self.assertNotIn("/evolve candidates - show current self-evolution candidates", client.sent[0][1])
+        self.assertNotIn("/evolve list - show current self-evolution candidates", client.sent[0][1])
         self.assertNotIn("/evolve select <id> - select a self-evolution candidate", client.sent[0][1])
         self.assertNotIn("/evolve run <id> - queue a self-evolution candidate as a task", client.sent[0][1])
         self.assertNotIn("/evolve reject <id> - reject a self-evolution candidate", client.sent[0][1])
@@ -682,20 +683,25 @@ class EnochTelegramTests(unittest.TestCase):
 
         reply = client.sent[0][1]
         self.assertIn("Evolve commands:", reply)
-        self.assertIn("/feedback", reply)
-        self.assertIn("/experience", reply)
-        self.assertIn("/propose", reply)
+        self.assertNotIn("/feedback", reply)
+        self.assertNotIn("/experience", reply)
+        self.assertNotIn("/propose", reply)
+        self.assertIn("/evolve - show self-evolution mode, theme, and top candidate", reply)
         self.assertIn("/evolve mode <mode>", reply)
         self.assertIn("Modes: disabled, co-evolve, auto-evolve.", reply)
         self.assertNotIn("/evolve mode disabled|co-evolve|auto-evolve", reply)
         self.assertNotIn("/evolve co-evolve - propose candidates", reply)
         self.assertNotIn("/evolve disabled - stop collecting", reply)
         self.assertNotIn("/evolve auto-evolve - select bounded", reply)
-        self.assertIn("/evolve theme <text>", reply)
-        self.assertIn("/evolve candidates", reply)
-        self.assertIn("/evolve select <id>", reply)
-        self.assertIn("/evolve run <id>", reply)
-        self.assertIn("/evolve reject <id>", reply)
+        self.assertIn("/evolve theme [text]", reply)
+        self.assertNotIn("/evolve explore", reply)
+        self.assertIn("/evolve list", reply)
+        self.assertNotIn("/evolve candidates", reply)
+        self.assertNotIn("/evolve select <id>", reply)
+        self.assertNotIn("/evolve run <id>", reply)
+        self.assertNotIn("/evolve reject <id>", reply)
+        self.assertIn("/evolve approve <id>", reply)
+        self.assertIn("/evolve remove <id>", reply)
         self.assertIn("/evolve schedule <text>", reply)
         self.assertNotIn("/evolve schedule off - stop scheduled evolve checks", reply)
         self.assertNotIn("/evolve schedule once a day - run evolve once per day", reply)
@@ -703,6 +709,21 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertNotIn("/evolve schedule daily HH:MM - run evolve once per day at local time", reply)
         self.assertNotIn("/evolve schedule cron '30 9 * * *' - run evolve with a cron-style daily schedule", reply)
         self.assertNotIn("Enoch Telegram commands:", reply)
+
+    def test_evolve_related_top_level_commands_have_separate_help_topics(self) -> None:
+        topics = {
+            "feedback": "/feedback - show feedback signals available to self-evolution",
+            "experience": "/experience - show the task experience journal and evolution candidates",
+            "propose": "/propose - rank all evolve sources and propose the strongest candidate",
+        }
+        for index, (topic, expected) in enumerate(topics.items(), start=1):
+            with self.subTest(topic=topic):
+                client = FakeTelegramClient(allowed_chat_id=42)
+                bot = EnochTelegramBot(load_identity(), ROOT, client)
+
+                bot.handle_update(_message_update(update_id=index, chat_id=42, text=f"/help {topic}"))
+
+                self.assertEqual(client.sent[0][1], expected)
 
     def test_help_debug_reports_unknown_command(self) -> None:
         client = FakeTelegramClient(allowed_chat_id=42)
@@ -972,6 +993,7 @@ class EnochTelegramTests(unittest.TestCase):
 
             with patch.object(bot, "_run_direct_work", side_effect=run_task) as run_direct_work:
                 bot._run_task_job(job)
+            experiences = load_experience_records(root)
 
         self.assertEqual(len(client.sent), 2)
         self.assertGreaterEqual(len(client.edited), 3)
@@ -986,6 +1008,10 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("PR URL:\n- none", client.sent[-1][1])
         self.assertIn("Result summary:\nDone with the task.", client.sent[-1][1])
         self.assertEqual(run_direct_work.call_args.kwargs["context"], "Use the agreed task snapshot.")
+        self.assertEqual(len(experiences), 1)
+        self.assertEqual(experiences[0].outcome, "completed")
+        self.assertEqual(experiences[0].request, "add queued work")
+        self.assertEqual(experiences[0].command, "/task")
         log_conversation_turn.assert_called()
 
     def test_task_worker_records_learning_only_for_skill_changes(self) -> None:
@@ -1271,6 +1297,35 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("Experience:", reply)
         self.assertIn("cron-1 [candidate experience] Review recurring workflow #1", reply)
 
+    def test_experience_lists_recent_journal_records(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            record_task_experience(
+                TaskJob(
+                    id=7,
+                    chat_id=42,
+                    text="improve Telegram recovery",
+                    created_at="2026-07-18T00:00:00+00:00",
+                    started_at="2026-07-18T00:01:00+00:00",
+                    completed_at="2026-07-18T00:02:00+00:00",
+                    status="completed",
+                    result="Recovery tests passed.",
+                    context_source="chat-snapshot",
+                ),
+                root,
+                command="/task",
+            )
+            client = FakeTelegramClient(allowed_chat_id=42)
+            bot = EnochTelegramBot(load_identity(), root, client)
+
+            bot.handle_update(_message_update(chat_id=42, text="/experience"))
+
+        reply = client.sent[0][1]
+        self.assertIn("Recent task experiences:", reply)
+        self.assertIn("task-7 [completed] improve Telegram recovery", reply)
+        self.assertIn("/task; context chat-snapshot", reply)
+        self.assertIn("Result: Recovery tests passed.", reply)
+
     def test_propose_ranks_all_sources_without_selecting_candidate(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
@@ -1285,10 +1340,11 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("Enoch proposes:", reply)
         self.assertIn("Ranked 1 new candidate(s) from the six evolve sources.", reply)
         self.assertIn("backlog-1 [candidate backlog] improve Telegram work UX", reply)
-        self.assertIn("Approve with /evolve run backlog-1.", reply)
+        self.assertIn("Approve with /evolve approve backlog-1.", reply)
+        self.assertIn("Remove with /evolve remove backlog-1.", reply)
         self.assertEqual(candidates[0].status, "candidate")
 
-    def test_evolve_can_list_select_and_reject_candidates(self) -> None:
+    def test_evolve_can_list_and_remove_candidates(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
             add_backlog_item(42, "low value cleanup", root, priority="p2")
@@ -1296,42 +1352,70 @@ class EnochTelegramTests(unittest.TestCase):
             client = FakeTelegramClient(allowed_chat_id=42)
             bot = EnochTelegramBot(load_identity(), root, client)
 
-            bot.handle_update(_message_update(chat_id=42, text="/evolve candidates"))
-            bot.handle_update(_message_update(update_id=2, chat_id=42, text="/evolve select backlog-1"))
-            bot.handle_update(_message_update(update_id=3, chat_id=42, text="/evolve"))
-            bot.handle_update(_message_update(update_id=4, chat_id=42, text="/evolve reject 1"))
-            bot.handle_update(_message_update(update_id=5, chat_id=42, text="/evolve candidates"))
-            bot.handle_update(_message_update(update_id=6, chat_id=42, text="/evolve candidates all"))
+            bot.handle_update(_message_update(chat_id=42, text="/evolve list"))
+            bot.handle_update(_message_update(update_id=2, chat_id=42, text="/evolve remove backlog-1"))
+            bot.handle_update(_message_update(update_id=3, chat_id=42, text="/evolve list"))
+            bot.handle_update(_message_update(update_id=4, chat_id=42, text="/evolve list all"))
 
         self.assertIn("Evolve candidates:", client.sent[0][1])
         self.assertIn("backlog-1 [candidate backlog] low value cleanup", client.sent[0][1])
-        self.assertIn("Selected evolve candidate.", client.sent[1][1])
-        self.assertIn("backlog-1 [selected backlog] low value cleanup", client.sent[1][1])
-        self.assertIn("backlog-1 [selected backlog] low value cleanup", client.sent[2][1])
-        self.assertIn("Rejected evolve candidate.", client.sent[3][1])
-        self.assertNotIn("backlog-1", client.sent[4][1])
-        self.assertIn("backlog-1 [rejected backlog] low value cleanup", client.sent[5][1])
+        self.assertIn("Removed evolve candidate.", client.sent[1][1])
+        self.assertIn("backlog-1 [removed backlog] low value cleanup", client.sent[1][1])
+        self.assertNotIn("backlog-1", client.sent[2][1])
+        self.assertIn("backlog-1 [removed backlog] low value cleanup", client.sent[3][1])
 
-    def test_evolve_run_queues_candidate_as_task(self) -> None:
+    def test_removed_evolve_commands_no_longer_change_candidates(self) -> None:
+        for index, command in enumerate(("select", "run", "reject"), start=1):
+            with self.subTest(command=command), TemporaryDirectory() as temp:
+                root = Path(temp)
+                add_backlog_item(42, "keep this candidate", root, priority="p1")
+                client = FakeTelegramClient(allowed_chat_id=42)
+                bot = EnochTelegramBot(load_identity(), root, client)
+
+                bot.handle_update(
+                    _message_update(update_id=index, chat_id=42, text=f"/evolve {command} backlog-1")
+                )
+                candidates = evolve_report(root).candidates
+                queued = task_queue_status(root)
+
+                self.assertIn("Use /evolve approve", client.sent[0][1])
+                self.assertEqual(candidates[0].status, "candidate")
+                self.assertEqual(queued.pending_count, 0)
+
+    def test_evolve_approve_queues_candidate_as_task(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
-            add_backlog_item(42, "ship evolve run", root, priority="p1")
+            add_backlog_item(42, "ship evolve approval", root, priority="p1")
             client = FakeTelegramClient(allowed_chat_id=42)
             bot = EnochTelegramBot(load_identity(), root, client)
 
-            bot.handle_update(_message_update(chat_id=42, text="/evolve run backlog-1"))
+            bot.handle_update(_message_update(chat_id=42, text="/evolve approve backlog-1"))
             queued = task_queue_status(root)
 
         self.assertEqual(queued.pending_count, 1)
-        self.assertIn("Queued evolve candidate backlog-1 as task #1.", client.sent[0][1])
-        self.assertIn("backlog-1 [running backlog] ship evolve run", client.sent[0][1])
-        self.assertIn("Evolve selected candidate backlog-1", queued.pending[0].text)
-        self.assertEqual(queued.pending[0].context_source, "evolve-run")
-        self.assertIn("Scheduled evolve candidate context:", queued.pending[0].context)
+        self.assertIn("Approved evolve candidate backlog-1 and queued task #1.", client.sent[0][1])
+        self.assertIn("backlog-1 [running backlog] ship evolve approval", client.sent[0][1])
+        self.assertIn("Evolve candidate backlog-1", queued.pending[0].text)
+        self.assertEqual(queued.pending[0].context_source, "evolve-approve")
+        self.assertIn("Evolve candidate context:", queued.pending[0].context)
+
+    def test_evolve_cannot_approve_removed_candidate(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            add_backlog_item(42, "remove this candidate", root, priority="p1")
+            client = FakeTelegramClient(allowed_chat_id=42)
+            bot = EnochTelegramBot(load_identity(), root, client)
+
+            bot.handle_update(_message_update(chat_id=42, text="/evolve remove backlog-1"))
+            bot.handle_update(_message_update(update_id=2, chat_id=42, text="/evolve approve backlog-1"))
+            queued = task_queue_status(root)
+
+        self.assertIn("cannot be approved from status removed", client.sent[1][1])
+        self.assertEqual(queued.pending_count, 0)
 
     @patch("enoch.telegram.bot.ensure_long_term_memory")
     @patch("enoch.telegram.bot.log_conversation_turn")
-    def test_evolve_run_candidate_is_marked_done_after_task_completion(
+    def test_evolve_approved_candidate_is_marked_done_after_task_completion(
         self,
         _log_conversation_turn: MagicMock,
         _update_memory: MagicMock,
@@ -1342,7 +1426,7 @@ class EnochTelegramTests(unittest.TestCase):
             client = FakeTelegramClient(allowed_chat_id=42)
             bot = EnochTelegramBot(load_identity(), root, client)
 
-            bot.handle_update(_message_update(chat_id=42, text="/evolve run backlog-1"))
+            bot.handle_update(_message_update(chat_id=42, text="/evolve approve backlog-1"))
             job = begin_next_task(root)
             assert job is not None
             with patch.object(bot, "_run_direct_work", return_value="Done with evolve work."):
@@ -1357,7 +1441,7 @@ class EnochTelegramTests(unittest.TestCase):
 
     @patch("enoch.telegram.bot.ensure_long_term_memory")
     @patch("enoch.telegram.bot.log_conversation_turn")
-    def test_evolve_run_candidate_is_marked_failed_after_task_failure(
+    def test_evolve_approved_candidate_is_marked_failed_after_task_failure(
         self,
         _log_conversation_turn: MagicMock,
         _update_memory: MagicMock,
@@ -1368,7 +1452,7 @@ class EnochTelegramTests(unittest.TestCase):
             client = FakeTelegramClient(allowed_chat_id=42)
             bot = EnochTelegramBot(load_identity(), root, client)
 
-            bot.handle_update(_message_update(chat_id=42, text="/evolve run backlog-1"))
+            bot.handle_update(_message_update(chat_id=42, text="/evolve approve backlog-1"))
             job = begin_next_task(root)
             assert job is not None
             with patch.object(bot, "_run_direct_work", return_value="Enoch could not publish this edit as a pull request: GH007"):
@@ -1395,6 +1479,20 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("Theme: improve recovery", client.sent[0][1])
         self.assertIn("Mode: disabled", client.sent[1][1])
         self.assertIn("Candidate counts:\n- none", client.sent[1][1])
+
+    def test_evolve_theme_shows_current_theme(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            client = FakeTelegramClient(allowed_chat_id=42)
+            bot = EnochTelegramBot(load_identity(), root, client)
+
+            bot.handle_update(_message_update(chat_id=42, text="/evolve theme"))
+            bot.handle_update(_message_update(update_id=2, chat_id=42, text="/evolve theme improve recovery"))
+            bot.handle_update(_message_update(update_id=3, chat_id=42, text="/evolve theme"))
+
+        self.assertIn("Evolve theme:\nnot set", client.sent[0][1])
+        self.assertIn("Evolve theme:\nimprove recovery", client.sent[2][1])
+        self.assertIn("Set with /evolve theme <text>.", client.sent[2][1])
 
     @patch(
         "enoch.telegram.bot.respond",
@@ -1436,8 +1534,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("Set a theme", client.sent[0][1])
         respond.assert_not_called()
 
-    @patch("enoch.telegram.bot.explore_peer_skills", return_value=(MagicMock(), MagicMock()))
-    def test_evolve_explore_discovers_peer_skills(self, explore_peer_skills: MagicMock) -> None:
+    def test_evolve_explore_is_not_a_command(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
@@ -1445,8 +1542,20 @@ class EnochTelegramTests(unittest.TestCase):
 
             bot.handle_update(_message_update(chat_id=42, text="/evolve explore enosh"))
 
-        explore_peer_skills.assert_called_once_with("enosh", root)
-        self.assertIn("Added 2 peer-learning candidate(s) from enosh", client.sent[0][1])
+        self.assertNotIn("peer-learning candidate", client.sent[0][1])
+        self.assertNotIn("/evolve explore", client.sent[0][1])
+        self.assertIn("Use /evolve list", client.sent[0][1])
+
+    def test_evolve_candidates_is_not_a_command(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            client = FakeTelegramClient(allowed_chat_id=42)
+            bot = EnochTelegramBot(load_identity(), root, client)
+
+            bot.handle_update(_message_update(chat_id=42, text="/evolve candidates"))
+
+        self.assertIn("Use /evolve list", client.sent[0][1])
+        self.assertNotIn("Evolve candidates:", client.sent[0][1])
 
     def test_evolve_keeps_direct_mode_aliases(self) -> None:
         with TemporaryDirectory() as temp:
@@ -1579,7 +1688,7 @@ class EnochTelegramTests(unittest.TestCase):
 
         self.assertIsNotNone(job)
         self.assertEqual(queued.pending_count, 1)
-        self.assertIn("Evolve selected candidate backlog-1", queued.pending[0].text)
+        self.assertIn("Evolve candidate backlog-1", queued.pending[0].text)
         self.assertEqual(queued.pending[0].context_source, "evolve-scheduler")
         self.assertEqual(report.top_candidate.status, "running")
         self.assertIn("Latest update: Scheduled by evolve auto-evolve.", client.sent[0][1])
@@ -1676,6 +1785,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual(jobs_again, ())
         self.assertEqual(queued.pending[0].text, "scheduled cleanup")
         self.assertEqual(queued.pending[0].context, "Use saved cron context.")
+        self.assertEqual(queued.pending[0].context_source, "cron:chat-snapshot")
         self.assertEqual(cron_after.active[0].id, cron.id)
         self.assertEqual(cron_after.active[0].last_task_id, queued.pending[0].id)
         self.assertIn("Task #1", client.sent[0][1])
