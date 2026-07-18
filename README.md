@@ -25,11 +25,11 @@ Create a Telegram bot for Enoch:
 Configure and start the local Enoch instance:
 
 ```bash
-cd /Users/garyzhao/projects/instances/enoch-gary
+cd /path/to/your/enoch-instance
 
-ENOCH_PYTHON=/Users/garyzhao/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 bin/enoch setup-token <token>
-ENOCH_PYTHON=/Users/garyzhao/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 bin/enoch setup-chat <your-chat-id>
-ENOCH_PYTHON=/Users/garyzhao/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 bin/enoch-daemon start
+bin/enoch setup-token <token>
+bin/enoch setup-chat <your-chat-id>
+bin/enoch-daemon start
 ```
 
 Then open the bot in Telegram and send `/status`.
@@ -58,6 +58,28 @@ python -m unittest discover -s tests
 
 The E2E design and covered workflows are documented in
 [`docs/testing.md`](docs/testing.md).
+
+## Descending from Enoch
+
+Enoch is a public Genesis-compatible reference body. Its `genesis.toml`
+declares the Git-tracked body boundary, inherited validation, launchers, source,
+packaging metadata, and regression contracts. Runtime credentials, memories,
+logs, chat identifiers, and instance configuration under `.enoch/` remain
+private state and are excluded from descent.
+
+From an adjacent clean Genesis checkout:
+
+```bash
+genesis create my-agent \
+  --from enoch \
+  --source ../enoch \
+  --ref HEAD \
+  --mission "Describe the descendant's purpose." \
+  --repo ../my-agent
+```
+
+Genesis stages the descendant, runs Enoch's inherited tests, and accepts birth
+only if validation passes without modifying the staged body.
 
 ## Lineage
 

@@ -1,0 +1,17 @@
+schema_version = 1
+package = "enoch"
+
+# Only these Git-tracked paths form the inheritable software body. Runtime
+# state, credentials, memories, logs, and worktree-local instance data remain
+# outside the descent boundary.
+body_paths = [
+  ".gitignore",
+  "bin",
+  "pyproject.toml",
+  "src/enoch",
+  "tests",
+]
+
+# Genesis prepends the active Python interpreter and runs this inherited gate
+# before either birth-related commit is accepted.
+validation = ["-m", "unittest", "discover", "-s", "tests"]
