@@ -1321,6 +1321,55 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual(experiences[0].command, "/task")
         log_conversation_turn.assert_called()
 
+    @patch("enoch.telegram.bot.ensure_long_term_memory")
+    @patch("enoch.telegram.bot.log_conversation_turn")
+    def test_evolve_task_worker_creates_one_status_message_for_all_progress(
+        self,
+        _log_conversation_turn: MagicMock,
+        _update_memory: MagicMock,
+    ) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            add_backlog_item(42, "ship evolve status updates", root, priority="p1")
+            client = FakeTelegramClient(allowed_chat_id=42)
+            bot = EnochTelegramBot(load_identity(), root, client)
+            bot.handle_update(
+                _message_update(chat_id=42, text="/evolve approve backlog-1")
+            )
+            job = begin_next_task(root)
+            assert job is not None
+
+            def run_task(*_args, **_kwargs):
+                bot._send_step_update(42, "Preparing a fresh branch.")
+                bot._send_step_update(42, "Working.")
+                bot._send_progress(42, 60, "workspace-write")
+                return "Done with evolve work."
+
+            with patch.object(bot, "_run_direct_work", side_effect=run_task):
+                bot._run_task_job(job)
+            completed = task_queue_status(root).history[-1]
+
+        self.assertEqual(len(client.sent), 3)
+        self.assertIn("Approved evolve candidate backlog-1", client.sent[0][1])
+        self.assertIn("Task #1", client.sent[1][1])
+        self.assertIn("Task #1 final update", client.sent[2][1])
+        self.assertFalse(
+            any("Enoch update:" in text for _chat_id, text in client.sent)
+        )
+        self.assertFalse(
+            any("Enoch is still working" in text for _chat_id, text in client.sent)
+        )
+        self.assertGreaterEqual(len(client.edited), 4)
+        self.assertEqual(
+            {message_id for _chat_id, message_id, _text in client.edited},
+            {2002},
+        )
+        edited_text = "\n".join(text for _chat_id, _message_id, text in client.edited)
+        self.assertIn("Latest update: Preparing a fresh branch.", edited_text)
+        self.assertIn("Latest update: Working.", edited_text)
+        self.assertIn("Still working after 1 minute(s)", edited_text)
+        self.assertEqual(completed.status_message_id, 2002)
+
     def test_task_worker_pauses_on_codex_access_error_and_resumes_same_task(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)

@@ -1042,6 +1042,8 @@ class EnochTelegramBot:
         task_status.latest_update = latest_update
         if pr_url and pr_url not in task_status.prs:
             task_status.prs.append(pr_url)
+        if task_status.message_id <= 0:
+            return True
         self._safe_edit_message(
             task_status.chat_id,
             task_status.message_id,
@@ -2119,19 +2121,37 @@ class EnochTelegramBot:
         failure_prefix: str,
     ) -> None:
         message_id = self._work_status_messages.get(job.id) or job.status_message_id
-        task_status = (
-            WorkStatusMessage(
+        created_status_message = False
+        if message_id is None:
+            status_message = WorkStatusMessage(
                 chat_id=job.chat_id,
-                message_id=message_id,
+                message_id=0,
                 request=job.text,
                 started_at=time.monotonic(),
                 task_id=job.id,
                 status="running",
+                latest_update=start_update,
                 prs=list(job.pr_urls),
                 context=job.context,
             )
-            if message_id is not None
-            else None
+            message_id = self._safe_send_message_id(
+                job.chat_id,
+                _format_work_status_message(status_message),
+            )
+            if message_id is not None:
+                created_status_message = True
+                self._work_status_messages[job.id] = message_id
+                record_task_status_message(job.id, message_id, self.root)
+        task_status = WorkStatusMessage(
+            chat_id=job.chat_id,
+            message_id=message_id or 0,
+            request=job.text,
+            started_at=time.monotonic(),
+            task_id=job.id,
+            status="running",
+            latest_update=start_update,
+            prs=list(job.pr_urls),
+            context=job.context,
         )
         token = _CURRENT_WORK_STATUS.set(task_status)
         task_token = _CURRENT_TASK_ID.set(job.id)
@@ -2139,10 +2159,8 @@ class EnochTelegramBot:
         cancellation_event = threading.Event()
         self._task_cancellations[job.id] = cancellation_event
         deadline = _start_task_deadline(self.root, cancellation_event)
-        if task_status is not None:
+        if not created_status_message:
             self._update_work_status(start_update, status="running")
-        else:
-            self._send_step_update(job.chat_id, start_update)
         completed_status = "completed"
         regression_signals: tuple[TaskRegressionSignal, ...] = ()
         try:
