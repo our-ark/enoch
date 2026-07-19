@@ -59,6 +59,7 @@ from enoch.prompt_append import (
     TASK_REGRESSION_END,
     TASK_REGRESSION_START,
 )
+from enoch.providers.runtime import FunctionAgentRuntime
 from enoch.task_queue import (
     TaskJob,
     begin_next_task,
@@ -943,18 +944,19 @@ class EnochTelegramTests(unittest.TestCase):
                 description="Previous frontier model.",
             ),
         )
-        with TemporaryDirectory() as temp, TemporaryDirectory() as codex_home:
+        runtime = FunctionAgentRuntime(
+            respond_fn=lambda *_args, **_kwargs: "",
+            act_in_session_fn=lambda *_args, **_kwargs: "",
+            model_summary_fn=lambda _root=None: "AI model: gpt-5.6-terra",
+            model_options_fn=lambda: options,
+            reset_usage_fn=lambda: None,
+        )
+        with TemporaryDirectory() as temp:
             root = Path(temp)
-            (Path(codex_home) / "config.toml").write_text(
-                'model = "gpt-5.6-terra"\n',
-                encoding="utf-8",
-            )
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochTelegramBot(load_identity(), root, client, runtime=runtime)
 
-            with patch.dict("os.environ", {"CODEX_HOME": codex_home}, clear=True):
-                with patch("enoch.commands.codex_model_options", return_value=options):
-                    bot.handle_update(_message_update(chat_id=42, text="/config model"))
+            bot.handle_update(_message_update(chat_id=42, text="/config model"))
 
         reply = client.sent[0][1]
         self.assertIn("Available GPT-5.6 models:", reply)
