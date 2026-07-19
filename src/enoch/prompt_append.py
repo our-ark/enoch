@@ -169,6 +169,8 @@ def _work_request_wrapper_block() -> str:
             "Work request:",
             "Complete the requested work directly.",
             "You may edit files, inspect the repository, run checks, and use available tools as needed.",
+            "The current checkout is already an isolated task worktree on its task branch.",
+            "Stay on the current branch; do not switch to or check out main, which may belong to another worktree.",
             "When the requested work requires publishing an existing branch or creating a pull request, do it directly.",
             "When implementation is complete and validation passes, publish the pull request as ready for review, not draft.",
             "Use a draft pull request only when work is intentionally incomplete or the human explicitly requests a draft.",
