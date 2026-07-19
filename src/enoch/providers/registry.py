@@ -91,7 +91,7 @@ def _builtin_factory(kind: ProviderKind, name: str) -> ProviderFactory | None:
     if kind == "runtime" and name == "codex":
         from enoch.providers.runtime import CodexRuntime
 
-        return lambda _root=None: CodexRuntime()
+        return lambda root=None: CodexRuntime(root)
     if kind == "chat" and name == "telegram":
         from enoch.telegram.client import TelegramClient, load_config
 

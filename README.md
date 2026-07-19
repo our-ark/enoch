@@ -48,6 +48,16 @@ Codex model and reasoning effort, settings are resolved in this order:
 Use `/config` in Telegram to inspect the effective settings and `/config model`
 or `/config reasoning-effort` to change Enoch's local overrides.
 
+The Codex executable is resolved independently in this order:
+
+1. `ENOCH_CODEX_BIN`
+2. `codex.executable` in `.enoch/config.yaml`
+3. `codex` on `PATH`
+4. Known Codex locations inside the ChatGPT or Codex macOS app
+
+Use `/config runtime codex executable <path|auto>` to configure or restore
+automatic discovery. The daemon reads this instance setting directly.
+
 ## Providers
 
 Telegram, Codex, Git, and GitHub are built-in providers rather than required
@@ -55,8 +65,9 @@ fork points. Installed Python packages can add chat, agent runtime, version
 control, and code forge providers through the `enoch.providers` entry-point
 group. Select them in `.enoch/config.yaml` or with `/config provider`.
 
-Provider contracts, packaging examples, normalized chat events, and migration
-compatibility are documented in [`docs/providers.md`](docs/providers.md).
+Provider contracts, packaging examples, provider-specific settings, normalized
+chat events, and migration compatibility are documented in
+[`docs/providers.md`](docs/providers.md).
 
 ## Testing
 

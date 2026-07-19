@@ -37,6 +37,7 @@ DEFAULT_TIMEOUT_SECONDS = 600
 DEFAULT_PROGRESS_INTERVAL_SECONDS = 60
 MODEL_CATALOG_TIMEOUT_SECONDS = 5
 DEFAULT_CODEX_PATHS = [
+    "/Applications/ChatGPT.app/Contents/Resources/codex",
     "/Applications/Codex.app/Contents/Resources/codex",
 ]
 REASONING_EFFORTS = {"low", "medium", "high"}
@@ -66,6 +67,14 @@ class CodexModelOption:
     slug: str
     display_name: str
     description: str = ""
+
+
+@dataclass(frozen=True)
+class CodexExecutableResolution:
+    path: str | None
+    source: str
+    configured_value: str = ""
+    detail: str = ""
 
 
 _TOKEN_USAGE: ContextVar[TokenUsage] = ContextVar("enoch_token_usage", default=TokenUsage())
@@ -180,8 +189,8 @@ def model_summary(root: Path | None = None) -> str:
     return "\n".join(lines)
 
 
-def codex_model_options() -> tuple[CodexModelOption, ...]:
-    codex = _codex_binary()
+def codex_model_options(root: Path | None = None) -> tuple[CodexModelOption, ...]:
+    codex = _codex_binary(root)
     if codex is None:
         return ()
     try:
@@ -499,9 +508,16 @@ def _run_codex_result(
     cancellation_event: threading.Event | None = None,
     state_root: Path | None = None,
 ) -> CodexRunResult:
-    codex = _codex_binary()
+    state_root = state_root or cwd
+    resolution = resolve_codex_executable(state_root)
+    codex = resolution.path
     if codex is None:
-        raise BrainError("Enoch cannot find the Codex CLI. Install or expose `codex` on PATH.")
+        detail = f" {resolution.detail}" if resolution.detail else ""
+        raise BrainError(
+            "Enoch cannot find the Codex CLI."
+            f"{detail} Configure it with `/config runtime codex executable <path>` "
+            "or expose `codex` on PATH."
+        )
 
     with tempfile.NamedTemporaryFile("r+", encoding="utf-8", delete=True) as output:
         args = _codex_exec_args(
@@ -514,7 +530,6 @@ def _run_codex_result(
         )
         prompt_marker = args.pop()
 
-        state_root = state_root or cwd
         model = _configured_model(state_root)
         if model:
             args.extend(["--model", model])
@@ -847,17 +862,55 @@ def _stop_process(process: subprocess.Popen[str]) -> None:
         process.wait()
 
 
-def _codex_binary() -> str | None:
-    configured = os.environ.get("ENOCH_CODEX_BIN")
+def resolve_codex_executable(root: Path | None = None) -> CodexExecutableResolution:
+    configured = os.environ.get("ENOCH_CODEX_BIN", "").strip()
     if configured:
-        return configured
+        return resolve_codex_executable_value(configured, "ENOCH_CODEX_BIN")
+
+    enoch_configured = read_section("codex", root).get("executable", "").strip()
+    if enoch_configured:
+        return resolve_codex_executable_value(
+            enoch_configured,
+            "Enoch config codex.executable",
+        )
 
     path_codex = shutil.which("codex")
     if path_codex:
-        return path_codex
+        return CodexExecutableResolution(path=path_codex, source="PATH")
 
     for path in DEFAULT_CODEX_PATHS:
-        if Path(path).exists():
-            return path
+        candidate = Path(path)
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return CodexExecutableResolution(path=path, source=f"known macOS path {path}")
 
-    return None
+    return CodexExecutableResolution(
+        path=None,
+        source="automatic discovery",
+        detail="No executable was found on PATH or in a known macOS app location.",
+    )
+
+
+def resolve_codex_executable_value(
+    value: str,
+    source: str = "provided executable",
+) -> CodexExecutableResolution:
+    expanded = str(Path(value).expanduser()) if os.sep in value else value
+    resolved = shutil.which(expanded) if os.sep not in expanded else expanded
+    if resolved:
+        candidate = Path(resolved)
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return CodexExecutableResolution(
+                path=str(candidate),
+                source=source,
+                configured_value=value,
+            )
+    return CodexExecutableResolution(
+        path=None,
+        source=source,
+        configured_value=value,
+        detail=f"Configured executable {value!r} does not exist or is not executable.",
+    )
+
+
+def _codex_binary(root: Path | None = None) -> str | None:
+    return resolve_codex_executable(root).path

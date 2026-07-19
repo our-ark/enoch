@@ -88,7 +88,7 @@ class FunctionAgentRuntime:
 
 
 class CodexRuntime(FunctionAgentRuntime):
-    def __init__(self) -> None:
+    def __init__(self, root: Path | None = None) -> None:
         from enoch.brain import (
             act_in_session,
             codex_model_options,
@@ -101,27 +101,36 @@ class CodexRuntime(FunctionAgentRuntime):
             respond_fn=respond,
             act_in_session_fn=act_in_session,
             model_summary_fn=model_summary,
-            model_options_fn=codex_model_options,
+            model_options_fn=lambda: codex_model_options(root),
             reset_usage_fn=reset_token_usage,
-            health_fn=_codex_health,
+            health_fn=lambda health_root=None: _codex_health(health_root or root),
         )
 
 
-def _codex_health(_root: Path | None = None) -> ProviderHealth:
-    from enoch.brain import _codex_binary
+def _codex_health(root: Path | None = None) -> ProviderHealth:
+    from enoch.brain import resolve_codex_executable
 
-    binary = _codex_binary()
-    if binary:
+    resolution = resolve_codex_executable(root)
+    if resolution.path:
         return ProviderHealth(
             name="codex binary",
             passed=True,
             command="which codex",
-            summary=binary,
+            summary=f"{resolution.path} (source: {resolution.source})",
         )
     return ProviderHealth(
         name="codex binary",
         passed=False,
         command="which codex",
-        output="Codex binary was not found. Set ENOCH_CODEX_BIN or install codex on PATH.",
-        summary="not found",
+        output=" ".join(
+            part
+            for part in (
+                "Codex binary was not found.",
+                resolution.detail,
+                "Set codex.executable in Enoch config, set ENOCH_CODEX_BIN, "
+                "or install codex on PATH.",
+            )
+            if part
+        ),
+        summary=f"not found (source: {resolution.source})",
     )

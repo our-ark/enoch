@@ -9,6 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from enoch.commands import config_command
+from enoch.config import read_section
 from enoch.daemon import daemon_paths, plist_bytes
 from enoch.git_tools import run_git
 from enoch.identity import load_identity
@@ -151,6 +152,49 @@ class EnochProviderTests(unittest.TestCase):
             self.assertIn("test-runtime", status)
             self.assertIn("runtime provider set to test-runtime", changed)
             self.assertEqual(provider_name("runtime", root), "test-runtime")
+
+    @patch.dict("os.environ", {}, clear=True)
+    def test_config_sets_shows_and_resets_codex_executable(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            executable = root / "Codex Runtime" / "codex"
+            executable.parent.mkdir()
+            executable.write_text("#!/bin/sh\n", encoding="utf-8")
+            executable.chmod(0o755)
+
+            changed = config_command(
+                f'/config runtime codex executable "{executable}"',
+                root,
+            )
+            shown = config_command("/config runtime codex executable", root)
+            configured = read_section("codex", root)
+            reset = config_command("/config runtime codex executable auto", root)
+
+            self.assertEqual(configured["executable"], str(executable))
+            self.assertIn(f"Executable: {executable}", changed)
+            self.assertIn("Source: Enoch config codex.executable", shown)
+            self.assertIn("reset to automatic discovery", reset)
+            self.assertNotIn("executable", read_section("codex", root))
+
+    @patch.dict("os.environ", {}, clear=True)
+    def test_doctor_reports_configured_codex_executable_source(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            executable = root / "codex"
+            executable.write_text("#!/bin/sh\n", encoding="utf-8")
+            executable.chmod(0o755)
+            config = root / ".enoch" / "config.yaml"
+            config.parent.mkdir()
+            config.write_text(
+                f'codex:\n  executable: "{executable}"\n',
+                encoding="utf-8",
+            )
+
+            check = _runtime_provider_check(root)
+
+        self.assertTrue(check.passed)
+        self.assertIn(str(executable), check.summary)
+        self.assertIn("source: Enoch config codex.executable", check.summary)
 
     def test_doctor_uses_selected_runtime_health(self) -> None:
         register_provider("runtime", "test-runtime", lambda _root=None: _Runtime(), replace=True)

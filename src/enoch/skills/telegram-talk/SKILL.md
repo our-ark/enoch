@@ -51,6 +51,7 @@ Environment variables can override local config:
 - `ENOCH_TELEGRAM_POLL_TIMEOUT`
 - `ENOCH_CODEX_MODEL`
 - `ENOCH_CODEX_REASONING_EFFORT`
+- `ENOCH_CODEX_BIN`
 - `ENOCH_PROGRESS_INTERVAL`
 
 Optional:
@@ -59,6 +60,7 @@ Optional:
 - `telegram.poll_timeout`
 - `codex.model`
 - `codex.reasoning_effort`
+- `codex.executable` (set with `/config runtime codex executable <path|auto>`)
 - `task.timeout_seconds` (defaults to 600 seconds and can be set with `/config task-timeout <duration>`)
 
 `/config model` reads the visible model catalog bundled with the installed

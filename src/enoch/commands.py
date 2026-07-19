@@ -2,9 +2,16 @@ from __future__ import annotations
 
 from pathlib import Path
 import re
+import shlex
 from typing import Callable
 
-from enoch.brain import REASONING_EFFORTS, codex_model_options, model_summary
+from enoch.brain import (
+    REASONING_EFFORTS,
+    codex_model_options,
+    model_summary,
+    resolve_codex_executable,
+    resolve_codex_executable_value,
+)
 from enoch.command_surface import lineage_usage
 from enoch.config import write_section_value
 from enoch.identity import Identity, identity_file_path, load_identity, update_mission
@@ -138,7 +145,7 @@ def thinking_command(
     prefix: str = "/",
     runtime: AgentRuntime | None = None,
 ) -> str:
-    runtime = runtime or _default_runtime()
+    runtime = runtime or _default_runtime(root)
     if model_summary_fn is model_summary:
         model_summary_fn = runtime.model_summary
     parts = text.split()
@@ -208,8 +215,11 @@ def config_command(
     prefix: str = "/",
     runtime: AgentRuntime | None = None,
 ) -> str:
-    runtime = runtime or _default_runtime()
-    parts = text.split()
+    runtime = runtime or _default_runtime(root)
+    try:
+        parts = shlex.split(text)
+    except ValueError:
+        return config_usage(prefix=prefix)
     if len(parts) == 1:
         return config_status(root, prefix=prefix, runtime=runtime)
     setting = parts[1].lower().replace("_", "-")
@@ -239,6 +249,30 @@ def config_command(
             write_section_value("providers", kind, value, root)
             message = f"Enoch {kind} provider set to {value}."
         return "\n\n".join([message, provider_config_status(root, prefix=prefix)])
+    if setting == "runtime":
+        if (
+            len(parts) < 4
+            or parts[2].strip().lower() != "codex"
+            or parts[3].strip().lower().replace("_", "-") != "executable"
+        ):
+            return config_usage(prefix=prefix)
+        if len(parts) == 4:
+            return codex_executable_config_status(root, prefix=prefix)
+        if len(parts) != 5:
+            return config_usage(prefix=prefix)
+        value = parts[4].strip()
+        if value.lower() in {"auto", "default", "reset"}:
+            write_section_value("codex", "executable", None, root)
+            message = "Enoch Codex executable reset to automatic discovery."
+        else:
+            candidate = resolve_codex_executable_value(value)
+            if candidate.path is None:
+                return f"Enoch could not set the Codex executable: {candidate.detail}"
+            write_section_value("codex", "executable", value, root)
+            message = f"Enoch Codex executable set to {candidate.path}."
+        return "\n\n".join(
+            [message, codex_executable_config_status(root, prefix=prefix)]
+        )
     if setting == "task-timeout":
         if len(parts) == 2:
             return config_status(root, prefix=prefix, runtime=runtime)
@@ -308,18 +342,28 @@ def config_status(
     prefix: str = "/",
     runtime: AgentRuntime | None = None,
 ) -> str:
-    runtime = runtime or _default_runtime()
+    runtime = runtime or _default_runtime(root)
     settings = task_settings(root)
     default = " (default)" if settings.uses_default_timeout else ""
     command = f"{prefix}config"
-    return "\n".join(
+    lines = [
+        "Enoch config:",
+        f"- Task timeout: {format_task_timeout(settings.timeout_seconds)}{default}",
+        f"- Providers: {_provider_summary(root)}",
+        "",
+        f"{runtime.name.title()}:",
+        runtime.model_summary(root),
+    ]
+    if runtime.name == "codex":
+        resolution = resolve_codex_executable(root)
+        lines.extend(
+            [
+                f"Executable: {resolution.path or 'not found'}",
+                f"Executable source: {resolution.source}",
+            ]
+        )
+    lines.extend(
         [
-            "Enoch config:",
-            f"- Task timeout: {format_task_timeout(settings.timeout_seconds)}{default}",
-            f"- Providers: {_provider_summary(root)}",
-            "",
-            f"{runtime.name.title()}:",
-            runtime.model_summary(root),
             "",
             f"Use {command} model to see available models or set one with {command} model <name>.",
             (
@@ -329,6 +373,11 @@ def config_status(
             f"Set task timeout with {command} task-timeout <duration> or {command} task-timeout default.",
         ]
     )
+    if runtime.name == "codex":
+        lines.append(
+            f"Set the runtime with {command} runtime codex executable <path|auto>."
+        )
+    return "\n".join(lines)
 
 
 def model_config_status(
@@ -337,7 +386,7 @@ def model_config_status(
     prefix: str = "/",
     runtime: AgentRuntime | None = None,
 ) -> str:
-    runtime = runtime or _default_runtime()
+    runtime = runtime or _default_runtime(root)
     command = f"{prefix}config"
     summary = runtime.model_summary(root)
     current = _model_name_from_summary(summary)
@@ -398,6 +447,26 @@ def provider_config_status(root: Path, *, prefix: str = "/") -> str:
     return "\n".join(lines)
 
 
+def codex_executable_config_status(root: Path, *, prefix: str = "/") -> str:
+    command = f"{prefix}config"
+    resolution = resolve_codex_executable(root)
+    lines = [
+        "Codex runtime executable:",
+        f"- Executable: {resolution.path or 'not found'}",
+        f"- Source: {resolution.source}",
+    ]
+    if resolution.detail:
+        lines.append(f"- Detail: {resolution.detail}")
+    lines.extend(
+        [
+            "",
+            f"Set with {command} runtime codex executable <path>.",
+            f"Reset with {command} runtime codex executable auto.",
+        ]
+    )
+    return "\n".join(lines)
+
+
 def _provider_summary(root: Path) -> str:
     return ", ".join(
         f"{kind}={provider_name(kind, root)}"
@@ -405,12 +474,12 @@ def _provider_summary(root: Path) -> str:
     )
 
 
-def _default_runtime() -> FunctionAgentRuntime:
+def _default_runtime(root: Path | None = None) -> FunctionAgentRuntime:
     return FunctionAgentRuntime(
         respond_fn=lambda *_args, **_kwargs: "",
         act_in_session_fn=lambda *_args, **_kwargs: "",
         model_summary_fn=model_summary,
-        model_options_fn=codex_model_options,
+        model_options_fn=lambda: codex_model_options(root),
         reset_usage_fn=lambda: None,
     )
 
@@ -431,6 +500,9 @@ def config_usage(prefix: str = "/") -> str:
             f"{command} - show local system settings",
             f"{command} providers - show active and available providers",
             f"{command} provider <kind> <name|default> - select a provider",
+            f"{command} runtime codex executable - show the effective Codex executable",
+            f"{command} runtime codex executable <path> - set the Codex executable",
+            f"{command} runtime codex executable auto - restore automatic discovery",
             f"{command} model - show the effective and available Codex models",
             f"{command} model <name> - set a local Codex model override",
             f"{command} model default - inherit the Codex model",

@@ -49,6 +49,15 @@ class EnochTaskFailureTests(unittest.TestCase):
         self.assertEqual(failure.failure_class, "permanent")
         self.assertFalse(failure.retryable)
 
+    def test_missing_runtime_is_specific_and_non_retryable(self) -> None:
+        failure = classify_task_failure(
+            "Enoch cannot find the Codex CLI. Configure it in Enoch config."
+        )
+
+        self.assertEqual(failure.code, "runtime_not_found")
+        self.assertEqual(failure.failure_class, "permanent")
+        self.assertFalse(failure.retryable)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -29,6 +29,7 @@ class EnochDaemonTests(unittest.TestCase):
         self.assertTrue(payload["KeepAlive"])
         self.assertEqual(payload["EnvironmentVariables"]["PYTHONPATH"], str(resolved_root / "src"))
         self.assertEqual(payload["EnvironmentVariables"]["ENOCH_PYTHON"], sys.executable)
+        self.assertNotIn("ENOCH_CODEX_BIN", payload["EnvironmentVariables"])
 
     @patch("enoch.daemon.platform.system", return_value="Darwin")
     @patch("enoch.daemon._launchctl")

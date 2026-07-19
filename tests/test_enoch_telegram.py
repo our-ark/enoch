@@ -679,6 +679,8 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("/config reasoning-effort default", reply)
         self.assertIn("/config task-timeout <duration>", reply)
         self.assertIn("/config task-timeout default", reply)
+        self.assertIn("/config runtime codex executable <path>", reply)
+        self.assertIn("/config runtime codex executable auto", reply)
         self.assertNotIn("Enoch Telegram commands:", reply)
 
     @patch("enoch.telegram.bot.merge_pull_request")

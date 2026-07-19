@@ -4,7 +4,6 @@ from dataclasses import dataclass
 import os
 import re
 import shlex
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -183,28 +182,34 @@ def _run_check(name: str, command: list[str], root: Path, timeout: float) -> Doc
 
 
 def _codex_binary_check(root: Path) -> DoctorCheckResult:
-    configured = os.environ.get("ENOCH_CODEX_BIN")
-    candidates = [configured] if configured else ["codex", "/Applications/Codex.app/Contents/Resources/codex"]
-    for candidate in candidates:
-        if not candidate:
-            continue
-        resolved = shutil.which(candidate) if os.sep not in candidate else candidate
-        if resolved and Path(resolved).exists():
-            return DoctorCheckResult(
-                name="codex binary",
-                passed=True,
-                command="which codex",
-                output="",
-                category="operational readiness",
-                summary=str(resolved),
-            )
+    from enoch.brain import resolve_codex_executable
+
+    resolution = resolve_codex_executable(root)
+    if resolution.path:
+        return DoctorCheckResult(
+            name="codex binary",
+            passed=True,
+            command="which codex",
+            output="",
+            category="operational readiness",
+            summary=f"{resolution.path} (source: {resolution.source})",
+        )
     return DoctorCheckResult(
         name="codex binary",
         passed=False,
         command="which codex",
-        output="Codex binary was not found. Set ENOCH_CODEX_BIN or install codex on PATH.",
+        output=" ".join(
+            part
+            for part in (
+                "Codex binary was not found.",
+                resolution.detail,
+                "Set codex.executable in Enoch config, set ENOCH_CODEX_BIN, "
+                "or install codex on PATH.",
+            )
+            if part
+        ),
         category="operational readiness",
-        summary="not found",
+        summary=f"not found (source: {resolution.source})",
     )
 
 

@@ -40,6 +40,31 @@ bin/enoch config provider chat slack
 Restart Enoch after changing a provider. Environment variables such as
 `ENOCH_RUNTIME_PROVIDER` and `ENOCH_CHAT_PROVIDER` override the file.
 
+Provider-specific settings live in the provider's existing config section.
+For example, the built-in Codex runtime keeps its model, reasoning, and
+executable settings together:
+
+```yaml
+codex:
+  model: gpt-5.6-sol
+  reasoning_effort: high
+  executable: /Applications/ChatGPT.app/Contents/Resources/codex
+```
+
+Inspect, set, or reset the Codex executable with:
+
+```text
+/config runtime codex executable
+/config runtime codex executable /Applications/ChatGPT.app/Contents/Resources/codex
+/config runtime codex executable auto
+```
+
+Executable resolution uses `ENOCH_CODEX_BIN`, then `codex.executable` from the
+Enoch instance config, then `PATH`, then known macOS app locations. An explicit
+but invalid environment or config value fails health checks instead of silently
+falling through to another installation. The daemon reads this same instance
+config; the executable path is not copied into its launchd plist.
+
 ## Third-party packages
 
 A provider package registers factories with Python package entry points:

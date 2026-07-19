@@ -642,12 +642,92 @@ class EnochBrainTests(unittest.TestCase):
         self.assertIn("--sandbox", args)
         self.assertIn("danger-full-access", args)
 
+    @patch.dict("os.environ", {}, clear=True)
+    @patch("enoch.brain.os.access", return_value=True)
+    @patch("enoch.brain.Path.is_file", return_value=True)
     @patch("enoch.brain.shutil.which", return_value=None)
-    @patch("enoch.brain.Path.exists", return_value=True)
     def test_falls_back_to_default_codex_app_path(
-        self, _exists: MagicMock, _which: MagicMock
+        self,
+        _which: MagicMock,
+        _is_file: MagicMock,
+        _access: MagicMock,
     ) -> None:
-        self.assertEqual(brain._codex_binary(), "/Applications/Codex.app/Contents/Resources/codex")
+        resolution = brain.resolve_codex_executable()
+
+        self.assertEqual(
+            resolution.path,
+            "/Applications/ChatGPT.app/Contents/Resources/codex",
+        )
+        self.assertIn("known macOS path", resolution.source)
+
+    @patch.dict("os.environ", {}, clear=True)
+    @patch("enoch.brain.shutil.which", return_value="/usr/local/bin/codex")
+    def test_enoch_config_codex_executable_precedes_path(self, _which: MagicMock) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            configured = root / "Codex Runtime" / "codex"
+            configured.parent.mkdir()
+            configured.write_text("#!/bin/sh\n", encoding="utf-8")
+            configured.chmod(0o755)
+            config = root / ".enoch" / "config.yaml"
+            config.parent.mkdir()
+            config.write_text(
+                f'codex:\n  executable: "{configured}"\n',
+                encoding="utf-8",
+            )
+
+            resolution = brain.resolve_codex_executable(root)
+
+        self.assertEqual(resolution.path, str(configured))
+        self.assertEqual(resolution.source, "Enoch config codex.executable")
+
+    @patch("enoch.brain.shutil.which", return_value="/usr/local/bin/codex")
+    def test_environment_codex_executable_precedes_enoch_config(self, _which: MagicMock) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            configured = root / "config-codex"
+            configured.write_text("#!/bin/sh\n", encoding="utf-8")
+            configured.chmod(0o755)
+            environment = root / "env-codex"
+            environment.write_text("#!/bin/sh\n", encoding="utf-8")
+            environment.chmod(0o755)
+            config = root / ".enoch" / "config.yaml"
+            config.parent.mkdir()
+            config.write_text(
+                f'codex:\n  executable: "{configured}"\n',
+                encoding="utf-8",
+            )
+
+            with patch.dict(
+                "os.environ",
+                {"ENOCH_CODEX_BIN": str(environment)},
+                clear=True,
+            ):
+                resolution = brain.resolve_codex_executable(root)
+
+        self.assertEqual(resolution.path, str(environment))
+        self.assertEqual(resolution.source, "ENOCH_CODEX_BIN")
+
+    @patch.dict("os.environ", {}, clear=True)
+    @patch("enoch.brain.shutil.which", return_value="/usr/local/bin/codex")
+    def test_invalid_explicit_codex_executable_does_not_silently_fall_back(
+        self,
+        _which: MagicMock,
+    ) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            config = root / ".enoch" / "config.yaml"
+            config.parent.mkdir()
+            config.write_text(
+                'codex:\n  executable: "/missing/codex"\n',
+                encoding="utf-8",
+            )
+
+            resolution = brain.resolve_codex_executable(root)
+
+        self.assertIsNone(resolution.path)
+        self.assertEqual(resolution.source, "Enoch config codex.executable")
+        self.assertIn("does not exist or is not executable", resolution.detail)
 
     @patch("enoch.brain.time.sleep", side_effect=KeyboardInterrupt)
     @patch("enoch.brain.time.monotonic", side_effect=[0, 1])

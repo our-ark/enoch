@@ -12,6 +12,15 @@ class TaskFailure:
 
 _PERMANENT_FAILURES = (
     (
+        "runtime_not_found",
+        (
+            "cannot find the codex cli",
+            "codex binary was not found",
+            "configured executable",
+            "does not exist or is not executable",
+        ),
+    ),
+    (
         "dirty_worktree",
         (
             "worktree is not clean",
