@@ -1,6 +1,7 @@
 from pathlib import Path
 import os
 import sys
+import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -10,11 +11,60 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from enoch.git_tools import GitError
 from enoch.immune import DoctorDiagnosis
-from enoch.updater import update_from_main
+from enoch.updater import run_update_doctor, update_from_main
 
 
 class EnochUpdaterTests(unittest.TestCase):
-    @patch("enoch.updater.run_immune_system")
+    def test_post_update_doctor_loads_code_from_updated_worktree(self) -> None:
+        payload = {
+            "passed": True,
+            "command": "updated doctor",
+            "output": "updated code ran",
+            "diagnosis": {
+                "summary": "Updated doctor passed.",
+                "failing_tests": [],
+                "likely_files": [],
+                "suggested_action": "Restart.",
+            },
+            "checks": [
+                {
+                    "name": "updated runtime",
+                    "passed": True,
+                    "command": "updated check",
+                    "output": "",
+                    "category": "operational readiness",
+                    "summary": "loaded from disk",
+                }
+            ],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            package = root / "src" / "enoch"
+            package.mkdir(parents=True)
+            (package / "__init__.py").write_text("", encoding="utf-8")
+            (package / "update_doctor.py").write_text(
+                "\n".join(
+                    [
+                        "import json",
+                        f"print(json.dumps({payload!r}, sort_keys=True))",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            with patch.dict(
+                os.environ,
+                {"ENOCH_PYTHON": sys.executable},
+                clear=False,
+            ):
+                result = run_update_doctor(root)
+
+        self.assertTrue(result.passed)
+        self.assertEqual(result.command, "updated doctor")
+        self.assertEqual(result.diagnosis.summary, "Updated doctor passed.")
+        self.assertEqual(result.checks[0].summary, "loaded from disk")
+
+    @patch("enoch.updater.run_update_doctor")
     @patch(
         "enoch.updater.pull_origin_main",
         return_value=(
@@ -34,9 +84,9 @@ class EnochUpdaterTests(unittest.TestCase):
         current_branch: MagicMock,
         _current_head: MagicMock,
         pull_origin_main: MagicMock,
-        run_immune_system: MagicMock,
+        run_update_doctor: MagicMock,
     ) -> None:
-        run_immune_system.return_value = _doctor_result()
+        run_update_doctor.return_value = _doctor_result()
 
         result = update_from_main(ROOT)
 
@@ -44,7 +94,7 @@ class EnochUpdaterTests(unittest.TestCase):
         fetch_origin_main.assert_called_once_with(ROOT)
         current_branch.assert_called_once_with(ROOT)
         pull_origin_main.assert_called_once_with(ROOT)
-        run_immune_system.assert_called_once_with(ROOT)
+        run_update_doctor.assert_called_once_with(ROOT)
         self.assertTrue(result.restart_required)
         self.assertIn("Enoch pulled latest main and doctor passed.", result.message)
         self.assertIn("Restarting now.", result.message)
@@ -53,7 +103,7 @@ class EnochUpdaterTests(unittest.TestCase):
         self.assertIn("Fast-forward", result.direct_action_result)
         self.assertIn("Restarting into 2222222.", result.direct_action_result)
 
-    @patch("enoch.updater.run_immune_system")
+    @patch("enoch.updater.run_update_doctor")
     @patch("enoch.updater.pull_origin_main", return_value="Already up to date.")
     @patch("enoch.updater.current_head", side_effect=["1111111111111111111111111111111111111111", "1111111111111111111111111111111111111111"])
     @patch("enoch.updater.current_branch", return_value="main")
@@ -66,11 +116,11 @@ class EnochUpdaterTests(unittest.TestCase):
         _current_branch: MagicMock,
         _current_head: MagicMock,
         _pull_origin_main: MagicMock,
-        run_immune_system: MagicMock,
+        run_update_doctor: MagicMock,
     ) -> None:
         result = update_from_main(ROOT)
 
-        run_immune_system.assert_not_called()
+        run_update_doctor.assert_not_called()
         self.assertFalse(result.restart_required)
         self.assertEqual(result.message, "Enoch is already up to date.")
         self.assertEqual(result.direct_action_result, "Already up to date.")
@@ -83,7 +133,7 @@ class EnochUpdaterTests(unittest.TestCase):
         "enoch.updater.promotions_pending_adoption",
         return_value=(MagicMock(),),
     )
-    @patch("enoch.updater.run_immune_system")
+    @patch("enoch.updater.run_update_doctor")
     @patch("enoch.updater.pull_origin_main", return_value="Already up to date.")
     @patch(
         "enoch.updater.current_head",
@@ -102,15 +152,15 @@ class EnochUpdaterTests(unittest.TestCase):
         _current_branch: MagicMock,
         _current_head: MagicMock,
         _pull_origin_main: MagicMock,
-        run_immune_system: MagicMock,
+        run_update_doctor: MagicMock,
         _pending_adoption: MagicMock,
         stage_adoptions: MagicMock,
     ) -> None:
-        run_immune_system.return_value = _doctor_result()
+        run_update_doctor.return_value = _doctor_result()
 
         result = update_from_main(ROOT)
 
-        run_immune_system.assert_called_once_with(ROOT)
+        run_update_doctor.assert_called_once_with(ROOT)
         stage_adoptions.assert_called_once_with(
             ROOT,
             "1111111111111111111111111111111111111111",
@@ -128,7 +178,7 @@ class EnochUpdaterTests(unittest.TestCase):
             "started_head": "0000000000000000000000000000000000000000",
         },
     )
-    @patch("enoch.updater.run_immune_system")
+    @patch("enoch.updater.run_update_doctor")
     @patch("enoch.updater.pull_origin_main", return_value="Already up to date.")
     @patch("enoch.updater.current_head", side_effect=["1111111111111111111111111111111111111111", "1111111111111111111111111111111111111111"])
     @patch("enoch.updater.current_branch", return_value="main")
@@ -141,12 +191,12 @@ class EnochUpdaterTests(unittest.TestCase):
         _current_branch: MagicMock,
         _current_head: MagicMock,
         _pull_origin_main: MagicMock,
-        run_immune_system: MagicMock,
+        run_update_doctor: MagicMock,
         _load_lifecycle_state: MagicMock,
     ) -> None:
         result = update_from_main(ROOT)
 
-        run_immune_system.assert_not_called()
+        run_update_doctor.assert_not_called()
         self.assertFalse(result.restart_required)
         self.assertIn("Enoch is already up to date.", result.message)
         self.assertIn("Telegram daemon started on 0000000", result.message)
@@ -180,7 +230,7 @@ class EnochUpdaterTests(unittest.TestCase):
         self.assertNotIn("Run /restart", result.message)
         self.assertEqual(result.direct_action_result, "Already up to date.")
 
-    @patch("enoch.updater.run_immune_system")
+    @patch("enoch.updater.run_update_doctor")
     @patch("enoch.updater.reset_hard")
     @patch("enoch.updater.pull_origin_main", return_value="Updating 1111111..2222222")
     @patch("enoch.updater.current_head", side_effect=["1111111111111111111111111111111111111111", "2222222222222222222222222222222222222222"])
@@ -195,7 +245,7 @@ class EnochUpdaterTests(unittest.TestCase):
         _current_head: MagicMock,
         _pull_origin_main: MagicMock,
         reset_hard: MagicMock,
-        run_immune_system: MagicMock,
+        run_update_doctor: MagicMock,
     ) -> None:
         doctor = _doctor_result()
         doctor.passed = False
@@ -205,7 +255,7 @@ class EnochUpdaterTests(unittest.TestCase):
             likely_files=[],
             suggested_action="Inspect failing tests.",
         )
-        run_immune_system.return_value = doctor
+        run_update_doctor.return_value = doctor
 
         result = update_from_main(ROOT)
 

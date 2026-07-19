@@ -4,6 +4,8 @@ from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
+import subprocess
+import sys
 
 from enoch.evolve_lifecycle import (
     promotions_pending_adoption,
@@ -11,7 +13,7 @@ from enoch.evolve_lifecycle import (
 )
 from enoch.formatting import format_doctor_result
 from enoch.git_tools import GitError, current_branch, ensure_clean_worktree
-from enoch.immune import run_immune_system
+from enoch.immune import DoctorCheckResult, DoctorDiagnosis, ImmuneResult
 from enoch.paths import enoch_home
 from enoch.runtime import DEFAULT_BRANCH, DEFAULT_REMOTE
 from enoch.update_tools import (
@@ -28,6 +30,9 @@ class UpdateResult:
     message: str
     direct_action_result: str
     restart_required: bool = False
+
+
+UPDATE_DOCTOR_TIMEOUT_SECONDS = 300
 
 
 def update_from_main(root: Path) -> UpdateResult:
@@ -52,7 +57,7 @@ def update_from_main(root: Path) -> UpdateResult:
     if previous_head == updated_head:
         pending_promotions = promotions_pending_adoption(root, updated_head)
         if pending_promotions:
-            doctor = run_immune_system(root)
+            doctor = run_update_doctor(root)
             if not doctor.passed:
                 return _message(
                     "\n\n".join(
@@ -94,7 +99,7 @@ def update_from_main(root: Path) -> UpdateResult:
             direct_action_result="\n\n".join(part for part in [pull_result, restart_note] if part),
         )
 
-    doctor = run_immune_system(root)
+    doctor = run_update_doctor(root)
     if not doctor.passed:
         try:
             reset_hard(previous_head, root)
@@ -141,6 +146,100 @@ def update_from_main(root: Path) -> UpdateResult:
 
 def _message(message: str) -> UpdateResult:
     return UpdateResult(message=message, direct_action_result="")
+
+
+def run_update_doctor(root: Path) -> ImmuneResult:
+    environment = os.environ.copy()
+    source_root = str(root / "src")
+    existing_pythonpath = environment.get("PYTHONPATH", "")
+    environment["PYTHONPATH"] = (
+        f"{source_root}{os.pathsep}{existing_pythonpath}"
+        if existing_pythonpath
+        else source_root
+    )
+    python = environment.get("ENOCH_PYTHON") or sys.executable
+    try:
+        completed = subprocess.run(
+            [python, "-m", "enoch.update_doctor"],
+            cwd=root,
+            env=environment,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=UPDATE_DOCTOR_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        return _doctor_runner_failure(str(error))
+
+    try:
+        payload = json.loads(completed.stdout)
+        return _doctor_result_from_payload(payload)
+    except (json.JSONDecodeError, TypeError, ValueError, KeyError) as error:
+        detail = completed.stderr.strip() or completed.stdout.strip() or str(error)
+        return _doctor_runner_failure(detail)
+
+
+def _doctor_result_from_payload(payload: object) -> ImmuneResult:
+    if not isinstance(payload, dict):
+        raise TypeError("Fresh doctor payload must be an object.")
+    raw_diagnosis = payload["diagnosis"]
+    raw_checks = payload["checks"]
+    if not isinstance(raw_diagnosis, dict) or not isinstance(raw_checks, list):
+        raise TypeError("Fresh doctor payload has invalid diagnosis or checks.")
+    diagnosis = DoctorDiagnosis(
+        summary=str(raw_diagnosis.get("summary") or ""),
+        failing_tests=_string_list(raw_diagnosis.get("failing_tests")),
+        likely_files=_string_list(raw_diagnosis.get("likely_files")),
+        suggested_action=str(raw_diagnosis.get("suggested_action") or ""),
+    )
+    checks = [
+        DoctorCheckResult(
+            name=str(raw["name"]),
+            passed=raw.get("passed") is True,
+            command=str(raw.get("command") or ""),
+            output=str(raw.get("output") or ""),
+            category=str(raw.get("category") or "code health"),
+            summary=str(raw.get("summary") or ""),
+        )
+        for raw in raw_checks
+        if isinstance(raw, dict)
+    ]
+    return ImmuneResult(
+        passed=payload.get("passed") is True,
+        command=str(payload.get("command") or ""),
+        output=str(payload.get("output") or ""),
+        diagnosis=diagnosis,
+        checks=checks,
+    )
+
+
+def _string_list(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value]
+
+
+def _doctor_runner_failure(detail: str) -> ImmuneResult:
+    check = DoctorCheckResult(
+        name="fresh doctor process",
+        passed=False,
+        command=f"{sys.executable} -m enoch.update_doctor",
+        output=detail,
+        category="operational readiness",
+        summary="could not load updated health checks",
+    )
+    return ImmuneResult(
+        passed=False,
+        command=check.command,
+        output=detail,
+        diagnosis=DoctorDiagnosis(
+            summary="Fresh post-update doctor process failed.",
+            failing_tests=[],
+            likely_files=[],
+            suggested_action="Inspect the fresh doctor process output before retrying the update.",
+        ),
+        checks=[check],
+    )
 
 
 def _stage_adoptions(root: Path, version: str) -> str:

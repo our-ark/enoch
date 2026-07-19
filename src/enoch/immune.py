@@ -98,6 +98,7 @@ def _import_smoke_command() -> list[str]:
                 "import enoch.skills",
                 "import enoch.telegram",
                 "import enoch.telegram.bot",
+                "import enoch.update_doctor",
             ]
         ),
     ]
