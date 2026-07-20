@@ -1,0 +1,4 @@
+interface:
+  display_name: "Skill Library"
+  short_description: "Package reusable skills for independent descendants"
+  default_prompt: "Use $skill-library to extract this capability into a pinned public library with a thin inheritable adapter."

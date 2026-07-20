@@ -1,0 +1,11 @@
+name: skill-library
+version: 0.1.0
+summary: Package agent-neutral skill implementations as immutable public libraries with thin inheritable adapters.
+owner: Enoch
+status: active
+mode: repository-write
+implementation: procedural
+contract: skill-library/v1
+entrypoint: none
+validation:
+  command: python3 -m unittest discover -s tests

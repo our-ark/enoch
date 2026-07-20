@@ -31,6 +31,9 @@ skills:
   - name: telegram-vision
     version: 0.2.0
     path: src/enoch/skills/telegram-vision
+  - name: skill-library
+    version: 0.1.0
+    path: src/enoch/skills/skill-library
   - name: code
     description: Inspect, modify, test, and explain changes to Enoch's local code body.
     path: src/enoch/skills/code

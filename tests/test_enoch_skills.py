@@ -20,6 +20,7 @@ class EnochSkillsTests(unittest.TestCase):
         self.assertEqual(agent.name, "Enoch")
         self.assertIn("telegram-talk", names)
         self.assertIn("telegram-vision", names)
+        self.assertIn("skill-library", names)
         self.assertIn("code", names)
         self.assertIn("inherit", names)
         self.assertIn("work", names)
@@ -44,6 +45,9 @@ class EnochSkillsTests(unittest.TestCase):
         vision = next(skill for skill in agent.skills if skill.name == "telegram-vision")
         self.assertEqual(vision.version, "0.2.0")
         self.assertIn("photos", vision.summary)
+        library = next(skill for skill in agent.skills if skill.name == "skill-library")
+        self.assertEqual(library.version, "0.1.0")
+        self.assertIn("immutable public libraries", library.summary)
 
     def test_loads_packaged_self_skills_without_source_checkout(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -53,6 +57,7 @@ class EnochSkillsTests(unittest.TestCase):
         self.assertEqual(agent.name, "Enoch")
         self.assertIn("telegram-talk", names)
         self.assertIn("telegram-vision", names)
+        self.assertIn("skill-library", names)
         self.assertIn("code", names)
         self.assertIn("inherit", names)
         self.assertIn("work", names)
@@ -71,6 +76,15 @@ class EnochSkillsTests(unittest.TestCase):
         self.assertIn("inherited_from: Seth", metadata)
         self.assertIn("source_commit: f0fa336", metadata)
         self.assertIn("library_contract: telegram-vision/v1", metadata)
+
+    def test_skill_library_declares_shared_library_contract(self) -> None:
+        metadata = (
+            ROOT / "src" / "enoch" / "skills" / "skill-library" / "skill.yaml"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("owner: Enoch", metadata)
+        self.assertIn("contract: skill-library/v1", metadata)
+        self.assertIn("implementation: procedural", metadata)
 
     def test_skills_command_can_inspect_explicit_local_agent_path(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
