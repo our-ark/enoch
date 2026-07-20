@@ -1,0 +1,14 @@
+[project]
+name = "our-ark-skill-catalog"
+version = "0.1.0"
+description = "Agent-neutral skill manifest parsing and catalog construction."
+license = "Apache-2.0"
+requires-python = ">=3.11"
+dependencies = []
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
