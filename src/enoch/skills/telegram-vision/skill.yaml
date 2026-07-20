@@ -3,7 +3,8 @@ version: 0.1.0
 summary: Understand photos and supported image documents sent through Enoch's locked Telegram chat.
 owner: Enoch
 origin_agent: Eve
-inherited_from: Adam
+inherited_from: Seth
+source_commit: f0fa336
 status: active
 mode: external-tool
 entrypoint: src/enoch/telegram/vision.py

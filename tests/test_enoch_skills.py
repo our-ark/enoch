@@ -62,6 +62,15 @@ class EnochSkillsTests(unittest.TestCase):
         self.assertEqual(learn.version, "0.1.0")
         self.assertIn("Adapt a published skill", learn.summary)
 
+    def test_telegram_vision_records_direct_parent_lineage(self) -> None:
+        metadata = (
+            ROOT / "src" / "enoch" / "skills" / "telegram-vision" / "skill.yaml"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("origin_agent: Eve", metadata)
+        self.assertIn("inherited_from: Seth", metadata)
+        self.assertIn("source_commit: f0fa336", metadata)
+
     def test_skills_command_can_inspect_explicit_local_agent_path(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             workspace = Path(directory)
