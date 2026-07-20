@@ -189,7 +189,7 @@ class EnochLineageTests(unittest.TestCase):
         self.assertIn("3. Enoch (current)", formatted)
         self.assertIn("   Relation: current agent", formatted)
         self.assertIn("   Source: src/enoch/identity.yaml", formatted)
-        self.assertIn("   New skills: github, evolve", formatted)
+        self.assertIn("   New skills: telegram-vision, github, evolve", formatted)
 
     def test_load_current_agent_profile_from_identity_yaml(self) -> None:
         current_agent = load_current_agent_profile(ROOT)

@@ -1,0 +1,19 @@
+name: telegram-vision
+version: 0.1.0
+summary: Understand photos and supported image documents sent through Enoch's locked Telegram chat.
+owner: Enoch
+origin_agent: Eve
+inherited_from: Adam
+status: active
+mode: external-tool
+entrypoint: src/enoch/telegram/vision.py
+permissions:
+  network:
+    telegram_file_download: locked_chat_only
+  filesystem:
+    write:
+      - private_temporary_images
+  model:
+    image_attachment: read_only
+validation:
+  command: python3 -m unittest discover -s tests

@@ -227,6 +227,30 @@ class EnochBrainTests(unittest.TestCase):
 
     @patch("enoch.brain.shutil.which", return_value="/usr/local/bin/codex")
     @patch("enoch.brain.subprocess.run")
+    def test_respond_attaches_images_to_codex_exec(
+        self, run: MagicMock, _which: MagicMock
+    ) -> None:
+        run.return_value.returncode = 0
+        run.return_value.stdout = ""
+        run.return_value.stderr = ""
+
+        with TemporaryDirectory() as temp:
+            image = Path(temp) / "telegram.jpg"
+            image.write_bytes(b"\xff\xd8\xff")
+            respond(
+                load_identity(),
+                "What is in this image?",
+                cwd=Path(temp),
+                image_paths=(image,),
+            )
+
+        args = run.call_args.args[0]
+        self.assertIn("--image", args)
+        self.assertEqual(args[args.index("--image") + 1], str(image))
+        self.assertEqual(args[-1], "-")
+
+    @patch("enoch.brain.shutil.which", return_value="/usr/local/bin/codex")
+    @patch("enoch.brain.subprocess.run")
     def test_missing_codex_login_raises_recoverable_access_error(
         self,
         run: MagicMock,
@@ -445,6 +469,46 @@ class EnochBrainTests(unittest.TestCase):
         self.assertNotIn("Persistent Enoch context sync:", last_input)
         self.assertIn("resumed session: yes", last_input)
         self.assertIn("session id: session-123", last_input)
+
+    @patch("enoch.brain.shutil.which", return_value="/usr/local/bin/codex")
+    @patch("enoch.brain.subprocess.run")
+    def test_respond_attaches_image_when_resuming_persistent_session(
+        self, run: MagicMock, _which: MagicMock
+    ) -> None:
+        run.return_value.returncode = 0
+        run.return_value.stdout = (
+            '{"type":"item.completed","item":{"type":"agent_message","text":"A cat"}}'
+        )
+        run.return_value.stderr = ""
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            image = root / "telegram.jpg"
+            image.write_bytes(b"\xff\xd8\xff")
+            save_codex_session(
+                CodexSessionState(
+                    key="telegram:42",
+                    session_id="session-123",
+                    turn_count=1,
+                    created_at="2026-06-18T00:00:00+00:00",
+                    updated_at="2026-06-18T00:00:00+00:00",
+                ),
+                root,
+            )
+
+            answer = respond(
+                load_identity(),
+                "What is this?",
+                cwd=root,
+                session_key="telegram:42",
+                image_paths=(image,),
+            )
+
+        args = run.call_args.args[0]
+        self.assertEqual(answer, "A cat")
+        self.assertEqual(args[:4], ["/usr/local/bin/codex", "exec", "resume", "session-123"])
+        self.assertIn("--image", args)
+        self.assertEqual(args[args.index("--image") + 1], str(image))
+        self.assertEqual(args[-1], "-")
 
     @patch("enoch.brain.shutil.which", return_value="/usr/local/bin/codex")
     @patch("enoch.brain.memory_for_prompt", return_value="Old memory should not be sent.")

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Telegram Vision"
+  short_description: "Understand images sent to Enoch through Telegram"
+  default_prompt: "Use $telegram-vision to understand this Telegram image and respond naturally."

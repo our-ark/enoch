@@ -19,6 +19,7 @@ class EnochSkillsTests(unittest.TestCase):
         names = [skill.name for skill in agent.skills]
         self.assertEqual(agent.name, "Enoch")
         self.assertIn("telegram-talk", names)
+        self.assertIn("telegram-vision", names)
         self.assertIn("code", names)
         self.assertIn("inherit", names)
         self.assertIn("work", names)
@@ -40,6 +41,9 @@ class EnochSkillsTests(unittest.TestCase):
         teach = next(skill for skill in agent.skills if skill.name == "teach")
         self.assertEqual(teach.exposure, "hidden")
         self.assertIn("Hidden skill", teach.summary)
+        vision = next(skill for skill in agent.skills if skill.name == "telegram-vision")
+        self.assertEqual(vision.version, "0.1.0")
+        self.assertIn("photos", vision.summary)
 
     def test_loads_packaged_self_skills_without_source_checkout(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -48,6 +52,7 @@ class EnochSkillsTests(unittest.TestCase):
         names = [skill.name for skill in agent.skills]
         self.assertEqual(agent.name, "Enoch")
         self.assertIn("telegram-talk", names)
+        self.assertIn("telegram-vision", names)
         self.assertIn("code", names)
         self.assertIn("inherit", names)
         self.assertIn("work", names)

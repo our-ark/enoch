@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 import threading
-from typing import Any, Callable, Protocol, runtime_checkable
+from typing import Any, Callable, Protocol, Sequence, runtime_checkable
 
 from enoch.identity import Identity
 
@@ -114,6 +114,7 @@ class AgentRuntime(Protocol):
         cwd: Path | None = None,
         progress_callback: ProgressCallback | None = None,
         session_key: str = "",
+        image_paths: Sequence[Path] = (),
     ) -> str: ...
 
     def act_in_session(

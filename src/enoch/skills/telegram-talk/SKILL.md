@@ -4,6 +4,9 @@
 
 Use this skill when Enoch should talk with the human through Telegram.
 
+For JPEG, PNG, and WebP image messages, use the inherited `telegram-vision`
+skill and keep the image turn read-only.
+
 ## Boundary
 
 Plain Telegram messages use Enoch's read-only brain path unless Enoch's model classifies the intent as a repository edit, approved direct action, memory request, ancestor adoption, or GitHub publishing action.

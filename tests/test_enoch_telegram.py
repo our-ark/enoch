@@ -90,6 +90,7 @@ from enoch.telegram.bot import (
 )
 from enoch.telegram import bot as telegram
 from enoch.telegram.client import READ_ACK_EMOJI, TelegramClient, TelegramConfig, TelegramError, load_config
+from enoch.telegram.vision import MAX_TELEGRAM_IMAGE_BYTES
 from enoch.telegram.lifecycle import (
     load_lifecycle_state as _load_lifecycle_state,
     previous_shutdown_warning as _previous_shutdown_warning,
@@ -180,6 +181,84 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual(config.token, "file-token")
         self.assertEqual(config.allowed_chat_id, 42)
         self.assertEqual(config.poll_timeout, 10)
+
+    @patch("enoch.telegram.client.request.urlopen")
+    def test_downloads_telegram_file_with_size_limit(self, urlopen: MagicMock) -> None:
+        response = MagicMock()
+        response.headers = {"Content-Length": "16"}
+        response.read.return_value = b"\xff\xd8\xfftelegram-photo"
+        urlopen.return_value.__enter__.return_value = response
+        client = TelegramClient(TelegramConfig(token="secret-token", poll_timeout=5))
+
+        with TemporaryDirectory() as temp:
+            destination = Path(temp) / "image.jpg"
+            with patch.object(
+                client,
+                "_call",
+                return_value={"result": {"file_path": "photos/image.jpg"}},
+            ):
+                client.download_file("file-id", destination, max_bytes=1024)
+
+            self.assertEqual(destination.read_bytes(), b"\xff\xd8\xfftelegram-photo")
+
+        request_object = urlopen.call_args.args[0]
+        self.assertTrue(request_object.full_url.endswith("/photos/image.jpg"))
+        response.read.assert_called_once_with(1025)
+
+    @patch("enoch.telegram.bot.respond")
+    def test_photo_is_downloaded_attached_and_deleted(self, respond: MagicMock) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            client = FakeTelegramClient(allowed_chat_id=42)
+            bot = EnochTelegramBot(load_identity(), root, client)
+
+            def inspect_image(_identity, prompt, **kwargs):
+                image_path = kwargs["image_paths"][0]
+                self.assertTrue(image_path.exists())
+                self.assertEqual(image_path.read_bytes(), b"\xff\xd8\xfftelegram-photo")
+                self.assertIn("这是什么花？", prompt)
+                self.assertEqual(kwargs["session_key"], "telegram:42")
+                return "这是一朵向日葵。"
+
+            respond.side_effect = inspect_image
+            bot.handle_update(_photo_update(chat_id=42, caption="这是什么花？"))
+
+            image_dir = root / ".enoch" / "telegram" / "images"
+            self.assertEqual(list(image_dir.iterdir()), [])
+
+        self.assertEqual(client.downloads, [("large-photo", MAX_TELEGRAM_IMAGE_BYTES)])
+        self.assertEqual(client.sent, [(42, "这是一朵向日葵。")])
+
+    @patch("enoch.telegram.bot.respond")
+    def test_photo_without_caption_gets_natural_image_prompt(
+        self,
+        respond: MagicMock,
+    ) -> None:
+        respond.return_value = "I can see a dog."
+        with TemporaryDirectory() as temp:
+            client = FakeTelegramClient(allowed_chat_id=42)
+            bot = EnochTelegramBot(load_identity(), Path(temp), client)
+
+            bot.handle_update(_photo_update(chat_id=42))
+
+        prompt = respond.call_args.args[1]
+        self.assertIn("without a caption", prompt)
+        self.assertEqual(client.sent, [(42, "I can see a dog.")])
+
+    @patch("enoch.telegram.bot.respond")
+    def test_photo_from_unlocked_chat_is_not_downloaded(
+        self,
+        respond: MagicMock,
+    ) -> None:
+        with TemporaryDirectory() as temp:
+            client = FakeTelegramClient(allowed_chat_id=7)
+            bot = EnochTelegramBot(load_identity(), Path(temp), client)
+
+            bot.handle_update(_photo_update(chat_id=42))
+
+        respond.assert_not_called()
+        self.assertEqual(client.downloads, [])
+        self.assertEqual(client.sent, [])
 
     @patch.dict(
         "os.environ",
@@ -606,12 +685,16 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertLess(reply.index("Inherit:"), reply.index("Learn:"))
         self.assertLess(reply.index("Learn:"), reply.index("/skills"))
         self.assertLess(reply.index("Learn:"), reply.index("Evolve:"))
+        self.assertLess(reply.index("Learn:"), reply.index("Vision:"))
+        self.assertLess(reply.index("Vision:"), reply.index("Evolve:"))
         self.assertLess(reply.index("Evolve:"), reply.index("/evolve"))
         self.assertLess(reply.index("Evolve:"), reply.index("System:"))
         self.assertIn("Common:", client.sent[0][1])
         self.assertNotIn("Memory:", client.sent[0][1])
         self.assertIn("Inherit:", client.sent[0][1])
         self.assertIn("Learn:", client.sent[0][1])
+        self.assertIn("Vision:", client.sent[0][1])
+        self.assertIn("Send a photo", client.sent[0][1])
         self.assertIn("Evolve:", client.sent[0][1])
         self.assertIn("Work:", client.sent[0][1])
         self.assertIn("System:", client.sent[0][1])
@@ -4747,6 +4830,7 @@ class FakeTelegramClient:
         self.edited = []
         self.updates = []
         self.offsets = []
+        self.downloads = []
 
     def get_updates(self, offset=None):
         self.offsets.append(offset)
@@ -4763,6 +4847,10 @@ class FakeTelegramClient:
 
     def send_read_ack(self, chat_id, message_id):
         self.acks.append((chat_id, message_id, READ_ACK_EMOJI))
+
+    def download_file(self, file_id, destination, *, max_bytes):
+        self.downloads.append((file_id, max_bytes))
+        destination.write_bytes(b"\xff\xd8\xfftelegram-photo")
 
 
 class FailingTelegramClient(FakeTelegramClient):
@@ -4823,6 +4911,20 @@ def _message_update(update_id=1, chat_id=42, text="hello", reply_text=None):
         "update_id": update_id,
         "message": message,
     }
+
+
+def _photo_update(update_id=1, chat_id=42, caption=""):
+    message = {
+        "message_id": 1000 + update_id,
+        "chat": {"id": chat_id},
+        "photo": [
+            {"file_id": "small-photo", "width": 90, "height": 90, "file_size": 100},
+            {"file_id": "large-photo", "width": 1280, "height": 720, "file_size": 500},
+        ],
+    }
+    if caption:
+        message["caption"] = caption
+    return {"update_id": update_id, "message": message}
 
 
 def _save_test_offset(offset: int, root: Path) -> None:

@@ -61,6 +61,30 @@ class TelegramClient:
                 first_message_id = message_id
         return first_message_id
 
+    def download_file(self, file_id: str, destination: Path, *, max_bytes: int) -> None:
+        data = self._call("getFile", {"file_id": file_id})
+        result = data.get("result") or {}
+        file_path = str(result.get("file_path") or "").strip()
+        if not file_path or file_path.startswith("/") or ".." in Path(file_path).parts:
+            raise TelegramError("Telegram did not return a safe file path.")
+
+        url = f"{TELEGRAM_API}/file/bot{self.config.token}/{file_path}"
+        req = request.Request(url, method="GET")
+        try:
+            with request.urlopen(req, timeout=self.config.poll_timeout + 10) as response:
+                declared_size = response.headers.get("Content-Length")
+                if declared_size and int(declared_size) > max_bytes:
+                    raise TelegramError("Telegram image is too large.")
+                content = response.read(max_bytes + 1)
+        except TelegramError:
+            raise
+        except (OSError, ValueError) as error:
+            raise TelegramError("Enoch could not download that Telegram image.") from error
+
+        if len(content) > max_bytes:
+            raise TelegramError("Telegram image is too large.")
+        destination.write_bytes(content)
+
     def edit_message(self, chat_id: int, message_id: int, text: str) -> None:
         self._call("editMessageText", {"chat_id": chat_id, "message_id": message_id, "text": text})
 
@@ -88,8 +112,12 @@ def telegram_event(update: dict[str, Any]) -> ChatEvent | None:
     chat = message.get("chat") or {}
     chat_id = chat.get("id")
     message_id = message.get("message_id")
-    text = str(message.get("text") or "").strip()
-    if not isinstance(update_id, int) or not isinstance(chat_id, int) or not text:
+    text = str(message.get("text") or message.get("caption") or "").strip()
+    if (
+        not isinstance(update_id, int)
+        or not isinstance(chat_id, int)
+        or (not text and not _has_supported_image(message))
+    ):
         return None
     return ChatEvent(
         cursor=update_id + 1,
@@ -98,6 +126,21 @@ def telegram_event(update: dict[str, Any]) -> ChatEvent | None:
         text=text,
         replied_text=_replied_text(message),
         raw=update,
+    )
+
+
+def _has_supported_image(message: dict[str, Any]) -> bool:
+    photos = message.get("photo")
+    if isinstance(photos, list) and any(
+        isinstance(item, dict) and item.get("file_id") for item in photos
+    ):
+        return True
+    document = message.get("document")
+    return (
+        isinstance(document, dict)
+        and bool(str(document.get("file_id") or "").strip())
+        and str(document.get("mime_type") or "").lower()
+        in {"image/jpeg", "image/png", "image/webp"}
     )
 
 

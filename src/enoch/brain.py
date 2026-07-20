@@ -11,7 +11,7 @@ import threading
 import time
 from pathlib import Path
 from ast import literal_eval
-from typing import Callable
+from typing import Callable, Sequence
 
 from enoch.codex_sessions import (
     CodexSessionState,
@@ -274,6 +274,7 @@ def respond(
     cwd: Path | None = None,
     progress_callback: ProgressCallback | None = None,
     session_key: str = "",
+    image_paths: Sequence[Path] = (),
 ) -> str:
     if session_key:
         return _respond_with_persistent_session(
@@ -282,6 +283,7 @@ def respond(
             cwd,
             session_key=session_key,
             progress_callback=progress_callback,
+            image_paths=image_paths,
         )
     return _run_codex(
         identity,
@@ -289,6 +291,7 @@ def respond(
         cwd,
         sandbox=ACTION_SANDBOX_READ_ONLY,
         progress_callback=progress_callback,
+        image_paths=image_paths,
     )
 
 
@@ -299,6 +302,7 @@ def _respond_with_persistent_session(
     *,
     session_key: str,
     progress_callback: ProgressCallback | None = None,
+    image_paths: Sequence[Path] = (),
 ) -> str:
     state = load_codex_session(session_key, cwd)
     prompt = _build_persistent_prompt(message, cwd, state)
@@ -311,6 +315,7 @@ def _respond_with_persistent_session(
             progress_callback=progress_callback,
             persist_session=True,
             session_id=state.session_id if state else "",
+            image_paths=image_paths,
         )
     except CodexAccessUnavailable:
         raise
@@ -326,6 +331,7 @@ def _respond_with_persistent_session(
             sandbox=ACTION_SANDBOX_READ_ONLY,
             progress_callback=progress_callback,
             persist_session=True,
+            image_paths=image_paths,
         )
         state = None
 
@@ -484,6 +490,8 @@ def _run_codex(
     progress_callback: ProgressCallback | None = None,
     cancellation_event: threading.Event | None = None,
     state_root: Path | None = None,
+    *,
+    image_paths: Sequence[Path] = (),
 ) -> str:
     return _run_codex_result(
         identity,
@@ -493,6 +501,7 @@ def _run_codex(
         progress_callback=progress_callback,
         cancellation_event=cancellation_event,
         state_root=state_root,
+        image_paths=image_paths,
     ).answer
 
 
@@ -507,6 +516,7 @@ def _run_codex_result(
     session_id: str = "",
     cancellation_event: threading.Event | None = None,
     state_root: Path | None = None,
+    image_paths: Sequence[Path] = (),
 ) -> CodexRunResult:
     state_root = state_root or cwd
     resolution = resolve_codex_executable(state_root)
@@ -527,6 +537,7 @@ def _run_codex_result(
             output.name,
             persist_session=persist_session,
             session_id=session_id,
+            image_paths=image_paths,
         )
         prompt_marker = args.pop()
 
@@ -599,9 +610,10 @@ def _codex_exec_args(
     *,
     persist_session: bool,
     session_id: str,
+    image_paths: Sequence[Path] = (),
 ) -> list[str]:
     if session_id:
-        return [
+        args = [
             codex,
             "exec",
             "resume",
@@ -611,8 +623,11 @@ def _codex_exec_args(
             "--json",
             "--output-last-message",
             output_path,
-            "-",
         ]
+        for image_path in image_paths:
+            args.extend(["--image", str(image_path)])
+        args.append("-")
+        return args
 
     args = [
         codex,
@@ -627,7 +642,10 @@ def _codex_exec_args(
     ]
     if not persist_session:
         args.append("--ephemeral")
-    args.extend(["--output-last-message", output_path, "-"])
+    args.extend(["--output-last-message", output_path])
+    for image_path in image_paths:
+        args.extend(["--image", str(image_path)])
+    args.append("-")
     return args
 
 

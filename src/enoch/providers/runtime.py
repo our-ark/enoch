@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import threading
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 
 from enoch.identity import Identity
 from enoch.providers.contracts import ProgressCallback, ProviderHealth
@@ -36,6 +36,7 @@ class FunctionAgentRuntime:
         cwd: Path | None = None,
         progress_callback: ProgressCallback | None = None,
         session_key: str = "",
+        image_paths: Sequence[Path] = (),
     ) -> str:
         return self.respond_fn(
             identity,
@@ -43,6 +44,7 @@ class FunctionAgentRuntime:
             cwd=cwd,
             progress_callback=progress_callback,
             session_key=session_key,
+            image_paths=image_paths,
         )
 
     def act_in_session(

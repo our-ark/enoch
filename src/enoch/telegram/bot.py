@@ -216,6 +216,12 @@ from enoch.task_queue import (
 )
 from enoch.task_events import TASK_SOURCES
 from enoch.telegram.client import TelegramClient, TelegramError, load_config, telegram_event
+from enoch.telegram.vision import (
+    TelegramImage,
+    select_telegram_image,
+    telegram_image_prompt,
+    temporary_telegram_image,
+)
 from enoch.commands import (
     action_lock_message as _action_lock_message,
     config_command,
@@ -435,77 +441,88 @@ class EnochTelegramBot:
 
         self._safe_send_read_ack(chat_id, message_id)
         self.runtime.reset_usage()
-        command, argument = _parse_telegram_command(text)
-        work_text = _with_replied_text_context(
-            text,
-            event.replied_text,
-            provider_name=_chat_provider_name(self.client),
-        )
-        if command == "/start":
-            reply = "Use /help to see available commands."
-        elif command == "/help":
-            reply = _help_message(argument)
-        elif command == "/ancestors":
-            reply = self._ancestors(chat_id, text)
-        elif command == "/inherit":
-            reply = self._inherit(chat_id, text)
-        elif command == "/mission":
-            reply = self._mission(text)
-        elif command == "/skills":
-            reply = self._skills(text)
-        elif command == "/learn":
-            reply = self._learn(chat_id, text)
-        elif command == "/do":
-            reply = self._do(chat_id, work_text)
-        elif command == "/task":
-            reply = self._task(chat_id, work_text)
-        elif command == "/tasks":
-            reply = _format_tasks_report(self.root)
-        elif command == "/stop":
-            reply = self._stop_running_job()
-        elif command == "/resume":
-            reply = self._resume_tasks(argument)
-        elif command in {"/backlog", "/backlogs"}:
-            reply = self._backlog(chat_id, work_text)
-        elif command in {"/cron", "/crons"}:
-            reply = self._cron(chat_id, work_text)
-        elif command == "/feedback":
-            reply = _format_feedback_report(self.root)
-        elif command == "/experience":
-            reply = _format_experience_report(self.root)
-        elif command == "/propose":
-            reply = _format_evolve_proposal(self._propose_evolve(chat_id, trigger="propose-fallback"))
-        elif command == "/evolve":
-            reply = self._evolve(chat_id, argument)
-        elif command == "/config":
-            reply = config_command(text, self.root, runtime=self.runtime)
-        elif command == "/self":
-            reply = identity_summary(self.identity, self.root)
-        elif command == "/status":
-            reply = self._status(chat_id)
-        elif command == "/doctor":
-            reply = self._doctor()
-        elif command == "/pr":
-            reply = self._pr(chat_id, argument)
-        elif command == "/update":
-            reply = self._update()
-            self._queue_session_sync(
-                chat_id,
-                _activity_sync_note(
-                    "User ran /update.",
-                    f"Result: {_clip_activity_text(reply)}",
-                ),
-            )
-        elif command == "/restart":
-            reply = self._restart_from_telegram()
+        message = event.raw.get("message") if isinstance(event.raw, dict) else None
+        telegram_message = message if isinstance(message, dict) else {}
+        image = select_telegram_image(telegram_message)
+        logged_input = text
+        if image is not None:
+            caption = str(telegram_message.get("caption") or "").strip()
+            reply = self._respond_to_image(chat_id, image, caption)
+            logged_input = "[Telegram image]" + (f" {caption}" if caption else "")
         else:
-            reply = self._natural(chat_id, text)
+            command, argument = _parse_telegram_command(text)
+            work_text = _with_replied_text_context(
+                text,
+                event.replied_text,
+                provider_name=_chat_provider_name(self.client),
+            )
+            if command == "/start":
+                reply = "Use /help to see available commands."
+            elif command == "/help":
+                reply = _help_message(argument)
+            elif command == "/ancestors":
+                reply = self._ancestors(chat_id, text)
+            elif command == "/inherit":
+                reply = self._inherit(chat_id, text)
+            elif command == "/mission":
+                reply = self._mission(text)
+            elif command == "/skills":
+                reply = self._skills(text)
+            elif command == "/learn":
+                reply = self._learn(chat_id, text)
+            elif command == "/do":
+                reply = self._do(chat_id, work_text)
+            elif command == "/task":
+                reply = self._task(chat_id, work_text)
+            elif command == "/tasks":
+                reply = _format_tasks_report(self.root)
+            elif command == "/stop":
+                reply = self._stop_running_job()
+            elif command == "/resume":
+                reply = self._resume_tasks(argument)
+            elif command in {"/backlog", "/backlogs"}:
+                reply = self._backlog(chat_id, work_text)
+            elif command in {"/cron", "/crons"}:
+                reply = self._cron(chat_id, work_text)
+            elif command == "/feedback":
+                reply = _format_feedback_report(self.root)
+            elif command == "/experience":
+                reply = _format_experience_report(self.root)
+            elif command == "/propose":
+                reply = _format_evolve_proposal(
+                    self._propose_evolve(chat_id, trigger="propose-fallback")
+                )
+            elif command == "/evolve":
+                reply = self._evolve(chat_id, argument)
+            elif command == "/config":
+                reply = config_command(text, self.root, runtime=self.runtime)
+            elif command == "/self":
+                reply = identity_summary(self.identity, self.root)
+            elif command == "/status":
+                reply = self._status(chat_id)
+            elif command == "/doctor":
+                reply = self._doctor()
+            elif command == "/pr":
+                reply = self._pr(chat_id, argument)
+            elif command == "/update":
+                reply = self._update()
+                self._queue_session_sync(
+                    chat_id,
+                    _activity_sync_note(
+                        "User ran /update.",
+                        f"Result: {_clip_activity_text(reply)}",
+                    ),
+                )
+            elif command == "/restart":
+                reply = self._restart_from_telegram()
+            else:
+                reply = self._natural(chat_id, text)
 
         send_error = self._safe_send_message(chat_id, reply) if reply else ""
         logged_reply = reply
         if send_error:
             logged_reply = "\n\n".join([reply, f"Telegram send failed: {send_error}"])
-        self._record_turn(chat_id, text, logged_reply)
+        self._record_turn(chat_id, logged_input, logged_reply)
         self._flush_session_syncs()
         self._remember_update_offset(event.cursor)
         if self._restart_after_reply:
@@ -542,6 +559,30 @@ class EnochTelegramBot:
             )
         except AgentRuntimeError as error:
             return str(error)
+
+    def _respond_to_image(
+        self,
+        chat_id: ConversationId,
+        image: TelegramImage,
+        caption: str,
+    ) -> str:
+        download_file = getattr(self.client, "download_file", None)
+        if not callable(download_file):
+            return "Enoch's current chat provider cannot download Telegram images."
+        try:
+            with temporary_telegram_image(self.client, image, self.root) as image_path:
+                return self.runtime.respond(
+                    self.identity,
+                    telegram_image_prompt(caption),
+                    cwd=self.root,
+                    session_key=self._session_key(chat_id),
+                    image_paths=(image_path,),
+                    progress_callback=lambda elapsed, sandbox: self._send_progress(
+                        chat_id, elapsed, sandbox
+                    ),
+                )
+        except (AgentRuntimeError, OSError, TelegramError) as error:
+            return f"Enoch could not view that Telegram image: {error}"
 
     def _queue_session_sync(self, chat_id: ConversationId | None, note: str) -> None:
         if chat_id is None or not note.strip():
