@@ -1,0 +1,14 @@
+[project]
+name = "our-ark-provider-kit"
+version = "0.1.0"
+description = "Agent-neutral provider contracts for Our Ark agents and reusable skills."
+license = "Apache-2.0"
+requires-python = ">=3.11"
+dependencies = []
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
