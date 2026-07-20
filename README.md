@@ -102,6 +102,12 @@ genesis create my-agent \
 Genesis stages the descendant, runs Enoch's inherited tests, and accepts birth
 only if validation passes without modifying the staged body.
 
+Reusable skill implementations may live under `libraries/`, outside the
+inherited body. Enoch's Telegram vision skill uses this model: descendants
+inherit its skill definition, adapter, and tests, while `genesis.toml` keeps an
+immutable dependency on the public library commit instead of copying the
+library into every descendant repository.
+
 ## Lineage
 
 - created by: Genesis

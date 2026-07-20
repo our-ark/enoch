@@ -29,7 +29,7 @@ skills:
     description: Talk with Enoch through Telegram using natural feature-request flow.
     path: src/enoch/skills/telegram-talk
   - name: telegram-vision
-    version: 0.1.0
+    version: 0.2.0
     path: src/enoch/skills/telegram-vision
   - name: code
     description: Inspect, modify, test, and explain changes to Enoch's local code body.

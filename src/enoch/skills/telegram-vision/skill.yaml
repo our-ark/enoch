@@ -1,10 +1,15 @@
 name: telegram-vision
-version: 0.1.0
+version: 0.2.0
 summary: Understand photos and supported image documents sent through Enoch's locked Telegram chat.
 owner: Enoch
 origin_agent: Eve
 inherited_from: Seth
 source_commit: f0fa336
+implementation: shared-library
+library_owner: Enoch
+library_package: our-ark-telegram-vision
+library_contract: telegram-vision/v1
+library_commit: 6d894d9beb882af7e5f57900b2323361510262de
 status: active
 mode: external-tool
 entrypoint: src/enoch/telegram/vision.py

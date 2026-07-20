@@ -5,6 +5,10 @@ description: Understand JPEG, PNG, and WebP images sent to Enoch through the loc
 
 # Telegram Vision
 
+Use the `telegram-vision/v1` adapter contract. The reusable implementation is
+provided by the public `our-ark-telegram-vision` library; keep agent identity,
+state paths, and Telegram-specific errors in the local adapter.
+
 ## Workflow
 
 1. Accept images only from Enoch's configured Telegram chat.

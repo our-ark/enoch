@@ -6,7 +6,9 @@ readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+  "our-ark-telegram-vision @ git+https://github.com/our-ark/enoch.git@6d894d9beb882af7e5f57900b2323361510262de#subdirectory=libraries/telegram-vision",
+]
 
 [project.scripts]
 enoch = "enoch.cli:main"

@@ -16,3 +16,9 @@ body_paths = [
 # Genesis prepends the active Python interpreter and runs this inherited gate
 # before either birth-related commit is accepted.
 validation = ["-m", "unittest", "discover", "-s", "tests"]
+
+[[runtime_dependencies]]
+name = "telegram-vision"
+requirement = "our-ark-telegram-vision @ git+https://github.com/our-ark/enoch.git@6d894d9beb882af7e5f57900b2323361510262de#subdirectory=libraries/telegram-vision"
+import_name = "our_ark_telegram_vision"
+local_source = "libraries/telegram-vision/src"

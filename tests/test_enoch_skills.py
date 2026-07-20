@@ -42,7 +42,7 @@ class EnochSkillsTests(unittest.TestCase):
         self.assertEqual(teach.exposure, "hidden")
         self.assertIn("Hidden skill", teach.summary)
         vision = next(skill for skill in agent.skills if skill.name == "telegram-vision")
-        self.assertEqual(vision.version, "0.1.0")
+        self.assertEqual(vision.version, "0.2.0")
         self.assertIn("photos", vision.summary)
 
     def test_loads_packaged_self_skills_without_source_checkout(self) -> None:
@@ -70,6 +70,7 @@ class EnochSkillsTests(unittest.TestCase):
         self.assertIn("origin_agent: Eve", metadata)
         self.assertIn("inherited_from: Seth", metadata)
         self.assertIn("source_commit: f0fa336", metadata)
+        self.assertIn("library_contract: telegram-vision/v1", metadata)
 
     def test_skills_command_can_inspect_explicit_local_agent_path(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
