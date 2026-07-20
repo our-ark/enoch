@@ -1,147 +1,27 @@
+"""Enoch configuration adapter for the shared Telegram transport."""
+
 from __future__ import annotations
 
-from dataclasses import dataclass
-import json
 import os
 from pathlib import Path
-from typing import Any
-from urllib import parse, request
 
 from enoch.config import config_path, read_section
-from enoch.providers.contracts import ChatEvent, ChatProviderError, ConversationId
-from enoch.runtime import DEFAULT_TELEGRAM_POLL_TIMEOUT, MAX_TELEGRAM_MESSAGE
+from enoch.runtime import DEFAULT_TELEGRAM_POLL_TIMEOUT
+from enoch.runtime_dependencies import activate_runtime_dependencies
 
 
-TELEGRAM_API = "https://api.telegram.org"
-READ_ACK_EMOJI = "👀"
+activate_runtime_dependencies()
 
-
-class TelegramError(ChatProviderError):
-    pass
-
-
-@dataclass(frozen=True)
-class TelegramConfig:
-    token: str
-    allowed_chat_id: int | None = None
-    poll_timeout: int = DEFAULT_TELEGRAM_POLL_TIMEOUT
-
-
-class TelegramClient:
-    name = "telegram"
-    provider_kind = "chat"
-
-    def __init__(self, config: TelegramConfig) -> None:
-        self.config = config
-
-    @property
-    def allowed_conversation_id(self) -> ConversationId | None:
-        return self.config.allowed_chat_id
-
-    def receive(self, cursor: int | None = None) -> list[ChatEvent]:
-        return [
-            event
-            for update in self.get_updates(cursor)
-            if (event := telegram_event(update)) is not None
-        ]
-
-    def get_updates(self, offset: int | None = None) -> list[dict[str, Any]]:
-        payload: dict[str, Any] = {"timeout": self.config.poll_timeout}
-        if offset is not None:
-            payload["offset"] = offset
-        data = self._call("getUpdates", payload)
-        return list(data.get("result", []))
-
-    def send_message(self, chat_id: int, text: str) -> int | None:
-        first_message_id: int | None = None
-        for chunk in chunks(text, MAX_TELEGRAM_MESSAGE):
-            data = self._call("sendMessage", {"chat_id": chat_id, "text": chunk})
-            message_id = _message_id(data)
-            if first_message_id is None and message_id is not None:
-                first_message_id = message_id
-        return first_message_id
-
-    def download_file(self, file_id: str, destination: Path, *, max_bytes: int) -> None:
-        data = self._call("getFile", {"file_id": file_id})
-        result = data.get("result") or {}
-        file_path = str(result.get("file_path") or "").strip()
-        if not file_path or file_path.startswith("/") or ".." in Path(file_path).parts:
-            raise TelegramError("Telegram did not return a safe file path.")
-
-        url = f"{TELEGRAM_API}/file/bot{self.config.token}/{file_path}"
-        req = request.Request(url, method="GET")
-        try:
-            with request.urlopen(req, timeout=self.config.poll_timeout + 10) as response:
-                declared_size = response.headers.get("Content-Length")
-                if declared_size and int(declared_size) > max_bytes:
-                    raise TelegramError("Telegram image is too large.")
-                content = response.read(max_bytes + 1)
-        except TelegramError:
-            raise
-        except (OSError, ValueError) as error:
-            raise TelegramError("Enoch could not download that Telegram image.") from error
-
-        if len(content) > max_bytes:
-            raise TelegramError("Telegram image is too large.")
-        destination.write_bytes(content)
-
-    def edit_message(self, chat_id: int, message_id: int, text: str) -> None:
-        self._call("editMessageText", {"chat_id": chat_id, "message_id": message_id, "text": text})
-
-    def send_read_ack(self, chat_id: int, message_id: int) -> None:
-        reaction = json.dumps([{"type": "emoji", "emoji": READ_ACK_EMOJI}], ensure_ascii=False)
-        self._call(
-            "setMessageReaction",
-            {"chat_id": chat_id, "message_id": message_id, "reaction": reaction},
-        )
-
-    def _call(self, method: str, payload: dict[str, Any]) -> dict[str, Any]:
-        url = f"{TELEGRAM_API}/bot{self.config.token}/{method}"
-        body = parse.urlencode(payload).encode("utf-8")
-        req = request.Request(url, data=body, method="POST")
-        with request.urlopen(req, timeout=self.config.poll_timeout + 10) as response:
-            data = json.loads(response.read().decode("utf-8"))
-        if not data.get("ok"):
-            raise TelegramError(str(data))
-        return data
-
-
-def telegram_event(update: dict[str, Any]) -> ChatEvent | None:
-    update_id = update.get("update_id")
-    message = update.get("message") or {}
-    chat = message.get("chat") or {}
-    chat_id = chat.get("id")
-    message_id = message.get("message_id")
-    text = str(message.get("text") or message.get("caption") or "").strip()
-    if (
-        not isinstance(update_id, int)
-        or not isinstance(chat_id, int)
-        or (not text and not _has_supported_image(message))
-    ):
-        return None
-    return ChatEvent(
-        cursor=update_id + 1,
-        conversation_id=chat_id,
-        message_id=message_id if isinstance(message_id, int) else None,
-        text=text,
-        replied_text=_replied_text(message),
-        raw=update,
-    )
-
-
-def _has_supported_image(message: dict[str, Any]) -> bool:
-    photos = message.get("photo")
-    if isinstance(photos, list) and any(
-        isinstance(item, dict) and item.get("file_id") for item in photos
-    ):
-        return True
-    document = message.get("document")
-    return (
-        isinstance(document, dict)
-        and bool(str(document.get("file_id") or "").strip())
-        and str(document.get("mime_type") or "").lower()
-        in {"image/jpeg", "image/png", "image/webp"}
-    )
+from our_ark_telegram import (  # noqa: E402
+    MAX_TELEGRAM_MESSAGE,
+    READ_ACK_EMOJI,
+    TELEGRAM_API,
+    TelegramClient,
+    TelegramConfig,
+    TelegramError,
+    chunks,
+    telegram_event,
+)
 
 
 def load_config(root: Path | None = None) -> TelegramConfig:
@@ -161,32 +41,11 @@ def load_config(root: Path | None = None) -> TelegramConfig:
         or str(DEFAULT_TELEGRAM_POLL_TIMEOUT),
         name="Telegram poll timeout",
     )
-    return TelegramConfig(token=token, allowed_chat_id=allowed_chat_id, poll_timeout=poll_timeout)
-
-
-def chunks(text: str, size: int = MAX_TELEGRAM_MESSAGE) -> list[str]:
-    if len(text) <= size:
-        return [text]
-    return [text[index : index + size] for index in range(0, len(text), size)]
-
-
-def _message_id(data: dict[str, Any]) -> int | None:
-    result = data.get("result")
-    if not isinstance(result, dict):
-        return None
-    message_id = result.get("message_id")
-    return message_id if isinstance(message_id, int) else None
-
-
-def _replied_text(message: dict[str, Any]) -> str:
-    reply = message.get("reply_to_message")
-    if not isinstance(reply, dict):
-        return ""
-    for key in ("text", "caption"):
-        value = reply.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-    return ""
+    return TelegramConfig(
+        token=token,
+        allowed_chat_id=allowed_chat_id,
+        poll_timeout=poll_timeout,
+    )
 
 
 def _optional_int(value: str | None, *, name: str) -> int | None:
@@ -213,3 +72,16 @@ def _setting(settings: dict[str, str], key: str, env_name: str) -> str:
     if env_value is not None:
         return env_value.strip()
     return settings.get(key, "").strip()
+
+
+__all__ = [
+    "MAX_TELEGRAM_MESSAGE",
+    "READ_ACK_EMOJI",
+    "TELEGRAM_API",
+    "TelegramClient",
+    "TelegramConfig",
+    "TelegramError",
+    "chunks",
+    "load_config",
+    "telegram_event",
+]

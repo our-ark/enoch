@@ -34,7 +34,7 @@ class EnochSkillsTests(unittest.TestCase):
         self.assertEqual(work.version, "0.1.0")
         self.assertIn("persistent work", work.summary)
         learn = next(skill for skill in agent.skills if skill.name == "learn")
-        self.assertEqual(learn.version, "0.1.0")
+        self.assertEqual(learn.version, "0.2.0")
         self.assertIn("Adapt a published skill", learn.summary)
         evolve = next(skill for skill in agent.skills if skill.name == "evolve")
         self.assertEqual(evolve.version, "0.2.0")
@@ -64,7 +64,7 @@ class EnochSkillsTests(unittest.TestCase):
         self.assertIn("evolve", names)
         self.assertIn("teach", names)
         learn = next(skill for skill in agent.skills if skill.name == "learn")
-        self.assertEqual(learn.version, "0.1.0")
+        self.assertEqual(learn.version, "0.2.0")
         self.assertIn("Adapt a published skill", learn.summary)
 
     def test_telegram_vision_records_direct_parent_lineage(self) -> None:

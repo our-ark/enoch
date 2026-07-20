@@ -182,7 +182,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual(config.allowed_chat_id, 42)
         self.assertEqual(config.poll_timeout, 10)
 
-    @patch("enoch.telegram.client.request.urlopen")
+    @patch("our_ark_telegram.core.request.urlopen")
     def test_downloads_telegram_file_with_size_limit(self, urlopen: MagicMock) -> None:
         response = MagicMock()
         response.headers = {"Content-Length": "16"}

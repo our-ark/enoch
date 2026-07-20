@@ -26,6 +26,7 @@ body:
 
 skills:
   - name: telegram-talk
+    version: 0.2.0
     description: Talk with Enoch through Telegram using natural feature-request flow.
     path: src/enoch/skills/telegram-talk
   - name: telegram-vision
@@ -47,7 +48,7 @@ skills:
     version: 0.1.0
     path: src/enoch/skills/work
   - name: learn
-    version: 0.1.0
+    version: 0.2.0
     path: src/enoch/skills/learn
   - name: evolve
     version: 0.2.0
