@@ -76,6 +76,10 @@ class EnochSkillsTests(unittest.TestCase):
         self.assertTrue(learn.version)
         self.assertIn("Adapt a published skill", learn.summary)
 
+    @unittest.skipUnless(
+        (ROOT / "libraries" / "telegram-vision").is_dir(),
+        "shared library sources are outside the inheritable agent body",
+    )
     def test_external_vision_skill_records_direct_parent_lineage(self) -> None:
         metadata = (
             ROOT / "libraries" / "telegram-vision" / "skills" / "telegram-vision" / "skill.yaml"

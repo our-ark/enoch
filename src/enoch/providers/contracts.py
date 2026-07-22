@@ -1,4 +1,9 @@
-"""Enoch adapter for the shared provider contract library."""
+"""Agent-body adapter for the shared provider contract library."""
+
+import os
+
+
+os.environ["OUR_ARK_AGENT_PACKAGE"] = __package__.split(".", 1)[0]
 
 from enoch.runtime_dependencies import activate_runtime_dependencies
 

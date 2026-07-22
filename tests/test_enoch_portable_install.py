@@ -14,6 +14,10 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 
 
+@unittest.skipUnless(
+    (ROOT / "libraries").is_dir() and (ROOT / ".github").is_dir(),
+    "repository release tests are outside the inheritable agent body",
+)
 class EnochPortableInstallTests(unittest.TestCase):
     def test_ci_provisions_locked_build_backend_before_offline_wheel_test(self) -> None:
         workflow = (ROOT / ".github" / "workflows" / "tests.yml").read_text(
@@ -169,7 +173,7 @@ def _write_chat_provider_package(root: Path) -> None:
             version = "0.0.1"
             requires-python = ">=3.11"
 
-            [project.entry-points."enoch.providers"]
+            [project.entry-points."our_ark.providers"]
             "chat.portable" = "portable_chat:create_provider"
 
             [build-system]
@@ -229,7 +233,7 @@ def _write_vcs_provider_package(root: Path) -> None:
             version = "0.0.1"
             requires-python = ">=3.11"
 
-            [project.entry-points."enoch.providers"]
+            [project.entry-points."our_ark.providers"]
             "vcs.portable" = "portable_vcs:create_provider"
 
             [build-system]

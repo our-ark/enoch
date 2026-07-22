@@ -173,7 +173,7 @@ def create_local_provider(_root: Path | None = None) -> LocalForgeProvider:
     return LocalForgeProvider()
 
 
-ENOCH_PROVIDERS = (
+OUR_ARK_PROVIDERS = (
     {
         "kind": "forge",
         "name": "local",

@@ -19,7 +19,7 @@ class EnochGithubTitleTests(unittest.TestCase):
         self.assertLessEqual(len(title), 72)
 
     def test_feature_title_has_fallback(self) -> None:
-        self.assertEqual(feature_title("   "), "Enoch feature")
+        self.assertEqual(feature_title("   "), "Agent feature")
 
 
 if __name__ == "__main__":

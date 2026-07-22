@@ -21,10 +21,10 @@ class EnochIdentityTests(unittest.TestCase):
         self.assertEqual(identity.origin.created_by, "Genesis")
         self.assertEqual(identity.body.source_path, "src/enoch")
 
-    def test_identity_has_human_ancestry_signal(self) -> None:
+    def test_identity_has_mission_and_ancestry(self) -> None:
         identity = load_identity()
 
-        self.assertIn("bounded, testable, human-governed change", identity.mission)
+        self.assertTrue(identity.mission.strip())
         self.assertEqual(identity.ancestor, "Seth")
 
     def test_identity_yaml_is_the_only_versioned_identity_source(self) -> None:

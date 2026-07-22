@@ -16,12 +16,12 @@ for source in (
 ):
     sys.path.insert(0, str(source))
 
-from our_ark_github import ENOCH_PROVIDERS, GithubForgeProvider
+from our_ark_github import OUR_ARK_PROVIDERS, GithubForgeProvider
 
 
 class GithubProviderTests(unittest.TestCase):
     def test_descriptor_registers_forge_factory(self) -> None:
-        descriptor = ENOCH_PROVIDERS[0]
+        descriptor = OUR_ARK_PROVIDERS[0]
 
         self.assertEqual(descriptor["kind"], "forge")
         self.assertEqual(descriptor["name"], "github")

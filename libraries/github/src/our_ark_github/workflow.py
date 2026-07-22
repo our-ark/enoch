@@ -9,17 +9,8 @@ import shutil
 import subprocess
 from urllib.parse import urlparse
 
-from enoch.config import read_section
-from enoch.git_tools import (
-    GitError,
-    changed_files,
-    current_branch,
-    diff_summary,
-    ensure_clean_worktree,
-    run_git,
-)
-from enoch.immune import ImmuneResult, run_immune_system
 from our_ark_provider_kit import (
+    agent_context,
     EvolutionProvenance,
     ForgeProviderError,
     LocalPublishResult,
@@ -31,10 +22,11 @@ from our_ark_provider_kit import (
     PullRequestTarget,
     RemotePublishResult,
 )
-from enoch.runtime import DEFAULT_BRANCH, DEFAULT_REMOTE, PROTECTED_BRANCHES
 
 
-DEFAULT_PROTECTED_BRANCHES = PROTECTED_BRANCHES
+DEFAULT_BRANCH = "main"
+DEFAULT_REMOTE = "origin"
+DEFAULT_PROTECTED_BRANCHES = {DEFAULT_BRANCH, "master"}
 GITHUB_NOREPLY_DOMAIN = "users.noreply.github.com"
 _POSITIVE_PR_NUMBER = re.compile(r"^[1-9][0-9]*$")
 _GITHUB_REPOSITORY_PART = re.compile(r"^[A-Za-z0-9_.-]+$")
@@ -44,9 +36,44 @@ class PublishError(ForgeProviderError):
     pass
 
 
+GitError = PublishError
+
+
+def _agent_module(component: str, root: Path | None = None):
+    return agent_context(root).module(component)
+
+
+def read_section(section: str, root: Path | None = None):
+    return _agent_module("config", root).read_section(section, root)
+
+
+def changed_files(root: Path | None = None):
+    return _agent_module("git_tools", root).changed_files(root)
+
+
+def current_branch(root: Path | None = None):
+    return _agent_module("git_tools", root).current_branch(root)
+
+
+def diff_summary(root: Path | None = None):
+    return _agent_module("git_tools", root).diff_summary(root)
+
+
+def ensure_clean_worktree(root: Path | None = None):
+    return _agent_module("git_tools", root).ensure_clean_worktree(root)
+
+
+def run_git(args: list[str], root: Path | None = None):
+    return _agent_module("git_tools", root).run_git(args, root)
+
+
+def run_immune_system(root: Path | None = None):
+    return _agent_module("immune", root).run_immune_system(root)
+
+
 def feature_title(text: str) -> str:
     normalized = " ".join(text.strip().split())
-    return normalized[:72].strip() or "Enoch feature"
+    return normalized[:72].strip() or "Agent feature"
 
 
 _PR_VIEW_FIELDS = (
@@ -615,15 +642,18 @@ class _PublishAuthor:
 
 
 def _publish_author(root: Path | None) -> _PublishAuthor:
+    context = agent_context(root)
     git_config = read_section("git", root)
     name = (
-        os.environ.get("ENOCH_GIT_AUTHOR_NAME")
+        os.environ.get(f"{context.env_prefix}_GIT_AUTHOR_NAME")
+        or os.environ.get("OUR_ARK_GIT_AUTHOR_NAME")
         or git_config.get("author_name")
         or _git_config_value("user.name", root)
         or _latest_author_value("%an", root)
     )
     email = (
-        os.environ.get("ENOCH_GIT_AUTHOR_EMAIL")
+        os.environ.get(f"{context.env_prefix}_GIT_AUTHOR_EMAIL")
+        or os.environ.get("OUR_ARK_GIT_AUTHOR_EMAIL")
         or git_config.get("author_email")
         or _noreply_latest_author_email(root)
         or _git_config_value("user.email", root)
@@ -673,20 +703,21 @@ def _ensure_upstream(remote: str, branch: str, root: Path | None) -> None:
 def _latest_commit_subject(root: Path | None) -> str:
     result = run_git(["log", "-1", "--pretty=%s"], root)
     if result.returncode != 0 or not result.stdout.strip():
-        return "Enoch evolution"
+        return "Agent evolution"
     return result.stdout.strip()
 
 
 def _default_pr_body(branch: str, root: Path | None) -> str:
+    context = agent_context(root)
     commit = _latest_commit_subject(root)
     return "\n".join(
         [
             "## Summary",
-            f"- Prepared Enoch evolution from `{branch}`.",
+            f"- Prepared {context.name} evolution from `{branch}`.",
             f"- Latest commit: {commit}",
             "",
             "## Validation",
-            "- Run `bin/enoch` and `doctor` locally as needed before review.",
+            f"- Run `bin/{context.service_slug}` and `doctor` locally as needed before review.",
             "",
             "## Human Review",
             "- PR created for review.",

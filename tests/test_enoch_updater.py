@@ -212,7 +212,7 @@ class EnochUpdaterTests(unittest.TestCase):
         run_update_doctor.assert_not_called()
         self.assertFalse(result.restart_required)
         self.assertIn("Enoch is already up to date.", result.message)
-        self.assertIn("Telegram daemon started on 0000000", result.message)
+        self.assertIn("daemon started on 0000000", result.message)
         self.assertIn("Run /restart to load the current code.", result.message)
         self.assertIn("Run /restart to load the current code.", result.direct_action_result)
 

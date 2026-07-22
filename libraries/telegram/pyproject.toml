@@ -8,7 +8,7 @@ dependencies = [
   "our-ark-provider-kit @ git+https://github.com/our-ark/enoch.git@ed2dda1f1042cf6f616b9dffeebdbd12f6f85d26#subdirectory=libraries/provider-kit",
 ]
 
-[project.entry-points."enoch.providers"]
+[project.entry-points."our_ark.providers"]
 "chat.telegram" = "our_ark_telegram:create_provider"
 
 [build-system]

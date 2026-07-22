@@ -8,7 +8,7 @@ import shutil
 import subprocess
 import sys
 
-from our_ark_provider_kit import ServiceProviderError
+from our_ark_provider_kit import ServiceProviderError, agent_context
 
 
 UNIT_NAME = "our-ark-enoch.service"
@@ -23,6 +23,10 @@ class SystemdPaths:
     root: Path
     unit_directory: Path
     unit: Path
+    unit_name: str
+    package: str
+    agent_name: str
+    env_prefix: str
 
 
 class SystemdServiceProvider:
@@ -37,50 +41,53 @@ class SystemdServiceProvider:
         paths = self.paths(root)
         self._write_manifest(paths)
         self._systemctl(["daemon-reload"])
-        self._systemctl(["enable", "--now", UNIT_NAME])
-        return f"Enoch service installed at {paths.unit}."
+        self._systemctl(["enable", "--now", paths.unit_name])
+        return f"{paths.agent_name} service installed at {paths.unit}."
 
     def uninstall(self, root: Path | None = None) -> str:
         self._require_host()
         paths = self.paths(root)
-        self._systemctl(["disable", "--now", UNIT_NAME], allow_failure=True)
+        self._systemctl(["disable", "--now", paths.unit_name], allow_failure=True)
         paths.unit.unlink(missing_ok=True)
         self._systemctl(["daemon-reload"])
-        return "Enoch service uninstalled."
+        return f"{paths.agent_name} service uninstalled."
 
     def start(self, root: Path | None = None) -> str:
         self._require_host()
         paths = self.paths(root)
         self._write_manifest(paths)
         self._systemctl(["daemon-reload"])
-        self._systemctl(["enable", "--now", UNIT_NAME])
-        return "Enoch service started."
+        self._systemctl(["enable", "--now", paths.unit_name])
+        return f"{paths.agent_name} service started."
 
     def stop(self, root: Path | None = None, *, allow_missing: bool = False) -> str:
-        del root
         self._require_host()
-        self._systemctl(["stop", UNIT_NAME], allow_failure=allow_missing)
-        return "Enoch service stopped."
+        paths = self.paths(root)
+        self._systemctl(["stop", paths.unit_name], allow_failure=allow_missing)
+        return f"{paths.agent_name} service stopped."
 
     def restart(self, root: Path | None = None) -> str:
         self._require_host()
         paths = self.paths(root)
         self._write_manifest(paths)
         self._systemctl(["daemon-reload"])
-        self._systemctl(["restart", UNIT_NAME])
-        return "Enoch service restarted."
+        self._systemctl(["restart", paths.unit_name])
+        return f"{paths.agent_name} service restarted."
 
     def status(self, root: Path | None = None) -> str:
-        del root
         self._require_host()
-        result = self._systemctl(["is-active", "--quiet", UNIT_NAME], allow_failure=True)
-        return "Enoch service is running." if result.returncode == 0 else "Enoch service is not running."
+        paths = self.paths(root)
+        result = self._systemctl(
+            ["is-active", "--quiet", paths.unit_name], allow_failure=True
+        )
+        state = "running" if result.returncode == 0 else "not running"
+        return f"{paths.agent_name} service is {state}."
 
     def logs(self, root: Path | None = None, *, lines: int = 80) -> str:
-        del root
         self._require_host()
+        paths = self.paths(root)
         result = subprocess.run(
-            ["journalctl", "--user", "-u", UNIT_NAME, "-n", str(lines), "--no-pager"],
+            ["journalctl", "--user", "-u", paths.unit_name, "-n", str(lines), "--no-pager"],
             capture_output=True,
             text=True,
             check=False,
@@ -96,7 +103,7 @@ class SystemdServiceProvider:
         active = False
         if supports_host() and systemctl:
             active = self._systemctl(
-                ["is-active", "--quiet", UNIT_NAME],
+                ["is-active", "--quiet", paths.unit_name],
                 allow_failure=True,
             ).returncode == 0
         return "\n".join(
@@ -105,7 +112,7 @@ class SystemdServiceProvider:
                 _check("host", supports_host(), platform.system()),
                 _check("systemctl", bool(systemctl), systemctl or "not found"),
                 _check("manifest", paths.unit.exists(), str(paths.unit)),
-                _check("service", active, UNIT_NAME),
+                _check("service", active, paths.unit_name),
             ]
         )
 
@@ -113,21 +120,25 @@ class SystemdServiceProvider:
         return unit_text(self.paths(root))
 
     def schedule_restart(self, root: Path | None = None) -> None:
-        del root
-        self._schedule("restart")
+        self._schedule(root, "restart")
 
     def schedule_stop(self, root: Path | None = None) -> None:
-        del root
-        self._schedule("stop")
+        self._schedule(root, "stop")
 
     def paths(self, root: Path | None = None) -> SystemdPaths:
         resolved_root = Path(root or Path.cwd()).resolve()
+        context = agent_context(resolved_root)
+        unit_name = f"our-ark-{context.service_slug}.service"
         home = self.home or Path.home()
         directory = home / ".config" / "systemd" / "user"
         return SystemdPaths(
             root=resolved_root,
             unit_directory=directory,
-            unit=directory / UNIT_NAME,
+            unit=directory / unit_name,
+            unit_name=unit_name,
+            package=context.service_slug,
+            agent_name=context.name,
+            env_prefix=context.env_prefix,
         )
 
     def _write_manifest(self, paths: SystemdPaths) -> None:
@@ -157,9 +168,10 @@ class SystemdServiceProvider:
         if shutil.which("systemctl") is None:
             raise ServiceProviderError("systemctl is not available on PATH.")
 
-    def _schedule(self, action: str) -> None:
+    def _schedule(self, root: Path | None, action: str) -> None:
+        paths = self.paths(root)
         subprocess.Popen(
-            ["systemctl", "--user", action, UNIT_NAME],
+            ["systemctl", "--user", action, paths.unit_name],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True,
@@ -168,14 +180,19 @@ class SystemdServiceProvider:
 
 def unit_text(paths: SystemdPaths) -> str:
     root = _quote(str(paths.root))
-    executable = _quote(str(paths.root / "bin" / "enoch-agent"))
-    python = _quote(os.environ.get("ENOCH_PYTHON", sys.executable))
+    executable = _quote(str(paths.root / "bin" / f"{paths.package}-agent"))
+    python = _quote(
+        os.environ.get(
+            f"{paths.env_prefix}_PYTHON",
+            os.environ.get("OUR_ARK_PYTHON", sys.executable),
+        )
+    )
     python_path = _quote(str(paths.root / "src"))
     path = _quote(os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"))
     return "\n".join(
         [
             "[Unit]",
-            "Description=Enoch agent",
+            f"Description={paths.agent_name} agent",
             "After=network-online.target",
             "Wants=network-online.target",
             "",
@@ -187,7 +204,7 @@ def unit_text(paths: SystemdPaths) -> str:
             "RestartSec=5",
             f'Environment="PATH={path}"',
             f'Environment="PYTHONPATH={python_path}"',
-            f'Environment="ENOCH_PYTHON={python}"',
+            f'Environment="{paths.env_prefix}_PYTHON={python}"',
             "",
             "[Install]",
             "WantedBy=default.target",
@@ -209,7 +226,7 @@ def create_provider(_root: Path | None = None) -> SystemdServiceProvider:
     return SystemdServiceProvider()
 
 
-ENOCH_PROVIDERS = (
+OUR_ARK_PROVIDERS = (
     {
         "kind": "service",
         "name": "systemd",
@@ -221,7 +238,7 @@ ENOCH_PROVIDERS = (
 
 
 __all__ = [
-    "ENOCH_PROVIDERS",
+    "OUR_ARK_PROVIDERS",
     "SystemdPaths",
     "SystemdServiceProvider",
     "UNIT_NAME",

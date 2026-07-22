@@ -17,7 +17,7 @@ def create_provider(root=None):
     return factory(root)
 
 
-ENOCH_PROVIDERS = (
+OUR_ARK_PROVIDERS = (
     {
         "kind": "chat",
         "name": "telegram",

@@ -250,7 +250,7 @@ def create_provider(_root: Path | None = None) -> GitVersionControlProvider:
     return GitVersionControlProvider()
 
 
-ENOCH_PROVIDERS = (
+OUR_ARK_PROVIDERS = (
     {
         "kind": "vcs",
         "name": "git",

@@ -18,8 +18,10 @@ class SystemdServiceProviderTests(unittest.TestCase):
     def test_manifest_runs_enoch_agent_as_a_resilient_user_service(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
+            root = base / "Enoch Instance"
+            _write_agent_body(root)
             provider = SystemdServiceProvider(home=base / "home")
-            paths = provider.paths(base / "Enoch Instance")
+            paths = provider.paths(root)
 
             manifest = unit_text(paths)
 
@@ -41,10 +43,12 @@ class SystemdServiceProviderTests(unittest.TestCase):
         run.return_value.returncode = 0
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
+            root = base / "repo"
+            _write_agent_body(root)
             provider = SystemdServiceProvider(home=base / "home")
 
-            result = provider.install(base / "repo")
-            paths = provider.paths(base / "repo")
+            result = provider.install(root)
+            paths = provider.paths(root)
 
             self.assertTrue(paths.unit.exists())
 
@@ -90,6 +94,18 @@ class SystemdServiceProviderTests(unittest.TestCase):
     ) -> None:
         with self.assertRaisesRegex(RuntimeError, "systemctl is not available"):
             SystemdServiceProvider().start()
+
+
+def _write_agent_body(root: Path, package: str = "enoch", name: str = "Enoch") -> None:
+    (root / "src" / package).mkdir(parents=True)
+    (root / "genesis.toml").write_text(
+        f'package = "{package}"\n',
+        encoding="utf-8",
+    )
+    (root / "src" / package / "identity.yaml").write_text(
+        f'name: "{name}"\n',
+        encoding="utf-8",
+    )
 
 
 if __name__ == "__main__":

@@ -9,15 +9,16 @@ import subprocess
 from typing import Any
 
 from our_ark_github import workflow
-from our_ark_provider_kit import ForgeProviderError
+from our_ark_provider_kit import ForgeProviderError, agent_context
 
 
 class GithubForgeProvider:
     name = "github"
     provider_kind = "forge"
 
-    def __init__(self, gh: str | None = None) -> None:
+    def __init__(self, gh: str | None = None, root: Path | None = None) -> None:
         self.gh = gh or shutil.which("gh")
+        self.root = root
 
     feature_title = staticmethod(workflow.feature_title)
     format_evolution_provenance = staticmethod(workflow.format_evolution_provenance)
@@ -53,10 +54,10 @@ class GithubForgeProvider:
         return content
 
     def remote_parent(self, repo: str, branch: str):
-        from enoch.lineage.core import LINEAGE_PATH, parse_lineage_parent
+        lineage = agent_context(self.root).module("lineage.core")
 
-        content = self._content_text(repo, LINEAGE_PATH.as_posix(), branch)
-        return parse_lineage_parent(content) if content is not None else None
+        content = self._content_text(repo, lineage.LINEAGE_PATH.as_posix(), branch)
+        return lineage.parse_lineage_parent(content) if content is not None else None
 
     def latest_commit(self, repo: str, branch: str) -> str:
         data = self._json(["api", f"repos/{repo}/commits/{branch}"])
@@ -66,11 +67,11 @@ class GithubForgeProvider:
         return sha
 
     def declared_skills(self, repo: str, branch: str) -> tuple[str, ...]:
-        from enoch.lineage.core import parse_declared_skills
+        lineage = agent_context(self.root).module("lineage.core")
 
         name = repo.split("/")[-1]
         content = self._content_text(repo, f"src/{name}/identity.yaml", branch)
-        return parse_declared_skills(content) if content is not None else ()
+        return lineage.parse_declared_skills(content) if content is not None else ()
 
     def merged_prs(self, repo: str, branch: str, limit: int = 20) -> list[dict[str, Any]]:
         return list(
@@ -123,11 +124,11 @@ class GithubForgeProvider:
             ) from error
 
 
-def create_provider(_root: Path | None = None) -> GithubForgeProvider:
-    return GithubForgeProvider()
+def create_provider(root: Path | None = None) -> GithubForgeProvider:
+    return GithubForgeProvider(root=root)
 
 
-ENOCH_PROVIDERS = (
+OUR_ARK_PROVIDERS = (
     {
         "kind": "forge",
         "name": "github",
@@ -137,4 +138,4 @@ ENOCH_PROVIDERS = (
 )
 
 
-__all__ = ["GithubForgeProvider", "create_provider", "workflow"]
+__all__ = ["GithubForgeProvider", "OUR_ARK_PROVIDERS", "create_provider", "workflow"]

@@ -21,8 +21,8 @@ ProviderKind = Literal["chat", "runtime", "vcs", "forge", "service"]
 ProviderFactory = Callable[[Path | None], Any]
 ProviderSetup = Callable[..., str]
 PROVIDER_KINDS: tuple[ProviderKind, ...] = ("chat", "runtime", "vcs", "forge", "service")
-ENTRY_POINT_GROUP = "enoch.providers"
-PLUGIN_ATTRIBUTE = "ENOCH_PROVIDERS"
+ENTRY_POINT_GROUP = "our_ark.providers"
+PLUGIN_ATTRIBUTE = "OUR_ARK_PROVIDERS"
 CORE_PROVIDER_MODULES = (
     "enoch.providers.runtime",
     "enoch.providers.vcs",

@@ -296,7 +296,7 @@ class _EntryPoint:
 
 class _EntryPoints(list):
     def select(self, *, group):
-        return self if group == "enoch.providers" else ()
+        return self if group == "our_ark.providers" else ()
 
 
 class EnochProviderTests(unittest.TestCase):

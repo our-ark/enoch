@@ -8,7 +8,7 @@ import plistlib
 import subprocess
 import sys
 
-from our_ark_provider_kit import ServiceProviderError
+from our_ark_provider_kit import ServiceProviderError, agent_context
 
 
 LABEL = "com.ourark.enoch"
@@ -27,6 +27,10 @@ class LaunchdPaths:
     logs: Path
     stdout: Path
     stderr: Path
+    package: str
+    agent_name: str
+    label: str
+    env_prefix: str
 
 
 class LaunchdServiceProvider:
@@ -41,38 +45,41 @@ class LaunchdServiceProvider:
         paths = self.paths(root)
         self._write_manifest(paths)
         self._launchctl(["bootstrap", self._domain(), str(paths.plist)], allow_failure=True)
-        return f"Enoch service installed at {paths.plist}."
+        return f"{paths.agent_name} service installed at {paths.plist}."
 
     def uninstall(self, root: Path | None = None) -> str:
         self._require_host()
         paths = self.paths(root)
         self._launchctl(["bootout", self._domain(), str(paths.plist)], allow_failure=True)
         paths.plist.unlink(missing_ok=True)
-        return "Enoch service uninstalled."
+        return f"{paths.agent_name} service uninstalled."
 
     def start(self, root: Path | None = None) -> str:
         self._require_host()
         paths = self.paths(root)
         self._write_manifest(paths)
         self._launchctl(["bootstrap", self._domain(), str(paths.plist)], allow_failure=True)
-        self._launchctl(["kickstart", "-k", f"{self._domain()}/{LABEL}"])
-        return "Enoch service started."
+        self._launchctl(["kickstart", "-k", f"{self._domain()}/{paths.label}"])
+        return f"{paths.agent_name} service started."
 
     def stop(self, root: Path | None = None, *, allow_missing: bool = False) -> str:
         self._require_host()
         paths = self.paths(root)
         self._launchctl(["bootout", self._domain(), str(paths.plist)], allow_failure=allow_missing)
-        return "Enoch service stopped."
+        return f"{paths.agent_name} service stopped."
 
     def restart(self, root: Path | None = None) -> str:
         self.stop(root, allow_missing=True)
         return self.start(root)
 
     def status(self, root: Path | None = None) -> str:
-        del root
         self._require_host()
-        result = self._launchctl(["print", f"{self._domain()}/{LABEL}"], allow_failure=True)
-        return "Enoch service is running." if result.returncode == 0 else "Enoch service is not running."
+        paths = self.paths(root)
+        result = self._launchctl(
+            ["print", f"{self._domain()}/{paths.label}"], allow_failure=True
+        )
+        state = "running" if result.returncode == 0 else "not running"
+        return f"{paths.agent_name} service is {state}."
 
     def logs(self, root: Path | None = None, *, lines: int = 80) -> str:
         paths = self.paths(root)
@@ -88,7 +95,7 @@ class LaunchdServiceProvider:
         loaded = False
         if supports_host():
             loaded = self._launchctl(
-                ["print", f"{self._domain()}/{LABEL}"],
+                ["print", f"{self._domain()}/{paths.label}"],
                 allow_failure=True,
             ).returncode == 0
         return "\n".join(
@@ -97,7 +104,7 @@ class LaunchdServiceProvider:
                 _check("host", supports_host(), platform.system()),
                 _check("manifest", paths.plist.exists(), str(paths.plist)),
                 _check("log directory", paths.logs.exists(), str(paths.logs)),
-                _check("service", loaded, LABEL),
+                _check("service", loaded, paths.label),
             ]
         )
 
@@ -112,16 +119,22 @@ class LaunchdServiceProvider:
 
     def paths(self, root: Path | None = None) -> LaunchdPaths:
         resolved_root = Path(root or Path.cwd()).resolve()
+        context = agent_context(resolved_root)
+        label = f"com.ourark.{context.service_slug}"
         home = self.home or Path.home()
         launch_agents = home / "Library" / "LaunchAgents"
-        logs = resolved_root / ".enoch" / "logs" / "daemon"
+        logs = resolved_root / context.private_directory / "logs" / "daemon"
         return LaunchdPaths(
             root=resolved_root,
             launch_agents=launch_agents,
-            plist=launch_agents / PLIST_NAME,
+            plist=launch_agents / f"{label}.plist",
             logs=logs,
-            stdout=logs / "enoch-daemon.out.log",
-            stderr=logs / "enoch-daemon.err.log",
+            stdout=logs / f"{context.service_slug}-daemon.out.log",
+            stderr=logs / f"{context.service_slug}-daemon.err.log",
+            package=context.service_slug,
+            agent_name=context.name,
+            label=label,
+            env_prefix=context.env_prefix,
         )
 
     def _write_manifest(self, paths: LaunchdPaths) -> None:
@@ -150,8 +163,9 @@ class LaunchdServiceProvider:
 
     def _schedule(self, root: Path | None, action: str) -> None:
         resolved_root = Path(root or Path.cwd()).resolve()
+        context = agent_context(resolved_root)
         subprocess.Popen(
-            [str(resolved_root / "bin" / "enoch-daemon"), action],
+            [str(resolved_root / "bin" / f"{context.service_slug}-daemon"), action],
             cwd=resolved_root,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -161,8 +175,8 @@ class LaunchdServiceProvider:
 
 def plist_bytes(paths: LaunchdPaths) -> bytes:
     payload = {
-        "Label": LABEL,
-        "ProgramArguments": [str(paths.root / "bin" / "enoch-agent")],
+        "Label": paths.label,
+        "ProgramArguments": [str(paths.root / "bin" / f"{paths.package}-agent")],
         "WorkingDirectory": str(paths.root),
         "RunAtLoad": True,
         "KeepAlive": True,
@@ -174,7 +188,10 @@ def plist_bytes(paths: LaunchdPaths) -> bytes:
                 "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
             ),
             "PYTHONPATH": str(paths.root / "src"),
-            "ENOCH_PYTHON": os.environ.get("ENOCH_PYTHON", sys.executable),
+            f"{paths.env_prefix}_PYTHON": os.environ.get(
+                f"{paths.env_prefix}_PYTHON",
+                os.environ.get("OUR_ARK_PYTHON", sys.executable),
+            ),
         },
     }
     return plistlib.dumps(payload, sort_keys=False)
@@ -196,7 +213,7 @@ def create_provider(_root: Path | None = None) -> LaunchdServiceProvider:
     return LaunchdServiceProvider()
 
 
-ENOCH_PROVIDERS = (
+OUR_ARK_PROVIDERS = (
     {
         "kind": "service",
         "name": "launchd",
@@ -208,7 +225,7 @@ ENOCH_PROVIDERS = (
 
 
 __all__ = [
-    "ENOCH_PROVIDERS",
+    "OUR_ARK_PROVIDERS",
     "LABEL",
     "LaunchdPaths",
     "LaunchdServiceProvider",

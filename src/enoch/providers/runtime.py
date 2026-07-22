@@ -193,7 +193,7 @@ def create_provider(root: Path | None = None) -> CodexRuntime:
     return CodexRuntime(root)
 
 
-ENOCH_PROVIDERS = (
+OUR_ARK_PROVIDERS = (
     {
         "kind": "runtime",
         "name": "codex",

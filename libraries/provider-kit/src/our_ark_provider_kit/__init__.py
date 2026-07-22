@@ -32,9 +32,16 @@ from our_ark_provider_kit.contracts import (
     normalize_conversation_id,
     normalize_message_id,
 )
+from our_ark_provider_kit.agent_context import (
+    AgentContext,
+    AgentContextError,
+    agent_context,
+)
 
 
 __all__ = [
+    "AgentContext",
+    "AgentContextError",
     "AgentIdentity",
     "AgentRuntime",
     "AgentRuntimeAccessUnavailable",
@@ -67,4 +74,5 @@ __all__ = [
     "VersionControlProviderError",
     "normalize_conversation_id",
     "normalize_message_id",
+    "agent_context",
 ]

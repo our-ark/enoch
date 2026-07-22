@@ -20,8 +20,10 @@ class LaunchdServiceProviderTests(unittest.TestCase):
     def test_manifest_runs_enoch_agent_from_the_selected_root(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
+            root = base / "Enoch Instance"
+            _write_agent_body(root)
             provider = LaunchdServiceProvider(home=base / "home")
-            paths = provider.paths(base / "Enoch Instance")
+            paths = provider.paths(root)
 
             payload = plistlib.loads(plist_bytes(paths))
 
@@ -44,10 +46,12 @@ class LaunchdServiceProviderTests(unittest.TestCase):
         run.return_value.returncode = 0
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
+            root = base / "repo"
+            _write_agent_body(root)
             provider = LaunchdServiceProvider(home=base / "home")
 
-            result = provider.install(base / "repo")
-            paths = provider.paths(base / "repo")
+            result = provider.install(root)
+            paths = provider.paths(root)
 
             self.assertTrue(paths.plist.exists())
 
@@ -65,6 +69,7 @@ class LaunchdServiceProviderTests(unittest.TestCase):
     ) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
+            _write_agent_body(root)
             LaunchdServiceProvider().schedule_restart(root)
 
         popen.assert_called_once_with(
@@ -80,6 +85,18 @@ class LaunchdServiceProviderTests(unittest.TestCase):
         self.assertEqual(provider.name, "launchd")
         self.assertEqual(provider.provider_kind, "service")
         self.assertEqual(LABEL, "com.ourark.enoch")
+
+
+def _write_agent_body(root: Path, package: str = "enoch", name: str = "Enoch") -> None:
+    (root / "src" / package).mkdir(parents=True)
+    (root / "genesis.toml").write_text(
+        f'package = "{package}"\n',
+        encoding="utf-8",
+    )
+    (root / "src" / package / "identity.yaml").write_text(
+        f'name: "{name}"\n',
+        encoding="utf-8",
+    )
 
 
 if __name__ == "__main__":

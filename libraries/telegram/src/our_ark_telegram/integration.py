@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 from typing import Callable
 
+from our_ark_provider_kit import agent_context
 from our_ark_telegram.core import (
     DEFAULT_TELEGRAM_POLL_TIMEOUT,
     TelegramClient,
@@ -17,24 +18,28 @@ def create_provider(root: Path | None = None) -> TelegramClient:
 
 
 def load_config(root: Path | None = None) -> TelegramConfig:
-    try:
-        from enoch.config import read_section
-    except ImportError as error:
-        raise TelegramError("Telegram's Enoch integration requires the enoch package.") from error
-
+    context = agent_context(root)
+    read_section = context.module("config").read_section
     settings = read_section("telegram", root)
-    token = os.environ.get("ENOCH_TELEGRAM_BOT_TOKEN") or settings.get("bot_token", "")
+    token = (
+        os.environ.get(f"{context.env_prefix}_TELEGRAM_BOT_TOKEN")
+        or os.environ.get("OUR_ARK_TELEGRAM_BOT_TOKEN")
+        or settings.get("bot_token", "")
+    )
     if not token:
         raise TelegramError(
-            "Configure telegram.bot_token or set ENOCH_TELEGRAM_BOT_TOKEN before starting Enoch."
+            "Configure telegram.bot_token or set "
+            f"{context.env_prefix}_TELEGRAM_BOT_TOKEN before starting {context.name}."
         )
     allowed_chat_id = _optional_integer(
-        os.environ.get("ENOCH_TELEGRAM_ALLOWED_CHAT_ID")
+        os.environ.get(f"{context.env_prefix}_TELEGRAM_ALLOWED_CHAT_ID")
+        or os.environ.get("OUR_ARK_TELEGRAM_ALLOWED_CHAT_ID")
         or settings.get("allowed_chat_id", ""),
         name="Telegram allowed chat id",
     )
     poll_timeout = _integer(
-        os.environ.get("ENOCH_TELEGRAM_POLL_TIMEOUT")
+        os.environ.get(f"{context.env_prefix}_TELEGRAM_POLL_TIMEOUT")
+        or os.environ.get("OUR_ARK_TELEGRAM_POLL_TIMEOUT")
         or settings.get("poll_timeout", "")
         or str(DEFAULT_TELEGRAM_POLL_TIMEOUT),
         name="Telegram poll timeout",
@@ -53,7 +58,11 @@ def setup_provider(
     prompt: Callable[[str], str] | None = None,
     prefix: str = "",
 ) -> str:
-    from enoch.config import config_path, read_section, write_section_value
+    context = agent_context(root)
+    config = context.module("config")
+    config_path = config.config_path
+    read_section = config.read_section
+    write_section_value = config.write_section_value
 
     prompt_fn = prompt or input
     command = text.strip()
@@ -67,7 +76,7 @@ def setup_provider(
     elif action == "setup":
         action = ""
     if action in {"help", "-h", "--help"}:
-        return _setup_usage(prefix)
+        return _setup_usage(prefix, context.service_slug)
     if action in {"show", "status"}:
         return _setup_status(root)
     if action in {"token", "bot-token"}:
@@ -88,8 +97,8 @@ def setup_provider(
         return "\n".join(
             [
                 f"Telegram chat lock saved to {config_path(root)}.",
-                "Restart Enoch so the daemon uses the new conversation lock:",
-                "bin/enoch-daemon restart",
+                f"Restart {context.name} so the daemon uses the new conversation lock:",
+                f"bin/{context.service_slug}-daemon restart",
             ]
         )
     if action in {"poll", "poll-timeout", "timeout"}:
@@ -110,11 +119,13 @@ def setup_provider(
                 write_section_value("telegram", "bot_token", token, root)
                 saved = f"Telegram bot token saved to {config_path(root)}."
         return "\n\n".join(part for part in (saved, _setup_status(root), _next_step(root, prefix)) if part)
-    return _setup_usage(prefix)
+    return _setup_usage(prefix, context.service_slug)
 
 
 def _setup_status(root: Path) -> str:
-    from enoch.config import config_path, read_section
+    config = agent_context(root).module("config")
+    config_path = config.config_path
+    read_section = config.read_section
 
     settings = read_section("telegram", root)
     token = settings.get("bot_token", "").strip()
@@ -131,8 +142,8 @@ def _setup_status(root: Path) -> str:
     )
 
 
-def _setup_usage(prefix: str) -> str:
-    command = f"{prefix}setup" if prefix else "bin/enoch setup"
+def _setup_usage(prefix: str, service_slug: str) -> str:
+    command = f"{prefix}setup" if prefix else f"bin/{service_slug} setup"
     return "\n".join(
         [
             "Telegram provider setup:",
@@ -145,21 +156,25 @@ def _setup_usage(prefix: str) -> str:
 
 
 def _next_step(root: Path, prefix: str) -> str:
-    from enoch.config import read_section
+    context = agent_context(root)
+    read_section = context.module("config").read_section
 
     settings = read_section("telegram", root)
     conversation = settings.get("allowed_chat_id", "").strip()
-    command = f"{prefix}setup" if prefix else "bin/enoch setup"
+    command = f"{prefix}setup" if prefix else f"bin/{context.service_slug} setup"
     if not conversation:
         return "\n".join(
             [
                 "Next:",
-                "1. Start Enoch: bin/enoch-daemon start",
+                f"1. Start {context.name}: bin/{context.service_slug}-daemon start",
                 "2. Send /status to the configured bot.",
                 f"3. Save the conversation lock: {command} chat <chat_id>",
             ]
         )
-    return "Setup is ready. Start or restart Enoch with: bin/enoch-daemon restart"
+    return (
+        f"Setup is ready. Start or restart {context.name} with: "
+        f"bin/{context.service_slug}-daemon restart"
+    )
 
 
 def _optional_integer(value: str, *, name: str) -> int | None:
