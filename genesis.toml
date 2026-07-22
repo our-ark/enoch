@@ -19,7 +19,7 @@ validation = ["-m", "unittest", "discover", "-s", "tests"]
 
 [[runtime_dependencies]]
 name = "provider-kit"
-requirement = "our-ark-provider-kit @ git+https://github.com/our-ark/enoch.git@dac38645237afb8f1992d210d2a25a84328c87ae#subdirectory=libraries/provider-kit"
+requirement = "our-ark-provider-kit @ git+https://github.com/our-ark/enoch.git@d061b43439237b999fd9ba8c40c1996e3bb676fa#subdirectory=libraries/provider-kit"
 import_name = "our_ark_provider_kit"
 local_source = "libraries/provider-kit/src"
 

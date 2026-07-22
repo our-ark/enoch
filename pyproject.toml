@@ -7,7 +7,7 @@ license = "Apache-2.0"
 license-files = ["LICENSE"]
 requires-python = ">=3.11"
 dependencies = [
-  "our-ark-provider-kit @ git+https://github.com/our-ark/enoch.git@dac38645237afb8f1992d210d2a25a84328c87ae#subdirectory=libraries/provider-kit",
+  "our-ark-provider-kit @ git+https://github.com/our-ark/enoch.git@d061b43439237b999fd9ba8c40c1996e3bb676fa#subdirectory=libraries/provider-kit",
   "our-ark-skill-catalog @ git+https://github.com/our-ark/enoch.git@946ff26f93bff3f6eefeb5deb81ca4db1127266f#subdirectory=libraries/skill-catalog",
 ]
 
