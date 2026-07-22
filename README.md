@@ -18,16 +18,17 @@ Enoch can evolve the governed code body that she is.
 
 [OpenClaw](https://github.com/openclaw/openclaw) emphasizes persistent memory
 and workspace skills. [Hermes Agent](https://github.com/NousResearch/hermes-agent)
-adds a learning loop that creates and improves reusable skills. Enoch treats
-tested code as another layer of durable learning: she can identify limitations
-in her own operation, propose a bounded change to the software body that runs
-her, implement it in an isolated worktree, validate it, and publish it for
-human review.
+adds a learning loop that creates and improves reusable skills. Enoch extends
+durable learning into tested software changes.
+
+She can identify limitations in her own operation, propose a bounded change to
+the code that runs her, implement it in an isolated worktree, validate it, and
+publish it for human review.
 
 This is not unrestricted self-modification. Every evolution remains traceable
-from evidence to candidate, task, pull request, human promotion, and verified
-adoption. Enoch evolves her code while people retain authority over what
-becomes part of the running agent.
+from evidence to candidate, task, pull request, human review and merge, and
+verified adoption. Enoch can evolve her code while people retain authority over
+what becomes part of the running agent.
 
 ## Core Skills
 
