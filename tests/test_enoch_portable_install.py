@@ -15,6 +15,25 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class EnochPortableInstallTests(unittest.TestCase):
+    def test_ci_provisions_locked_build_backend_before_offline_wheel_test(self) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "tests.yml").read_text(
+            encoding="utf-8"
+        )
+        install_command = (
+            "python -m pip install --disable-pip-version-check --require-hashes "
+            "-r .github/requirements/test-build.txt"
+        )
+        test_command = "python -m unittest discover -s tests"
+
+        self.assertIn(install_command, workflow)
+        self.assertLess(workflow.index(install_command), workflow.index(test_command))
+
+        requirements = (
+            ROOT / ".github" / "requirements" / "test-build.txt"
+        ).read_text(encoding="utf-8")
+        self.assertRegex(requirements, r"(?m)^setuptools==\d+\.\d+\.\d+ \\$\n")
+        self.assertRegex(requirements, r"--hash=sha256:[0-9a-f]{64}$")
+
     def test_reference_providers_share_the_core_contract_pin(self) -> None:
         root_metadata = _project_metadata(ROOT / "pyproject.toml")
         core_contract = _dependency(root_metadata["project"]["dependencies"], "our-ark-provider-kit")
