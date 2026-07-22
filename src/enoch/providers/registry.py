@@ -10,10 +10,10 @@ from enoch.config import read_section
 from enoch.runtime_dependencies import load_runtime_dependencies
 
 
-ProviderKind = Literal["chat", "runtime", "vcs", "forge"]
+ProviderKind = Literal["chat", "runtime", "vcs", "forge", "service"]
 ProviderFactory = Callable[[Path | None], Any]
 ProviderSetup = Callable[..., str]
-PROVIDER_KINDS: tuple[ProviderKind, ...] = ("chat", "runtime", "vcs", "forge")
+PROVIDER_KINDS: tuple[ProviderKind, ...] = ("chat", "runtime", "vcs", "forge", "service")
 ENTRY_POINT_GROUP = "enoch.providers"
 PLUGIN_ATTRIBUTE = "ENOCH_PROVIDERS"
 CORE_PROVIDER_MODULES = ("enoch.providers.runtime", "enoch.providers.vcs")
@@ -157,6 +157,12 @@ def _register_module_plugins(module_name: str, specs: object) -> None:
         factory = spec.get("factory")
         if kind not in PROVIDER_KINDS or not callable(factory):
             raise ProviderError(f"{module_name} exports an invalid provider descriptor.")
+        supports = spec.get("supports")
+        if supports is not None:
+            if not callable(supports):
+                raise ProviderError(f"{module_name} provider supports must be callable.")
+            if not supports():
+                continue
         register_provider(
             kind,  # type: ignore[arg-type]
             name,

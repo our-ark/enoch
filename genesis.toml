@@ -36,6 +36,18 @@ import_name = "our_ark_github"
 local_source = "libraries/github/src"
 
 [[runtime_dependencies]]
+name = "launchd"
+requirement = "our-ark-launchd @ git+https://github.com/our-ark/enoch.git@d00cc3713cf898544a7cd329bc3ad13a03cbd08a#subdirectory=libraries/launchd"
+import_name = "our_ark_launchd"
+local_source = "libraries/launchd/src"
+
+[[runtime_dependencies]]
+name = "systemd"
+requirement = "our-ark-systemd @ git+https://github.com/our-ark/enoch.git@d00cc3713cf898544a7cd329bc3ad13a03cbd08a#subdirectory=libraries/systemd"
+import_name = "our_ark_systemd"
+local_source = "libraries/systemd/src"
+
+[[runtime_dependencies]]
 name = "skill-catalog"
 requirement = "our-ark-skill-catalog @ git+https://github.com/our-ark/enoch.git@946ff26f93bff3f6eefeb5deb81ca4db1127266f#subdirectory=libraries/skill-catalog"
 import_name = "our_ark_skill_catalog"

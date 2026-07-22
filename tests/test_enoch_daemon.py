@@ -1,118 +1,117 @@
 from pathlib import Path
-import plistlib
-import sys
 import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
 
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "src"))
-
 from enoch import daemon
+from enoch.providers.contracts import ServiceProviderError
+
+
+class _Service:
+    name = "test-service"
+    provider_kind = "service"
+
+    def __init__(self) -> None:
+        self.calls = []
+
+    def install(self, root=None):
+        self.calls.append(("install", root))
+        return "installed"
+
+    def uninstall(self, root=None):
+        self.calls.append(("uninstall", root))
+        return "uninstalled"
+
+    def start(self, root=None):
+        self.calls.append(("start", root))
+        return "started"
+
+    def stop(self, root=None, *, allow_missing=False):
+        self.calls.append(("stop", root, allow_missing))
+        return "stopped"
+
+    def restart(self, root=None):
+        self.calls.append(("restart", root))
+        return "restarted"
+
+    def status(self, root=None):
+        return "running"
+
+    def logs(self, root=None, *, lines=80):
+        return f"logs:{lines}"
+
+    def doctor(self, root=None):
+        return "Service provider: test-service\n- service: ok"
+
+    def manifest(self, root=None):
+        return "service manifest"
 
 
 class EnochDaemonTests(unittest.TestCase):
-    def test_plist_runs_configured_agent_with_keepalive(self) -> None:
+    def test_install_validates_chat_and_delegates_to_service(self) -> None:
+        service = _Service()
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            home = root / "home"
-            paths = daemon.daemon_paths(root=root, home=home)
+            with (
+                patch("enoch.daemon._require_daemon_config") as require_config,
+                patch("enoch.daemon._service", return_value=service),
+            ):
+                result = daemon.install(root)
 
-            payload = plistlib.loads(daemon.plist_bytes(paths))
+        self.assertEqual(result, "installed")
+        require_config.assert_called_once_with(root.resolve())
+        self.assertEqual(service.calls, [("install", root.resolve())])
 
-        self.assertEqual(payload["Label"], "com.ourark.enoch")
-        resolved_root = root.resolve()
-        self.assertEqual(payload["ProgramArguments"], [str(resolved_root / "bin" / "enoch-agent")])
-        self.assertEqual(payload["WorkingDirectory"], str(resolved_root))
-        self.assertTrue(payload["RunAtLoad"])
-        self.assertTrue(payload["KeepAlive"])
-        self.assertEqual(payload["EnvironmentVariables"]["PYTHONPATH"], str(resolved_root / "src"))
-        self.assertEqual(payload["EnvironmentVariables"]["ENOCH_PYTHON"], sys.executable)
-        self.assertNotIn("ENOCH_CODEX_BIN", payload["EnvironmentVariables"])
-
-    @patch("enoch.daemon.platform.system", return_value="Darwin")
-    @patch("enoch.daemon._launchctl")
-    def test_install_writes_launch_agent(self, launchctl: MagicMock, _system: MagicMock) -> None:
-        launchctl.return_value.returncode = 0
+    def test_restart_validates_chat_and_uses_atomic_provider_restart(self) -> None:
+        service = _Service()
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            home = root / "home"
-            _write_config(root)
-            with patch("enoch.daemon.Path.home", return_value=home):
-                message = daemon.install(root=root)
+            with (
+                patch("enoch.daemon._require_daemon_config"),
+                patch("enoch.daemon._service", return_value=service),
+            ):
+                result = daemon.restart(root)
 
-            plist = home / "Library" / "LaunchAgents" / "com.ourark.enoch.plist"
-            logs = root / ".enoch" / "logs" / "daemon"
+        self.assertEqual(result, "restarted")
+        self.assertEqual(service.calls, [("restart", root.resolve())])
 
-            self.assertTrue(plist.exists())
-            self.assertTrue(logs.exists())
-            self.assertIn(str(plist), message)
-            launchctl.assert_called_once()
+    def test_dispatch_routes_status_logs_and_manifest(self) -> None:
+        service = _Service()
+        with patch("enoch.daemon._service", return_value=service):
+            self.assertEqual(daemon.dispatch("status"), "running")
+            self.assertEqual(daemon.dispatch("logs", lines=12), "logs:12")
+            self.assertEqual(daemon.dispatch("manifest"), "service manifest")
 
-    @patch("enoch.daemon.platform.system", return_value="Darwin")
-    @patch("enoch.daemon._launchctl")
-    def test_status_reports_loaded(self, launchctl: MagicMock, _system: MagicMock) -> None:
-        launchctl.return_value.returncode = 0
-
-        self.assertEqual(daemon.status(), "Enoch daemon is loaded.")
-
-    @patch("enoch.daemon.platform.system", return_value="Darwin")
-    @patch("enoch.daemon._launchctl")
-    def test_doctor_reports_checks(self, launchctl: MagicMock, _system: MagicMock) -> None:
-        launchctl.return_value.returncode = 0
+    def test_doctor_combines_chat_and_service_readiness(self) -> None:
+        service = _Service()
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            home = root / "home"
-            paths = daemon.daemon_paths(root=root, home=home)
-            _write_config(root)
-            paths.logs.mkdir(parents=True)
-            paths.launch_agents.mkdir(parents=True)
-            paths.plist.write_text("plist", encoding="utf-8")
+            with (
+                patch("enoch.daemon._has_daemon_config", return_value=True),
+                patch("enoch.daemon.provider_name", return_value="test-chat"),
+                patch("enoch.daemon._service", return_value=service),
+            ):
+                result = daemon.doctor(root)
 
-            with patch("enoch.daemon.Path.home", return_value=home):
-                result = daemon.doctor(root=root)
-
-        self.assertIn("Enoch daemon plumbing doctor:", result)
+        self.assertIn("Enoch service doctor:", result)
         self.assertIn("- config: ok", result)
-        self.assertIn("- launchd: ok", result)
+        self.assertIn("Service provider: test-service", result)
 
-    @patch("enoch.daemon.platform.system", return_value="Darwin")
-    @patch("enoch.daemon._launchctl")
-    def test_doctor_reports_launchd_not_loaded(self, launchctl: MagicMock, _system: MagicMock) -> None:
-        launchctl.return_value.returncode = 1
+    @patch("builtins.print")
+    @patch("enoch.daemon.dispatch", side_effect=ServiceProviderError("service unavailable"))
+    def test_main_reports_service_provider_errors(self, _dispatch: MagicMock, print_: MagicMock) -> None:
+        with self.assertRaises(SystemExit):
+            daemon.main(["status"])
+
+        print_.assert_called_once_with("service unavailable")
+
+    def test_start_requires_configured_chat(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            home = root / "home"
-            _write_config(root)
-            paths = daemon.daemon_paths(root=root, home=home)
-            paths.logs.mkdir(parents=True)
-            paths.launch_agents.mkdir(parents=True)
-            paths.plist.write_text("plist", encoding="utf-8")
-
-            with patch("enoch.daemon.Path.home", return_value=home):
-                result = daemon.doctor(root=root)
-
-        self.assertIn("- launchd: needs attention", result)
-
-    @patch("enoch.daemon.platform.system", return_value="Linux")
-    def test_daemon_requires_macos(self, _system: MagicMock) -> None:
-        with self.assertRaisesRegex(daemon.DaemonError, "macOS launchd"):
-            daemon.start(root=ROOT)
-
-    @patch("enoch.daemon.platform.system", return_value="Darwin")
-    def test_start_requires_local_config_token(self, _system: MagicMock) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            with self.assertRaisesRegex(daemon.DaemonError, "Configure the selected chat provider"):
-                daemon.start(root=Path(directory))
-
-
-def _write_config(root: Path) -> None:
-    (root / ".enoch").mkdir()
-    (root / ".enoch" / "config.yaml").write_text(
-        "\n".join(["telegram:", '  bot_token: "token"']),
-        encoding="utf-8",
-    )
+            with patch("enoch.daemon._has_daemon_config", return_value=False):
+                with self.assertRaisesRegex(daemon.DaemonError, "Configure the selected chat provider"):
+                    daemon.start(root)
 
 
 if __name__ == "__main__":

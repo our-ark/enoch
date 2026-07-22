@@ -13,6 +13,7 @@ Seth's self-evolving descendant: walk with her code body, inspect her own work, 
 - A working Codex CLI login for reasoning and evolution tasks
 - GitHub CLI authentication when publishing branches or pull requests
 - Telegram credentials only when using the optional Telegram interface
+- macOS launchd or a Linux systemd user session for background operation
 
 ## Quick Start
 
@@ -83,11 +84,12 @@ automatic discovery. The daemon reads this instance setting directly.
 
 ## Providers
 
-Codex and Git are core defaults. Telegram and GitHub are reference provider
-packages under `libraries/`. Installed Python packages can add or replace chat,
-agent runtime, version control, and code forge providers through the
-`enoch.providers` entry-point group. Select them in `.enoch/config.yaml` or with
-`/config provider`.
+Codex and Git are core defaults. Telegram, GitHub, launchd, and systemd are
+reference provider packages under `libraries/`. Installed Python packages can
+add or replace chat, agent runtime, version control, code forge, and host
+service providers through the `enoch.providers` entry-point group. Select them
+in `.enoch/config.yaml` or with `/config provider`. launchd is selected on
+macOS; systemd user services are selected on Linux.
 
 Provider contracts, packaging examples, provider-specific settings, normalized
 chat events, and migration compatibility are documented in

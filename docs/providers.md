@@ -1,6 +1,6 @@
 # Enoch providers
 
-Enoch separates replaceable infrastructure from agent behavior through four
+Enoch separates replaceable infrastructure from agent behavior through five
 provider capabilities:
 
 | Kind | Reference provider | Responsibility |
@@ -9,6 +9,7 @@ provider capabilities:
 | `runtime` | `codex` | Answer, edit, resume sessions, report models, and cancel work |
 | `vcs` | `git` | Run local version-control operations |
 | `forge` | `github` | Create, inspect, list, close, and merge pull requests |
+| `service` | `launchd` / `systemd` | Install, control, inspect, and restart the agent process |
 
 The active providers are configured in the private instance file
 `.enoch/config.yaml`:
@@ -19,6 +20,7 @@ providers:
   runtime: codex
   vcs: git
   forge: github
+  service: launchd
 ```
 
 The same settings can be inspected and changed with:
@@ -27,6 +29,7 @@ The same settings can be inspected and changed with:
 /config providers
 /config provider runtime claude
 /config provider chat slack
+/config provider service systemd
 /config provider runtime default
 ```
 
@@ -38,7 +41,8 @@ bin/enoch config provider chat slack
 ```
 
 Restart Enoch after changing a provider. Environment variables such as
-`ENOCH_RUNTIME_PROVIDER` and `ENOCH_CHAT_PROVIDER` override the file.
+`ENOCH_RUNTIME_PROVIDER`, `ENOCH_CHAT_PROVIDER`, and
+`ENOCH_SERVICE_PROVIDER` override the file.
 
 Provider-specific settings live in the provider's existing config section.
 For example, the built-in Codex runtime keeps its model, reasoning, and
@@ -63,7 +67,33 @@ Executable resolution uses `ENOCH_CODEX_BIN`, then `codex.executable` from the
 Enoch instance config, then `PATH`, then known macOS app locations. An explicit
 but invalid environment or config value fails health checks instead of silently
 falling through to another installation. The daemon reads this same instance
-config; the executable path is not copied into its launchd plist.
+config; the executable path is not copied into a service manifest.
+
+## Host services
+
+The core daemon command is independent of the operating system's service
+manager. The reference `launchd` provider supports macOS, while the reference
+`systemd` provider installs a user service on Linux. Enoch selects the provider
+supported by the current host unless `providers.service` explicitly chooses
+one.
+
+Both implementations expose the same lifecycle:
+
+```text
+bin/enoch-daemon install
+bin/enoch-daemon start
+bin/enoch-daemon stop
+bin/enoch-daemon restart
+bin/enoch-daemon status
+bin/enoch-daemon logs
+bin/enoch-daemon doctor
+bin/enoch-daemon manifest
+```
+
+On Linux, these commands use `systemctl --user` and logs come from the user
+journal. On macOS they use a LaunchAgent and file-backed logs under
+`.enoch/logs/daemon`. `/restart` and update adoption also delegate to the
+selected service provider, so core code does not invoke either service manager.
 
 ## Third-party packages
 
@@ -73,6 +103,7 @@ A provider package registers factories with Python package entry points:
 [project.entry-points."enoch.providers"]
 "chat.slack" = "enoch_slack:create_provider"
 "runtime.claude" = "enoch_claude:create_provider"
+"service.container" = "enoch_container:create_provider"
 ```
 
 Factories may accept the Enoch repository root and return an implementation of

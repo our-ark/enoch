@@ -10,7 +10,6 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from enoch.commands import config_command
 from enoch.config import read_section
-from enoch.daemon import daemon_paths, plist_bytes
 from enoch.git_tools import run_git
 from enoch.identity import load_identity
 from enoch.immune import _runtime_provider_check
@@ -135,6 +134,7 @@ class EnochProviderTests(unittest.TestCase):
             self.assertEqual(provider_name("runtime", root), "codex")
             self.assertEqual(provider_name("vcs", root), "git")
             self.assertEqual(provider_name("forge", root), "github")
+            self.assertIn(provider_name("service", root), {"launchd", "systemd"})
 
     def test_registered_provider_can_be_selected_from_instance_config(self) -> None:
         provider = _Vcs()
@@ -312,19 +312,18 @@ class EnochProviderTests(unittest.TestCase):
         self.assertIn("Test Chat conversation", runtime.messages[0][1])
         self.assertNotIn("Telegram image boundary", runtime.messages[0][1])
 
-    def test_custom_chat_provider_selects_generic_daemon_launcher(self) -> None:
-        register_provider("chat", "test-chat", lambda _root=None: _Chat(), replace=True)
+    def test_custom_service_provider_can_be_selected(self) -> None:
+        service = type("Service", (), {"name": "test-service", "provider_kind": "service"})()
+        register_provider("service", "test-service", lambda _root=None: service, replace=True)
         with TemporaryDirectory() as temp:
             root = Path(temp)
             config = root / ".enoch" / "config.yaml"
             config.parent.mkdir()
-            config.write_text("providers:\n  chat: test-chat\n", encoding="utf-8")
-            paths = daemon_paths(root, home=root / "home")
+            config.write_text("providers:\n  service: test-service\n", encoding="utf-8")
 
-            payload = plist_bytes(paths).decode("utf-8")
+            selected = load_provider("service", root)
 
-        self.assertIn("enoch-agent", payload)
-        self.assertNotIn("enoch-telegram", payload)
+        self.assertIs(selected, service)
 
     def test_string_chat_and_message_ids_survive_task_persistence(self) -> None:
         with TemporaryDirectory() as temp:
@@ -341,6 +340,7 @@ class EnochProviderTests(unittest.TestCase):
         self.assertIn("telegram", available_providers("chat"))
         self.assertIn("codex", available_providers("runtime"))
         self.assertEqual(load_provider("vcs", name="git").name, "git")
+        self.assertTrue(available_providers("service"))
 
     def test_installed_entry_point_loads_without_core_changes(self) -> None:
         with patch(

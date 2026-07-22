@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
-import subprocess
 
 from enoch.git_tools import GitError, run_git
 from enoch.paths import repo_root
+from enoch.providers.registry import load_provider
 from enoch.runtime import DEFAULT_BRANCH, DEFAULT_REMOTE
 
 
@@ -89,24 +89,12 @@ def reset_hard(revision: str, root: Path | None = None) -> None:
 
 def schedule_daemon_restart(root: Path | None = None) -> None:
     resolved_root = repo_root(root)
-    subprocess.Popen(
-        [str(resolved_root / "bin" / "enoch-daemon"), "restart"],
-        cwd=resolved_root,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True,
-    )
+    load_provider("service", resolved_root).schedule_restart(resolved_root)
 
 
 def schedule_daemon_stop(root: Path | None = None) -> None:
     resolved_root = repo_root(root)
-    subprocess.Popen(
-        [str(resolved_root / "bin" / "enoch-daemon"), "stop"],
-        cwd=resolved_root,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True,
-    )
+    load_provider("service", resolved_root).schedule_stop(resolved_root)
 
 
 def ensure_local_main_current(root: Path) -> None:

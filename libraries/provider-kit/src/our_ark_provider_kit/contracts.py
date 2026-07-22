@@ -51,6 +51,10 @@ class VersionControlProviderError(RuntimeError):
     """Raised when a version control provider operation fails."""
 
 
+class ServiceProviderError(RuntimeError):
+    """Raised when a host service manager operation fails."""
+
+
 @dataclass(frozen=True)
 class Attachment:
     """A provider-neutral attachment reference carried by a chat event."""
@@ -281,6 +285,39 @@ class VersionControlProvider(Protocol):
         args: list[str],
         root: Path | None = None,
     ) -> Any: ...
+
+
+@runtime_checkable
+class ServiceProvider(Protocol):
+    name: str
+    provider_kind: str
+
+    def install(self, root: Path | None = None) -> str: ...
+
+    def uninstall(self, root: Path | None = None) -> str: ...
+
+    def start(self, root: Path | None = None) -> str: ...
+
+    def stop(
+        self,
+        root: Path | None = None,
+        *,
+        allow_missing: bool = False,
+    ) -> str: ...
+
+    def restart(self, root: Path | None = None) -> str: ...
+
+    def status(self, root: Path | None = None) -> str: ...
+
+    def logs(self, root: Path | None = None, *, lines: int = 80) -> str: ...
+
+    def doctor(self, root: Path | None = None) -> str: ...
+
+    def manifest(self, root: Path | None = None) -> str: ...
+
+    def schedule_restart(self, root: Path | None = None) -> None: ...
+
+    def schedule_stop(self, root: Path | None = None) -> None: ...
 
 
 @runtime_checkable

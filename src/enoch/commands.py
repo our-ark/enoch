@@ -231,7 +231,7 @@ def config_command(
             return config_usage(prefix=prefix)
         kind = parts[2].strip().lower()
         if kind not in PROVIDER_KINDS:
-            return "Provider kind must be chat, runtime, vcs, or forge."
+            return f"Provider kind must be one of: {', '.join(PROVIDER_KINDS)}."
         value = parts[3].strip().lower()
         if value in {"default", "reset"}:
             write_section_value("providers", kind, None, root)
@@ -436,14 +436,14 @@ def model_config_status(
 def provider_config_status(root: Path, *, prefix: str = "/") -> str:
     command = f"{prefix}config"
     lines = ["Enoch providers:"]
-    for kind in ("chat", "runtime", "vcs", "forge"):
+    for kind in PROVIDER_KINDS:
         selected = provider_name(kind, root)
         choices = ", ".join(available_providers(kind, root))
         lines.append(f"- {kind}: {selected} (available: {choices})")
     lines.extend(
         [
             "",
-            f"Set with {command} provider <chat|runtime|vcs|forge> <name>.",
+            f"Set with {command} provider <chat|runtime|vcs|forge|service> <name>.",
             f"Reset with {command} provider <kind> default.",
             "Restart Enoch after changing a provider.",
         ]
