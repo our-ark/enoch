@@ -6,7 +6,7 @@ implementation: shared-library
 library_owner: Enoch
 library_package: our-ark-telegram
 library_contract: telegram-channel/v1
-library_commit: b798949960e92254cac7785345df675feda46f08
+library_commit: 5608b4b1ce85f64c3093730fcaac9c3a458169ca
 status: active
 mode: external-tool
 entrypoint: src/enoch/telegram/client.py

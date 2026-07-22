@@ -19,13 +19,13 @@ validation = ["-m", "unittest", "discover", "-s", "tests"]
 
 [[runtime_dependencies]]
 name = "provider-kit"
-requirement = "our-ark-provider-kit @ git+https://github.com/our-ark/enoch.git@8eb1f70fa9906da45b263a52d211874d803fac86#subdirectory=libraries/provider-kit"
+requirement = "our-ark-provider-kit @ git+https://github.com/our-ark/enoch.git@5608b4b1ce85f64c3093730fcaac9c3a458169ca#subdirectory=libraries/provider-kit"
 import_name = "our_ark_provider_kit"
 local_source = "libraries/provider-kit/src"
 
 [[runtime_dependencies]]
 name = "telegram"
-requirement = "our-ark-telegram @ git+https://github.com/our-ark/enoch.git@b798949960e92254cac7785345df675feda46f08#subdirectory=libraries/telegram"
+requirement = "our-ark-telegram @ git+https://github.com/our-ark/enoch.git@5608b4b1ce85f64c3093730fcaac9c3a458169ca#subdirectory=libraries/telegram"
 import_name = "our_ark_telegram"
 local_source = "libraries/telegram/src"
 
