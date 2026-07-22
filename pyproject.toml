@@ -13,10 +13,10 @@ dependencies = [
 
 [project.optional-dependencies]
 reference = [
-  "our-ark-telegram @ git+https://github.com/our-ark/enoch.git@7659a64b95afd6542af01b2c2a91dd2a341d44f2#subdirectory=libraries/telegram",
-  "our-ark-github @ git+https://github.com/our-ark/enoch.git@7659a64b95afd6542af01b2c2a91dd2a341d44f2#subdirectory=libraries/github",
-  "our-ark-launchd @ git+https://github.com/our-ark/enoch.git@7659a64b95afd6542af01b2c2a91dd2a341d44f2#subdirectory=libraries/launchd",
-  "our-ark-systemd @ git+https://github.com/our-ark/enoch.git@7659a64b95afd6542af01b2c2a91dd2a341d44f2#subdirectory=libraries/systemd",
+  "our-ark-telegram @ git+https://github.com/our-ark/enoch.git@663e0050b81efb8c25d19e54182c8625f102f814#subdirectory=libraries/telegram",
+  "our-ark-github @ git+https://github.com/our-ark/enoch.git@663e0050b81efb8c25d19e54182c8625f102f814#subdirectory=libraries/github",
+  "our-ark-launchd @ git+https://github.com/our-ark/enoch.git@663e0050b81efb8c25d19e54182c8625f102f814#subdirectory=libraries/launchd",
+  "our-ark-systemd @ git+https://github.com/our-ark/enoch.git@663e0050b81efb8c25d19e54182c8625f102f814#subdirectory=libraries/systemd",
   "our-ark-telegram-vision @ git+https://github.com/our-ark/enoch.git@6d894d9beb882af7e5f57900b2323361510262de#subdirectory=libraries/telegram-vision",
 ]
 
