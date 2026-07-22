@@ -1,10 +1,15 @@
 # Evolve Skill Design
 
-Enoch should have an `evolve` skill for self-evolution. This skill is not a generic background task runner. It is an evolution selection loop: Enoch collects possible improvements from several sources, ranks them against her current direction, and chooses the best next small step.
+Enoch's `evolve` skill is a governed self-evolution selection loop, not a
+generic background task runner. Enoch collects possible improvements from
+several sources, ranks them against her current direction, and chooses the best
+next small step.
 
 ## Purpose
 
-Enoch's code is part of Enoch. Self-evolution means changing that code body deliberately, with memory, lineage, tests, and human review. The evolve skill should help Enoch grow without turning autonomy into random self-modification.
+Enoch's code is part of Enoch. Self-evolution means changing that code body
+deliberately, with memory, lineage, tests, and human review. The evolve skill
+helps Enoch grow without turning autonomy into random self-modification.
 
 ## Modes
 
@@ -26,9 +31,7 @@ Enoch may initiate bounded self-evolution on her own body.
 
 She can select a low-risk, high-value candidate, queue or run the work, test it, and open a pull request for human review. She should not merge her own evolution changes.
 
-## Candidate Sources
-
-Self-evolution candidates can come from several sources.
+## Evolution Direction
 
 ### theme
 
@@ -41,7 +44,13 @@ Examples:
 - make inheritance safer and cleaner
 - reduce human coordination burden
 
-The theme acts as evolutionary pressure. Without a theme, auto-evolve can drift into random optimization.
+The theme acts as evolutionary pressure. It affects ranking but is not itself a
+candidate source. Without a theme, auto-evolve can drift into random
+optimization.
+
+## Candidate Sources
+
+Self-evolution candidates can come from six sources.
 
 ### backlog
 
@@ -59,9 +68,10 @@ Feedback includes corrections, frustrations, repeated requests, UX complaints, a
 
 Enoch writes every tracked task transition to the append-only
 `.enoch/task_events.jsonl`. Events cover `created`, `queued`, `started`,
-`completed`, `failed`, `cancelled`, and `reverted`, including the request, result
-summary, context source, pull requests, and changed files. Legacy
-`.enoch/experience.jsonl` records remain readable.
+`retrying`, `paused`, `resumed`, `completed`, `failed`, `cancelled`, `regressed`,
+`reverted`, and `forward-fixed`, including the request, result summary, context
+source, pull requests, and changed files. Legacy `.enoch/experience.jsonl`
+records remain readable.
 
 Task provenance retains three general lifecycle dimensions:
 
@@ -89,10 +99,11 @@ statistics, but it does not stand in for these distinct evolve actors.
 
 Evolution decisions have a separate append-only journal at
 `.enoch/evolve_events.jsonl`. It records `checked`, `proposed`, `selected`,
-`queued`, `completed`, `failed`, `cancelled`, `skipped`, and `removed` events.
+`queued`, `completed`, `failed`, `cancelled`, `skipped`, `removed`, and
+`no-action` decision events, plus `promoted` and `adopted` governance events.
 Each event links candidate provenance, decision actor, trigger, mode, theme,
-score, and task id without conflating an agent-origin idea with an autonomous
-scheduler decision.
+score, proposal id, and task id without conflating an agent-origin idea with an
+autonomous scheduler decision.
 
 Experience candidates come from failures, repeated manual steps, confusing flows, missing commands, test failures, recovery friction, and places where Enoch notices she needed human help for something she could safely automate next time.
 
@@ -206,8 +217,8 @@ Enoch should require human direction before changing:
 - mission
 - identity
 - secrets or tokens
-- GitHub settings
-- daemon configuration
+- forge or remote-repository settings
+- host-service configuration
 - permission boundaries
 - merge behavior
 - destructive operations

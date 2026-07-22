@@ -15,17 +15,19 @@ launchd behavior is tested hermetically.
 
 ## Hermetic evolution E2E tests
 
-`tests/test_enoch_e2e.py` exercises Enoch's evolution task lifecycle with real
+`tests/test_enoch_e2e.py` exercises the reference evolution stack with real
 temporary Git repositories, a bare `origin`, and a linked agent worktree. It
-uses protocol-compatible local substitutes for Codex, GitHub CLI, and Telegram,
-so it needs no network access, GitHub credentials, Codex token, or Telegram
-token.
+uses protocol-compatible local substitutes for the Codex runtime, GitHub forge,
+and Telegram channel, so it needs no network access or external credentials.
+These named tools are fixtures for the reference providers, not dependencies of
+Enoch core.
 
 The suite verifies:
 
 - approved evolution publishes a ready-for-review PR with full provenance;
-- each task runs in an isolated linked worktree based on the latest
-  `origin/main`, even when the resident checkout is dirty;
+- each reference Git task runs in an isolated linked worktree based on that
+  fixture's authoritative `origin/main`, even when the resident checkout is
+  dirty;
 - successful task worktrees are removed while the resident branch remains
   untouched, and failed task worktrees remain available for inspection;
 - active worker leases prevent startup recovery from launching a duplicate
@@ -36,17 +38,18 @@ The suite verifies:
   the resume-all alias;
 - a failed task can be retried without rewriting history, and retry reconciles
   journaled or branch-linked PRs before starting duplicate work;
-- Codex authentication failure pauses a task and `/resume` completes that same
-  task after access returns;
-- progress updates edit one Telegram status message;
+- reference-runtime authentication failure pauses a task and `/resume`
+  completes that same task after access returns;
+- reference-channel progress updates edit one Telegram status message;
 - failed work creates an experience candidate with its complete causal chain.
 
 The E2E doctor result is deterministic because the outer test run already
 executes the complete test suite. Git branch, commit, push, cleanup, queue,
 event, provenance, and PR command behavior remain real.
 
-Live GitHub, Telegram, and Codex smoke tests should remain opt-in. They exercise
-credentials and external services, so they do not belong in pull request CI.
+Live GitHub, Telegram, and Codex smoke tests should remain opt-in reference
+provider checks. They exercise credentials and external services, so they do
+not belong in pull request CI.
 
 ## Portable installation E2E
 

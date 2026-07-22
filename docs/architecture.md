@@ -1,8 +1,12 @@
 # Enoch architecture
 
 Enoch core is organized around domain boundaries rather than infrastructure
-brands. Concrete chat, forge, and host-service integrations live under
-`libraries/` and enter core through provider contracts.
+brands. Five provider contracts isolate chat, agent runtime, version control,
+code forge, and host-service infrastructure from agent behavior. Core includes
+portable defaults for Codex, Git, and local-only publication; reference
+Telegram, GitHub, launchd, and systemd integrations live under `libraries/`.
+Every implementation enters the application through the same provider loading
+and validation boundary.
 
 ## Core packages
 
@@ -26,8 +30,14 @@ with a shared lifecycle.
 
 Domain packages may depend on foundational configuration, paths, memory, and
 provider contracts. Infrastructure libraries implement those contracts and do
-not become imports in domain code. `enoch.app.core` composes the domains; domain
-packages must not import the application orchestrator.
+not become imports in domain code. Provider-specific configuration and setup
+remain owned by each implementation. `enoch.app.core` composes the domains;
+domain packages must not import the application orchestrator.
+
+Portable task flows use semantic provider operations rather than parsing Git,
+GitHub, Telegram, or service-manager commands. Compatibility escape hatches may
+exist inside a concrete provider, but they are not part of the portable core
+contract.
 
 The stable executable surfaces remain `bin/enoch`, `bin/enoch-agent`, and
 `bin/enoch-daemon`. Internal Python module paths may evolve with the package
