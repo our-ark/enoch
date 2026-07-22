@@ -5,7 +5,15 @@ from hashlib import sha256
 from pathlib import Path
 import re
 
-from enoch.git_tools import GitError, current_branch, delete_branch, run_git
+from enoch.git_tools import (
+    GitError,
+    branch_exists,
+    create_workspace,
+    current_branch,
+    delete_branch,
+    remove_workspace,
+    workspace_paths,
+)
 
 
 @dataclass(frozen=True)
@@ -47,7 +55,7 @@ def prepare_task_worktree(
     existing_branch: str = "",
 ) -> TaskWorktree:
     path = Path(existing_path).expanduser().resolve() if existing_path else task_worktree_path(control_root, task_id)
-    registered = _registered_worktrees(control_root)
+    registered = set(workspace_paths(control_root))
     if path in registered:
         branch = current_branch(path)
         if existing_branch and branch != existing_branch:
@@ -65,13 +73,14 @@ def prepare_task_worktree(
         resident_branch=resident_branch,
         created_at=created_at,
     )
-    if _branch_exists(control_root, branch):
-        args = ["worktree", "add", str(path), branch]
-    else:
-        args = ["worktree", "add", "-b", branch, str(path), start_point]
-    result = run_git(args, control_root)
-    if result.returncode != 0:
-        raise GitError(result.stderr or result.stdout or f"Could not create task #{task_id} worktree.")
+    exists = branch_exists(branch, control_root)
+    create_workspace(
+        path,
+        branch,
+        control_root,
+        start_point="" if exists else start_point,
+        create_branch=not exists,
+    )
     return TaskWorktree(task_id=task_id, path=path, branch=branch, created=True)
 
 
@@ -83,7 +92,7 @@ def prepare_existing_branch_worktree(
     existing_path: str = "",
 ) -> TaskWorktree:
     path = Path(existing_path).expanduser().resolve() if existing_path else task_worktree_path(control_root, task_id)
-    registered = _registered_worktrees(control_root)
+    registered = set(workspace_paths(control_root))
     if path in registered:
         checked_out = current_branch(path)
         if checked_out != branch:
@@ -93,16 +102,10 @@ def prepare_existing_branch_worktree(
         return TaskWorktree(task_id=task_id, path=path, branch=branch, created=False)
     if path.exists() and any(path.iterdir()):
         raise GitError(f"Task #{task_id} worktree path is not empty: {path}")
-    if not _branch_exists(control_root, branch):
+    if not branch_exists(branch, control_root):
         raise GitError(f"Local branch {branch} does not exist.")
     path.parent.mkdir(parents=True, exist_ok=True)
-    result = run_git(["worktree", "add", str(path), branch], control_root)
-    if result.returncode != 0:
-        raise GitError(
-            result.stderr
-            or result.stdout
-            or f"Could not create task #{task_id} worktree for {branch}."
-        )
+    create_workspace(path, branch, control_root)
     return TaskWorktree(task_id=task_id, path=path, branch=branch, created=True)
 
 
@@ -113,13 +116,7 @@ def remove_task_worktree(
     delete_local_branch: bool = True,
     force_delete_branch: bool = False,
 ) -> str:
-    result = run_git(["worktree", "remove", str(worktree.path)], control_root)
-    if result.returncode != 0:
-        raise GitError(
-            result.stderr
-            or result.stdout
-            or f"Could not remove task #{worktree.task_id} worktree."
-        )
+    remove_workspace(worktree.path, control_root)
     messages = [f"Removed task #{worktree.task_id} worktree."]
     if delete_local_branch:
         try:
@@ -133,22 +130,6 @@ def remove_task_worktree(
         else:
             messages.append(f"Deleted local branch {worktree.branch}.")
     return "\n".join(messages)
-
-
-def _registered_worktrees(control_root: Path) -> set[Path]:
-    result = run_git(["worktree", "list", "--porcelain"], control_root)
-    if result.returncode != 0:
-        raise GitError(result.stderr or "Could not inspect Git worktrees.")
-    return {
-        Path(line.removeprefix("worktree ")).expanduser().resolve()
-        for line in result.stdout.splitlines()
-        if line.startswith("worktree ")
-    }
-
-
-def _branch_exists(control_root: Path, branch: str) -> bool:
-    result = run_git(["show-ref", "--verify", "--quiet", f"refs/heads/{branch}"], control_root)
-    return result.returncode == 0
 
 
 def _slug(value: str) -> str:

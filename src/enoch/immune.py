@@ -243,6 +243,16 @@ def _git_worktree_check(root: Path, timeout: float) -> DoctorCheckResult:
     if selected != "git":
         try:
             provider = load_provider("vcs", root, name=selected)
+            if hasattr(provider, "is_clean"):
+                clean = bool(provider.is_clean(root))
+                return DoctorCheckResult(
+                    name=f"{selected} workspace",
+                    passed=True,
+                    command=f"{selected} workspace status",
+                    output="",
+                    category="operational readiness",
+                    summary="worktree clean" if clean else "worktree dirty",
+                )
             provider_result = provider.run(["status", "--porcelain"], root)
         except (ProviderError, OSError) as error:
             return DoctorCheckResult(

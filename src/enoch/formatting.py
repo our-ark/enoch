@@ -93,6 +93,16 @@ def format_publish_result(result: LocalPublishResult) -> str:
 
 
 def format_remote_publish_result(result: RemotePublishResult) -> str:
+    if not result.pushed:
+        return "\n".join(
+            [
+                "Enoch kept this branch locally.",
+                f"Branch: {result.branch}",
+                f"Remote: {result.remote}",
+                "Review URL: unavailable",
+                "Publish step: no remote forge is configured.",
+            ]
+        )
     return "\n".join(
         [
             "Enoch pushed this branch.",
@@ -116,13 +126,11 @@ def format_pr_result(result: PullRequestResult) -> str:
             lines.append(f"Reason: {result.note}")
         if result.fallback_url:
             lines.append(f"Review URL: {result.fallback_url}")
-    lines.extend(
-        [
-            f"Branch: {result.branch}",
-            f"Title: {result.title}",
-            "Local checkout will return to its resident branch after the forge handoff.",
-        ]
-    )
+    lines.extend([f"Branch: {result.branch}", f"Title: {result.title}"])
+    if result.created or result.fallback_url:
+        lines.append("Local checkout will return to its resident branch after the forge handoff.")
+    else:
+        lines.append("The committed branch will remain available in the local repository.")
     return "\n".join(lines)
 
 
@@ -131,7 +139,7 @@ def pr_step_update(result: PullRequestResult) -> str:
         return f"Opened pull request: {result.url or 'URL unavailable'}"
     if result.fallback_url:
         return f"Could not open a pull request automatically. Review URL: {result.fallback_url}"
-    return "Could not open a pull request automatically."
+    return result.note or "Could not open a pull request automatically."
 
 
 def publish_summary(result: LocalPublishResult, *, title: str = "Committed local change") -> str:
@@ -150,6 +158,16 @@ def publish_summary(result: LocalPublishResult, *, title: str = "Committed local
 
 
 def remote_publish_summary(result: RemotePublishResult) -> str:
+    if not result.pushed:
+        return "\n".join(
+            [
+                "Kept branch locally",
+                "",
+                f"Branch: {result.branch}",
+                f"Remote: {result.remote}",
+                "Review URL: unavailable",
+            ]
+        )
     return "\n".join(
         [
             "Pushed branch",

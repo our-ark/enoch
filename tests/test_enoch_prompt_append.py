@@ -55,6 +55,13 @@ class EnochPromptAppendTests(unittest.TestCase):
         self.assertIn("/pr merge <PR number or PR URL>", prompt)
         self.assertIn("forward-fixed", prompt)
 
+    def test_work_request_prompt_uses_local_handoff_without_remote_forge(self) -> None:
+        prompt = work_request_prompt("Update README.", remote_review=False)
+
+        self.assertIn("No remote review forge is configured", prompt)
+        self.assertIn("preserve the local task branch", prompt)
+        self.assertNotIn("publish the pull request", prompt)
+
     def test_extract_edit_request_strips_marker_from_visible_reply(self) -> None:
         reply = f"I can do that.\n\n{EDIT_REQUEST_START}\nUpdate README.\n{EDIT_REQUEST_END}"
 

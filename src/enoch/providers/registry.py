@@ -16,7 +16,11 @@ ProviderSetup = Callable[..., str]
 PROVIDER_KINDS: tuple[ProviderKind, ...] = ("chat", "runtime", "vcs", "forge", "service")
 ENTRY_POINT_GROUP = "enoch.providers"
 PLUGIN_ATTRIBUTE = "ENOCH_PROVIDERS"
-CORE_PROVIDER_MODULES = ("enoch.providers.runtime", "enoch.providers.vcs")
+CORE_PROVIDER_MODULES = (
+    "enoch.providers.runtime",
+    "enoch.providers.vcs",
+    "enoch.providers.forge",
+)
 SOURCE_PROJECT_ROOT = Path(__file__).resolve().parents[3]
 _REGISTERED: dict[tuple[ProviderKind, str], ProviderFactory] = {}
 _DEFAULTS: dict[ProviderKind, str] = {}

@@ -286,6 +286,54 @@ class VersionControlProvider(Protocol):
         root: Path | None = None,
     ) -> Any: ...
 
+    def current_branch(self, root: Path | None = None) -> str: ...
+
+    def is_clean(self, root: Path | None = None) -> bool: ...
+
+    def changed_files(self, root: Path | None = None) -> list[str]: ...
+
+    def diff_summary(self, root: Path | None = None) -> str: ...
+
+    def stage(self, files: Sequence[str], root: Path | None = None) -> None: ...
+
+    def commit(self, message: str, root: Path | None = None) -> str: ...
+
+    def create_branch(
+        self,
+        branch: str,
+        root: Path | None = None,
+        *,
+        start_point: str = "",
+    ) -> None: ...
+
+    def switch_branch(self, branch: str, root: Path | None = None) -> None: ...
+
+    def delete_branch(
+        self,
+        branch: str,
+        root: Path | None = None,
+        *,
+        force: bool = False,
+    ) -> None: ...
+
+    def branch_exists(self, branch: str, root: Path | None = None) -> bool: ...
+
+    def task_base(self, root: Path | None = None) -> str: ...
+
+    def workspace_paths(self, root: Path | None = None) -> tuple[Path, ...]: ...
+
+    def create_workspace(
+        self,
+        path: Path,
+        branch: str,
+        root: Path | None = None,
+        *,
+        start_point: str = "",
+        create_branch: bool = False,
+    ) -> None: ...
+
+    def remove_workspace(self, path: Path, root: Path | None = None) -> None: ...
+
 
 @runtime_checkable
 class ServiceProvider(Protocol):

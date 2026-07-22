@@ -39,6 +39,7 @@ class RuntimeDependency:
     requirement: str
     import_name: str
     local_source: Path | None = None
+    optional: bool = False
 
 
 def activate_runtime_dependencies(root: Path | None = None) -> tuple[Path, ...]:
@@ -68,7 +69,8 @@ def runtime_dependency_paths(root: Path | None = None) -> tuple[Path, ...]:
         if preloaded is not None:
             runtime_paths.append(preloaded)
             continue
-        unresolved.append(dependency)
+        if not dependency.optional:
+            unresolved.append(dependency)
 
     if not unresolved:
         return _unique_paths(runtime_paths)
@@ -97,6 +99,12 @@ def load_runtime_dependencies(root: Path | None = None) -> tuple[RuntimeDependen
         requirement = str(raw.get("requirement") or "").strip()
         import_name = str(raw.get("import_name") or "").strip()
         local_value = str(raw.get("local_source") or "").strip()
+        optional_value = raw.get("optional", False)
+        if not isinstance(optional_value, bool):
+            raise RuntimeDependencyError(
+                f"Runtime dependency {name or '<unnamed>'} optional must be a boolean."
+            )
+        optional = optional_value
         if not name or not requirement or not import_name:
             raise RuntimeDependencyError(
                 "Runtime dependencies require name, requirement, and import_name."
@@ -118,6 +126,7 @@ def load_runtime_dependencies(root: Path | None = None) -> tuple[RuntimeDependen
                 requirement=requirement,
                 import_name=import_name,
                 local_source=local_source,
+                optional=optional,
             )
         )
     return tuple(dependencies)

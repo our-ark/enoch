@@ -1004,7 +1004,12 @@ class EnochApplication:
             self._send_step_update(chat_id, "Working.")
             result = self.runtime.act_in_session(
                 self.identity,
-                work_request_prompt(_work_request_with_context(request, context)),
+                work_request_prompt(
+                    _work_request_with_context(request, context),
+                    remote_review=bool(
+                        getattr(self.forge, "supports_remote_review", True)
+                    ),
+                ),
                 cwd=work_root,
                 sandbox=sandbox,
                 session_key=session_key,
@@ -1144,12 +1149,19 @@ class EnochApplication:
             work_root = task_worktree.path
             ensure_clean_worktree(work_root)
 
-            self._send_step_update(chat_id, f"Pushing branch {branch}.")
+            self._send_step_update(chat_id, f"Handing off branch {branch}.")
             pushed = push_current_branch(root=work_root)
             outputs.append(_format_remote_publish_result(pushed))
-            self._send_step_update(chat_id, f"Pushed branch {pushed.branch}.")
+            self._send_step_update(
+                chat_id,
+                (
+                    f"Pushed branch {pushed.branch}."
+                    if pushed.pushed
+                    else f"Kept branch {pushed.branch} locally."
+                ),
+            )
 
-            self._send_step_update(chat_id, "Opening a pull request.")
+            self._send_step_update(chat_id, "Preparing the review handoff.")
             pr = _create_pull_request_for_current_task(
                 work_root,
                 self.root,
@@ -1249,13 +1261,20 @@ class EnochApplication:
             summaries.append(_publish_summary(commit))
             self._send_step_update(chat_id, f"Committed {commit.commit_sha}.")
 
-            self._send_step_update(chat_id, "Pushing the branch to the configured forge.")
+            self._send_step_update(chat_id, "Handing off the branch to the configured forge.")
             pushed = push_current_branch(root=publish_root)
             outputs.append(_format_remote_publish_result(pushed))
             summaries.append(_remote_publish_summary(pushed))
-            self._send_step_update(chat_id, f"Pushed branch {pushed.branch}.")
+            self._send_step_update(
+                chat_id,
+                (
+                    f"Pushed branch {pushed.branch}."
+                    if pushed.pushed
+                    else f"Kept branch {pushed.branch} locally."
+                ),
+            )
 
-            self._send_step_update(chat_id, "Opening a pull request.")
+            self._send_step_update(chat_id, "Preparing the review handoff.")
             pr = _create_pull_request_for_current_task(
                 publish_root,
                 self.root,
@@ -1274,11 +1293,14 @@ class EnochApplication:
                 handoff = remove_task_worktree(
                     self.root,
                     task_worktree,
-                    force_delete_branch=True,
+                    delete_local_branch=pushed.pushed,
+                    force_delete_branch=pushed.pushed,
                 )
             else:
                 self._send_step_update(chat_id, f"Returning local checkout to {resident_branch}.")
-                handoff = self._return_to_resident_after_handoff()
+                handoff = self._return_to_resident_after_handoff(
+                    published_remotely=pushed.pushed,
+                )
             outputs.append(handoff)
             summaries.append(handoff)
             self._send_step_update(chat_id, f"Resident checkout remains on {resident_branch}.")
@@ -1292,41 +1314,53 @@ class EnochApplication:
             self._send_step_update(chat_id, failure)
             return "\n\n".join([*outputs, failure]) if outputs else failure
 
-        _record_direct_action(f"published edit as pull request: {request}", "\n\n".join(summaries), self.root)
+        action = (
+            f"published edit as pull request: {request}"
+            if pr.created
+            else f"committed edit to local branch: {request}"
+        )
+        _record_direct_action(action, "\n\n".join(summaries), self.root)
         reply = "\n\n".join(outputs)
         self._queue_session_sync(
             chat_id,
             _activity_sync_note(
-                f"Enoch published an edit request as a pull request: {request}",
+                f"Enoch {action}",
                 f"Final workflow summary: {_clip_activity_text(summaries[-1]) if summaries else 'none'}",
                 f"Result: {_clip_activity_text(reply)}",
             ),
         )
         return reply
 
-    def _return_to_resident_after_handoff(self) -> str:
+    def _return_to_resident_after_handoff(self, *, published_remotely: bool = True) -> str:
         branch = current_branch(self.root)
         resident_branch = self._resident_branch_name(branch)
         if branch == resident_branch:
             return f"Local checkout is already on {resident_branch}."
         ensure_clean_worktree(self.root)
         switch_branch(resident_branch, self.root)
-        cleanup = _delete_local_branch_if_enabled(
-            branch,
-            self.root,
-            protected_branch=resident_branch,
+        cleanup = ""
+        if published_remotely:
+            cleanup = _delete_local_branch_if_enabled(
+                branch,
+                self.root,
+                protected_branch=resident_branch,
+            )
+        location = (
+            "The change remains on the pushed remote branch."
+            if published_remotely
+            else f"The change remains on local branch {branch}."
         )
         if cleanup:
             return "\n".join(
                 [
                     f"Enoch switched local checkout back to {resident_branch}.",
                     cleanup,
-                    "The change remains on the pushed remote branch.",
+                    location,
                 ]
             )
         return (
             f"Enoch switched local checkout back to {resident_branch}. "
-            "The change remains on the pushed remote branch."
+            f"{location}"
         )
 
     def _remember_resident_branch(self, fallback: str) -> str:

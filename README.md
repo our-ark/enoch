@@ -28,11 +28,14 @@ included.
 | Background service | launchd on macOS; systemd on Linux | Another process or service manager |
 
 Enoch core depends on provider contracts rather than Telegram, GitHub,
-launchd, or systemd directly. Provider packages can be added through the
+launchd, or systemd directly. A portable deployment only needs to add `chat`
+and `vcs` providers: Enoch supplies the Codex runtime and a local-only forge
+fallback, while a background service manager is optional. Provider packages
+can be added through the
 `enoch.providers` Python entry-point group and selected in the private
 `.enoch/config.yaml` file, with `/config provider`, or with environment
-variables. A custom deployment implements whichever of the `chat`, `runtime`,
-`vcs`, `forge`, and `service` capabilities differ from the reference stack.
+variables. Add `runtime`, `forge`, or `service` providers only when the
+built-in or foreground behavior is not sufficient.
 
 The reference providers require a Codex CLI login, Git, GitHub CLI
 authentication for publishing, Telegram credentials for chat, and either
@@ -40,7 +43,8 @@ launchd or a systemd user session for background operation.
 
 ## Quick Start
 
-Clone the repository and start Enoch from its checked-out software body:
+Clone the repository and start Enoch from its checked-out software body. The
+core install does not install Telegram, GitHub, launchd, or systemd:
 
 ```bash
 git clone https://github.com/our-ark/enoch.git
@@ -107,12 +111,28 @@ automatic discovery. The daemon reads this instance setting directly.
 
 ## Providers
 
-Codex and Git are core defaults. Telegram, GitHub, launchd, and systemd are
-reference provider packages under `libraries/`. Installed Python packages can
+Codex, Git, and a local-only forge are core defaults. Telegram, GitHub,
+launchd, and systemd are reference provider packages under `libraries/`.
+Installed Python packages can
 add or replace chat, agent runtime, version control, code forge, and host
 service providers through the `enoch.providers` entry-point group. Select them
 in `.enoch/config.yaml` or with `/config provider`. launchd is selected on
-macOS; systemd user services are selected on Linux.
+macOS; systemd user services are selected on Linux. Install the complete
+reference stack with `pip install '.[reference]'` when working from a clone.
+
+For a new environment, install provider packages exposing `chat.<name>` and
+`vcs.<name>` entry points, then select only those two capabilities:
+
+```yaml
+providers:
+  chat: my-chat
+  vcs: my-vcs
+```
+
+`bin/enoch-agent` can then run in the foreground. Without a forge provider,
+successful edits are committed and retained on their local task branches;
+adding a forge later enables remote push and review workflows. A service
+provider is needed only for `bin/enoch-daemon` lifecycle management.
 
 Provider contracts, packaging examples, provider-specific settings, normalized
 chat events, and migration compatibility are documented in

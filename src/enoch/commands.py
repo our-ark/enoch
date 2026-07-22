@@ -437,8 +437,11 @@ def provider_config_status(root: Path, *, prefix: str = "/") -> str:
     command = f"{prefix}config"
     lines = ["Enoch providers:"]
     for kind in PROVIDER_KINDS:
-        selected = provider_name(kind, root)
-        choices = ", ".join(available_providers(kind, root))
+        choices = ", ".join(available_providers(kind, root)) or "none"
+        try:
+            selected = provider_name(kind, root)
+        except ProviderError:
+            selected = "not configured"
         lines.append(f"- {kind}: {selected} (available: {choices})")
     lines.extend(
         [

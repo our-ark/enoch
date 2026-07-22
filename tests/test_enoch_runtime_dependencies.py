@@ -76,6 +76,17 @@ class EnochRuntimeDependencyTests(unittest.TestCase):
             self.assertEqual(paths, (preloaded.resolve(),))
             pip.assert_not_called()
 
+    def test_skips_missing_optional_dependency_without_installing(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            _write_manifest(root, optional=True)
+
+            with patch("enoch.runtime_dependencies._pip_install") as pip:
+                paths = runtime_dependency_paths(root)
+
+            self.assertEqual(paths, ())
+            pip.assert_not_called()
+
     def test_replaces_incomplete_private_install(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
@@ -134,7 +145,12 @@ class EnochRuntimeDependencyTests(unittest.TestCase):
                 load_runtime_dependencies(root)
 
 
-def _write_manifest(root: Path, *, local_source: str = "") -> None:
+def _write_manifest(
+    root: Path,
+    *,
+    local_source: str = "",
+    optional: bool = False,
+) -> None:
     lines = [
         "[[runtime_dependencies]]",
         'name = "example"',
@@ -143,6 +159,8 @@ def _write_manifest(root: Path, *, local_source: str = "") -> None:
     ]
     if local_source:
         lines.append(f'local_source = "{local_source}"')
+    if optional:
+        lines.append("optional = true")
     (root / "genesis.toml").write_text("\n".join(lines), encoding="utf-8")
 
 

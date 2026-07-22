@@ -4,8 +4,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 import re
-import subprocess
 
+from enoch.git_tools import GitError, branch_exists, create_workspace, current_branch
 from enoch.identity import Identity
 
 
@@ -43,7 +43,10 @@ def init_instance(
         branch = branch.strip() or _default_instance_branch(identity.body.package, instance_name)
         _create_git_worktree(root, target, branch)
     elif not branch.strip():
-        branch = _current_branch(root)
+        try:
+            branch = current_branch(root) or "HEAD"
+        except GitError:
+            branch = "HEAD"
     metadata_path = _write_instance_metadata(identity, root, target, instance_name, branch)
     return InstanceInitResult(
         agent_name=identity.name,
@@ -95,12 +98,17 @@ def _create_git_worktree(root: Path, target: Path, branch: str) -> None:
     if target.exists() and any(target.iterdir()):
         raise InstanceError(f"Worktree target is not empty: {target}")
     target.parent.mkdir(parents=True, exist_ok=True)
-    branch_exists = _branch_exists(root, branch)
-    args = ["worktree", "add"]
-    if not branch_exists:
-        args.extend(["-b", branch])
-    args.extend([str(target), branch if branch_exists else "HEAD"])
-    _git(args, root)
+    exists = branch_exists(branch, root)
+    try:
+        create_workspace(
+            target,
+            branch,
+            root,
+            start_point="" if exists else "HEAD",
+            create_branch=not exists,
+        )
+    except GitError as error:
+        raise InstanceError(str(error)) from error
 
 
 def _write_instance_metadata(
@@ -150,37 +158,6 @@ def _default_instance_branch(package: str, instance_name: str) -> str:
 def _slug(value: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
     return slug or DEFAULT_INSTANCE_NAME
-
-
-def _branch_exists(root: Path, branch: str) -> bool:
-    result = subprocess.run(
-        ["git", "rev-parse", "--verify", "--quiet", branch],
-        cwd=root,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    return result.returncode == 0
-
-
-def _current_branch(root: Path) -> str:
-    result = subprocess.run(
-        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-        cwd=root,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    if result.returncode == 0 and result.stdout.strip():
-        return result.stdout.strip()
-    return "HEAD"
-
-
-def _git(args: list[str], root: Path) -> None:
-    result = subprocess.run(["git", *args], cwd=root, text=True, capture_output=True, check=False)
-    if result.returncode != 0:
-        detail = (result.stderr or result.stdout or "git command failed").strip()
-        raise InstanceError(detail)
 
 
 def _yaml_quote(value: str) -> str:

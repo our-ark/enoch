@@ -1,14 +1,15 @@
 # Enoch providers
 
 Enoch separates replaceable infrastructure from agent behavior through five
-provider capabilities:
+provider capabilities. Only `chat` and `vcs` must be supplied when moving the
+core agent into a new environment:
 
 | Kind | Reference provider | Responsibility |
 | --- | --- | --- |
 | `chat` | `telegram` | Receive normalized chat events and deliver messages |
 | `runtime` | `codex` | Answer, edit, resume sessions, report models, and cancel work |
 | `vcs` | `git` | Run local version-control operations |
-| `forge` | `github` | Create, inspect, list, close, and merge pull requests |
+| `forge` | local fallback; `github` reference | Retain local branches or create, inspect, list, close, and merge pull requests |
 | `service` | `launchd` / `systemd` | Install, control, inspect, and restart the agent process |
 
 The active providers are configured in the private instance file
@@ -22,6 +23,19 @@ providers:
   forge: github
   service: launchd
 ```
+
+The minimal portable configuration is:
+
+```yaml
+providers:
+  chat: my-chat
+  vcs: my-vcs
+```
+
+The built-in Codex runtime and local forge fill the other execution-critical
+roles. The local forge runs validation and commits completed changes, but does
+not push or open a review. It deliberately preserves the local task branch.
+`service` is optional for foreground execution.
 
 The same settings can be inspected and changed with:
 
@@ -103,6 +117,7 @@ A provider package registers factories with Python package entry points:
 [project.entry-points."enoch.providers"]
 "chat.slack" = "enoch_slack:create_provider"
 "runtime.claude" = "enoch_claude:create_provider"
+"vcs.jj" = "enoch_jj:create_provider"
 "service.container" = "enoch_container:create_provider"
 ```
 
@@ -173,6 +188,15 @@ instead of assuming a Codex binary. They should raise
 failures and `AgentRuntimeCancelled` for human cancellation. Forge and VCS
 providers should raise their matching provider errors. This preserves Enoch's
 pause, resume, failure, and audit behavior across implementations.
+
+VCS providers implement repository semantics rather than parsing Git command
+arguments: current and switched branches, clean-state and diff inspection,
+staging and commit, task base selection, and isolated workspace
+creation/removal. `run(args, root)`
+remains part of the compatibility contract for Git-oriented update, lineage,
+and evolution operations. A provider can support ordinary chat tasks and local
+publication through the semantic methods first, then add those advanced
+operations as needed.
 
 ## Provider-owned setup
 

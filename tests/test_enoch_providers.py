@@ -2,7 +2,7 @@ from pathlib import Path
 import sys
 import unittest
 from tempfile import TemporaryDirectory
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -12,18 +12,25 @@ from enoch.commands import config_command
 from enoch.config import read_section
 from enoch.git_tools import run_git
 from enoch.identity import load_identity
-from enoch.immune import _runtime_provider_check
+from enoch.immune import _git_worktree_check, _runtime_provider_check
+from enoch.operations.update_tools import task_branch_base
 from enoch.providers import (
     Attachment,
     ChatEvent,
+    LocalPublishResult,
+    PullRequestResult,
     ProviderHealth,
+    RemotePublishResult,
     available_providers,
     load_provider,
     provider_name,
     register_provider,
 )
+from enoch.providers.forge import LocalForgeProvider
+from enoch.providers import registry as provider_registry
 from enoch.app.core import EnochApplication
 from enoch.tasks.queue import enqueue_task, record_task_status_message, task_queue_status
+from enoch.tasks.worktree import TaskWorktree
 
 
 class _Result:
@@ -42,6 +49,37 @@ class _Vcs:
     def run(self, args, root=None):
         self.calls.append((args, root))
         return _Result()
+
+
+class _SemanticVcs(_Vcs):
+    name = "semantic-vcs"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.staged = ()
+        self.commits = []
+
+    def current_branch(self, root=None):
+        return "change/portable"
+
+    def is_clean(self, root=None):
+        return True
+
+    def task_base(self, root=None):
+        return "stable-revision"
+
+    def changed_files(self, root=None):
+        return ["README.md"]
+
+    def diff_summary(self, root=None):
+        return "README.md changed"
+
+    def stage(self, files, root=None):
+        self.staged = tuple(files)
+
+    def commit(self, message, root=None):
+        self.commits.append(message)
+        return "revision-1"
 
 
 class _Runtime:
@@ -149,6 +187,143 @@ class EnochProviderTests(unittest.TestCase):
 
         self.assertEqual(result.stdout, "custom vcs")
         self.assertEqual(provider.calls, [(["status", "--short"], root)])
+
+    def test_core_starts_with_only_custom_chat_and_vcs_integrations(self) -> None:
+        with TemporaryDirectory() as temp, patch.dict(
+            provider_registry._REGISTERED,
+            {},
+            clear=True,
+        ), patch.dict(
+            provider_registry._DEFAULTS,
+            {},
+            clear=True,
+        ), patch.object(
+            provider_registry,
+            "_LOADED_PLUGIN_MODULES",
+            set(),
+        ), patch.object(
+            provider_registry,
+            "load_runtime_dependencies",
+            return_value=(),
+        ), patch.object(
+            provider_registry,
+            "_entry_points",
+            return_value=(),
+        ):
+            root = Path(temp)
+            register_provider("chat", "custom-chat", lambda _root=None: _Chat())
+            register_provider("vcs", "custom-vcs", lambda _root=None: _Vcs())
+            config = root / ".enoch" / "config.yaml"
+            config.parent.mkdir()
+            config.write_text(
+                "providers:\n  chat: custom-chat\n  vcs: custom-vcs\n",
+                encoding="utf-8",
+            )
+
+            chat = load_provider("chat", root)
+            runtime = load_provider("runtime", root)
+            forge = load_provider("forge", root)
+            app = EnochApplication(
+                identity=load_identity(),
+                root=root,
+                client=chat,
+                runtime=runtime,
+                forge=forge,
+            )
+
+            self.assertEqual(app.client.name, "test-chat")
+            self.assertEqual(runtime.name, "codex")
+            self.assertIsInstance(forge, LocalForgeProvider)
+            self.assertEqual(provider_name("vcs", root), "custom-vcs")
+            status = config_command("/config providers", root)
+            self.assertIn("forge: local", status)
+            self.assertIn("service: not configured", status)
+
+    def test_local_forge_publishes_through_semantic_vcs_contract(self) -> None:
+        vcs = _SemanticVcs()
+        doctor = MagicMock(passed=True)
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            register_provider("vcs", "semantic-vcs", lambda _root=None: vcs, replace=True)
+            config = root / ".enoch" / "config.yaml"
+            config.parent.mkdir()
+            config.write_text("providers:\n  vcs: semantic-vcs\n  forge: local\n", encoding="utf-8")
+
+            with patch("enoch.providers.forge.run_immune_system", return_value=doctor):
+                committed = LocalForgeProvider().prepare_local_publish(
+                    "Portable change",
+                    root=root,
+                    allowed_files=("README.md",),
+                )
+            remote = LocalForgeProvider().push_current_branch(root=root)
+            base = task_branch_base(root)
+            health = _git_worktree_check(root, timeout=1)
+
+        self.assertEqual(vcs.calls, [])
+        self.assertEqual(vcs.staged, ("README.md",))
+        self.assertEqual(vcs.commits, ["Portable change"])
+        self.assertEqual(committed.commit_sha, "revision-1")
+        self.assertFalse(remote.pushed)
+        self.assertEqual(base, "stable-revision")
+        self.assertTrue(health.passed)
+
+    def test_local_forge_handoff_preserves_unpushed_task_branch(self) -> None:
+        doctor = MagicMock(passed=True)
+        committed = LocalPublishResult(
+            branch="change/portable",
+            commit_message="Portable change",
+            changed_files=["README.md"],
+            diff="README.md changed",
+            doctor=doctor,
+            commit_sha="revision-1",
+        )
+        remote = RemotePublishResult(
+            branch="change/portable",
+            remote="local",
+            pushed=False,
+            ahead_count=0,
+            compare_url=None,
+        )
+        review = PullRequestResult(
+            branch="change/portable",
+            title="Portable change",
+            body="",
+            created=False,
+            url=None,
+            fallback_url=None,
+            note="No forge provider is configured.",
+        )
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            app = EnochApplication(load_identity(), root, _Chat(), runtime=_Runtime())
+            app.forge = MagicMock()
+            app.forge.create_pull_request.return_value = review
+            workspace = TaskWorktree(1, root / "task-1", "change/portable", True)
+            with patch("enoch.app.core.feature_title", return_value="Portable change"), patch(
+                "enoch.app.core.prepare_local_publish",
+                return_value=committed,
+            ), patch(
+                "enoch.app.core.push_current_branch",
+                return_value=remote,
+            ), patch(
+                "enoch.app.core.remove_task_worktree",
+                return_value="Removed workspace and kept branch.",
+            ) as remove:
+                result = app._publish_feature_pr(
+                    "room-1",
+                    "Portable change",
+                    ("README.md",),
+                    work_root=workspace.path,
+                    task_worktree=workspace,
+                )
+
+        remove.assert_called_once_with(
+            root,
+            workspace,
+            delete_local_branch=False,
+            force_delete_branch=False,
+        )
+        self.assertIn("kept this branch locally", result)
 
     def test_config_lists_and_selects_installed_providers(self) -> None:
         register_provider("runtime", "test-runtime", lambda _root=None: _Runtime(), replace=True)

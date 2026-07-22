@@ -51,11 +51,11 @@ def read_only_turn_prompt(message: str) -> str:
     )
 
 
-def work_request_prompt(request: str) -> str:
+def work_request_prompt(request: str, *, remote_review: bool = True) -> str:
     return _with_blocks(
         f"Proceed with this work request:\n{request.strip()}",
         [
-            _work_request_wrapper_block(),
+            _work_request_wrapper_block(remote_review=remote_review),
             _state_freshness_block(),
             _memory_request_block(),
             _task_regression_block(),
@@ -163,22 +163,35 @@ def _read_only_wrapper_block() -> str:
     )
 
 
-def _work_request_wrapper_block() -> str:
-    return "\n".join(
-        [
-            "Work request:",
-            "Complete the requested work directly.",
-            "You may edit files, inspect the repository, run checks, and use available tools as needed.",
-            "The current checkout is already an isolated task worktree on its task branch.",
-            "Stay on the current branch; do not switch to or check out main, which may belong to another worktree.",
-            "When the requested work requires publishing an existing branch or creating a pull request, do it directly.",
-            "When implementation is complete and validation passes, publish the pull request as ready for review, not draft.",
-            "Use a draft pull request only when work is intentionally incomplete or the human explicitly requests a draft.",
-            "When the task supplies an Evolution provenance section, preserve it verbatim in the pull request body.",
-            "Never merge a pull request from a work request. Only an explicit human /pr merge <PR number or PR URL> command from Enoch's locked chat-provider conversation authorizes that exact merge.",
-            "Keep changes scoped to the request.",
-        ]
-    )
+def _work_request_wrapper_block(*, remote_review: bool) -> str:
+    lines = [
+        "Work request:",
+        "Complete the requested work directly.",
+        "You may edit files, inspect the repository, run checks, and use available tools as needed.",
+    ]
+    if remote_review:
+        lines.extend(
+            [
+                "The current checkout is already an isolated task worktree on its task branch.",
+                "Stay on the current branch; do not switch to or check out main, which may belong to another worktree.",
+                "When the requested work requires publishing an existing branch or creating a pull request, do it directly.",
+                "When implementation is complete and validation passes, publish the pull request as ready for review, not draft.",
+                "Use a draft pull request only when work is intentionally incomplete or the human explicitly requests a draft.",
+                "When the task supplies an Evolution provenance section, preserve it verbatim in the pull request body.",
+                "Never merge a pull request from a work request. Only an explicit human /pr merge <PR number or PR URL> command from Enoch's locked chat-provider conversation authorizes that exact merge.",
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                "The current checkout is already an isolated task workspace on its task branch.",
+                "Stay on the current branch; do not switch to the authoritative branch, which may belong to another workspace.",
+                "No remote review forge is configured. Do not push, open a pull request, or switch branches.",
+                "Complete and validate the file changes; Enoch will commit them and preserve the local task branch.",
+            ]
+        )
+    lines.append("Keep changes scoped to the request.")
+    return "\n".join(lines)
 
 
 def _state_freshness_block() -> str:
@@ -187,7 +200,7 @@ def _state_freshness_block() -> str:
             "Repository state:",
             "Local checkout may have changed since prior turns.",
             "Do not assume prior PR changes are merged or present locally.",
-            "Inspect current files/git state before repository-dependent work.",
+            "Inspect current files and repository state before repository-dependent work.",
         ]
     )
 

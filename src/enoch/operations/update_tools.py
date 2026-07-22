@@ -5,7 +5,7 @@ from pathlib import Path
 
 from enoch.git_tools import GitError, run_git
 from enoch.paths import repo_root
-from enoch.providers.registry import load_provider
+from enoch.providers.registry import load_provider, provider_name
 from enoch.runtime import DEFAULT_BRANCH, DEFAULT_REMOTE
 
 
@@ -112,6 +112,11 @@ def ensure_local_main_current(root: Path) -> None:
 
 
 def task_branch_base(root: Path) -> str:
+    selected = provider_name("vcs", root)
+    if selected != "git":
+        provider = load_provider("vcs", root, name=selected)
+        if hasattr(provider, "task_base"):
+            return str(provider.task_base(root)).strip()
     fetch_error: GitError | None = None
     try:
         fetch_origin_main(root)
