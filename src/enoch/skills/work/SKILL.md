@@ -37,7 +37,7 @@ When work is queued:
 4. Run queued work through the same authorized repository workflow as foreground `/do` work.
 5. Promote backlog items only when the task queue is idle.
 6. Claim due cron jobs atomically before enqueueing them, so one due event creates one task.
-7. When Codex authentication, quota, or rate limits are unavailable, move the
+7. When agent runtime authentication, quota, or rate limits are unavailable, move the
    active task to `paused`, stop the worker before it consumes later tasks, and
    warn the human. `/resume` moves paused tasks back to the front with the same
    ids and context after access is available again.

@@ -261,6 +261,18 @@ class _LifecycleVcs:
         self.raw_calls.append((args, root))
         raise AssertionError("Lifecycle must not send raw Git commands.")
 
+    def current_branch(self, root=None): return "trunk"
+    def is_clean(self, root=None): return True
+    def changed_files(self, root=None): return []
+    def diff_summary(self, root=None): return ""
+    def stage(self, files, root=None): return None
+    def commit(self, message, root=None): return "revision"
+    def create_branch(self, branch, root=None, *, start_point=""): return None
+    def switch_branch(self, branch, root=None): return None
+    def delete_branch(self, branch, root=None, *, force=False): return None
+    def branch_exists(self, branch, root=None): return False
+    def task_base(self, root=None): return "trusted-revision"
+
     def authoritative_branch(self, root=None):
         return "trunk"
 
@@ -271,9 +283,26 @@ class _LifecycleVcs:
     def authoritative_revision(self, root=None):
         return "trusted-revision"
 
+    def current_revision(self, root=None): return "trusted-revision"
+    def resolve_revision(self, revision, root=None): return revision
+
     def is_ancestor(self, revision, descendant, root=None):
         self.ancestry_checks.append((revision, descendant))
         return True
+
+    def update_to_authoritative(self, root=None): return "Already up to date."
+    def restore_revision(self, revision, root=None): return None
+    def workspace_paths(self, root=None): return ()
+    def create_workspace(
+        self,
+        path,
+        branch,
+        root=None,
+        *,
+        start_point="",
+        create_branch=False,
+    ): return None
+    def remove_workspace(self, path, root=None): return None
 
 
 class _LifecycleForge:

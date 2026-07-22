@@ -13,7 +13,7 @@ from enoch.evolution.lifecycle import (
     stage_promoted_evolve_adoptions,
 )
 from enoch.formatting import format_doctor_result
-from enoch.git_tools import GitError, current_branch, ensure_clean_worktree
+from enoch.vcs_tools import VcsError, current_branch, ensure_clean_worktree
 from enoch.immune import DoctorCheckResult, DoctorDiagnosis, ImmuneResult
 from enoch.providers.registry import provider_name
 from enoch.operations.update_tools import (
@@ -56,7 +56,7 @@ def update_from_authoritative(root: Path) -> UpdateResult:
         previous_head = current_repository_revision(root)
         pull_result = update_repository(root)
         updated_head = current_repository_revision(root)
-    except GitError as error:
+    except VcsError as error:
         return _message(f"Enoch could not update: {error}")
 
     if previous_head == updated_head:
@@ -109,7 +109,7 @@ def update_from_authoritative(root: Path) -> UpdateResult:
         try:
             restore_repository_revision(previous_head, root)
             rollback = f"Rolled back to {previous_head[:7]}."
-        except GitError as error:
+        except VcsError as error:
             rollback = f"Rollback failed: {error}"
         return _message(
             "\n\n".join(

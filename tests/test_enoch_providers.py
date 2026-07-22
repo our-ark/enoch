@@ -20,6 +20,7 @@ from enoch.providers import (
     ChatEvent,
     LocalPublishResult,
     PullRequestResult,
+    ProviderError,
     ProviderHealth,
     RemotePublishResult,
     available_providers,
@@ -50,6 +51,80 @@ class _Vcs:
     def run(self, args, root=None):
         self.calls.append((args, root))
         return _Result()
+
+    def current_branch(self, root=None):
+        return "main"
+
+    def is_clean(self, root=None):
+        return True
+
+    def changed_files(self, root=None):
+        return []
+
+    def diff_summary(self, root=None):
+        return "No working tree changes."
+
+    def stage(self, files, root=None):
+        return None
+
+    def commit(self, message, root=None):
+        return "revision-1"
+
+    def create_branch(self, branch, root=None, *, start_point=""):
+        return None
+
+    def switch_branch(self, branch, root=None):
+        return None
+
+    def delete_branch(self, branch, root=None, *, force=False):
+        return None
+
+    def branch_exists(self, branch, root=None):
+        return True
+
+    def task_base(self, root=None):
+        return "revision-1"
+
+    def authoritative_branch(self, root=None):
+        return "main"
+
+    def refresh_authoritative(self, root=None):
+        return ""
+
+    def authoritative_revision(self, root=None):
+        return "revision-1"
+
+    def current_revision(self, root=None):
+        return "revision-1"
+
+    def resolve_revision(self, revision, root=None):
+        return revision
+
+    def is_ancestor(self, revision, descendant, root=None):
+        return True
+
+    def update_to_authoritative(self, root=None):
+        return "Already up to date."
+
+    def restore_revision(self, revision, root=None):
+        return None
+
+    def workspace_paths(self, root=None):
+        return ()
+
+    def create_workspace(
+        self,
+        path,
+        branch,
+        root=None,
+        *,
+        start_point="",
+        create_branch=False,
+    ):
+        return None
+
+    def remove_workspace(self, path, root=None):
+        return None
 
 
 class _SemanticVcs(_Vcs):
@@ -149,6 +224,17 @@ class _Runtime:
         )
 
 
+class _ConfigurableRuntime(_Runtime):
+    name = "configurable-runtime"
+    config_section = "configurable-runtime"
+
+    def configure(self, args, root, *, prefix="/"):
+        return f"Configured {self.name}: {' '.join(args) or 'status'} ({prefix})"
+
+    def config_summary(self, root):
+        return "Endpoint: local-test"
+
+
 class _Chat:
     name = "test-chat"
     provider_kind = "chat"
@@ -182,6 +268,23 @@ class _Chat:
     def download_attachment(self, attachment, destination, *, max_bytes):
         self.downloaded.append((attachment.file_id, max_bytes))
         destination.write_bytes(b"\xff\xd8\xffplugin-image")
+
+
+class _Service:
+    name = "test-service"
+    provider_kind = "service"
+
+    def install(self, root=None): return "installed"
+    def uninstall(self, root=None): return "uninstalled"
+    def start(self, root=None): return "started"
+    def stop(self, root=None, *, allow_missing=False): return "stopped"
+    def restart(self, root=None): return "restarted"
+    def status(self, root=None): return "running"
+    def logs(self, root=None, *, lines=80): return "logs"
+    def doctor(self, root=None): return "passed"
+    def manifest(self, root=None): return "manifest"
+    def schedule_restart(self, root=None): return None
+    def schedule_stop(self, root=None): return None
 
 
 class _EntryPoint:
@@ -220,6 +323,13 @@ class EnochProviderTests(unittest.TestCase):
 
         self.assertEqual(result.stdout, "custom vcs")
         self.assertEqual(provider.calls, [(["status", "--short"], root)])
+
+    def test_invalid_provider_reports_missing_contract_members_at_load_time(self) -> None:
+        invalid = type("InvalidChat", (), {"name": "broken", "provider_kind": "chat"})()
+        register_provider("chat", "broken", lambda _root=None: invalid, replace=True)
+
+        with self.assertRaisesRegex(ProviderError, "Missing: allowed_conversation_id"):
+            load_provider("chat", name="broken")
 
     def test_core_starts_with_only_custom_chat_and_vcs_integrations(self) -> None:
         with TemporaryDirectory() as temp, patch.dict(
@@ -390,6 +500,30 @@ class EnochProviderTests(unittest.TestCase):
             self.assertIn("runtime provider set to test-runtime", changed)
             self.assertEqual(provider_name("runtime", root), "test-runtime")
 
+    def test_runtime_provider_owns_provider_specific_config(self) -> None:
+        runtime = _ConfigurableRuntime()
+        register_provider(
+            "runtime",
+            runtime.name,
+            lambda _root=None: runtime,
+            replace=True,
+        )
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+
+            configured = config_command(
+                "/config runtime configurable-runtime endpoint local-test",
+                root,
+            )
+            status = config_command("/config", root, runtime=runtime)
+
+        self.assertEqual(
+            configured,
+            "Configured configurable-runtime: endpoint local-test (/)",
+        )
+        self.assertIn("Endpoint: local-test", status)
+        self.assertNotIn("Codex runtime executable", status)
+
     @patch.dict("os.environ", {}, clear=True)
     def test_config_sets_shows_and_resets_codex_executable(self) -> None:
         with TemporaryDirectory() as temp:
@@ -540,7 +674,7 @@ class EnochProviderTests(unittest.TestCase):
         self.assertNotIn("Telegram image boundary", runtime.messages[0][1])
 
     def test_custom_service_provider_can_be_selected(self) -> None:
-        service = type("Service", (), {"name": "test-service", "provider_kind": "service"})()
+        service = _Service()
         register_provider("service", "test-service", lambda _root=None: service, replace=True)
         with TemporaryDirectory() as temp:
             root = Path(temp)

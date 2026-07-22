@@ -90,6 +90,9 @@ class FunctionAgentRuntime:
 
 
 class CodexRuntime(FunctionAgentRuntime):
+    model_catalog_label = "Available GPT-5.6 models:"
+    model_example = "gpt-5.6-sol"
+
     def __init__(self, root: Path | None = None) -> None:
         from enoch.brain import (
             act_in_session,
@@ -102,9 +105,87 @@ class CodexRuntime(FunctionAgentRuntime):
             respond_fn=respond,
             act_in_session_fn=act_in_session,
             model_summary_fn=model_summary,
-            model_options_fn=lambda: codex_model_options(root),
+            model_options_fn=lambda: tuple(
+                option
+                for option in codex_model_options(root)
+                if option.slug == "gpt-5.6" or option.slug.startswith("gpt-5.6-")
+            ),
             reset_usage_fn=reset_token_usage,
             health_fn=lambda health_root=None: _codex_health(health_root or root),
+        )
+
+    def configure(
+        self,
+        args: tuple[str, ...],
+        root: Path,
+        *,
+        prefix: str = "/",
+    ) -> str:
+        from enoch.brain import resolve_codex_executable_value
+        from enoch.config import write_section_value
+
+        if not args:
+            return self.config_help(prefix=prefix)
+        if args[0].strip().lower().replace("_", "-") != "executable":
+            return self.config_help(prefix=prefix)
+        if len(args) == 1:
+            return self.config_status(root, prefix=prefix)
+        if len(args) != 2:
+            return self.config_help(prefix=prefix)
+        value = args[1].strip()
+        if value.lower() in {"auto", "default", "reset"}:
+            write_section_value(self.config_section, "executable", None, root)
+            message = "Enoch Codex executable reset to automatic discovery."
+        else:
+            candidate = resolve_codex_executable_value(value)
+            if candidate.path is None:
+                return f"Enoch could not set the Codex executable: {candidate.detail}"
+            write_section_value(self.config_section, "executable", value, root)
+            message = f"Enoch Codex executable set to {candidate.path}."
+        return "\n\n".join([message, self.config_status(root, prefix=prefix)])
+
+    def config_summary(self, root: Path) -> str:
+        from enoch.brain import resolve_codex_executable
+
+        resolution = resolve_codex_executable(root)
+        return "\n".join(
+            [
+                f"Executable: {resolution.path or 'not found'}",
+                f"Executable source: {resolution.source}",
+            ]
+        )
+
+    def config_status(self, root: Path, *, prefix: str = "/") -> str:
+        from enoch.brain import resolve_codex_executable
+
+        command = f"{prefix}config"
+        resolution = resolve_codex_executable(root)
+        lines = [
+            "Codex runtime executable:",
+            f"- Executable: {resolution.path or 'not found'}",
+            f"- Source: {resolution.source}",
+        ]
+        if resolution.detail:
+            lines.append(f"- Detail: {resolution.detail}")
+        lines.extend(
+            [
+                "",
+                f"Set with {command} runtime codex executable <path>.",
+                f"Reset with {command} runtime codex executable auto.",
+            ]
+        )
+        return "\n".join(lines)
+
+    @staticmethod
+    def config_help(*, prefix: str = "/") -> str:
+        command = f"{prefix}config"
+        return "\n".join(
+            [
+                "Codex runtime config:",
+                f"{command} runtime codex executable",
+                f"{command} runtime codex executable <path>",
+                f"{command} runtime codex executable auto",
+            ]
         )
 
 

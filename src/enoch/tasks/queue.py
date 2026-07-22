@@ -694,7 +694,7 @@ def resume_paused_tasks(
                 root,
                 event_actor=event_actor,
                 trigger=trigger,
-                result="Resumed after Codex access was restored.",
+                result="Resumed after agent runtime access was restored.",
             )
         return resumed
 

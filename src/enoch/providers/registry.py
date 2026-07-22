@@ -7,6 +7,13 @@ from pathlib import Path
 from typing import Any, Callable, Literal
 
 from enoch.config import read_section
+from enoch.providers.contracts import (
+    AgentRuntime,
+    ChatProvider,
+    ForgeProvider,
+    ServiceProvider,
+    VersionControlProvider,
+)
 from enoch.runtime_dependencies import load_runtime_dependencies
 
 
@@ -26,6 +33,13 @@ _REGISTERED: dict[tuple[ProviderKind, str], ProviderFactory] = {}
 _DEFAULTS: dict[ProviderKind, str] = {}
 _SETUP_HANDLERS: dict[tuple[ProviderKind, str], ProviderSetup] = {}
 _LOADED_PLUGIN_MODULES: set[str] = set()
+_PROVIDER_CONTRACTS = {
+    "chat": ChatProvider,
+    "runtime": AgentRuntime,
+    "vcs": VersionControlProvider,
+    "forge": ForgeProvider,
+    "service": ServiceProvider,
+}
 
 
 class ProviderError(RuntimeError):
@@ -126,7 +140,24 @@ def load_provider(
         raise ProviderError(
             f"Provider {kind}.{selected} returned provider_kind={actual_kind or 'missing'}."
         )
+    contract = _PROVIDER_CONTRACTS[kind]
+    if not isinstance(provider, contract):
+        missing = _missing_contract_members(provider, contract)
+        detail = f" Missing: {', '.join(missing)}." if missing else ""
+        raise ProviderError(
+            f"Provider {kind}.{selected} does not satisfy {contract.__name__}.{detail}"
+        )
     return provider
+
+
+def _missing_contract_members(provider: object, contract: type) -> tuple[str, ...]:
+    required = {
+        name
+        for name, value in contract.__dict__.items()
+        if not name.startswith("_") and (callable(value) or isinstance(value, property))
+    }
+    required.update(getattr(contract, "__annotations__", {}))
+    return tuple(sorted(name for name in required if not hasattr(provider, name)))
 
 
 def _load_provider_plugins(root: Path | None) -> None:

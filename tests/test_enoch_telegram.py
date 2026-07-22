@@ -758,7 +758,10 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertNotIn("/evolve schedule cron '30 9 * * *' - run evolve with a cron-style daily schedule", client.sent[0][1])
         self.assertIn("/update", client.sent[0][1])
         self.assertIn("/config - show or update local system settings", client.sent[0][1])
-        self.assertIn("/resume - continue tasks paused while Codex access was unavailable", client.sent[0][1])
+        self.assertIn(
+            "/resume - continue tasks paused while agent runtime access was unavailable",
+            client.sent[0][1],
+        )
         self.assertIn("/restart - restart Enoch's chat daemon from the locked conversation", client.sent[0][1])
         self.assertNotIn("/shutdown", client.sent[0][1])
         self.assertIn("say the request naturally", client.sent[0][1])
@@ -777,8 +780,8 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("/config reasoning-effort default", reply)
         self.assertIn("/config task-timeout <duration>", reply)
         self.assertIn("/config task-timeout default", reply)
-        self.assertIn("/config runtime codex executable <path>", reply)
-        self.assertIn("/config runtime codex executable auto", reply)
+        self.assertIn("/config runtime <provider>", reply)
+        self.assertIn("/config runtime <provider> <setting> [value]", reply)
         self.assertNotIn("Enoch Telegram commands:", reply)
 
     @patch("enoch.app.core.merge_pull_request")
@@ -856,7 +859,7 @@ class EnochTelegramTests(unittest.TestCase):
 
         self.assertEqual(
             client.sent[0][1],
-            "/resume - continue tasks paused while Codex access was unavailable",
+            "/resume - continue tasks paused while agent runtime access was unavailable",
         )
 
     def test_help_lists_pr_and_explains_its_subcommands(self) -> None:
@@ -1045,9 +1048,11 @@ class EnochTelegramTests(unittest.TestCase):
             respond_fn=lambda *_args, **_kwargs: "",
             act_in_session_fn=lambda *_args, **_kwargs: "",
             model_summary_fn=lambda _root=None: "AI model: gpt-5.6-terra",
-            model_options_fn=lambda: options,
+            model_options_fn=lambda: options[:2],
             reset_usage_fn=lambda: None,
         )
+        runtime.model_catalog_label = "Available GPT-5.6 models:"
+        runtime.model_example = "gpt-5.6-sol"
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)

@@ -26,16 +26,50 @@ class EnochPortableInstallTests(unittest.TestCase):
             )
             self.assertEqual(provider_contract, core_contract, package)
 
-    def test_installed_core_completes_task_with_external_chat_and_vcs(self) -> None:
+    def test_wheel_install_completes_task_with_independent_chat_and_vcs_packages(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
             target = base / "site-packages"
-            plugin = base / "portable-providers"
+            wheels = base / "wheels"
+            chat_provider = base / "portable-chat"
+            vcs_provider = base / "portable-vcs"
             body = base / "body"
             codex = base / "codex"
             target.mkdir()
-            _write_provider_package(plugin)
+            wheels.mkdir()
+            _write_chat_provider_package(chat_provider)
+            _write_vcs_provider_package(vcs_provider)
             _write_fake_codex(codex)
+
+            for project in (
+                ROOT / "libraries" / "provider-kit",
+                ROOT / "libraries" / "skill-catalog",
+                ROOT,
+                chat_provider,
+                vcs_provider,
+            ):
+                built = subprocess.run(
+                    [
+                        sys.executable,
+                        "-m",
+                        "pip",
+                        "wheel",
+                        "--quiet",
+                        "--disable-pip-version-check",
+                        "--no-deps",
+                        "--no-build-isolation",
+                        "--wheel-dir",
+                        str(wheels),
+                        str(project),
+                    ],
+                    cwd=base,
+                    env={**os.environ, "PIP_NO_INDEX": "1"},
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                    timeout=120,
+                )
+                self.assertEqual(built.returncode, 0, built.stderr or built.stdout)
 
             install = subprocess.run(
                 [
@@ -49,10 +83,7 @@ class EnochPortableInstallTests(unittest.TestCase):
                     "--no-build-isolation",
                     "--target",
                     str(target),
-                    str(ROOT / "libraries" / "provider-kit"),
-                    str(ROOT / "libraries" / "skill-catalog"),
-                    str(ROOT),
-                    str(plugin),
+                    *(str(path) for path in sorted(wheels.glob("*.whl"))),
                 ],
                 cwd=base,
                 env={**os.environ, "PIP_NO_INDEX": "1"},
@@ -88,6 +119,10 @@ class EnochPortableInstallTests(unittest.TestCase):
         self.assertEqual(result["vcs"], "portable-vcs")
         self.assertEqual(result["runtime"], "codex")
         self.assertEqual(result["forge"], "local")
+        self.assertEqual(result["enoch_version"], "0.1.0")
+        self.assertEqual(result["chat_provider_version"], "0.0.1")
+        self.assertEqual(result["vcs_provider_version"], "0.0.1")
+        self.assertGreater(result["startup_messages"], 0)
         self.assertEqual(result["status"], "completed")
         self.assertTrue(result["branch_preserved"])
         self.assertFalse(result["workspace_exists"])
@@ -105,37 +140,33 @@ def _dependency(dependencies: list[str], name: str) -> str:
     return matches[0]
 
 
-def _write_provider_package(root: Path) -> None:
+def _write_chat_provider_package(root: Path) -> None:
     root.mkdir()
     (root / "pyproject.toml").write_text(
         textwrap.dedent(
             """
             [project]
-            name = "enoch-portable-test-providers"
+            name = "enoch-portable-chat-provider"
             version = "0.0.1"
             requires-python = ">=3.11"
 
             [project.entry-points."enoch.providers"]
-            "chat.portable" = "portable_providers:create_chat"
-            "vcs.portable" = "portable_providers:create_vcs"
+            "chat.portable" = "portable_chat:create_provider"
 
             [build-system]
             requires = ["setuptools"]
             build-backend = "setuptools.build_meta"
 
             [tool.setuptools]
-            py-modules = ["portable_providers"]
+            py-modules = ["portable_chat"]
             """
         ).strip()
         + "\n",
         encoding="utf-8",
     )
-    (root / "portable_providers.py").write_text(
+    (root / "portable_chat.py").write_text(
         textwrap.dedent(
             """
-            from enoch.providers.vcs import GitVersionControlProvider
-
-
             class PortableChat:
                 name = "portable-chat"
                 provider_kind = "chat"
@@ -161,15 +192,163 @@ def _write_provider_package(root: Path) -> None:
                     return None
 
 
-            class PortableVcs(GitVersionControlProvider):
-                name = "portable-vcs"
-
-
-            def create_chat(root=None):
+            def create_provider(root=None):
                 return PortableChat()
+            """
+        ).lstrip(),
+        encoding="utf-8",
+    )
 
 
-            def create_vcs(root=None):
+def _write_vcs_provider_package(root: Path) -> None:
+    root.mkdir()
+    (root / "pyproject.toml").write_text(
+        textwrap.dedent(
+            """
+            [project]
+            name = "enoch-portable-vcs-provider"
+            version = "0.0.1"
+            requires-python = ">=3.11"
+
+            [project.entry-points."enoch.providers"]
+            "vcs.portable" = "portable_vcs:create_provider"
+
+            [build-system]
+            requires = ["setuptools"]
+            build-backend = "setuptools.build_meta"
+
+            [tool.setuptools]
+            py-modules = ["portable_vcs"]
+            """
+        ).strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    (root / "portable_vcs.py").write_text(
+        textwrap.dedent(
+            """
+            from pathlib import Path
+            import subprocess
+
+
+            class PortableVcs:
+                name = "portable-vcs"
+                provider_kind = "vcs"
+
+                def _git(self, args, root=None, *, check=True):
+                    result = subprocess.run(
+                        ["git", *args],
+                        cwd=root,
+                        text=True,
+                        capture_output=True,
+                        check=False,
+                    )
+                    if check and result.returncode != 0:
+                        raise RuntimeError(result.stderr or result.stdout)
+                    return result
+
+                def current_branch(self, root=None):
+                    return self._git(["branch", "--show-current"], root).stdout.strip()
+
+                def is_clean(self, root=None):
+                    return not self._git(["status", "--porcelain"], root).stdout.strip()
+
+                def changed_files(self, root=None):
+                    tracked = self._git(["diff", "--name-only", "HEAD"], root).stdout.splitlines()
+                    untracked = self._git(
+                        ["ls-files", "--others", "--exclude-standard"], root
+                    ).stdout.splitlines()
+                    return [path for path in [*tracked, *untracked] if path]
+
+                def diff_summary(self, root=None):
+                    return self._git(["diff", "--stat", "HEAD"], root).stdout.strip()
+
+                def stage(self, files, root=None):
+                    self._git(["add", "--", *files], root)
+
+                def commit(self, message, root=None):
+                    self._git(["commit", "-m", message], root)
+                    return self.current_revision(root)
+
+                def create_branch(self, branch, root=None, *, start_point=""):
+                    args = ["switch", "-c", branch]
+                    if start_point:
+                        args.append(start_point)
+                    self._git(args, root)
+
+                def switch_branch(self, branch, root=None):
+                    self._git(["switch", branch], root)
+
+                def delete_branch(self, branch, root=None, *, force=False):
+                    self._git(["branch", "-D" if force else "-d", branch], root)
+
+                def branch_exists(self, branch, root=None):
+                    return self._git(
+                        ["show-ref", "--verify", "--quiet", f"refs/heads/{branch}"],
+                        root,
+                        check=False,
+                    ).returncode == 0
+
+                def task_base(self, root=None):
+                    return self.authoritative_branch(root)
+
+                def authoritative_branch(self, root=None):
+                    return "main"
+
+                def refresh_authoritative(self, root=None):
+                    return ""
+
+                def authoritative_revision(self, root=None):
+                    return self.resolve_revision(self.authoritative_branch(root), root)
+
+                def current_revision(self, root=None):
+                    return self.resolve_revision("HEAD", root)
+
+                def resolve_revision(self, revision, root=None):
+                    result = self._git(["rev-parse", revision], root, check=False)
+                    return result.stdout.strip() if result.returncode == 0 else ""
+
+                def is_ancestor(self, revision, descendant, root=None):
+                    return self._git(
+                        ["merge-base", "--is-ancestor", revision, descendant],
+                        root,
+                        check=False,
+                    ).returncode == 0
+
+                def update_to_authoritative(self, root=None):
+                    return "Already up to date."
+
+                def restore_revision(self, revision, root=None):
+                    self._git(["reset", "--hard", revision], root)
+
+                def workspace_paths(self, root=None):
+                    output = self._git(["worktree", "list", "--porcelain"], root).stdout
+                    return tuple(
+                        Path(line.removeprefix("worktree ")).resolve()
+                        for line in output.splitlines()
+                        if line.startswith("worktree ")
+                    )
+
+                def create_workspace(
+                    self,
+                    path,
+                    branch,
+                    root=None,
+                    *,
+                    start_point="",
+                    create_branch=False,
+                ):
+                    args = ["worktree", "add"]
+                    if create_branch:
+                        args.extend(["-b", branch])
+                    args.extend([str(path), start_point or branch])
+                    self._git(args, root)
+
+                def remove_workspace(self, path, root=None):
+                    self._git(["worktree", "remove", str(path)], root)
+
+
+            def create_provider(root=None):
                 return PortableVcs()
             """
         ).lstrip(),
@@ -206,6 +385,7 @@ def _write_fake_codex(path: Path) -> None:
 _INSTALLED_TASK_SCRIPT = textwrap.dedent(
     """
     import json
+    from importlib.metadata import version
     from pathlib import Path
     import subprocess
     import sys
@@ -252,6 +432,7 @@ _INSTALLED_TASK_SCRIPT = textwrap.dedent(
         runtime=runtime,
         forge=forge,
     )
+    app.notify_startup()
     queued = enqueue_task("portable-room", "Create PORTABLE_RESULT.md", root)
     running = begin_next_task(root)
     assert running is not None and running.id == queued.id
@@ -274,6 +455,10 @@ _INSTALLED_TASK_SCRIPT = textwrap.dedent(
         "vcs": vcs.name,
         "runtime": runtime.name,
         "forge": forge.name,
+        "enoch_version": version("enoch"),
+        "chat_provider_version": version("enoch-portable-chat-provider"),
+        "vcs_provider_version": version("enoch-portable-vcs-provider"),
+        "startup_messages": len(chat.sent),
         "status": completed.status,
         "branch_preserved": branch_preserved,
         "workspace_exists": Path(completed.worktree_path).exists(),

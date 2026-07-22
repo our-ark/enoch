@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 import re
 
-from enoch.git_tools import GitError, branch_exists, create_workspace, current_branch
+from enoch.vcs_tools import VcsError, branch_exists, create_workspace, current_branch
 from enoch.identity import Identity
 
 
@@ -45,7 +45,7 @@ def init_instance(
     elif not branch.strip():
         try:
             branch = current_branch(root) or "HEAD"
-        except GitError:
+        except VcsError:
             branch = "HEAD"
     metadata_path = _write_instance_metadata(identity, root, target, instance_name, branch)
     return InstanceInitResult(
@@ -107,7 +107,7 @@ def _create_git_worktree(root: Path, target: Path, branch: str) -> None:
             start_point="" if exists else "HEAD",
             create_branch=not exists,
         )
-    except GitError as error:
+    except VcsError as error:
         raise InstanceError(str(error)) from error
 
 

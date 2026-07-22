@@ -189,6 +189,13 @@ failures and `AgentRuntimeCancelled` for human cancellation. Forge and VCS
 providers should raise their matching provider errors. This preserves Enoch's
 pause, resume, failure, and audit behavior across implementations.
 
+Runtime-specific settings stay with the provider. A runtime may optionally
+implement `configure(args, root, prefix="/")` for
+`/config runtime <provider> ...` and `config_summary(root)` for its section in
+`/config`. Model and reasoning overrides remain generic through
+`config_section`, `model_summary()`, and `model_options()`. Core task and resume
+messages refer to agent runtime access rather than a particular implementation.
+
 VCS providers implement repository semantics rather than parsing Git command
 arguments: current and switched branches, clean-state and diff inspection,
 staging and commit, task base selection, and isolated workspace
@@ -210,6 +217,11 @@ existing `telegram:` settings through this hook.
 
 `bin/enoch-agent` starts whichever chat provider is selected. Provider packages
 do not need to modify Enoch core or fork the application.
+
+`load_provider()` validates the selected implementation against its provider
+contract before returning it. Missing methods or properties produce an
+immediate `ProviderError` naming the incomplete provider and missing members,
+instead of failing later in a task.
 
 Forge providers own task publication, pull-request management, evolution
 promotion, lineage discovery, and published skill reads. A replacement forge

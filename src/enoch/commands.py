@@ -7,10 +7,7 @@ from typing import Callable
 
 from enoch.brain import (
     REASONING_EFFORTS,
-    codex_model_options,
     model_summary,
-    resolve_codex_executable,
-    resolve_codex_executable_value,
 )
 from enoch.command_surface import lineage_usage
 from enoch.config import write_section_value
@@ -38,9 +35,9 @@ from enoch.providers.registry import (
     PROVIDER_KINDS,
     ProviderError,
     available_providers,
+    load_provider,
     provider_name,
 )
-from enoch.providers.runtime import FunctionAgentRuntime
 from enoch.skills import skills_command
 from enoch.tasks.config import (
     format_task_timeout,
@@ -50,7 +47,7 @@ from enoch.tasks.config import (
 )
 
 
-_CODEX_MODEL_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
+_MODEL_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
 
 
 ModelSummaryFn = Callable[[Path], str]
@@ -254,29 +251,17 @@ def config_command(
             message = f"Enoch {kind} provider set to {value}."
         return "\n\n".join([message, provider_config_status(root, prefix=prefix)])
     if setting == "runtime":
-        if (
-            len(parts) < 4
-            or parts[2].strip().lower() != "codex"
-            or parts[3].strip().lower().replace("_", "-") != "executable"
-        ):
+        if len(parts) < 3:
             return config_usage(prefix=prefix)
-        if len(parts) == 4:
-            return codex_executable_config_status(root, prefix=prefix)
-        if len(parts) != 5:
-            return config_usage(prefix=prefix)
-        value = parts[4].strip()
-        if value.lower() in {"auto", "default", "reset"}:
-            write_section_value("codex", "executable", None, root)
-            message = "Enoch Codex executable reset to automatic discovery."
-        else:
-            candidate = resolve_codex_executable_value(value)
-            if candidate.path is None:
-                return f"Enoch could not set the Codex executable: {candidate.detail}"
-            write_section_value("codex", "executable", value, root)
-            message = f"Enoch Codex executable set to {candidate.path}."
-        return "\n\n".join(
-            [message, codex_executable_config_status(root, prefix=prefix)]
-        )
+        selected = parts[2].strip().lower()
+        try:
+            selected_runtime = load_provider("runtime", root, name=selected)
+        except ProviderError as error:
+            return str(error)
+        configure = getattr(selected_runtime, "configure", None)
+        if not callable(configure):
+            return f"Runtime provider {selected} does not expose provider-specific config."
+        return str(configure(tuple(parts[3:]), root, prefix=prefix))
     if setting == "task-timeout":
         if len(parts) == 2:
             return config_status(root, prefix=prefix, runtime=runtime)
@@ -310,7 +295,7 @@ def config_command(
         if value.lower() in {"default", "reset"}:
             write_section_value(section, "model", None, root)
             message = f"Enoch cleared her local {runtime_label} model override."
-        elif not _CODEX_MODEL_PATTERN.fullmatch(value):
+        elif not _MODEL_PATTERN.fullmatch(value):
             return f"{runtime_label} model must be one model identifier without spaces."
         else:
             write_section_value(section, "model", value, root)
@@ -358,14 +343,11 @@ def config_status(
         f"{runtime.name.title()}:",
         runtime.model_summary(root),
     ]
-    if runtime.name == "codex":
-        resolution = resolve_codex_executable(root)
-        lines.extend(
-            [
-                f"Executable: {resolution.path or 'not found'}",
-                f"Executable source: {resolution.source}",
-            ]
-        )
+    runtime_config_summary = getattr(runtime, "config_summary", None)
+    if callable(runtime_config_summary):
+        summary = str(runtime_config_summary(root)).strip()
+        if summary:
+            lines.append(summary)
     lines.extend(
         [
             "",
@@ -377,9 +359,9 @@ def config_status(
             f"Set task timeout with {command} task-timeout <duration> or {command} task-timeout default.",
         ]
     )
-    if runtime.name == "codex":
+    if callable(getattr(runtime, "configure", None)):
         lines.append(
-            f"Set the runtime with {command} runtime codex executable <path|auto>."
+            f"Use {command} runtime {runtime.name} to see provider-specific runtime settings."
         )
     return "\n".join(lines)
 
@@ -396,22 +378,20 @@ def model_config_status(
     current = _model_name_from_summary(summary)
     runtime_label = runtime.name.title()
     all_options = runtime.model_options()
-    if runtime.name == "codex":
-        options = tuple(
-            option
-            for option in all_options
-            if option.slug == "gpt-5.6" or option.slug.startswith("gpt-5.6-")
-        )
-        available_label = "Available GPT-5.6 models:"
-        example = f"Example: {command} model gpt-5.6-sol"
-    else:
-        options = all_options
-        available_label = f"Available {runtime_label} models:"
-        example = (
+    options = all_options
+    available_label = str(
+        getattr(runtime, "model_catalog_label", f"Available {runtime_label} models:")
+    )
+    example_model = str(getattr(runtime, "model_example", "")).strip()
+    example = (
+        f"Example: {command} model {example_model}"
+        if example_model
+        else (
             f"Set with {command} model <name>."
             if not options
             else f"Example: {command} model {options[0].slug}"
         )
+    )
     lines = [f"{runtime_label} model:", summary, "", available_label]
     if options:
         for option in options:
@@ -454,26 +434,6 @@ def provider_config_status(root: Path, *, prefix: str = "/") -> str:
     return "\n".join(lines)
 
 
-def codex_executable_config_status(root: Path, *, prefix: str = "/") -> str:
-    command = f"{prefix}config"
-    resolution = resolve_codex_executable(root)
-    lines = [
-        "Codex runtime executable:",
-        f"- Executable: {resolution.path or 'not found'}",
-        f"- Source: {resolution.source}",
-    ]
-    if resolution.detail:
-        lines.append(f"- Detail: {resolution.detail}")
-    lines.extend(
-        [
-            "",
-            f"Set with {command} runtime codex executable <path>.",
-            f"Reset with {command} runtime codex executable auto.",
-        ]
-    )
-    return "\n".join(lines)
-
-
 def _provider_summary(root: Path) -> str:
     providers = []
     for kind in PROVIDER_KINDS:
@@ -485,14 +445,8 @@ def _provider_summary(root: Path) -> str:
     return ", ".join(providers)
 
 
-def _default_runtime(root: Path | None = None) -> FunctionAgentRuntime:
-    return FunctionAgentRuntime(
-        respond_fn=lambda *_args, **_kwargs: "",
-        act_in_session_fn=lambda *_args, **_kwargs: "",
-        model_summary_fn=model_summary,
-        model_options_fn=lambda: codex_model_options(root),
-        reset_usage_fn=lambda: None,
-    )
+def _default_runtime(root: Path | None = None) -> AgentRuntime:
+    return load_provider("runtime", root)
 
 
 def _model_name_from_summary(summary: str) -> str:
@@ -511,15 +465,14 @@ def config_usage(prefix: str = "/") -> str:
             f"{command} - show local system settings",
             f"{command} providers - show active and available providers",
             f"{command} provider <kind> <name|default> - select a provider",
-            f"{command} runtime codex executable - show the effective Codex executable",
-            f"{command} runtime codex executable <path> - set the Codex executable",
-            f"{command} runtime codex executable auto - restore automatic discovery",
-            f"{command} model - show the effective and available Codex models",
-            f"{command} model <name> - set a local Codex model override",
-            f"{command} model default - inherit the Codex model",
+            f"{command} runtime <provider> - show provider-specific runtime settings",
+            f"{command} runtime <provider> <setting> [value] - configure the runtime provider",
+            f"{command} model - show the effective and available runtime models",
+            f"{command} model <name> - set a local runtime model override",
+            f"{command} model default - inherit the runtime model",
             f"{command} reasoning-effort - show the effective reasoning effort",
             f"{command} reasoning-effort low|medium|high - set local reasoning effort",
-            f"{command} reasoning-effort default - inherit Codex reasoning effort",
+            f"{command} reasoning-effort default - inherit runtime reasoning effort",
             f"{command} task-timeout - show the task timeout",
             f"{command} task-timeout <duration> - set a timeout between 1m and 2h",
             f"{command} task-timeout default - restore the 10m default",
@@ -645,13 +598,13 @@ def help_message(topic: str = "", *, chat_provider: str = "chat") -> str:
             "",
             "System:",
             "/config - show or update local system settings",
-            "/resume - continue tasks paused while Codex access was unavailable",
+            "/resume - continue tasks paused while agent runtime access was unavailable",
             "/doctor - run local health checks",
             "/pr - list and manage pull requests",
             "/update - update from the authoritative repository, run doctor, and restart if safe",
             "/restart - restart Enoch's chat daemon from the locked conversation",
             "",
-            "For repository changes, say the request naturally. Enoch will open a PR automatically when Codex requests an edit.",
+            "For repository changes, say the request naturally. Enoch will publish completed edits for review automatically.",
         ]
     )
 
@@ -741,7 +694,7 @@ def _help_topic_message(topic: str) -> str:
         "skills": "/skills [agent-or-path] - show declared skills",
         "learn": "/learn <skill> from <agent> - adapt a published skill from another Our-Ark agent",
         "doctor": "/doctor - run local health checks",
-        "resume": "/resume - continue tasks paused while Codex access was unavailable",
+        "resume": "/resume - continue tasks paused while agent runtime access was unavailable",
         "update": "/update - update from the authoritative repository, run doctor, and restart if safe",
         "restart": "/restart - restart Enoch's chat daemon from the locked conversation",
         "thinking": thinking_usage("/"),

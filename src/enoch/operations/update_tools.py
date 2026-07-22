@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from enoch.git_tools import (
-    GitError,
+from enoch.vcs_tools import (
+    VcsError,
     authoritative_branch,
     authoritative_revision,
     current_branch,
@@ -26,7 +26,7 @@ def repository_sync_summary(root: Path | None = None) -> str:
     try:
         branch = authoritative_branch(root)
         revision = authoritative_revision(root)
-    except GitError as error:
+    except VcsError as error:
         return f"Authoritative repository revision: unavailable ({error})"
     return f"Authoritative repository revision: {branch} {revision[:7]}"
 
@@ -113,7 +113,7 @@ def ensure_authoritative_current(root: Path) -> None:
     if local and remote and local != remote:
         branch = current_branch(root)
         if branch != branch_name:
-            raise GitError(
+            raise VcsError(
                 f"Local {branch_name} is not up to date with the authoritative revision. "
                 f"Switch to {branch_name} before evolving."
             )
@@ -129,7 +129,7 @@ def task_branch_base(root: Path) -> str:
     provider = load_provider("vcs", root)
     method = getattr(provider, "task_base", None)
     if not callable(method):
-        raise GitError(
+        raise VcsError(
             f"VCS provider {getattr(provider, 'name', 'unknown')} does not support task_base."
         )
     return str(method(root)).strip()

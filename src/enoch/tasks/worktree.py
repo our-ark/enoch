@@ -5,8 +5,8 @@ from hashlib import sha256
 from pathlib import Path
 import re
 
-from enoch.git_tools import (
-    GitError,
+from enoch.vcs_tools import (
+    VcsError,
     branch_exists,
     create_workspace,
     current_branch,
@@ -59,13 +59,13 @@ def prepare_task_worktree(
     if path in registered:
         branch = current_branch(path)
         if existing_branch and branch != existing_branch:
-            raise GitError(
+            raise VcsError(
                 f"Task #{task_id} worktree is on {branch}, expected {existing_branch}."
             )
         return TaskWorktree(task_id=task_id, path=path, branch=branch, created=False)
 
     if path.exists() and any(path.iterdir()):
-        raise GitError(f"Task #{task_id} worktree path is not empty: {path}")
+        raise VcsError(f"Task #{task_id} worktree path is not empty: {path}")
     path.parent.mkdir(parents=True, exist_ok=True)
     branch = existing_branch or task_branch_name(
         task_id,
@@ -96,14 +96,14 @@ def prepare_existing_branch_worktree(
     if path in registered:
         checked_out = current_branch(path)
         if checked_out != branch:
-            raise GitError(
+            raise VcsError(
                 f"Task #{task_id} worktree is on {checked_out}, expected {branch}."
             )
         return TaskWorktree(task_id=task_id, path=path, branch=branch, created=False)
     if path.exists() and any(path.iterdir()):
-        raise GitError(f"Task #{task_id} worktree path is not empty: {path}")
+        raise VcsError(f"Task #{task_id} worktree path is not empty: {path}")
     if not branch_exists(branch, control_root):
-        raise GitError(f"Local branch {branch} does not exist.")
+        raise VcsError(f"Local branch {branch} does not exist.")
     path.parent.mkdir(parents=True, exist_ok=True)
     create_workspace(path, branch, control_root)
     return TaskWorktree(task_id=task_id, path=path, branch=branch, created=True)
@@ -125,7 +125,7 @@ def remove_task_worktree(
                 control_root,
                 force=force_delete_branch,
             )
-        except GitError as error:
+        except VcsError as error:
             messages.append(f"Kept local branch {worktree.branch}: {error}")
         else:
             messages.append(f"Deleted local branch {worktree.branch}.")

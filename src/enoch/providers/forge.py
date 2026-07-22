@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from enoch.git_tools import changed_files, commit, current_branch, diff_summary, stage_files
+from enoch.vcs_tools import changed_files, commit, current_branch, diff_summary, stage_files
 from enoch.immune import run_immune_system
 from enoch.providers.contracts import (
     EvolutionProvenance,

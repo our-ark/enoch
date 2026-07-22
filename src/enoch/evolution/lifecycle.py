@@ -11,7 +11,7 @@ from enoch.evolution.events import (
     load_evolve_events,
     record_evolve_event,
 )
-from enoch.git_tools import GitError, revision_is_ancestor
+from enoch.vcs_tools import VcsError, revision_is_ancestor
 from enoch.memory.paths import atomic_write
 from enoch.paths import enoch_home
 from enoch.providers.contracts import (
@@ -101,7 +101,7 @@ def reconcile_evolve_candidate(
     _validate_merged_pull_request(pull_request, authoritative)
     try:
         refresh_repository(root)
-    except GitError as error:
+    except VcsError as error:
         raise EvolveLifecycleError(
             f"Could not refresh authoritative branch {authoritative}: {error}"
         ) from error

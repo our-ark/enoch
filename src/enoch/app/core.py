@@ -24,7 +24,6 @@ from enoch.backlog import (
 )
 from enoch.automatic_learning import record_learning_artifact
 from enoch.brain import (
-    BrainCancelled,
     act_in_session,
     codex_model_options,
     model_summary,
@@ -100,8 +99,8 @@ from enoch.evolution.lifecycle import (
     format_reconcile_result,
     reconcile_evolve_candidate,
 )
-from enoch.git_tools import (
-    GitError,
+from enoch.vcs_tools import (
+    VcsError,
     changed_files,
     delete_branch,
     current_branch,
@@ -665,7 +664,7 @@ class EnochApplication:
             return self._action_lock_message()
         queue_status = task_queue_status(self.root)
         if queue_status.paused_count:
-            return "Enoch has paused tasks. Restore Codex access and use /resume before starting /do."
+            return "Enoch has paused tasks. Restore agent runtime access and use /resume before starting /do."
         running = queue_status.running
         snapshot = self._resolve_task_context_snapshot(chat_id, argument)
         if snapshot.codex_unavailable_reason:
@@ -772,7 +771,7 @@ class EnochApplication:
         session_key: str,
     ) -> str:
         if task_queue_status(self.root).paused_count:
-            return "Enoch has paused tasks. Restore Codex access and use /resume before starting more work."
+            return "Enoch has paused tasks. Restore agent runtime access and use /resume before starting more work."
         try:
             job = begin_direct_task(
                 chat_id,
@@ -1031,7 +1030,7 @@ class EnochApplication:
             raise
         except AgentRuntimeAccessUnavailable:
             raise
-        except (AgentRuntimeError, GitError, OSError) as error:
+        except (AgentRuntimeError, VcsError, OSError) as error:
             return f"Enoch could not complete the requested work yet: {error}"
 
         parts = [branch_note, result or "Enoch completed the requested work.", memory_note]
@@ -1044,7 +1043,7 @@ class EnochApplication:
                 )
                 parts.append("No files changed.")
                 parts.append(cleanup)
-            except GitError as error:
+            except VcsError as error:
                 parts.append(f"Enoch could not clean up the task worktree: {error}")
             return "\n\n".join(part for part in parts if part)
 
@@ -1078,10 +1077,10 @@ class EnochApplication:
         task_id = _CURRENT_TASK_ID.get()
         worker_id = _CURRENT_TASK_WORKER_ID.get()
         if task_id is None or not worker_id:
-            raise GitError("Task worktree preparation requires an owned running task.")
+            raise VcsError("Task worktree preparation requires an owned running task.")
         job = _task_by_id(task_id, self.root)
         if job is None or job.status != "running" or job.worker_id != worker_id:
-            raise GitError(f"Task #{task_id} no longer owns its execution lease.")
+            raise VcsError(f"Task #{task_id} no longer owns its execution lease.")
         base = _task_branch_base(self.root)
         worktree = prepare_task_worktree(
             self.root,
@@ -1101,7 +1100,7 @@ class EnochApplication:
             self.root,
         )
         if recorded is None:
-            raise GitError(f"Task #{task_id} lost its execution lease while preparing its worktree.")
+            raise VcsError(f"Task #{task_id} lost its execution lease while preparing its worktree.")
         return worktree
 
     def _run_forge_maintenance(self, request: "ForgeMaintenanceRequest") -> str:
@@ -1194,7 +1193,7 @@ class EnochApplication:
                         self._authoritative_branch_name(),
                     ),
                 )
-        except (GitError, ForgeProviderError) as error:
+        except (VcsError, ForgeProviderError) as error:
             failure = f"Enoch could not publish existing branch {branch}: {error}"
             self._send_step_update(chat_id, failure)
             return "\n\n".join([*outputs, failure]) if outputs else failure
@@ -1204,10 +1203,10 @@ class EnochApplication:
         task_id = _CURRENT_TASK_ID.get()
         worker_id = _CURRENT_TASK_WORKER_ID.get()
         if task_id is None or not worker_id:
-            raise GitError("Branch publishing requires an owned running task.")
+            raise VcsError("Branch publishing requires an owned running task.")
         job = _task_by_id(task_id, self.root)
         if job is None or job.status != "running" or job.worker_id != worker_id:
-            raise GitError(f"Task #{task_id} no longer owns its execution lease.")
+            raise VcsError(f"Task #{task_id} no longer owns its execution lease.")
         worktree = prepare_existing_branch_worktree(
             self.root,
             task_id,
@@ -1222,7 +1221,7 @@ class EnochApplication:
             self.root,
         )
         if recorded is None:
-            raise GitError(f"Task #{task_id} lost its execution lease while preparing its worktree.")
+            raise VcsError(f"Task #{task_id} lost its execution lease while preparing its worktree.")
         return worktree
 
     def _save_memory_requests(self, requests: tuple[str, ...]) -> str:
@@ -1321,7 +1320,7 @@ class EnochApplication:
                         self._authoritative_branch_name(),
                     ),
                 )
-        except (GitError, ForgeProviderError) as error:
+        except (VcsError, ForgeProviderError) as error:
             failure = f"Enoch could not publish this edit as a pull request: {error}"
             self._send_step_update(chat_id, failure)
             return "\n\n".join([*outputs, failure]) if outputs else failure
@@ -1390,7 +1389,7 @@ class EnochApplication:
     def _authoritative_branch_name(self) -> str:
         try:
             return _authoritative_branch_name(self.root) or DEFAULT_BRANCH
-        except GitError:
+        except VcsError:
             return DEFAULT_BRANCH
 
     def _send_step_update(self, chat_id: ConversationId | None, message: str) -> None:
@@ -1729,7 +1728,7 @@ class EnochApplication:
                 trigger="codex-unavailable",
             )
         except (OSError, ValueError):
-            return "Enoch could not preserve that task while Codex access is unavailable."
+            return "Enoch could not preserve that task while agent runtime access is unavailable."
         if paused is None:
             return "Enoch could not pause that task safely."
         return self._publish_paused_task(paused, reason)
@@ -1746,7 +1745,7 @@ class EnochApplication:
                     started_at=time.monotonic(),
                     task_id=job.id,
                     status="paused",
-                    latest_update=f"{reason} Use /resume when Codex access is available again.",
+                    latest_update=f"{reason} Use /resume when agent runtime access is available again.",
                     context=job.context,
                 )
             ),
@@ -1760,7 +1759,7 @@ class EnochApplication:
     def _resume_tasks(self, argument: str, *, trigger: str = "/resume") -> str:
         cleaned = argument.strip().lower()
         if trigger == "/resume" and cleaned:
-            return "Use /resume to continue tasks paused because Codex access was unavailable."
+            return "Use /resume to continue tasks paused because agent runtime access was unavailable."
         task_id = None
         if trigger == "/task resume" and cleaned != "all":
             try:
@@ -1775,14 +1774,14 @@ class EnochApplication:
         if not resumed:
             if task_id is not None:
                 return f"Task #{task_id} is not paused."
-            return "No tasks are paused for Codex access."
+            return "No tasks are paused for agent runtime access."
         for job in resumed:
             resume_evolve_candidate_for_task(
                 job,
                 self.root,
                 event_actor="human",
                 trigger=trigger,
-                reason="User resumed after restoring Codex access.",
+                reason="User resumed after restoring agent runtime access.",
             )
             message_id = self._work_status_messages.get(job.id) or job.status_message_id
             if message_id is not None:
@@ -1798,7 +1797,7 @@ class EnochApplication:
                             started_at=time.monotonic(),
                             task_id=job.id,
                             status="queued",
-                            latest_update="Resumed after Codex access was restored.",
+                            latest_update="Resumed after agent runtime access was restored.",
                             context=job.context,
                         )
                     ),
@@ -2932,7 +2931,7 @@ class EnochApplication:
     def _raise_if_current_task_cancelled(self) -> None:
         cancellation_event = self._current_task_cancellation_event()
         if cancellation_event is not None and cancellation_event.is_set():
-            raise BrainCancelled("Enoch cancelled the active task.")
+            raise AgentRuntimeCancelled("Enoch cancelled the active task.")
 
     def _record_automatic_learning(self, job: TaskJob, *, command: str, result: str) -> None:
         try:
@@ -3131,7 +3130,7 @@ def main(chat_provider_name: str = "") -> None:
     previous_shutdown_warning = _begin_lifecycle_run(root, provider=selected_channel)
     try:
         adopted = finalize_promoted_evolve_adoptions(root)
-    except (OSError, ValueError, GitError, EvolveLifecycleError):
+    except (OSError, ValueError, VcsError, EvolveLifecycleError):
         adopted = ()
     _record_system_event(
         "startup",
@@ -3238,14 +3237,14 @@ def _sandbox_description(sandbox: str) -> str:
 def _worktree_snapshot(root: Path) -> str:
     try:
         return diff_summary(root)
-    except GitError:
+    except VcsError:
         return ""
 
 
 def _changed_files_or_empty(root: Path) -> tuple[str, ...]:
     try:
         return tuple(changed_files(root))
-    except GitError:
+    except VcsError:
         return ()
 
 
@@ -3505,7 +3504,7 @@ def _cleanup_completed_task_worktree(job: TaskJob | None, root: Path) -> None:
             ),
             force_delete_branch=True,
         )
-    except GitError:
+    except VcsError:
         return
 
 
@@ -3717,9 +3716,9 @@ def _task_by_id(task_id: int, root: Path) -> TaskJob | None:
 def _codex_pause_warning(task_id: int, reason: str) -> str:
     return "\n".join(
         [
-            f"Task #{task_id} was paused because Codex access is unavailable.",
-            reason.strip() or "Codex access is unavailable.",
-            "When Codex access is available again, use /resume.",
+            f"Task #{task_id} was paused because agent runtime access is unavailable.",
+            reason.strip() or "Agent runtime access is unavailable.",
+            "When agent runtime access is available again, use /resume.",
         ]
     )
 

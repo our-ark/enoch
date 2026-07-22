@@ -217,7 +217,7 @@ def _memory_request_block() -> str:
             "Long-term memory:",
             "If this conversation reveals a durable user preference, project fact, workflow rule, or stable decision, do not run a command.",
             f"Instead include:\n{MEMORY_REQUEST_START}\n<concise durable memory>\n{MEMORY_REQUEST_END}",
-            "Enoch will save it outside the read-only Codex turn.",
+            "Enoch will save it outside the read-only agent runtime turn.",
             "Use it rarely. Do not save one-off tasks, casual chat, temporary debugging details, command outputs, secrets, credentials, or private keys.",
             "Do not edit .enoch/memory files directly.",
         ]
