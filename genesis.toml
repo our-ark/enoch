@@ -25,7 +25,7 @@ local_source = "libraries/provider-kit/src"
 
 [[runtime_dependencies]]
 name = "telegram"
-requirement = "our-ark-telegram @ git+https://github.com/our-ark/enoch.git@224c99a4e430022e194d49c855b14de778f1f26c#subdirectory=libraries/telegram"
+requirement = "our-ark-telegram @ git+https://github.com/our-ark/enoch.git@0ebe689ba344f224f7a35911e4f33184f232e739#subdirectory=libraries/telegram"
 import_name = "our_ark_telegram"
 local_source = "libraries/telegram/src"
 

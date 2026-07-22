@@ -8,7 +8,7 @@ license-files = ["LICENSE"]
 requires-python = ">=3.11"
 dependencies = [
   "our-ark-provider-kit @ git+https://github.com/our-ark/enoch.git@dac38645237afb8f1992d210d2a25a84328c87ae#subdirectory=libraries/provider-kit",
-  "our-ark-telegram @ git+https://github.com/our-ark/enoch.git@224c99a4e430022e194d49c855b14de778f1f26c#subdirectory=libraries/telegram",
+  "our-ark-telegram @ git+https://github.com/our-ark/enoch.git@0ebe689ba344f224f7a35911e4f33184f232e739#subdirectory=libraries/telegram",
   "our-ark-github @ git+https://github.com/our-ark/enoch.git@224c99a4e430022e194d49c855b14de778f1f26c#subdirectory=libraries/github",
   "our-ark-launchd @ git+https://github.com/our-ark/enoch.git@dac38645237afb8f1992d210d2a25a84328c87ae#subdirectory=libraries/launchd",
   "our-ark-systemd @ git+https://github.com/our-ark/enoch.git@dac38645237afb8f1992d210d2a25a84328c87ae#subdirectory=libraries/systemd",
