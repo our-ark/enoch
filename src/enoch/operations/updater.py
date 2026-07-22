@@ -16,13 +16,13 @@ from enoch.formatting import format_doctor_result
 from enoch.git_tools import GitError, current_branch, ensure_clean_worktree
 from enoch.immune import DoctorCheckResult, DoctorDiagnosis, ImmuneResult
 from enoch.providers.registry import provider_name
-from enoch.runtime import DEFAULT_BRANCH, DEFAULT_REMOTE
 from enoch.operations.update_tools import (
-    current_head,
-    fetch_origin_main,
-    head_merged_into_origin_main,
-    pull_origin_main,
-    reset_hard,
+    authoritative_branch_name,
+    current_repository_revision,
+    current_revision_on_authoritative,
+    refresh_repository,
+    restore_repository_revision,
+    update_repository,
 )
 
 
@@ -36,22 +36,26 @@ class UpdateResult:
 UPDATE_DOCTOR_TIMEOUT_SECONDS = 300
 
 
-def update_from_main(root: Path) -> UpdateResult:
+def update_from_authoritative(root: Path) -> UpdateResult:
     try:
         ensure_clean_worktree(root)
-        fetch_origin_main(root)
+        authoritative = authoritative_branch_name(root)
+        refresh_repository(root)
         branch = current_branch(root)
-        if branch != DEFAULT_BRANCH:
+        if branch != authoritative:
             if not branch:
-                return _message(f"Enoch could not update: current checkout is detached. Switch to {DEFAULT_BRANCH} first.")
-            if not head_merged_into_origin_main(root):
+                return _message(
+                    "Enoch could not update: current checkout is detached. "
+                    f"Switch to {authoritative} first."
+                )
+            if not current_revision_on_authoritative(root):
                 return _message(
                     f"Enoch could not update: current branch {branch} has commits that are not merged into "
-                    f"{DEFAULT_REMOTE}/{DEFAULT_BRANCH}. Finish, merge, or switch branches first."
+                    f"the authoritative {authoritative} branch. Finish, merge, or switch branches first."
                 )
-        previous_head = current_head(root)
-        pull_result = pull_origin_main(root)
-        updated_head = current_head(root)
+        previous_head = current_repository_revision(root)
+        pull_result = update_repository(root)
+        updated_head = current_repository_revision(root)
     except GitError as error:
         return _message(f"Enoch could not update: {error}")
 
@@ -103,14 +107,14 @@ def update_from_main(root: Path) -> UpdateResult:
     doctor = run_update_doctor(root)
     if not doctor.passed:
         try:
-            reset_hard(previous_head, root)
+            restore_repository_revision(previous_head, root)
             rollback = f"Rolled back to {previous_head[:7]}."
         except GitError as error:
             rollback = f"Rollback failed: {error}"
         return _message(
             "\n\n".join(
                 [
-                    "Enoch pulled latest main, but doctor failed. I am not restarting.",
+                    f"Enoch updated to latest {authoritative}, but doctor failed. I am not restarting.",
                     format_doctor_result(doctor),
                     rollback,
                     "The currently running Enoch process is still the pre-update code.",
@@ -124,7 +128,7 @@ def update_from_main(root: Path) -> UpdateResult:
         message="\n\n".join(
             part
             for part in [
-                "Enoch pulled latest main and doctor passed.",
+                f"Enoch updated to latest {authoritative} and doctor passed.",
                 formatted_doctor,
                 staged_note,
                 "Restarting now. The startup notification will confirm Enoch came back.",
@@ -143,6 +147,11 @@ def update_from_main(root: Path) -> UpdateResult:
         ),
         restart_required=True,
     )
+
+
+def update_from_main(root: Path) -> UpdateResult:
+    """Compatibility alias for integrations using the original Git-specific name."""
+    return update_from_authoritative(root)
 
 
 def _message(message: str) -> UpdateResult:

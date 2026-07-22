@@ -12,7 +12,7 @@ from typing import Any, Iterator, Sequence
 from enoch.identity import Identity
 from enoch.paths import enoch_home
 from enoch.providers.contracts import Attachment, ChatProvider, Cursor
-from enoch.operations.update_tools import current_head, main_pull_summary
+from enoch.operations.update_tools import current_repository_revision, repository_sync_summary
 
 
 MAX_IMAGE_BYTES = 20 * 1024 * 1024
@@ -135,7 +135,7 @@ def startup_message(
     lines = [
         f"{identity.name} restarted and is listening on {label}.",
         "Startup notification: daemon is running.",
-        main_pull_summary(root),
+        repository_sync_summary(root),
     ]
     if previous_shutdown_warning:
         lines.append(previous_shutdown_warning)
@@ -256,6 +256,6 @@ def _safe_provider_name(name: str) -> str:
 
 def _current_head_or_empty(root: Path | None = None) -> str:
     try:
-        return current_head(root)
+        return current_repository_revision(root)
     except Exception:
         return ""

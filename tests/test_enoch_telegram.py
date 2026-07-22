@@ -600,15 +600,15 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual(state["status"], "running")
 
     def test_lifecycle_run_records_started_head(self) -> None:
-        current_head = MagicMock(return_value="1111111111111111111111111111111111111111")
+        current_repository_revision = MagicMock(return_value="1111111111111111111111111111111111111111")
         with TemporaryDirectory() as temp:
             root = Path(temp)
 
-            with patch("enoch.channel.current_head", current_head):
+            with patch("enoch.channel.current_repository_revision", current_repository_revision):
                 _begin_lifecycle_run(root, provider="telegram")
             state = _load_lifecycle_state(root)
 
-        current_head.assert_called_once_with(root)
+        current_repository_revision.assert_called_once_with(root)
         self.assertEqual(state["started_head"], "1111111111111111111111111111111111111111")
 
     def test_lifecycle_run_warns_when_shutdown_notice_was_not_sent(self) -> None:
@@ -641,7 +641,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual(state["reason"], "SIGTERM")
         self.assertTrue(state["shutdown_notification_sent"])
 
-    @patch("enoch.operations.update_tools.run_git")
+    @patch("enoch.providers.vcs.GitVersionControlProvider.run")
     def test_main_pull_summary_reports_fetch_head_timestamp_and_main_sha(self, run_git: MagicMock) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
@@ -650,8 +650,8 @@ class EnochTelegramTests(unittest.TestCase):
             fetch_head.write_text("abc123\t\tbranch 'main' of https://github.com/our-ark/enoch\n", encoding="utf-8")
             os.utime(fetch_head, (1_700_000_000, 1_700_000_000))
             run_git.side_effect = [
-                MagicMock(returncode=0, stdout=".git/FETCH_HEAD"),
                 MagicMock(returncode=0, stdout="abc1234"),
+                MagicMock(returncode=0, stdout=".git/FETCH_HEAD"),
             ]
 
             summary = _main_pull_summary(root)
@@ -660,7 +660,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("2023-", summary)
         self.assertIn("origin/main abc1234", summary)
 
-    @patch("enoch.operations.update_tools.run_git")
+    @patch("enoch.providers.vcs.GitVersionControlProvider.run")
     def test_main_pull_summary_is_unavailable_without_main_fetch(self, run_git: MagicMock) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
@@ -668,8 +668,8 @@ class EnochTelegramTests(unittest.TestCase):
             fetch_head.parent.mkdir()
             fetch_head.write_text("abc123\t\tbranch 'feature' of https://github.com/our-ark/enoch\n", encoding="utf-8")
             run_git.side_effect = [
-                MagicMock(returncode=0, stdout=".git/FETCH_HEAD"),
                 MagicMock(returncode=0, stdout="abc1234"),
+                MagicMock(returncode=0, stdout=".git/FETCH_HEAD"),
             ]
 
             summary = _main_pull_summary(root)
@@ -3932,31 +3932,32 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual(telegram._format_elapsed(122), "2 minutes")
         self.assertEqual(telegram._format_elapsed(4082), "1 hour 8 minutes")
 
-    @patch("enoch.command_surface.run_git")
-    def test_checktree_reports_clean_worktree(self, run_git: MagicMock) -> None:
-        run_git.return_value = MagicMock(returncode=0, stdout="", stderr="")
+    @patch("enoch.command_surface.load_provider")
+    def test_checktree_reports_clean_worktree(self, load_provider: MagicMock) -> None:
+        load_provider.return_value.is_clean.return_value = True
 
         self.assertEqual(_checktree(ROOT), "Worktree status: clean")
-        run_git.assert_called_once_with(["status", "--porcelain"], ROOT)
+        load_provider.assert_called_once_with("vcs", ROOT)
 
-    @patch("enoch.command_surface.run_git")
-    def test_checktree_reports_dirty_worktree(self, run_git: MagicMock) -> None:
-        run_git.return_value = MagicMock(returncode=0, stdout=" M README.md\n?? scratch.txt", stderr="")
+    @patch("enoch.command_surface.load_provider")
+    def test_checktree_reports_dirty_worktree(self, load_provider: MagicMock) -> None:
+        load_provider.return_value.is_clean.return_value = False
+        load_provider.return_value.changed_files.return_value = ["README.md", "scratch.txt"]
 
         result = _checktree(ROOT)
 
         self.assertIn("Worktree status: dirty", result)
-        self.assertIn("M README.md", result)
-        self.assertIn("?? scratch.txt", result)
+        self.assertIn("README.md", result)
+        self.assertIn("scratch.txt", result)
 
-    @patch("enoch.command_surface.run_git")
-    def test_checktree_reports_unknown_when_git_fails(self, run_git: MagicMock) -> None:
-        run_git.return_value = MagicMock(returncode=1, stdout="", stderr="not a git repository")
+    @patch("enoch.command_surface.load_provider")
+    def test_checktree_reports_unknown_when_vcs_fails(self, load_provider: MagicMock) -> None:
+        load_provider.return_value.is_clean.side_effect = GitError("not a repository")
 
         result = _checktree(ROOT)
 
         self.assertIn("Worktree status: unknown", result)
-        self.assertIn("not a git repository", result)
+        self.assertIn("not a repository", result)
 
     @patch("enoch.app.core.run_immune_system")
     def test_doctor_runs_health_checks(self, run_immune_system: MagicMock) -> None:
@@ -3975,52 +3976,52 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("All tests passed.", client.sent[0][1])
 
     @patch("enoch.app.core._schedule_daemon_restart")
-    @patch("enoch.app.core.update_from_main")
+    @patch("enoch.app.core.update_from_authoritative")
     def test_update_uses_shared_updater_and_restarts_when_safe(
         self,
-        update_from_main: MagicMock,
+        update_from_authoritative: MagicMock,
         schedule_restart: MagicMock,
     ) -> None:
-        update_from_main.return_value.message = "Enoch pulled latest main and doctor passed.\n\nRestarting now."
-        update_from_main.return_value.direct_action_result = "Updating 1111111..2222222"
-        update_from_main.return_value.restart_required = True
+        update_from_authoritative.return_value.message = "Enoch pulled latest main and doctor passed.\n\nRestarting now."
+        update_from_authoritative.return_value.direct_action_result = "Updating 1111111..2222222"
+        update_from_authoritative.return_value.restart_required = True
         client = FakeTelegramClient(allowed_chat_id=42)
         bot = EnochApplication(load_identity(), ROOT, client)
 
         _handle_update(bot, _message_update(chat_id=42, text="/update"))
 
-        update_from_main.assert_called_once_with(ROOT)
+        update_from_authoritative.assert_called_once_with(ROOT)
         schedule_restart.assert_called_once_with(ROOT)
         self.assertIn("Enoch pulled latest main and doctor passed.", client.sent[0][1])
         self.assertIn("Restarting now.", client.sent[0][1])
 
     @patch("enoch.app.core._schedule_daemon_restart")
-    @patch("enoch.app.core.update_from_main")
+    @patch("enoch.app.core.update_from_authoritative")
     def test_update_does_not_restart_when_shared_result_does_not_request_it(
         self,
-        update_from_main: MagicMock,
+        update_from_authoritative: MagicMock,
         schedule_restart: MagicMock,
     ) -> None:
-        update_from_main.return_value.message = "Enoch is already up to date.\nAlready up to date."
-        update_from_main.return_value.direct_action_result = "Already up to date."
-        update_from_main.return_value.restart_required = False
+        update_from_authoritative.return_value.message = "Enoch is already up to date.\nAlready up to date."
+        update_from_authoritative.return_value.direct_action_result = "Already up to date."
+        update_from_authoritative.return_value.restart_required = False
         client = FakeTelegramClient(allowed_chat_id=42)
         bot = EnochApplication(load_identity(), ROOT, client)
 
         _handle_update(bot, _message_update(chat_id=42, text="/update"))
 
-        update_from_main.assert_called_once_with(ROOT)
+        update_from_authoritative.assert_called_once_with(ROOT)
         schedule_restart.assert_not_called()
         self.assertIn("Enoch is already up to date.", client.sent[0][1])
 
-    @patch("enoch.app.core.update_from_main")
-    def test_update_requires_locked_chat(self, update_from_main: MagicMock) -> None:
+    @patch("enoch.app.core.update_from_authoritative")
+    def test_update_requires_locked_chat(self, update_from_authoritative: MagicMock) -> None:
         client = FakeTelegramClient(allowed_chat_id=None)
         bot = EnochApplication(load_identity(), ROOT, client)
 
         _handle_update(bot, _message_update(chat_id=42, text="/update"))
 
-        update_from_main.assert_not_called()
+        update_from_authoritative.assert_not_called()
         self.assertIn("locked to one conversation", client.sent[0][1])
 
     @patch("enoch.app.core._schedule_daemon_restart")
@@ -4780,19 +4781,29 @@ class EnochTelegramTests(unittest.TestCase):
 
         sleep.assert_called_once_with(5)
 
-    @patch("enoch.operations.update_tools.run_git")
-    def test_ensure_local_main_current_pulls_stale_main(self, run_git: MagicMock) -> None:
-        run_git.side_effect = [
-            MagicMock(returncode=0, stdout="", stderr=""),
-            MagicMock(returncode=0, stdout="aaa111", stderr=""),
-            MagicMock(returncode=0, stdout="bbb222", stderr=""),
-            MagicMock(returncode=0, stdout="main", stderr=""),
-            MagicMock(returncode=0, stdout="Updating aaa111..bbb222", stderr=""),
-        ]
+    @patch("enoch.operations.update_tools.update_repository")
+    @patch("enoch.operations.update_tools.current_branch", return_value="main")
+    @patch(
+        "enoch.operations.update_tools.authoritative_repository_revision",
+        return_value="bbb222",
+    )
+    @patch("enoch.operations.update_tools.resolve_revision", return_value="aaa111")
+    @patch("enoch.operations.update_tools.authoritative_branch_name", return_value="main")
+    @patch("enoch.operations.update_tools.refresh_repository")
+    def test_ensure_local_main_current_pulls_stale_main(
+        self,
+        refresh_repository: MagicMock,
+        _authoritative_branch: MagicMock,
+        _resolve_revision: MagicMock,
+        _authoritative_revision: MagicMock,
+        _current_branch: MagicMock,
+        update_repository: MagicMock,
+    ) -> None:
 
         ensure_local_main_current(ROOT)
 
-        run_git.assert_any_call(["pull", "--ff-only", "origin", "main"], ROOT)
+        refresh_repository.assert_called_once_with(ROOT)
+        update_repository.assert_called_once_with(ROOT)
 
     @patch("enoch.app.core.ensure_long_term_memory")
     @patch("enoch.app.core.log_system_event", side_effect=OSError("disk full"))
@@ -4808,17 +4819,17 @@ class EnochTelegramTests(unittest.TestCase):
     @patch("enoch.app.core.ensure_long_term_memory")
     @patch("enoch.app.core.log_conversation_turn")
     @patch("enoch.app.core._schedule_daemon_restart")
-    @patch("enoch.app.core.update_from_main")
+    @patch("enoch.app.core.update_from_authoritative")
     def test_restart_triggering_update_saves_offset_before_restart(
         self,
-        update_from_main: MagicMock,
+        update_from_authoritative: MagicMock,
         schedule_restart: MagicMock,
         _log_conversation_turn: MagicMock,
         _update_memory: MagicMock,
     ) -> None:
-        update_from_main.return_value.message = "Enoch pulled latest main and doctor passed."
-        update_from_main.return_value.direct_action_result = "Updating 1111111..2222222"
-        update_from_main.return_value.restart_required = True
+        update_from_authoritative.return_value.message = "Enoch pulled latest main and doctor passed."
+        update_from_authoritative.return_value.direct_action_result = "Updating 1111111..2222222"
+        update_from_authoritative.return_value.restart_required = True
         with TemporaryDirectory() as temp:
             root = Path(temp)
 

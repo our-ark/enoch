@@ -115,7 +115,12 @@ def extract_task_regression_signals(reply: str) -> TaskRegressionSignals:
     return TaskRegressionSignals(visible_reply=visible, signals=tuple(signals))
 
 
-def repository_handoff_note(branch: str, pr_url: str, resident_branch: str = "main") -> str:
+def repository_handoff_note(
+    branch: str,
+    pr_url: str,
+    resident_branch: str = "main",
+    authoritative_branch: str = "main",
+) -> str:
     return "\n".join(
         [
             "Repository state update:",
@@ -125,7 +130,8 @@ def repository_handoff_note(branch: str, pr_url: str, resident_branch: str = "ma
             "Do not assume the PR was merged.",
             f"Do not assume `{resident_branch}` contains those changes.",
             "Inspect current local state before repository-dependent work.",
-            "Treat the current repository state and `origin/main` as source of truth "
+            f"Treat the current repository state and authoritative branch `{authoritative_branch}` "
+            "as source of truth "
             "unless asked to continue/update that PR.",
         ]
     )

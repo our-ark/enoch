@@ -648,7 +648,7 @@ def help_message(topic: str = "", *, chat_provider: str = "chat") -> str:
             "/resume - continue tasks paused while Codex access was unavailable",
             "/doctor - run local health checks",
             "/pr - list and manage pull requests",
-            "/update - pull latest main, run doctor, and restart if safe",
+            "/update - update from the authoritative repository, run doctor, and restart if safe",
             "/restart - restart Enoch's chat daemon from the locked conversation",
             "",
             "For repository changes, say the request naturally. Enoch will open a PR automatically when Codex requests an edit.",
@@ -742,7 +742,7 @@ def _help_topic_message(topic: str) -> str:
         "learn": "/learn <skill> from <agent> - adapt a published skill from another Our-Ark agent",
         "doctor": "/doctor - run local health checks",
         "resume": "/resume - continue tasks paused while Codex access was unavailable",
-        "update": "/update - pull latest main, run doctor, and restart if safe",
+        "update": "/update - update from the authoritative repository, run doctor, and restart if safe",
         "restart": "/restart - restart Enoch's chat daemon from the locked conversation",
         "thinking": thinking_usage("/"),
     }

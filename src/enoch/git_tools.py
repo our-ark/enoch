@@ -18,7 +18,14 @@ class GitResult:
 
 
 def run_git(args: list[str], root: Path | None = None) -> GitResult:
-    result = load_provider("vcs", root).run(args, root)
+    provider = load_provider("vcs", root)
+    method = getattr(provider, "run", None)
+    if not callable(method):
+        raise GitError(
+            f"VCS provider {getattr(provider, 'name', 'unknown')} does not expose "
+            "Git command compatibility."
+        )
+    result = method(args, root)
     return GitResult(
         int(result.returncode),
         str(result.stdout).strip(),
@@ -202,3 +209,49 @@ def remove_workspace(path: Path, root: Path | None = None) -> None:
     result = run_git(["worktree", "remove", str(path)], root)
     if result.returncode != 0:
         raise GitError(result.stderr or result.stdout or f"Could not remove workspace {path}.")
+
+
+def authoritative_branch(root: Path | None = None) -> str:
+    return str(_advanced_vcs_method("authoritative_branch", root)(root)).strip()
+
+
+def refresh_authoritative(root: Path | None = None) -> str:
+    return str(_advanced_vcs_method("refresh_authoritative", root)(root)).strip()
+
+
+def authoritative_revision(root: Path | None = None) -> str:
+    return str(_advanced_vcs_method("authoritative_revision", root)(root)).strip()
+
+
+def current_revision(root: Path | None = None) -> str:
+    return str(_advanced_vcs_method("current_revision", root)(root)).strip()
+
+
+def resolve_revision(revision: str, root: Path | None = None) -> str:
+    return str(_advanced_vcs_method("resolve_revision", root)(revision, root)).strip()
+
+
+def revision_is_ancestor(
+    revision: str,
+    descendant: str,
+    root: Path | None = None,
+) -> bool:
+    return bool(_advanced_vcs_method("is_ancestor", root)(revision, descendant, root))
+
+
+def update_to_authoritative(root: Path | None = None) -> str:
+    return str(_advanced_vcs_method("update_to_authoritative", root)(root)).strip()
+
+
+def restore_revision(revision: str, root: Path | None = None) -> None:
+    _advanced_vcs_method("restore_revision", root)(revision, root)
+
+
+def _advanced_vcs_method(name: str, root: Path | None):
+    provider = load_provider("vcs", root)
+    method = getattr(provider, name, None)
+    if not callable(method):
+        raise GitError(
+            f"VCS provider {getattr(provider, 'name', 'unknown')} does not support {name}."
+        )
+    return method

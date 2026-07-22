@@ -35,7 +35,10 @@ class EnochCliTests(unittest.TestCase):
         self.assertNotIn("debug       Inspect prompts, logs, state files, and worktree health.", output)
         self.assertNotIn("mode        Show or set chat/work mode.", output)
         self.assertIn("doctor      Run Enoch's local health checks", output)
-        self.assertIn("update      Pull latest main, run doctor, and restart Enoch if safe.", output)
+        self.assertIn(
+            "update      Update from the authoritative repository, run doctor, and restart Enoch if safe.",
+            output,
+        )
         self.assertIn("Enoch CLI is admin-only.", output)
         self.assertNotIn("lastinput   Shortcut", output)
         self.assertNotIn("checktree   Shortcut", output)
@@ -148,21 +151,25 @@ class EnochCliTests(unittest.TestCase):
 
     @patch("enoch.cli._schedule_daemon_restart")
     @patch("enoch.cli._record_direct_action")
-    @patch("enoch.cli.update_from_main")
+    @patch("enoch.cli.update_from_authoritative")
     def test_update_records_and_restarts_from_shared_result(
         self,
-        update_from_main: MagicMock,
+        update_from_authoritative: MagicMock,
         record_direct_action: MagicMock,
         schedule_restart: MagicMock,
     ) -> None:
-        update_from_main.return_value.message = "Enoch pulled latest main and doctor passed."
-        update_from_main.return_value.direct_action_result = "Updating 1111111..2222222"
-        update_from_main.return_value.restart_required = True
+        update_from_authoritative.return_value.message = "Enoch pulled latest main and doctor passed."
+        update_from_authoritative.return_value.direct_action_result = "Updating 1111111..2222222"
+        update_from_authoritative.return_value.restart_required = True
 
         output = _run_repl_commands("update", "exit")
 
-        update_from_main.assert_called_once_with(ROOT)
-        record_direct_action.assert_called_once_with("update from main", "Updating 1111111..2222222", ROOT)
+        update_from_authoritative.assert_called_once_with(ROOT)
+        record_direct_action.assert_called_once_with(
+            "update from authoritative repository",
+            "Updating 1111111..2222222",
+            ROOT,
+        )
         schedule_restart.assert_called_once_with(ROOT)
         self.assertIn("Enoch pulled latest main and doctor passed.", output)
 

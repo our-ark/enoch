@@ -14,6 +14,7 @@ from enoch.git_tools import run_git
 from enoch.identity import load_identity
 from enoch.immune import _git_worktree_check, _runtime_provider_check
 from enoch.operations.update_tools import task_branch_base
+from enoch.operations.updater import update_from_authoritative
 from enoch.providers import (
     Attachment,
     ChatEvent,
@@ -58,6 +59,9 @@ class _SemanticVcs(_Vcs):
         super().__init__()
         self.staged = ()
         self.commits = []
+        self.refreshed = False
+        self.updated = False
+        self.restored = ""
 
     def current_branch(self, root=None):
         return "change/portable"
@@ -67,6 +71,35 @@ class _SemanticVcs(_Vcs):
 
     def task_base(self, root=None):
         return "stable-revision"
+
+    def authoritative_branch(self, root=None):
+        return "trunk"
+
+    def refresh_authoritative(self, root=None):
+        self.refreshed = True
+        return "refreshed trunk"
+
+    def authoritative_revision(self, root=None):
+        return "revision-2"
+
+    def current_revision(self, root=None):
+        return "revision-2" if self.updated else "revision-1"
+
+    def resolve_revision(self, revision, root=None):
+        return {"trunk": "revision-1"}.get(revision, revision)
+
+    def is_ancestor(self, revision, descendant, root=None):
+        return (revision, descendant) in {
+            ("revision-1", "revision-2"),
+            ("revision-2", "revision-2"),
+        }
+
+    def update_to_authoritative(self, root=None):
+        self.updated = True
+        return "updated to trunk"
+
+    def restore_revision(self, revision, root=None):
+        self.restored = revision
 
     def changed_files(self, root=None):
         return ["README.md"]
@@ -266,6 +299,25 @@ class EnochProviderTests(unittest.TestCase):
         self.assertFalse(remote.pushed)
         self.assertEqual(base, "stable-revision")
         self.assertTrue(health.passed)
+
+    def test_update_uses_advanced_vcs_contract_without_raw_commands(self) -> None:
+        vcs = _SemanticVcs()
+        doctor = MagicMock(passed=True)
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            register_provider("vcs", "semantic-vcs", lambda _root=None: vcs, replace=True)
+            config = root / ".enoch" / "config.yaml"
+            config.parent.mkdir()
+            config.write_text("providers:\n  vcs: semantic-vcs\n", encoding="utf-8")
+
+            with patch("enoch.operations.updater.run_update_doctor", return_value=doctor):
+                result = update_from_authoritative(root)
+
+        self.assertTrue(result.restart_required)
+        self.assertTrue(vcs.refreshed)
+        self.assertTrue(vcs.updated)
+        self.assertEqual(vcs.calls, [])
+        self.assertIn("updated to trunk", result.direct_action_result)
 
     def test_local_forge_handoff_preserves_unpushed_task_branch(self) -> None:
         doctor = MagicMock(passed=True)

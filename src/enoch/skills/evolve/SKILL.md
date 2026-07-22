@@ -73,7 +73,8 @@ rate, source and trigger distribution, and selected proposal outcomes.
 
 Task completion is not promotion or adoption. `/evolve reconcile <id>` verifies
 that a completed candidate's PR was merged by a human and that its merge commit
-is contained in trusted `origin/main`, then records a `promoted` event.
+is contained in the VCS provider's trusted authoritative branch, then records a
+`promoted` event.
 `/evolve reconcile <id> backfill` performs the same verification while marking
 the evidence as historical backfill. After `/update` passes doctor, Enoch stages
 eligible promotions and records `adopted` only when the restarted daemon confirms

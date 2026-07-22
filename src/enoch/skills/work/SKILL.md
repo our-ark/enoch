@@ -43,8 +43,9 @@ When work is queued:
    ids and context after access is available again.
 8. Keep the agent-instance branch as the resident control worktree. Give every
    code task its own linked worktree and branch from the latest available
-   `origin/main` or local `main`, and run Codex, tests, commits, pushes, and PR
-   creation there. Keep `.enoch` queue, memory, and event state in the resident
+   authoritative revision supplied by the VCS provider, and run the agent runtime,
+   tests, commits, publication, and review handoff there. Keep `.enoch` queue,
+   memory, and event state in the resident
    worktree. Remove successful task worktrees after handoff; preserve failed or
    paused worktrees for inspection and recovery.
 9. `/task retry <id>` retries only a failed task by creating a new task with a

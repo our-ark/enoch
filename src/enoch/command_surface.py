@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from enoch.git_tools import run_git
-from enoch.providers.registry import load_provider, provider_name
+from enoch.providers.contracts import VersionControlProviderError
+from enoch.providers.registry import ProviderError, load_provider
 
 
 def lineage_usage(prefix: str = "", *, command_name: str = "ancestors") -> str:
@@ -30,14 +30,13 @@ def lineage_usage(prefix: str = "", *, command_name: str = "ancestors") -> str:
 
 
 def checktree(root: Path | None = None) -> str:
-    selected = provider_name("vcs", root)
-    provider = load_provider("vcs", root, name=selected)
-    if selected != "git" and hasattr(provider, "is_clean"):
-        return f"Worktree status: {'clean' if provider.is_clean(root) else 'dirty'}"
-    result = run_git(["status", "--porcelain"], root)
-    if result.returncode != 0:
-        detail = result.stderr or result.stdout or "Could not inspect worktree."
-        return f"Worktree status: unknown\n{detail}"
-    if not result.stdout:
-        return "Worktree status: clean"
-    return "\n".join(["Worktree status: dirty", result.stdout])
+    try:
+        provider = load_provider("vcs", root)
+        if provider.is_clean(root):
+            return "Worktree status: clean"
+        changed = [str(path) for path in provider.changed_files(root)]
+    except (ProviderError, VersionControlProviderError, OSError) as error:
+        return f"Worktree status: unknown\n{error}"
+    if not changed:
+        return "Worktree status: dirty"
+    return "\n".join(["Worktree status: dirty", *changed])

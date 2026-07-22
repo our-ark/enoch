@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 
 from enoch.paths import repo_root
-from enoch.providers.contracts import AgentRuntimeError
+from enoch.providers.contracts import AgentRuntimeError, VersionControlProviderError
 from enoch.providers.registry import ProviderError, load_provider, provider_name
 
 
@@ -54,7 +54,7 @@ def run_immune_system(root: Path | None = None) -> ImmuneResult:
         _run_check("tests", _test_command(), root_path, timeout),
         _run_check("import smoke", _import_smoke_command(), root_path, timeout),
         _runtime_provider_check(root_path),
-        _git_worktree_check(root_path, timeout),
+        _vcs_workspace_check(root_path, timeout),
         _memory_storage_check(root_path),
     ]
     output = _combined_output(checks)
@@ -238,55 +238,33 @@ def _runtime_provider_check(root: Path) -> DoctorCheckResult:
     )
 
 
-def _git_worktree_check(root: Path, timeout: float) -> DoctorCheckResult:
+def _vcs_workspace_check(root: Path, timeout: float) -> DoctorCheckResult:
+    del timeout
     selected = provider_name("vcs", root)
-    if selected != "git":
-        try:
-            provider = load_provider("vcs", root, name=selected)
-            if hasattr(provider, "is_clean"):
-                clean = bool(provider.is_clean(root))
-                return DoctorCheckResult(
-                    name=f"{selected} workspace",
-                    passed=True,
-                    command=f"{selected} workspace status",
-                    output="",
-                    category="operational readiness",
-                    summary="worktree clean" if clean else "worktree dirty",
-                )
-            provider_result = provider.run(["status", "--porcelain"], root)
-        except (ProviderError, OSError) as error:
-            return DoctorCheckResult(
-                name=f"{selected} worktree",
-                passed=False,
-                command=f"{selected} status",
-                output=str(error),
-                category="operational readiness",
-                summary="provider unavailable",
-            )
-        output = str(provider_result.stdout).strip()
+    try:
+        clean = bool(load_provider("vcs", root, name=selected).is_clean(root))
+    except (ProviderError, VersionControlProviderError, OSError) as error:
         return DoctorCheckResult(
             name=f"{selected} worktree",
-            passed=int(provider_result.returncode) == 0,
-            command=f"{selected} status",
-            output=output,
+            passed=False,
+            command=f"{selected} workspace status",
+            output=str(error),
             category="operational readiness",
-            summary="worktree dirty" if output else "worktree clean",
+            summary="provider unavailable",
         )
-    result = _run_check(
-        "git worktree",
-        ["git", "status", "--porcelain"],
-        root,
-        timeout,
-    )
-    summary = "worktree dirty" if result.output.strip() else "worktree clean"
     return DoctorCheckResult(
-        name=result.name,
-        passed=result.passed,
-        command=result.command,
-        output=result.output,
+        name=f"{selected} worktree",
+        passed=True,
+        command=f"{selected} workspace status",
+        output="",
         category="operational readiness",
-        summary=summary if result.passed else result.summary,
+        summary="worktree clean" if clean else "worktree dirty",
     )
+
+
+def _git_worktree_check(root: Path, timeout: float) -> DoctorCheckResult:
+    """Compatibility alias for callers using the original Git-specific name."""
+    return _vcs_workspace_check(root, timeout)
 
 
 def _memory_storage_check(root: Path) -> DoctorCheckResult:

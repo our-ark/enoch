@@ -23,6 +23,7 @@ from enoch.evolution.lifecycle import (
     reconcile_evolve_candidate,
     stage_promoted_evolve_adoptions,
 )
+from enoch.providers import register_provider
 from our_ark_github.workflow import PullRequestMergeStatus
 from enoch.tasks.queue import (
     begin_next_task,
@@ -38,16 +39,34 @@ VERSION = "9999999aabbccddeeff001122334455667788990"
 
 
 class EnochEvolveLifecycleTests(unittest.TestCase):
+    def test_reconcile_uses_vcs_authoritative_history_without_git_commands(self) -> None:
+        vcs = _LifecycleVcs()
+        forge = _LifecycleForge(_merged_pr(base_branch="trunk"))
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            register_provider("vcs", "lifecycle-vcs", lambda _root=None: vcs, replace=True)
+            config = root / ".enoch" / "config.yaml"
+            config.parent.mkdir()
+            config.write_text("providers:\n  vcs: lifecycle-vcs\n", encoding="utf-8")
+            candidate_id = _completed_candidate_with_pr(root)
+
+            result = reconcile_evolve_candidate(candidate_id, root, forge=forge)
+
+        self.assertEqual(result.authoritative_branch, "trunk")
+        self.assertEqual(vcs.refreshed, 1)
+        self.assertEqual(vcs.ancestry_checks, [(MERGE_COMMIT, "trusted-revision")])
+        self.assertEqual(vcs.raw_calls, [])
+
     @patch(
-        "enoch.evolution.lifecycle.revision_merged_into_origin_main",
+        "enoch.evolution.lifecycle.revision_on_authoritative",
         return_value=True,
     )
-    @patch("enoch.evolution.lifecycle.fetch_origin_main")
+    @patch("enoch.evolution.lifecycle.refresh_repository")
     @patch("enoch.evolution.lifecycle.inspect_pull_request_merge")
     def test_reconcile_records_verified_human_promotion_once(
         self,
         inspect_pull_request_merge,
-        _fetch_origin_main,
+        _refresh_repository,
         revision_on_main,
     ) -> None:
         with TemporaryDirectory() as temp:
@@ -76,15 +95,15 @@ class EnochEvolveLifecycleTests(unittest.TestCase):
         revision_on_main.assert_called_with(MERGE_COMMIT, root)
 
     @patch(
-        "enoch.evolution.lifecycle.revision_merged_into_origin_main",
+        "enoch.evolution.lifecycle.revision_on_authoritative",
         return_value=False,
     )
-    @patch("enoch.evolution.lifecycle.fetch_origin_main")
+    @patch("enoch.evolution.lifecycle.refresh_repository")
     @patch("enoch.evolution.lifecycle.inspect_pull_request_merge")
     def test_reconcile_refuses_merge_commit_outside_trusted_main(
         self,
         inspect_pull_request_merge,
-        _fetch_origin_main,
+        _refresh_repository,
         _revision_on_main,
     ) -> None:
         with TemporaryDirectory() as temp:
@@ -94,7 +113,7 @@ class EnochEvolveLifecycleTests(unittest.TestCase):
 
             with self.assertRaisesRegex(
                 EvolveLifecycleError,
-                "not on trusted origin/main",
+                "not on trusted authoritative branch main",
             ):
                 reconcile_evolve_candidate(candidate_id, root)
 
@@ -127,15 +146,15 @@ class EnochEvolveLifecycleTests(unittest.TestCase):
                 reconcile_evolve_candidate(candidate_id, root)
 
     @patch(
-        "enoch.evolution.lifecycle.revision_merged_into_origin_main",
+        "enoch.evolution.lifecycle.revision_on_authoritative",
         return_value=True,
     )
-    @patch("enoch.evolution.lifecycle.fetch_origin_main")
+    @patch("enoch.evolution.lifecycle.refresh_repository")
     @patch("enoch.evolution.lifecycle.inspect_pull_request_merge")
     def test_backfill_and_restart_adoption_preserve_recording_mode(
         self,
         inspect_pull_request_merge,
-        _fetch_origin_main,
+        _refresh_repository,
         _revision_on_main,
     ) -> None:
         with TemporaryDirectory() as temp:
@@ -218,15 +237,51 @@ def _completed_candidate_with_pr(root: Path) -> str:
     return candidate_id
 
 
-def _merged_pr() -> PullRequestMergeStatus:
+def _merged_pr(*, base_branch: str = "main") -> PullRequestMergeStatus:
     return PullRequestMergeStatus(
         reference=PR_URL,
         url=PR_URL,
         state="MERGED",
-        base_branch="main",
+        base_branch=base_branch,
         merge_commit=MERGE_COMMIT,
         merged_at="2026-07-18T18:30:00Z",
     )
+
+
+class _LifecycleVcs:
+    name = "lifecycle-vcs"
+    provider_kind = "vcs"
+
+    def __init__(self) -> None:
+        self.refreshed = 0
+        self.ancestry_checks = []
+        self.raw_calls = []
+
+    def run(self, args, root=None):
+        self.raw_calls.append((args, root))
+        raise AssertionError("Lifecycle must not send raw Git commands.")
+
+    def authoritative_branch(self, root=None):
+        return "trunk"
+
+    def refresh_authoritative(self, root=None):
+        self.refreshed += 1
+        return "refreshed"
+
+    def authoritative_revision(self, root=None):
+        return "trusted-revision"
+
+    def is_ancestor(self, revision, descendant, root=None):
+        self.ancestry_checks.append((revision, descendant))
+        return True
+
+
+class _LifecycleForge:
+    def __init__(self, status: PullRequestMergeStatus) -> None:
+        self.status = status
+
+    def inspect_pull_request_merge(self, reference, root=None):
+        return self.status
 
 
 if __name__ == "__main__":

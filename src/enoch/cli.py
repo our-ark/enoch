@@ -23,7 +23,7 @@ from enoch.commands import (
 )
 from enoch.setup_tools import setup_command
 from enoch.operations.update_tools import schedule_daemon_restart as _schedule_daemon_restart
-from enoch.operations.updater import update_from_main
+from enoch.operations.updater import update_from_authoritative
 
 
 HELP = """Commands:
@@ -39,7 +39,7 @@ HELP = """Commands:
   skills      Show declared skills for Enoch or another local agent.
   learn       Inspect a published skill for adaptation.
   doctor      Run Enoch's local health checks.
-  update      Pull latest main, run doctor, and restart Enoch if safe.
+  update      Update from the authoritative repository, run doctor, and restart Enoch if safe.
   exit        Put Enoch back to sleep.
 
 Enoch CLI is admin-only. Use the configured chat provider for conversation, repository edits, and self-evolution.
@@ -229,9 +229,13 @@ def _learn(text: str, root: Path) -> str:
 
 
 def _update(root: Path) -> str:
-    result = update_from_main(root)
+    result = update_from_authoritative(root)
     if result.direct_action_result:
-        _record_direct_action("update from main", result.direct_action_result, root)
+        _record_direct_action(
+            "update from authoritative repository",
+            result.direct_action_result,
+            root,
+        )
     if result.restart_required:
         _schedule_daemon_restart(root)
     return result.message

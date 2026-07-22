@@ -222,7 +222,7 @@ work. It does not mean the change became authoritative or entered the running
 instance.
 
 - `promoted` means a human merged the candidate PR and Enoch verified its merge
-  commit is contained in trusted `origin/main`.
+  revision is contained in the VCS provider's trusted authoritative branch.
 - `adopted` means the instance updated to a version containing that promotion,
   passed doctor, restarted, and confirmed the running version.
 

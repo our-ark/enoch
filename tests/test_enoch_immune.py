@@ -125,18 +125,20 @@ class EnochImmuneTests(unittest.TestCase):
 
     @patch("enoch.immune._memory_storage_check")
     @patch("enoch.immune._codex_binary_check")
+    @patch("enoch.immune.load_provider")
     @patch("enoch.immune.subprocess.run")
     def test_dirty_worktree_is_reported_without_failing_doctor(
         self,
         run: MagicMock,
+        load_provider: MagicMock,
         codex_binary_check: MagicMock,
         memory_storage_check: MagicMock,
     ) -> None:
         codex_binary_check.return_value = _check("codex binary", category="operational readiness")
         memory_storage_check.return_value = _check("memory storage", category="operational readiness")
         clean = MagicMock(returncode=0, stdout="OK", stderr="")
-        dirty = MagicMock(returncode=0, stdout=" M README.md\n", stderr="")
-        run.side_effect = [clean, clean, clean, dirty]
+        run.side_effect = [clean, clean, clean]
+        load_provider.return_value.is_clean.return_value = False
 
         result = run_immune_system(ROOT)
 

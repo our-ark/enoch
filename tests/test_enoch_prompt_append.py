@@ -116,11 +116,13 @@ class EnochPromptAppendTests(unittest.TestCase):
             "enoch/turn-readme",
             "https://github.com/our-ark/enoch/pull/1",
             "agent/enoch-gary",
+            "trunk",
         )
 
         self.assertIn("enoch/turn-readme", note)
         self.assertIn("Do not assume the PR was merged.", note)
         self.assertIn("Local checkout is back on resident branch `agent/enoch-gary`.", note)
+        self.assertIn("authoritative branch `trunk`", note)
 
 
 if __name__ == "__main__":

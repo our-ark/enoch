@@ -1,50 +1,43 @@
 from __future__ import annotations
 
-from datetime import datetime
 from pathlib import Path
 
-from enoch.git_tools import GitError, run_git
+from enoch.git_tools import (
+    GitError,
+    authoritative_branch,
+    authoritative_revision,
+    current_branch,
+    current_revision,
+    refresh_authoritative,
+    resolve_revision,
+    restore_revision,
+    revision_is_ancestor,
+    update_to_authoritative,
+)
 from enoch.paths import repo_root
-from enoch.providers.registry import load_provider, provider_name
-from enoch.runtime import DEFAULT_BRANCH, DEFAULT_REMOTE
+from enoch.providers.registry import load_provider
+
+
+def repository_sync_summary(root: Path | None = None) -> str:
+    provider = load_provider("vcs", root)
+    summary = getattr(provider, "sync_summary", None)
+    if callable(summary):
+        return str(summary(root)).strip()
+    try:
+        branch = authoritative_branch(root)
+        revision = authoritative_revision(root)
+    except GitError as error:
+        return f"Authoritative repository revision: unavailable ({error})"
+    return f"Authoritative repository revision: {branch} {revision[:7]}"
 
 
 def main_pull_summary(root: Path | None = None) -> str:
-    fetch_head = fetch_head_path(root)
-    main_sha = origin_main_sha(root)
-    if fetch_head is None or not fetch_head.exists():
-        return f"Last git main pull observed: unavailable{_sha_suffix(main_sha)}"
-    try:
-        content = fetch_head.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return f"Last git main pull observed: unavailable{_sha_suffix(main_sha)}"
-    if f"branch '{DEFAULT_BRANCH}'" not in content:
-        return f"Last git main pull observed: unavailable{_sha_suffix(main_sha)}"
-    pulled_at = datetime.fromtimestamp(fetch_head.stat().st_mtime).astimezone()
-    return f"Last git main pull observed: {pulled_at.strftime('%Y-%m-%d %H:%M:%S %Z')}{_sha_suffix(main_sha)}"
-
-
-def fetch_head_path(root: Path | None = None) -> Path | None:
-    result = run_git(["rev-parse", "--git-path", "FETCH_HEAD"], root)
-    if result.returncode != 0 or not result.stdout:
-        return None
-    path = Path(result.stdout)
-    if path.is_absolute():
-        return path
-    return (root or Path.cwd()) / path
-
-
-def origin_main_sha(root: Path | None = None) -> str:
-    result = run_git(["rev-parse", "--short", f"{DEFAULT_REMOTE}/{DEFAULT_BRANCH}"], root)
-    if result.returncode != 0:
-        return ""
-    return result.stdout.strip()
+    """Compatibility alias for integrations using the original Git-specific name."""
+    return repository_sync_summary(root)
 
 
 def fetch_origin_main(root: Path | None = None) -> None:
-    result = run_git(["fetch", DEFAULT_REMOTE, DEFAULT_BRANCH], root)
-    if result.returncode != 0:
-        raise GitError(result.stderr or result.stdout or f"Could not fetch {DEFAULT_REMOTE}/{DEFAULT_BRANCH}.")
+    refresh_repository(root)
 
 
 def head_merged_into_origin_main(root: Path | None = None) -> bool:
@@ -55,36 +48,51 @@ def revision_merged_into_origin_main(
     revision: str,
     root: Path | None = None,
 ) -> bool:
-    result = run_git(
-        [
-            "merge-base",
-            "--is-ancestor",
-            revision,
-            f"{DEFAULT_REMOTE}/{DEFAULT_BRANCH}",
-        ],
-        root,
-    )
-    return result.returncode == 0
+    return revision_on_authoritative(revision, root)
 
 
 def current_head(root: Path | None = None) -> str:
-    result = run_git(["rev-parse", "HEAD"], root)
-    if result.returncode != 0 or not result.stdout:
-        raise GitError(result.stderr or "Could not inspect HEAD.")
-    return result.stdout.strip()
+    return current_repository_revision(root)
 
 
 def pull_origin_main(root: Path | None = None) -> str:
-    result = run_git(["pull", "--ff-only", DEFAULT_REMOTE, DEFAULT_BRANCH], root)
-    if result.returncode != 0:
-        raise GitError(result.stderr or result.stdout or f"Could not pull {DEFAULT_REMOTE}/{DEFAULT_BRANCH}.")
-    return result.stdout or "Already up to date."
+    return update_repository(root)
 
 
 def reset_hard(revision: str, root: Path | None = None) -> None:
-    result = run_git(["reset", "--hard", revision], root)
-    if result.returncode != 0:
-        raise GitError(result.stderr or result.stdout or f"Could not roll back to {revision}.")
+    restore_repository_revision(revision, root)
+
+
+def authoritative_branch_name(root: Path | None = None) -> str:
+    return authoritative_branch(root)
+
+
+def refresh_repository(root: Path | None = None) -> str:
+    return refresh_authoritative(root)
+
+
+def authoritative_repository_revision(root: Path | None = None) -> str:
+    return authoritative_revision(root)
+
+
+def current_repository_revision(root: Path | None = None) -> str:
+    return current_revision(root)
+
+
+def revision_on_authoritative(revision: str, root: Path | None = None) -> bool:
+    return revision_is_ancestor(revision, authoritative_repository_revision(root), root)
+
+
+def current_revision_on_authoritative(root: Path | None = None) -> bool:
+    return revision_on_authoritative(current_repository_revision(root), root)
+
+
+def update_repository(root: Path | None = None) -> str:
+    return update_to_authoritative(root) or "Already up to date."
+
+
+def restore_repository_revision(revision: str, root: Path | None = None) -> None:
+    restore_revision(revision, root)
 
 
 def schedule_daemon_restart(root: Path | None = None) -> None:
@@ -97,55 +105,39 @@ def schedule_daemon_stop(root: Path | None = None) -> None:
     load_provider("service", resolved_root).schedule_stop(resolved_root)
 
 
-def ensure_local_main_current(root: Path) -> None:
-    fetch_origin_main(root)
-    local = rev_parse(DEFAULT_BRANCH, root)
-    remote = rev_parse(f"{DEFAULT_REMOTE}/{DEFAULT_BRANCH}", root)
+def ensure_authoritative_current(root: Path) -> None:
+    refresh_repository(root)
+    branch_name = authoritative_branch_name(root)
+    local = resolve_revision(branch_name, root)
+    remote = authoritative_repository_revision(root)
     if local and remote and local != remote:
-        branch = current_branch_name(root)
-        if branch != DEFAULT_BRANCH:
+        branch = current_branch(root)
+        if branch != branch_name:
             raise GitError(
-                f"Local {DEFAULT_BRANCH} is not up to date with {DEFAULT_REMOTE}/{DEFAULT_BRANCH}. "
-                f"Switch to {DEFAULT_BRANCH} before evolving."
+                f"Local {branch_name} is not up to date with the authoritative revision. "
+                f"Switch to {branch_name} before evolving."
             )
-        pull_origin_main(root)
+        update_repository(root)
+
+
+def ensure_local_main_current(root: Path) -> None:
+    """Compatibility alias for integrations using the original Git-specific name."""
+    ensure_authoritative_current(root)
 
 
 def task_branch_base(root: Path) -> str:
-    selected = provider_name("vcs", root)
-    if selected != "git":
-        provider = load_provider("vcs", root, name=selected)
-        if hasattr(provider, "task_base"):
-            return str(provider.task_base(root)).strip()
-    fetch_error: GitError | None = None
-    try:
-        fetch_origin_main(root)
-    except GitError as error:
-        fetch_error = error
-
-    remote = f"{DEFAULT_REMOTE}/{DEFAULT_BRANCH}"
-    if rev_parse(remote, root):
-        return remote
-    if rev_parse(DEFAULT_BRANCH, root):
-        return DEFAULT_BRANCH
-    if fetch_error is not None:
-        raise GitError(f"Could not prepare a task branch base: {fetch_error}") from fetch_error
-    raise GitError(f"Could not find {remote} or local {DEFAULT_BRANCH}.")
+    provider = load_provider("vcs", root)
+    method = getattr(provider, "task_base", None)
+    if not callable(method):
+        raise GitError(
+            f"VCS provider {getattr(provider, 'name', 'unknown')} does not support task_base."
+        )
+    return str(method(root)).strip()
 
 
 def current_branch_name(root: Path | None = None) -> str:
-    result = run_git(["branch", "--show-current"], root)
-    if result.returncode != 0:
-        raise GitError(result.stderr or "Could not determine current branch.")
-    return result.stdout.strip()
+    return current_branch(root)
 
 
 def rev_parse(revision: str, root: Path | None = None) -> str:
-    result = run_git(["rev-parse", revision], root)
-    if result.returncode != 0:
-        return ""
-    return result.stdout.strip()
-
-
-def _sha_suffix(sha: str) -> str:
-    return f" ({DEFAULT_REMOTE}/{DEFAULT_BRANCH} {sha})" if sha else ""
+    return resolve_revision(revision, root)

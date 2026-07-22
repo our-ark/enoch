@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 import subprocess
 
@@ -18,6 +19,8 @@ class VersionControlResult:
 class GitVersionControlProvider:
     name = "git"
     provider_kind = "vcs"
+    remote = "origin"
+    main_branch = "main"
 
     def run(
         self,
@@ -110,11 +113,87 @@ class GitVersionControlProvider:
         ).returncode == 0
 
     def task_base(self, root: Path | None = None) -> str:
-        self.run(["fetch", "origin", "main"], root)
-        for revision in ("origin/main", "main"):
-            if self.run(["rev-parse", "--verify", "--quiet", revision], root).returncode == 0:
+        try:
+            self.refresh_authoritative(root)
+        except VersionControlProviderError:
+            pass
+        for revision in (self._authoritative_ref(), self.main_branch):
+            if self.resolve_revision(revision, root):
                 return revision
-        raise VersionControlProviderError("Could not find origin/main or local main.")
+        raise VersionControlProviderError(
+            f"Could not find {self._authoritative_ref()} or local {self.main_branch}."
+        )
+
+    def authoritative_branch(self, root: Path | None = None) -> str:
+        del root
+        return self.main_branch
+
+    def refresh_authoritative(self, root: Path | None = None) -> str:
+        return self._output(
+            ["fetch", self.remote, self.main_branch],
+            root,
+            f"Could not fetch {self._authoritative_ref()}.",
+        )
+
+    def authoritative_revision(self, root: Path | None = None) -> str:
+        revision = self.resolve_revision(self._authoritative_ref(), root)
+        if not revision:
+            raise VersionControlProviderError(
+                f"Could not resolve authoritative revision {self._authoritative_ref()}."
+            )
+        return revision
+
+    def current_revision(self, root: Path | None = None) -> str:
+        revision = self.resolve_revision("HEAD", root)
+        if not revision:
+            raise VersionControlProviderError("Could not inspect current revision.")
+        return revision
+
+    def resolve_revision(self, revision: str, root: Path | None = None) -> str:
+        result = self.run(["rev-parse", revision], root)
+        return result.stdout.strip() if result.returncode == 0 else ""
+
+    def is_ancestor(
+        self,
+        revision: str,
+        descendant: str,
+        root: Path | None = None,
+    ) -> bool:
+        return self.run(
+            ["merge-base", "--is-ancestor", revision, descendant],
+            root,
+        ).returncode == 0
+
+    def update_to_authoritative(self, root: Path | None = None) -> str:
+        output = self._output(
+            ["pull", "--ff-only", self.remote, self.main_branch],
+            root,
+            f"Could not update from {self._authoritative_ref()}.",
+        )
+        return output or "Already up to date."
+
+    def restore_revision(self, revision: str, root: Path | None = None) -> None:
+        self._output(
+            ["reset", "--hard", revision],
+            root,
+            f"Could not restore revision {revision}.",
+        )
+
+    def sync_summary(self, root: Path | None = None) -> str:
+        revision = self.resolve_revision(self._authoritative_ref(), root)
+        suffix = f" ({self._authoritative_ref()} {revision[:7]})" if revision else ""
+        label = f"Last git {self.main_branch} pull observed"
+        fetch_path = self._git_path("FETCH_HEAD", root)
+        if fetch_path is None or not fetch_path.exists():
+            return f"{label}: unavailable{suffix}"
+        try:
+            content = fetch_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return f"{label}: unavailable{suffix}"
+        if f"branch '{self.main_branch}'" not in content:
+            return f"{label}: unavailable{suffix}"
+        pulled_at = datetime.fromtimestamp(fetch_path.stat().st_mtime).astimezone()
+        return f"{label}: {pulled_at.strftime('%Y-%m-%d %H:%M:%S %Z')}{suffix}"
 
     def workspace_paths(self, root: Path | None = None) -> tuple[Path, ...]:
         output = self._output(
@@ -155,6 +234,16 @@ class GitVersionControlProvider:
         if result.returncode != 0:
             raise VersionControlProviderError(result.stderr or result.stdout or message)
         return result.stdout.strip()
+
+    def _authoritative_ref(self) -> str:
+        return f"{self.remote}/{self.main_branch}"
+
+    def _git_path(self, name: str, root: Path | None) -> Path | None:
+        result = self.run(["rev-parse", "--git-path", name], root)
+        if result.returncode != 0 or not result.stdout:
+            return None
+        path = Path(result.stdout)
+        return path if path.is_absolute() else repo_root(root) / path
 
 
 def create_provider(_root: Path | None = None) -> GitVersionControlProvider:

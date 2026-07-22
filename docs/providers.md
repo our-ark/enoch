@@ -192,11 +192,13 @@ pause, resume, failure, and audit behavior across implementations.
 VCS providers implement repository semantics rather than parsing Git command
 arguments: current and switched branches, clean-state and diff inspection,
 staging and commit, task base selection, and isolated workspace
-creation/removal. `run(args, root)`
-remains part of the compatibility contract for Git-oriented update, lineage,
-and evolution operations. A provider can support ordinary chat tasks and local
-publication through the semantic methods first, then add those advanced
-operations as needed.
+creation/removal. Governed evolution additionally uses authoritative branch
+discovery and refresh, revision resolution and ancestry, repository update and
+rollback. Providers may also expose a sync summary for startup diagnostics.
+`run(args, root)` remains a compatibility escape
+hatch implemented by the built-in Git provider, not a required provider
+contract. Enoch's update and evolution lifecycle do not depend on either
+optional capability.
 
 ## Provider-owned setup
 

@@ -11,7 +11,7 @@ from enoch.evolution.events import (
     load_evolve_events,
     record_evolve_event,
 )
-from enoch.git_tools import GitError, run_git
+from enoch.git_tools import GitError, revision_is_ancestor
 from enoch.memory.paths import atomic_write
 from enoch.paths import enoch_home
 from enoch.providers.contracts import (
@@ -21,12 +21,12 @@ from enoch.providers.contracts import (
 )
 from enoch.providers.registry import load_provider
 from enoch.providers.forge import inspect_pull_request_merge
-from enoch.runtime import DEFAULT_BRANCH
 from enoch.tasks.events import TaskEvent, load_task_events
 from enoch.operations.update_tools import (
-    current_head,
-    fetch_origin_main,
-    revision_merged_into_origin_main,
+    authoritative_branch_name,
+    current_repository_revision,
+    refresh_repository,
+    revision_on_authoritative,
 )
 
 
@@ -97,14 +97,18 @@ def reconcile_evolve_candidate(
         )
     except ForgeProviderError as error:
         raise EvolveLifecycleError(f"Could not inspect {pr_url}: {error}") from error
-    _validate_merged_pull_request(pull_request)
+    authoritative = authoritative_branch_name(root)
+    _validate_merged_pull_request(pull_request, authoritative)
     try:
-        fetch_origin_main(root)
+        refresh_repository(root)
     except GitError as error:
-        raise EvolveLifecycleError(f"Could not refresh origin/main: {error}") from error
-    if not revision_merged_into_origin_main(pull_request.merge_commit, root):
         raise EvolveLifecycleError(
-            f"PR merge commit {pull_request.merge_commit} is not on trusted origin/main."
+            f"Could not refresh authoritative branch {authoritative}: {error}"
+        ) from error
+    if not revision_on_authoritative(pull_request.merge_commit, root):
+        raise EvolveLifecycleError(
+            f"PR merge revision {pull_request.merge_commit} is not on trusted "
+            f"authoritative branch {authoritative}."
         )
 
     existing = _promoted_event(candidate.id, pull_request.merge_commit, root)
@@ -178,13 +182,14 @@ def stage_promoted_evolve_adoptions(
 ) -> tuple[PendingAdoption, ...]:
     if health_check.strip().lower() != "passed":
         return ()
+    default_branch = authoritative_branch_name(root)
     pending = tuple(
         PendingAdoption(
             candidate_id=event.candidate_id,
             task_id=event.task_id,
             pr_url=event.pr_url,
             merge_commit=event.merge_commit,
-            authoritative_branch=event.authoritative_branch or DEFAULT_BRANCH,
+            authoritative_branch=event.authoritative_branch or default_branch,
             promoted_at=event.promoted_at,
             version=version,
             health_check="passed",
@@ -217,7 +222,7 @@ def finalize_promoted_evolve_adoptions(
     pending = _load_pending_adoptions(root)
     if not pending:
         return ()
-    version = running_version.strip() or current_head(root)
+    version = running_version.strip() or current_repository_revision(root)
     completed: list[EvolveEvent] = []
     remaining: list[PendingAdoption] = []
     for item in pending:
@@ -275,12 +280,16 @@ def _completed_task_with_pr(
     return max(matches, key=lambda event: (event.task_id, event.occurred_at), default=None)
 
 
-def _validate_merged_pull_request(status: PullRequestMergeStatus) -> None:
+def _validate_merged_pull_request(
+    status: PullRequestMergeStatus,
+    authoritative: str,
+) -> None:
     if status.state != "MERGED":
         raise EvolveLifecycleError(f"Pull request {status.url} is not merged.")
-    if status.base_branch != DEFAULT_BRANCH:
+    if status.base_branch != authoritative:
         raise EvolveLifecycleError(
-            f"Pull request {status.url} targets {status.base_branch}, not authoritative {DEFAULT_BRANCH}."
+            f"Pull request {status.url} targets {status.base_branch}, "
+            f"not authoritative {authoritative}."
         )
     if not status.merge_commit or not status.merged_at:
         raise EvolveLifecycleError(
@@ -343,11 +352,7 @@ def _recording_mode(value: str) -> str:
 
 
 def _is_ancestor(revision: str, descendant: str, root: Path) -> bool:
-    result = run_git(
-        ["merge-base", "--is-ancestor", revision, descendant],
-        root,
-    )
-    return result.returncode == 0
+    return revision_is_ancestor(revision, descendant, root)
 
 
 def _load_pending_adoptions(root: Path) -> tuple[PendingAdoption, ...]:
@@ -360,6 +365,7 @@ def _load_pending_adoptions(root: Path) -> tuple[PendingAdoption, ...]:
     if not isinstance(raw_items, list):
         return ()
     items = []
+    default_branch = authoritative_branch_name(root)
     for raw in raw_items:
         if not isinstance(raw, dict):
             continue
@@ -375,7 +381,7 @@ def _load_pending_adoptions(root: Path) -> tuple[PendingAdoption, ...]:
                 pr_url=str(raw.get("pr_url") or "").strip(),
                 merge_commit=merge_commit,
                 authoritative_branch=str(
-                    raw.get("authoritative_branch") or DEFAULT_BRANCH
+                    raw.get("authoritative_branch") or default_branch
                 ).strip(),
                 promoted_at=str(raw.get("promoted_at") or "").strip(),
                 version=version,

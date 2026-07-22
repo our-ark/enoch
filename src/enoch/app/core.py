@@ -248,10 +248,11 @@ from enoch.tasks.worktree import (
     remove_task_worktree,
 )
 from enoch.operations.update_tools import (
+    authoritative_branch_name as _authoritative_branch_name,
     schedule_daemon_restart as _schedule_daemon_restart,
     task_branch_base as _task_branch_base,
 )
-from enoch.operations.updater import update_from_main
+from enoch.operations.updater import update_from_authoritative
 from enoch.app.models import (
     ForgeMaintenanceRequest,
     ShutdownRequested,
@@ -1186,7 +1187,12 @@ class EnochApplication:
             if pr.url:
                 self._queue_session_sync(
                     chat_id,
-                    repository_handoff_note(pr.branch, pr.url, resident_branch),
+                    repository_handoff_note(
+                        pr.branch,
+                        pr.url,
+                        resident_branch,
+                        self._authoritative_branch_name(),
+                    ),
                 )
         except (GitError, ForgeProviderError) as error:
             failure = f"Enoch could not publish existing branch {branch}: {error}"
@@ -1308,7 +1314,12 @@ class EnochApplication:
             if pr.url:
                 self._queue_session_sync(
                     chat_id,
-                    repository_handoff_note(pr.branch, pr.url, resident_branch),
+                    repository_handoff_note(
+                        pr.branch,
+                        pr.url,
+                        resident_branch,
+                        self._authoritative_branch_name(),
+                    ),
                 )
         except (GitError, ForgeProviderError) as error:
             failure = f"Enoch could not publish this edit as a pull request: {error}"
@@ -1374,7 +1385,13 @@ class EnochApplication:
             return self._resident_branch
         if fallback:
             return self._remember_resident_branch(fallback)
-        return self._remember_resident_branch(DEFAULT_BRANCH)
+        return self._remember_resident_branch(self._authoritative_branch_name())
+
+    def _authoritative_branch_name(self) -> str:
+        try:
+            return _authoritative_branch_name(self.root) or DEFAULT_BRANCH
+        except GitError:
+            return DEFAULT_BRANCH
 
     def _send_step_update(self, chat_id: ConversationId | None, message: str) -> None:
         if chat_id is None:
@@ -3047,9 +3064,13 @@ class EnochApplication:
     def _update(self) -> str:
         if not self._action_allowed():
             return self._action_lock_message()
-        result = update_from_main(self.root)
+        result = update_from_authoritative(self.root)
         if result.direct_action_result:
-            _record_direct_action("update from main", result.direct_action_result, self.root)
+            _record_direct_action(
+                "update from authoritative repository",
+                result.direct_action_result,
+                self.root,
+            )
         if result.restart_required:
             self._restart_after_reply = True
         return result.message
