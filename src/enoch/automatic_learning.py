@@ -21,7 +21,7 @@ from enoch.paths import enoch_home
 SCHEMA_VERSION = 1
 SUMMARY_LIMIT = 4000
 _LEARNING_THREAD_LOCK = threading.RLock()
-_PR_URL_PATTERN = re.compile(r"https://github\.com/[^/\s]+/[^/\s]+/pull/\d+")
+_PR_URL_PATTERN = re.compile(r"https://[^\s]+/(?:pull|pulls|merge_requests)/\d+")
 
 
 @dataclass(frozen=True)

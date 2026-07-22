@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from enoch.github.workflow import (
+from enoch.providers.contracts import (
     LocalPublishResult,
     PullRequestResult,
     RemotePublishResult,
@@ -100,14 +100,9 @@ def format_remote_publish_result(result: RemotePublishResult) -> str:
             f"Remote: {result.remote}",
             f"Commits pushed: {result.ahead_count}",
             f"Review URL: {result.compare_url or 'unavailable'}",
-            "Publish step: branch pushed to GitHub.",
+            "Publish step: branch pushed to the configured forge.",
         ]
     )
-
-
-# Compatibility aliases for existing channel integrations.
-format_telegram_publish_result = format_publish_result
-format_telegram_remote_publish_result = format_remote_publish_result
 
 
 def format_pr_result(result: PullRequestResult) -> str:
@@ -125,7 +120,7 @@ def format_pr_result(result: PullRequestResult) -> str:
         [
             f"Branch: {result.branch}",
             f"Title: {result.title}",
-            "Local checkout will return to its resident branch after the GitHub handoff.",
+            "Local checkout will return to its resident branch after the forge handoff.",
         ]
     )
     return "\n".join(lines)

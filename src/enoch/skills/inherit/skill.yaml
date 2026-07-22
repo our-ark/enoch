@@ -17,7 +17,7 @@ permissions:
       - .agent/lineage_inbox.json
     write:
       - .agent/lineage_inbox.json
-  github:
+  forge:
     read_repo: true
 validation:
   command: python3 -m unittest discover -s tests

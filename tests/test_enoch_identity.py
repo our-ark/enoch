@@ -40,7 +40,7 @@ class EnochIdentityTests(unittest.TestCase):
     def test_identity_declares_skills(self) -> None:
         text = (ROOT / "src" / "enoch" / "identity.yaml").read_text(encoding="utf-8")
 
-        for name in ["telegram-talk", "code", "github", "inherit", "learn", "teach"]:
+        for name in ["code", "inherit", "learn", "teach"]:
             self.assertIn(f"- name: {name}", text)
         self.assertIn("exposure: hidden", text)
         self.assertNotIn("- name: talk\n", text)

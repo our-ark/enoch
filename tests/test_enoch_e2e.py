@@ -20,8 +20,8 @@ from enoch.identity import load_identity
 from enoch.immune import DoctorDiagnosis, ImmuneResult
 from enoch.task_events import load_task_events
 from enoch.task_queue import begin_next_task, task_queue_status
-from enoch.telegram.bot import EnochTelegramBot
-from enoch.telegram.client import TelegramConfig
+from enoch.application import EnochApplication
+from our_ark_telegram import TelegramConfig, telegram_event
 
 
 CHAT_ID = 42
@@ -62,11 +62,11 @@ class EnochEvolutionEndToEndTests(unittest.TestCase):
         self.addCleanup(environment.stop)
 
         bot_doctor = patch(
-            "enoch.telegram.bot.run_immune_system",
+            "enoch.application.run_immune_system",
             side_effect=lambda _root=None: _passing_doctor(),
         )
         publish_doctor = patch(
-            "enoch.github.workflow.run_immune_system",
+            "our_ark_github.workflow.run_immune_system",
             side_effect=lambda _root=None: _passing_doctor(),
         )
         bot_doctor.start()
@@ -75,7 +75,7 @@ class EnochEvolutionEndToEndTests(unittest.TestCase):
         self.addCleanup(publish_doctor.stop)
 
         self.client = _RecordingTelegramClient(CHAT_ID)
-        self.bot = EnochTelegramBot(load_identity(), self.instance, self.client)
+        self.bot = EnochApplication(load_identity(), self.instance, self.client)
 
     def test_evolve_approve_publishes_ready_pr_from_latest_main_with_one_progress_message(
         self,
@@ -344,7 +344,9 @@ class EnochEvolutionEndToEndTests(unittest.TestCase):
 
     def _command(self, text: str) -> str:
         self._update_id += 1
-        self.bot.handle_update(_message_update(self._update_id, text))
+        event = telegram_event(_message_update(self._update_id, text))
+        self.assertIsNotNone(event)
+        self.bot.handle_event(event)
         return self.client.sent[-1][1]
 
     def _run_next_task(self):

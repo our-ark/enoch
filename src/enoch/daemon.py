@@ -9,10 +9,11 @@ import platform
 import subprocess
 import sys
 
-from enoch.config import config_path, read_section
+from enoch.config import config_path
 from enoch.logs import daemon_log_dir
 from enoch.paths import enoch_home, repo_root
 from enoch.providers.registry import ProviderError, load_provider, provider_name
+from enoch.providers.contracts import ChatProviderError
 from enoch.runtime import DEFAULT_DAEMON_LOG_LINES
 
 
@@ -171,10 +172,9 @@ def _write_plist(paths: DaemonPaths) -> None:
 
 
 def plist_bytes(paths: DaemonPaths) -> bytes:
-    launcher = "enoch-telegram" if provider_name("chat", paths.root) == "telegram" else "enoch-agent"
     payload = {
         "Label": LABEL,
-        "ProgramArguments": [str(paths.root / "bin" / launcher)],
+        "ProgramArguments": [str(paths.root / "bin" / "enoch-agent")],
         "WorkingDirectory": str(paths.root),
         "RunAtLoad": True,
         "KeepAlive": True,
@@ -226,12 +226,6 @@ def _require_macos() -> None:
 
 def _require_daemon_config(root: Path) -> None:
     if not _has_daemon_config(root):
-        if provider_name("chat", root) == "telegram":
-            raise DaemonError(
-                f"Run `bin/enoch setup-token <token>` before starting Enoch daemon. "
-                f"Local config path: {config_path(root)}. "
-                "launchd does not inherit terminal-only Telegram token environment variables."
-            )
         raise DaemonError(
             f"Configure the selected chat provider before starting Enoch daemon. "
             f"Local config path: {config_path(root)}."
@@ -240,14 +234,11 @@ def _require_daemon_config(root: Path) -> None:
 
 def _has_daemon_config(root: Path) -> bool:
     selected = provider_name("chat", root)
-    if selected != "telegram":
-        try:
-            load_provider("chat", root, name=selected)
-        except ProviderError:
-            return False
-        return True
-    settings = read_section("telegram", root)
-    return bool(settings.get("bot_token", "").strip())
+    try:
+        load_provider("chat", root, name=selected)
+    except (ProviderError, ChatProviderError):
+        return False
+    return True
 
 
 def _check(name: str, passed: bool, detail: str) -> str:

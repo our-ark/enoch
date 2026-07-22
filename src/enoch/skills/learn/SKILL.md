@@ -7,7 +7,7 @@ Use this skill when Enoch should adapt and integrate a published skill from Lucy
 ## Use When
 
 - The human asks Enoch to learn a named skill from another agent with `/learn <skill> from <agent>`.
-- The source agent publishes that skill on GitHub main under `our-ark/<agent>`.
+- The source agent publishes that skill on the configured forge under `our-ark/<agent>`.
 - Enoch should translate the useful idea into her own body instead of copying another agent blindly.
 
 ## Do Not Use When
@@ -19,7 +19,7 @@ Use this skill when Enoch should adapt and integrate a published skill from Lucy
 ## Procedure
 
 1. Inspect the published skill with `/learn <skill> from <agent>`.
-2. Read the source agent's declared skill metadata and `SKILL.md` from GitHub main.
+2. Read the source agent's declared skill metadata and `SKILL.md` from the configured forge's authoritative branch.
 3. Decide whether Enoch should adapt the idea.
 4. If adapting, express a concise repository edit request.
 5. Let Enoch's normal edit workflow create a branch, modify files, run doctor, commit, push, and open a PR.

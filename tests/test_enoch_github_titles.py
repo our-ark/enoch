@@ -4,9 +4,11 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "libraries" / "provider-kit" / "src"))
+sys.path.insert(0, str(ROOT / "libraries" / "github" / "src"))
 sys.path.insert(0, str(ROOT / "src"))
 
-from enoch.github.workflow import feature_title
+from our_ark_github.workflow import feature_title
 
 
 class EnochGithubTitleTests(unittest.TestCase):

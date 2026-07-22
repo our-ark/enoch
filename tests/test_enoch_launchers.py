@@ -20,7 +20,7 @@ class EnochLauncherTests(unittest.TestCase):
             cases = [
                 ("bin/enoch", ["doctor"], "python3.11 -m enoch doctor"),
                 ("bin/enoch-daemon", ["status"], "python3.11 -m enoch.daemon status"),
-                ("bin/enoch-telegram", [], "python3.11 -m enoch.telegram"),
+                ("bin/enoch-agent", [], "python3.11 -m enoch.agent"),
             ]
 
             for script, args, expected in cases:

@@ -83,6 +83,110 @@ class ProviderHealth:
     summary: str = ""
 
 
+@dataclass(frozen=True)
+class LocalPublishResult:
+    branch: str
+    commit_message: str
+    changed_files: list[str]
+    diff: str
+    doctor: Any
+    commit_sha: str
+
+
+@dataclass(frozen=True)
+class RemotePublishResult:
+    branch: str
+    remote: str
+    pushed: bool
+    ahead_count: int
+    compare_url: str | None
+
+
+@dataclass(frozen=True)
+class PullRequestResult:
+    branch: str
+    title: str
+    body: str
+    created: bool
+    url: str | None
+    fallback_url: str | None
+    note: str | None = None
+    draft: bool = False
+
+
+@dataclass(frozen=True)
+class EvolutionProvenance:
+    candidate_id: str
+    evidence_source: str
+    signal_actor: str
+    candidate_actor: str
+    approval_actor: str
+    task_id: int
+    parent_candidate_id: str = ""
+    source_task_id: int | None = None
+    retry_of_task_id: int | None = None
+
+
+@dataclass(frozen=True)
+class PullRequestCloseResult:
+    number: int
+    closed: bool
+    url: str
+    note: str | None = None
+
+
+@dataclass(frozen=True)
+class PullRequestMergeStatus:
+    reference: str
+    url: str
+    state: str
+    base_branch: str
+    merge_commit: str
+    merged_at: str
+    number: int = 0
+    repository: str = ""
+    is_draft: bool = False
+    mergeable: str = ""
+    merge_state_status: str = ""
+    head_sha: str = ""
+    note: str | None = None
+
+
+@dataclass(frozen=True)
+class PullRequestTarget:
+    reference: str
+    number: int
+    repository: str = ""
+
+
+@dataclass(frozen=True)
+class PullRequestMergeCandidate:
+    target: PullRequestTarget
+    number: int
+    repository: str
+    url: str
+    state: str
+    is_draft: bool
+    mergeable: str
+    merge_state_status: str
+    head_oid: str
+    base_branch: str
+    title: str = ""
+    head_branch: str = ""
+    author: str = ""
+    updated_at: str = ""
+    merged_at: str = ""
+
+
+@dataclass(frozen=True)
+class PullRequestMergeResult:
+    number: int
+    url: str
+    method: str
+    merge_commit: str
+    message: str
+
+
 @runtime_checkable
 class AgentIdentity(Protocol):
     name: str
@@ -183,6 +287,14 @@ class VersionControlProvider(Protocol):
 class ForgeProvider(Protocol):
     name: str
     provider_kind: str
+
+    def feature_title(self, text: str) -> str: ...
+
+    def prepare_local_publish(self, commit_message: str, **kwargs: Any) -> LocalPublishResult: ...
+
+    def push_current_branch(self, **kwargs: Any) -> RemotePublishResult: ...
+
+    def format_evolution_provenance(self, provenance: EvolutionProvenance) -> str: ...
 
     def close_pull_request(
         self,

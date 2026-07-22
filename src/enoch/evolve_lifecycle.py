@@ -11,14 +11,16 @@ from enoch.evolve_events import (
     load_evolve_events,
     record_evolve_event,
 )
-from enoch.github.workflow import (
-    PullRequestMergeStatus,
-    inspect_pull_request_merge,
-)
 from enoch.git_tools import GitError, run_git
 from enoch.memory.paths import atomic_write
 from enoch.paths import enoch_home
-from enoch.providers.contracts import ForgeProvider, ForgeProviderError
+from enoch.providers.contracts import (
+    ForgeProvider,
+    ForgeProviderError,
+    PullRequestMergeStatus,
+)
+from enoch.providers.registry import load_provider
+from enoch.providers.forge import inspect_pull_request_merge
 from enoch.runtime import DEFAULT_BRANCH
 from enoch.task_events import TaskEvent, load_task_events
 from enoch.update_tools import (

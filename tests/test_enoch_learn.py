@@ -30,21 +30,21 @@ class EnochLearnTests(unittest.TestCase):
         self.assertEqual(request.agent, "lucy")
 
     def test_prompt_tells_enoch_to_adapt_published_skill(self) -> None:
-        with patch("enoch.learn._github_text", side_effect=_github_text):
+        with patch("enoch.learn._published_text", side_effect=_published_text):
             prompt = learn_skill_prompt("/learn teach from lucy", root=ROOT)
 
         self.assertIn("published skill teach from Lucy", prompt)
         self.assertIn("Do not copy the source agent blindly", prompt)
-        self.assertIn("github.com/our-ark/lucy@main", prompt)
+        self.assertIn("our-ark/lucy@main", prompt)
         self.assertIn("Package useful improvements", prompt)
         self.assertIn("SKILL.md:", prompt)
 
     def test_command_reports_published_skill_summary(self) -> None:
-        with patch("enoch.learn._github_text", side_effect=_github_text):
+        with patch("enoch.learn._published_text", side_effect=_published_text):
             output = learn_command("learn teach from lucy", ROOT, prefix="")
 
         self.assertIn("Enoch inspected Lucy's teach skill.", output)
-        self.assertIn("github.com/our-ark/lucy@main", output)
+        self.assertIn("our-ark/lucy@main", output)
         self.assertIn("SKILL.md:", output)
 
     def test_command_reports_usage_for_old_lesson_path_shape(self) -> None:
@@ -53,7 +53,7 @@ class EnochLearnTests(unittest.TestCase):
         self.assertEqual(output, "Use learn <skill> from <agent>.")
 
     def test_refuses_missing_skill(self) -> None:
-        with patch("enoch.learn._github_text", side_effect=_github_text):
+        with patch("enoch.learn._published_text", side_effect=_published_text):
             with self.assertRaisesRegex(LearnError, "does not declare skill work"):
                 load_published_skill("work", "lucy")
 
@@ -74,7 +74,7 @@ class EnochLearnTests(unittest.TestCase):
     def test_explores_visible_skills_from_peer_agent(self) -> None:
         peer = AgentSkills(
             name="Enosh",
-            root=Path("github.com/our-ark/enosh@main"),
+            root=Path("our-ark/enosh@main"),
             skills=(
                 SkillInfo(name="research", path="src/enosh/skills/research"),
                 SkillInfo(name="private", path="src/enosh/skills/private", exposure="hidden"),
@@ -98,7 +98,7 @@ class EnochLearnTests(unittest.TestCase):
             lineage = root / ".agent" / "lineage.yaml"
             lineage.parent.mkdir(parents=True)
             lineage.write_text(
-                "parent:\n  name: Seth\n  repo: https://github.com/our-ark/seth\n  branch: main\n",
+                "parent:\n  name: Seth\n  repo: https://our-ark/seth\n  branch: main\n",
                 encoding="utf-8",
             )
 
@@ -106,7 +106,7 @@ class EnochLearnTests(unittest.TestCase):
                 explore_peer_skills("seth", root, loader=lambda _agent, root=None: None)
 
 
-def _github_text(agent: str, path: str) -> str:
+def _published_text(agent: str, path: str, **_kwargs) -> str:
     if agent != "lucy":
         raise AssertionError(agent)
     if path == "src/lucy/identity.yaml":

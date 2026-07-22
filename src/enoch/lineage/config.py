@@ -22,7 +22,7 @@ DEFAULT_IMPORTANT_FILE_PREFIXES = (
     "src/enoch/brain.py",
     "src/enoch/config.py",
     "src/enoch/daemon.py",
-    "src/enoch/github/workflow.py",
+    "src/enoch/providers/",
     "src/enoch/immune.py",
     "src/enoch/application.py",
 )

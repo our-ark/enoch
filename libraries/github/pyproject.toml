@@ -1,0 +1,19 @@
+[project]
+name = "our-ark-github"
+version = "0.1.0"
+description = "GitHub forge provider for Our Ark agents."
+license = "Apache-2.0"
+requires-python = ">=3.11"
+dependencies = [
+  "our-ark-provider-kit @ git+https://github.com/our-ark/enoch.git@5608b4b1ce85f64c3093730fcaac9c3a458169ca#subdirectory=libraries/provider-kit",
+]
+
+[project.entry-points."enoch.providers"]
+"forge.github" = "our_ark_github:create_provider"
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

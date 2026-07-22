@@ -12,7 +12,7 @@ library_contract: telegram-vision/v1
 library_commit: 6d894d9beb882af7e5f57900b2323361510262de
 status: active
 mode: external-tool
-entrypoint: src/enoch/telegram/vision.py
+entrypoint: our_ark_telegram_vision
 permissions:
   network:
     telegram_file_download: locked_chat_only

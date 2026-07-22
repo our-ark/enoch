@@ -98,7 +98,6 @@ class CodexRuntime(FunctionAgentRuntime):
             reset_token_usage,
             respond,
         )
-
         super().__init__(
             respond_fn=respond,
             act_in_session_fn=act_in_session,
@@ -107,6 +106,20 @@ class CodexRuntime(FunctionAgentRuntime):
             reset_usage_fn=reset_token_usage,
             health_fn=lambda health_root=None: _codex_health(health_root or root),
         )
+
+
+def create_provider(root: Path | None = None) -> CodexRuntime:
+    return CodexRuntime(root)
+
+
+ENOCH_PROVIDERS = (
+    {
+        "kind": "runtime",
+        "name": "codex",
+        "factory": create_provider,
+        "default": True,
+    },
+)
 
 
 def _codex_health(root: Path | None = None) -> ProviderHealth:

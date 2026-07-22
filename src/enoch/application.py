@@ -128,15 +128,16 @@ from enoch.formatting import (
     remote_publish_summary,
     summarize_for_log,
 )
-from enoch.github.workflow import (
+from enoch.providers.contracts import (
     EvolutionProvenance,
     LocalPublishResult,
-    PublishError,
     PullRequestCloseResult,
     PullRequestMergeCandidate,
     PullRequestMergeResult,
     PullRequestResult,
     RemotePublishResult,
+)
+from enoch.providers.forge import (
     close_pull_request,
     create_pull_request,
     feature_title,
@@ -282,7 +283,7 @@ class WorkStatusMessage:
 
 
 @dataclass(frozen=True)
-class GithubMaintenanceRequest:
+class ForgeMaintenanceRequest:
     close_numbers: tuple[int, ...]
     keep_number: int | None = None
 
@@ -329,35 +330,15 @@ _CURRENT_REGRESSION_SIGNALS: ContextVar[tuple[TaskRegressionSignal, ...]] = Cont
 )
 
 
-def _load_telegram_offset(root: Path | None = None) -> int | None:
-    return load_channel_cursor("telegram", root)
-
-
-def _save_telegram_offset(offset: int, root: Path | None = None) -> None:
-    save_channel_cursor("telegram", offset, root)
-
-
 def _load_provider_cursor(name: str, root: Path | None = None) -> Cursor | None:
-    if name == "telegram":
-        return _load_telegram_offset(root)
     return load_channel_cursor(name, root)
 
 
 def _save_provider_cursor(name: str, cursor: Cursor, root: Path | None = None) -> None:
-    if name == "telegram":
-        _save_telegram_offset(cursor, root)
-        return
     save_channel_cursor(name, cursor, root)
 
 
-def _next_update_offset(update: dict[str, Any]) -> int | None:
-    try:
-        return int(update["update_id"]) + 1
-    except (KeyError, TypeError, ValueError):
-        return None
-
-
-def _begin_lifecycle_run(root: Path | None = None, *, provider: str = "telegram") -> str:
+def _begin_lifecycle_run(root: Path | None = None, *, provider: str = "chat") -> str:
     return begin_channel_lifecycle(provider, root)
 
 
@@ -366,7 +347,7 @@ def _record_lifecycle_shutdown(
     reason: str,
     *,
     shutdown_notification_sent: bool,
-    provider: str = "telegram",
+    provider: str = "chat",
 ) -> None:
     record_channel_shutdown(
         provider,
@@ -381,7 +362,7 @@ def _startup_message(
     root: Path | None = None,
     previous_shutdown_warning: str = "",
     *,
-    provider: str = "telegram",
+    provider: str = "chat",
 ) -> str:
     return channel_startup_message(identity, provider, root, previous_shutdown_warning)
 
@@ -391,7 +372,7 @@ def _shutdown_message(
     root: Path | None = None,
     reason: str = "shutdown",
     *,
-    provider: str = "telegram",
+    provider: str = "chat",
 ) -> str:
     del root
     return channel_shutdown_message(identity, provider, reason)
@@ -488,31 +469,11 @@ class EnochApplication:
         if recovered is None:
             recovered = recover_interrupted_task(self.root)
         _cleanup_completed_task_worktree(recovered, self.root)
-        receive = getattr(self.client, "receive", None)
-        if callable(receive):
-            for event in receive(self.offset):
-                self.handle_event(event)
-        else:
-            for update in self.client.get_updates(self.offset):
-                self.handle_update(update)
+        for event in self.client.receive(self.offset):
+            self.handle_event(event)
         self._enqueue_due_cron_jobs()
         self._run_due_evolve_schedule()
         self._maybe_start_task_worker()
-
-    def handle_update(self, update: dict[str, Any]) -> None:
-        """Handle a legacy Telegram update.
-
-        Channel plugins should expose normalized ``ChatEvent`` instances from
-        ``receive``; this path remains only for older Telegram providers.
-        """
-        from enoch.telegram.client import telegram_event
-
-        next_offset = _next_update_offset(update)
-        event = telegram_event(update)
-        if event is None:
-            self._remember_update_offset(next_offset)
-            return
-        self.handle_event(event)
 
     def handle_event(self, event: ChatEvent) -> None:
         chat_id = event.conversation_id
@@ -1034,9 +995,9 @@ class EnochApplication:
         session_key: str,
     ) -> str:
         self._raise_if_current_task_cancelled()
-        github_maintenance = _github_maintenance_request(request)
-        if github_maintenance is not None:
-            reply = self._run_github_maintenance(github_maintenance)
+        forge_maintenance = _forge_maintenance_request(request)
+        if forge_maintenance is not None:
+            reply = self._run_forge_maintenance(forge_maintenance)
             self._raise_if_current_task_cancelled()
             return reply
 
@@ -1152,8 +1113,8 @@ class EnochApplication:
             raise GitError(f"Task #{task_id} lost its execution lease while preparing its worktree.")
         return worktree
 
-    def _run_github_maintenance(self, request: "GithubMaintenanceRequest") -> str:
-        self._update_work_status("Updating GitHub pull requests.")
+    def _run_forge_maintenance(self, request: "ForgeMaintenanceRequest") -> str:
+        self._update_work_status("Updating pull requests.")
         results = [
             self.forge.close_pull_request(
                 number,
@@ -1304,7 +1265,7 @@ class EnochApplication:
             summaries.append(_publish_summary(commit))
             self._send_step_update(chat_id, f"Committed {commit.commit_sha}.")
 
-            self._send_step_update(chat_id, "Pushing the branch to GitHub.")
+            self._send_step_update(chat_id, "Pushing the branch to the configured forge.")
             pushed = push_current_branch(root=publish_root)
             outputs.append(_format_remote_publish_result(pushed))
             summaries.append(_remote_publish_summary(pushed))
@@ -1376,12 +1337,12 @@ class EnochApplication:
                 [
                     f"Enoch switched local checkout back to {resident_branch}.",
                     cleanup,
-                    "The change remains on the pushed GitHub branch.",
+                    "The change remains on the pushed remote branch.",
                 ]
             )
         return (
             f"Enoch switched local checkout back to {resident_branch}. "
-            "The change remains on the pushed GitHub branch."
+            "The change remains on the pushed remote branch."
         )
 
     def _remember_resident_branch(self, fallback: str) -> str:
@@ -3116,9 +3077,6 @@ class EnochApplication:
             return
 
 
-EnochTelegramBot = EnochApplication
-
-
 def main(chat_provider_name: str = "") -> None:
     root = Path.cwd()
     identity = load_identity()
@@ -3175,10 +3133,6 @@ def main(chat_provider_name: str = "") -> None:
         print(f"\n{identity.name} stopped listening on {provider_label}.")
 
 
-def telegram_main() -> None:
-    main("telegram")
-
-
 def _notify_shutdown(bot: EnochApplication, reason: str) -> None:
     bot.stop_workers()
     sent = _allowed_conversation_id(bot.client) is not None
@@ -3225,9 +3179,6 @@ def _parse_chat_command(text: str) -> tuple[str, str]:
     return command, rest.strip()
 
 
-_parse_telegram_command = _parse_chat_command
-
-
 def _allowed_conversation_id(client: object) -> ConversationId | None:
     if hasattr(client, "allowed_conversation_id"):
         return getattr(client, "allowed_conversation_id")
@@ -3237,22 +3188,18 @@ def _allowed_conversation_id(client: object) -> ConversationId | None:
 
 def _chat_provider_name(client: object) -> str:
     name = str(getattr(client, "name", "")).strip().lower()
-    if name:
-        return name
-    if hasattr(getattr(client, "config", None), "allowed_chat_id"):
-        return "telegram"
-    return "chat"
+    return name or "chat"
 
 
 def _format_pull_request_merge_result(result: PullRequestMergeResult) -> str:
-    commit = result.merge_commit or "reported by GitHub"
+    commit = result.merge_commit or "reported by the forge"
     return "\n".join(
         [
             f"Merged PR #{result.number}.",
             f"URL: {result.url}",
             f"Method: {result.method}",
             f"Merge commit: {commit}",
-            f"GitHub result: {result.message}",
+            f"Forge result: {result.message}",
         ]
     )
 
@@ -3416,14 +3363,6 @@ def _task_timeout_message(timeout_seconds: int) -> str:
     return f"Task exceeded the configured {format_task_timeout(timeout_seconds)} timeout."
 
 
-def _with_replied_message_context(text: str, message: dict[str, Any]) -> str:
-    return _with_replied_text_context(
-        text,
-        _replied_message_text(message),
-        provider_name="telegram",
-    )
-
-
 def _with_replied_text_context(
     text: str,
     reply_text: str,
@@ -3452,7 +3391,7 @@ def _with_replied_text_context(
     )
 
 
-def _task_context_snapshot_prompt(request: str, *, provider: str = "telegram") -> str:
+def _task_context_snapshot_prompt(request: str, *, provider: str = "chat") -> str:
     return "\n".join(
         [
             "Task context snapshot request:",
@@ -3543,7 +3482,7 @@ def _reconciled_retry_result(
         candidates.append(job.result)
     for result in candidates:
         urls = re.findall(
-            r"https://github\.com/[^/\s]+/[^/\s]+/pull/\d+",
+            r"https://[^\s]+/(?:pull|pulls|merge_requests)/\d+",
             result,
         )
         for url in urls:
@@ -4578,7 +4517,7 @@ def _backlog_priority_update(argument: str) -> tuple[int | None, str | None]:
     return item_id, parts[1].lower()
 
 
-def _github_maintenance_request(text: str) -> GithubMaintenanceRequest | None:
+def _forge_maintenance_request(text: str) -> ForgeMaintenanceRequest | None:
     normalized = " ".join(text.strip().split())
     if not normalized:
         return None
@@ -4592,11 +4531,11 @@ def _github_maintenance_request(text: str) -> GithubMaintenanceRequest | None:
     if any(word in lowered for word in dedup_words):
         keep_number = _keep_pr_number(normalized) or numbers[0]
         close_numbers = tuple(number for number in numbers if number != keep_number)
-        return GithubMaintenanceRequest(close_numbers=_unique_numbers(close_numbers), keep_number=keep_number)
+        return ForgeMaintenanceRequest(close_numbers=_unique_numbers(close_numbers), keep_number=keep_number)
     if any(word in lowered for word in close_words):
         keep_number = _keep_pr_number(normalized)
         close_numbers = tuple(number for number in numbers if number != keep_number)
-        return GithubMaintenanceRequest(close_numbers=_unique_numbers(close_numbers), keep_number=keep_number)
+        return ForgeMaintenanceRequest(close_numbers=_unique_numbers(close_numbers), keep_number=keep_number)
     return None
 
 
@@ -4636,7 +4575,7 @@ def _duplicate_close_comment(keep_number: int | None) -> str:
 def _format_pr_close_results(results: list[PullRequestCloseResult], keep_number: int | None) -> str:
     if not results:
         return "Enoch could not close any pull requests: no duplicate PR numbers were found."
-    lines = ["Enoch updated GitHub pull requests."]
+    lines = ["Enoch updated pull requests."]
     if keep_number is not None:
         lines.append(f"Kept PR: #{keep_number}")
     lines.append("Closed PRs:")
@@ -4649,7 +4588,7 @@ def _format_pr_close_results(results: list[PullRequestCloseResult], keep_number:
             failed = True
             lines.append(f"- #{result.number}: failed ({result.note or 'unknown error'})")
     if failed:
-        return "Enoch could not complete every GitHub PR update.\n\n" + "\n".join(lines)
+        return "Enoch could not complete every pull request update.\n\n" + "\n".join(lines)
     return "\n".join(lines)
 
 

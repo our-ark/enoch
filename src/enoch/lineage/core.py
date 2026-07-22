@@ -1,16 +1,15 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-import base64
 from datetime import datetime, timezone
 import json
 from pathlib import Path
-import shutil
-import subprocess
-from typing import Any
+from typing import Any, Protocol
 from urllib.parse import urlparse
 
 from enoch.lineage.config import LineageSettings, lineage_settings
+from enoch.providers.contracts import ForgeProviderError
+from enoch.providers.registry import ProviderError, load_provider
 from enoch.runtime import DEFAULT_BRANCH
 
 
@@ -99,87 +98,32 @@ class LineageResolution:
     warnings: tuple[str, ...] = ()
 
 
-class LineageGitHubClient:
-    def __init__(self, gh: str | None = None) -> None:
-        self.gh = gh or shutil.which("gh")
-        if self.gh is None:
-            raise LineageError("GitHub CLI is not available.")
+class LineageProvider(Protocol):
+    def remote_parent(self, repo: str, branch: str) -> ParentLink | None: ...
+    def latest_commit(self, repo: str, branch: str) -> str: ...
+    def declared_skills(self, repo: str, branch: str) -> tuple[str, ...]: ...
+    def merged_prs(self, repo: str, branch: str, limit: int = REFRESH_LIMIT) -> list[dict[str, Any]]: ...
+    def commits(self, repo: str, branch: str, limit: int = REFRESH_LIMIT) -> list[dict[str, Any]]: ...
+    def commit_files(self, repo: str, sha: str) -> tuple[str, ...]: ...
+    def pr_files(self, repo: str, number: int) -> tuple[str, ...]: ...
 
-    def remote_parent(self, repo: str, branch: str) -> ParentLink | None:
-        data = self._json(["api", f"repos/{repo}/contents/{LINEAGE_PATH.as_posix()}?ref={branch}"])
-        content = str(data.get("content") or "")
-        if not content:
-            return None
-        decoded = base64.b64decode(content).decode("utf-8")
-        return parse_lineage_parent(decoded)
 
-    def latest_commit(self, repo: str, branch: str) -> str:
-        data = self._json(["api", f"repos/{repo}/commits/{branch}"])
-        sha = str(data.get("sha") or "").strip()
-        if not sha:
-            raise LineageError(f"Could not read latest commit for {repo}:{branch}.")
-        return sha
-
-    def declared_skills(self, repo: str, branch: str) -> tuple[str, ...]:
-        data = self._json(["api", f"repos/{repo}/contents/src/{repo.split('/')[-1]}/identity.yaml?ref={branch}"])
-        content = str(data.get("content") or "")
-        if not content:
-            return ()
-        decoded = base64.b64decode(content).decode("utf-8")
-        return parse_declared_skills(decoded)
-
-    def merged_prs(self, repo: str, branch: str, limit: int = REFRESH_LIMIT) -> list[dict[str, Any]]:
-        return list(
-            self._json(
-                [
-                    "pr",
-                    "list",
-                    "--repo",
-                    repo,
-                    "--state",
-                    "merged",
-                    "--base",
-                    branch,
-                    "--limit",
-                    str(limit),
-                    "--json",
-                    "number,title,body,labels,mergedAt,mergeCommit,url",
-                ]
-            )
+def _lineage_provider(root: Path | None = None) -> LineageProvider:
+    try:
+        provider = load_provider("forge", root)
+    except ProviderError as error:
+        raise LineageError(str(error)) from error
+    required = (
+        "remote_parent", "latest_commit", "declared_skills", "merged_prs",
+        "commits", "commit_files", "pr_files",
+    )
+    missing = [name for name in required if not callable(getattr(provider, name, None))]
+    if missing:
+        raise LineageError(
+            f"Forge provider {getattr(provider, 'name', 'unknown')} lacks lineage capabilities: "
+            + ", ".join(missing)
         )
-
-    def commits(self, repo: str, branch: str, limit: int = REFRESH_LIMIT) -> list[dict[str, Any]]:
-        return list(
-            self._json(
-                [
-                    "api",
-                    f"repos/{repo}/commits?sha={branch}&per_page={limit}",
-                ]
-            )
-        )
-
-    def commit_files(self, repo: str, sha: str) -> tuple[str, ...]:
-        data = self._json(["api", f"repos/{repo}/commits/{sha}"])
-        return tuple(str(item.get("filename") or "") for item in data.get("files", []) if item.get("filename"))
-
-    def pr_files(self, repo: str, number: int) -> tuple[str, ...]:
-        data = self._json(["pr", "view", str(number), "--repo", repo, "--json", "files"])
-        return tuple(str(item.get("path") or "") for item in data.get("files", []) if item.get("path"))
-
-    def _json(self, args: list[str]) -> Any:
-        result = subprocess.run(
-            [self.gh, *args],
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-        if result.returncode != 0:
-            detail = result.stderr.strip() or result.stdout.strip() or "GitHub CLI command failed."
-            raise LineageError(detail)
-        try:
-            return json.loads(result.stdout or "null")
-        except json.JSONDecodeError as error:
-            raise LineageError("GitHub CLI returned invalid JSON.") from error
+    return provider
 
 
 def lineage_file(root: Path | None = None) -> Path:
@@ -266,13 +210,13 @@ def _commit_identifier(value: str) -> str:
 
 def resolve_lineage(
     root: Path | None = None,
-    client: LineageGitHubClient | None = None,
+    client: LineageProvider | None = None,
     max_depth: int = 10,
 ) -> LineageResolution:
     parent = load_parent(root)
     if parent is None:
         return LineageResolution(ancestors=())
-    github = client or LineageGitHubClient()
+    remote = client or _lineage_provider(root)
     chain: list[AncestorLink] = []
     warnings: list[str] = []
     seen_repos: set[str] = set()
@@ -284,8 +228,8 @@ def resolve_lineage(
         seen_repos.add(current.repo)
         branch = current.branch or DEFAULT_BRANCH
         try:
-            skills = github.declared_skills(current.repo, branch)
-        except LineageError:
+            skills = remote.declared_skills(current.repo, branch)
+        except (LineageError, ForgeProviderError):
             skills = ()
         chain.append(
             AncestorLink(
@@ -301,8 +245,8 @@ def resolve_lineage(
             break
         lineage_ref = current.commit_at_birth or current.branch or DEFAULT_BRANCH
         try:
-            current = github.remote_parent(current.repo, lineage_ref)
-        except LineageError as error:
+            current = remote.remote_parent(current.repo, lineage_ref)
+        except (LineageError, ForgeProviderError) as error:
             warnings.append(f"Could not read parent lineage from {current.repo}@{lineage_ref}: {error}")
             current = None
         depth += 1
@@ -374,7 +318,7 @@ def parse_identity_name(text: str) -> str:
 def refresh_lineage_inbox(
     root: Path | None = None,
     scope: str = "all",
-    client: LineageGitHubClient | None = None,
+    client: LineageProvider | None = None,
 ) -> LineageInboxReport:
     scope = (scope or "all").strip().lower()
     if scope not in {"all", "parent"}:
@@ -394,15 +338,15 @@ def refresh_lineage_inbox(
     new_count = 0
 
     if ancestors:
-        github = client or LineageGitHubClient()
+        remote = client or _lineage_provider(root)
         settings = lineage_settings(root)
         for ancestor in ancestors:
             try:
-                latest_heads[ancestor.repo] = github.latest_commit(ancestor.repo, ancestor.branch)
+                latest_heads[ancestor.repo] = remote.latest_commit(ancestor.repo, ancestor.branch)
                 pr_merge_commits: set[str] = set()
-                for pr in github.merged_prs(ancestor.repo, ancestor.branch):
+                for pr in remote.merged_prs(ancestor.repo, ancestor.branch):
                     number = int(pr.get("number") or 0)
-                    files = github.pr_files(ancestor.repo, number)
+                    files = remote.pr_files(ancestor.repo, number)
                     candidate = _candidate_from_pr(ancestor, pr, files, settings)
                     if candidate.merge_commit:
                         pr_merge_commits.add(candidate.merge_commit)
@@ -410,17 +354,17 @@ def refresh_lineage_inbox(
                     if previous is None:
                         new_count += 1
                     merged[candidate.id] = _merge_candidate_metadata(candidate, previous, refreshed_at)
-                for commit in github.commits(ancestor.repo, ancestor.branch):
+                for commit in remote.commits(ancestor.repo, ancestor.branch):
                     sha = _commit_sha(commit)
                     if not sha or sha in pr_merge_commits:
                         continue
-                    files = github.commit_files(ancestor.repo, sha)
+                    files = remote.commit_files(ancestor.repo, sha)
                     candidate = _candidate_from_commit(ancestor, commit, files, settings)
                     previous = existing.get(candidate.id)
                     if previous is None:
                         new_count += 1
                     merged[candidate.id] = _merge_candidate_metadata(candidate, previous, refreshed_at)
-            except (LineageError, ValueError) as error:
+            except (LineageError, ForgeProviderError, ValueError) as error:
                 errors.append(f"{ancestor.repo}: {error}")
 
     saved_candidates = tuple(sorted(merged.values(), key=_candidate_sort_key))
@@ -1008,12 +952,11 @@ def _clean_yaml_value(value: str) -> str:
 
 def _normalize_repo(repo: str) -> str:
     value = repo.strip()
-    if value.startswith("git@github.com:"):
-        value = value.removeprefix("git@github.com:")
+    if value.startswith("git@") and ":" in value:
+        value = value.split(":", 1)[1]
     elif value.startswith(("http://", "https://")):
         parsed = urlparse(value)
-        if parsed.netloc.lower() == "github.com":
-            value = parsed.path.lstrip("/")
+        value = parsed.path.lstrip("/")
     if value.endswith(".git"):
         value = value[:-4]
     return value.strip("/")

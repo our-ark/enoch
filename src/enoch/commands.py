@@ -35,7 +35,7 @@ from enoch.lineage.core import (
 from enoch.providers.contracts import AgentRuntime
 from enoch.providers.contracts import ConversationId
 from enoch.providers.registry import (
-    DEFAULT_PROVIDERS,
+    PROVIDER_KINDS,
     ProviderError,
     available_providers,
     provider_name,
@@ -66,7 +66,7 @@ def status_message(
     *,
     allowed_chat_id: ConversationId | None,
     chat_id: ConversationId | None = None,
-    chat_provider: str = "telegram",
+    chat_provider: str = "chat",
     model_summary_fn: ModelSummaryFn = model_summary,
 ) -> str:
     provider_label = _provider_label(chat_provider)
@@ -87,19 +87,9 @@ def status_message(
     )
     if allowed_chat_id is None and chat_id is not None:
         lines.append("")
-        if chat_provider.strip().lower() == "telegram":
-            lines.extend(
-                [
-                    "Lock Enoch to this Telegram conversation with:",
-                    f"bin/enoch setup-chat {chat_id}",
-                    "Then restart Enoch:",
-                    "bin/enoch-daemon restart",
-                ]
-            )
-        else:
-            lines.append(
-                f"Configure the {provider_label} provider to lock Enoch to this conversation, then restart Enoch."
-            )
+        lines.append(
+            f"Configure the {provider_label} provider to lock Enoch to this conversation, then restart Enoch."
+        )
     return "\n".join(lines)
 
 
@@ -212,7 +202,7 @@ def thinking_usage(prefix: str = "/") -> str:
     )
 
 
-def thinking_lock_message(chat_provider: str = "telegram") -> str:
+def thinking_lock_message(chat_provider: str = "chat") -> str:
     return (
         f"Enoch needs {_provider_label(chat_provider)} to be locked to one conversation "
         "before changing her thinking level."
@@ -240,16 +230,19 @@ def config_command(
         if len(parts) != 4 or setting != "provider":
             return config_usage(prefix=prefix)
         kind = parts[2].strip().lower()
-        if kind not in DEFAULT_PROVIDERS:
+        if kind not in PROVIDER_KINDS:
             return "Provider kind must be chat, runtime, vcs, or forge."
         value = parts[3].strip().lower()
         if value in {"default", "reset"}:
             write_section_value("providers", kind, None, root)
-            selected = DEFAULT_PROVIDERS[kind]
+            try:
+                selected = provider_name(kind, root)
+            except ProviderError as error:
+                return str(error)
             message = f"Enoch {kind} provider reset to {selected}."
         else:
             try:
-                choices = available_providers(kind)
+                choices = available_providers(kind, root)
             except ProviderError as error:
                 return str(error)
             if value not in choices:
@@ -445,7 +438,7 @@ def provider_config_status(root: Path, *, prefix: str = "/") -> str:
     lines = ["Enoch providers:"]
     for kind in ("chat", "runtime", "vcs", "forge"):
         selected = provider_name(kind, root)
-        choices = ", ".join(available_providers(kind))
+        choices = ", ".join(available_providers(kind, root))
         lines.append(f"- {kind}: {selected} (available: {choices})")
     lines.extend(
         [
@@ -479,10 +472,14 @@ def codex_executable_config_status(root: Path, *, prefix: str = "/") -> str:
 
 
 def _provider_summary(root: Path) -> str:
-    return ", ".join(
-        f"{kind}={provider_name(kind, root)}"
-        for kind in ("chat", "runtime", "vcs", "forge")
-    )
+    providers = []
+    for kind in PROVIDER_KINDS:
+        try:
+            selected = provider_name(kind, root)
+        except ProviderError:
+            selected = "not configured"
+        providers.append(f"{kind}={selected}")
+    return ", ".join(providers)
 
 
 def _default_runtime(root: Path | None = None) -> FunctionAgentRuntime:
@@ -601,7 +598,7 @@ def doctor_command(
     return format_doctor(run_doctor(root))
 
 
-def help_message(topic: str = "", *, chat_provider: str = "telegram") -> str:
+def help_message(topic: str = "", *, chat_provider: str = "chat") -> str:
     normalized_topic = _normalize_help_topic(topic)
     if normalized_topic:
         topic_message = _help_topic_message(normalized_topic)
@@ -754,23 +751,19 @@ def pr_usage(prefix: str = "/") -> str:
         [
             "Pull request commands:",
             f"{prefix}pr - list open pull requests in the current repository",
-            f"{prefix}pr show <PR number or GitHub PR URL> - inspect one pull request",
-            f"{prefix}pr merge <PR number or GitHub PR URL> - inspect and merge exactly that PR",
+            f"{prefix}pr show <PR number or PR URL> - inspect one pull request",
+            f"{prefix}pr merge <PR number or PR URL> - inspect and merge exactly that PR",
             "A merge target is required; Enoch will not infer one from the current branch or conversation.",
         ]
     )
 
 
-def action_lock_message(chat_provider: str = "telegram") -> str:
+def action_lock_message(chat_provider: str = "chat") -> str:
     label = _provider_label(chat_provider)
-    setup = (
-        "Run `bin/enoch setup-chat <chat_id>` and restart Enoch."
-        if chat_provider.strip().lower() == "telegram"
-        else f"Configure the {label} provider with a locked conversation and restart Enoch."
-    )
+    setup = f"Configure the {label} provider with a locked conversation and restart Enoch."
     return "\n".join(
         [
-            f"Enoch will not change code or coordinate GitHub unless {label} is locked to one conversation.",
+            f"Enoch will not change code or coordinate repository changes unless {label} is locked to one conversation.",
             setup,
         ]
     )

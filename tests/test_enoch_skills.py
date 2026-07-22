@@ -1,5 +1,4 @@
 from pathlib import Path
-import subprocess
 import sys
 import tempfile
 import unittest
@@ -9,7 +8,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from enoch.skills import SkillsError, _github_text, load_agent_skills, skills_command
+from enoch.skills import SkillsError, _published_text, load_agent_skills, skills_command
 
 
 class EnochSkillsTests(unittest.TestCase):
@@ -18,8 +17,6 @@ class EnochSkillsTests(unittest.TestCase):
 
         names = [skill.name for skill in agent.skills]
         self.assertEqual(agent.name, "Enoch")
-        self.assertIn("telegram-talk", names)
-        self.assertIn("telegram-vision", names)
         self.assertIn("skill-library", names)
         self.assertIn("code", names)
         self.assertIn("inherit", names)
@@ -42,9 +39,6 @@ class EnochSkillsTests(unittest.TestCase):
         teach = next(skill for skill in agent.skills if skill.name == "teach")
         self.assertEqual(teach.exposure, "hidden")
         self.assertIn("Hidden skill", teach.summary)
-        vision = next(skill for skill in agent.skills if skill.name == "telegram-vision")
-        self.assertEqual(vision.version, "0.2.0")
-        self.assertIn("photos", vision.summary)
         library = next(skill for skill in agent.skills if skill.name == "skill-library")
         self.assertEqual(library.version, "0.1.0")
         self.assertIn("immutable public libraries", library.summary)
@@ -55,8 +49,6 @@ class EnochSkillsTests(unittest.TestCase):
 
         names = [skill.name for skill in agent.skills]
         self.assertEqual(agent.name, "Enoch")
-        self.assertIn("telegram-talk", names)
-        self.assertIn("telegram-vision", names)
         self.assertIn("skill-library", names)
         self.assertIn("code", names)
         self.assertIn("inherit", names)
@@ -67,9 +59,9 @@ class EnochSkillsTests(unittest.TestCase):
         self.assertEqual(learn.version, "0.2.0")
         self.assertIn("Adapt a published skill", learn.summary)
 
-    def test_telegram_vision_records_direct_parent_lineage(self) -> None:
+    def test_external_vision_skill_records_direct_parent_lineage(self) -> None:
         metadata = (
-            ROOT / "src" / "enoch" / "skills" / "telegram-vision" / "skill.yaml"
+            ROOT / "libraries" / "telegram-vision" / "skills" / "telegram-vision" / "skill.yaml"
         ).read_text(encoding="utf-8")
 
         self.assertIn("origin_agent: Eve", metadata)
@@ -117,7 +109,7 @@ class EnochSkillsTests(unittest.TestCase):
         self.assertIn("Package Lucy lessons.", output)
 
     def test_skills_command_reads_named_agent_from_github_main(self) -> None:
-        def github_text(agent: str, path: str) -> str:
+        def published_text(agent: str, path: str, **_kwargs) -> str:
             self.assertEqual(agent, "lucy")
             if path == "src/lucy/identity.yaml":
                 return "\n".join(
@@ -135,16 +127,16 @@ class EnochSkillsTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "instances" / "enoch-gary"
-            with patch("enoch.skills._github_text", side_effect=github_text):
+            with patch("enoch.skills._published_text", side_effect=published_text):
                 output = skills_command("skills lucy", root, prefix="")
 
         self.assertIn("Lucy skills:", output)
-        self.assertIn("Root: github.com/our-ark/lucy@main", output)
+        self.assertIn("Root: our-ark/lucy@main", output)
         self.assertIn("teach", output)
         self.assertIn("Package Lucy lessons.", output)
 
     def test_skills_command_reads_any_named_agent_from_github_main(self) -> None:
-        def github_text(agent: str, path: str) -> str:
+        def published_text(agent: str, path: str, **_kwargs) -> str:
             self.assertEqual(agent, "adam")
             if path == "src/adam/identity.yaml":
                 return "\n".join(
@@ -162,16 +154,16 @@ class EnochSkillsTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "instances" / "enoch-gary"
-            with patch("enoch.skills._github_text", side_effect=github_text):
+            with patch("enoch.skills._published_text", side_effect=published_text):
                 output = skills_command("skills adam", root, prefix="")
 
         self.assertIn("Adam skills:", output)
-        self.assertIn("Root: github.com/our-ark/adam@main", output)
+        self.assertIn("Root: our-ark/adam@main", output)
         self.assertIn("inherit", output)
 
     def test_skills_command_reports_missing_published_agent(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            with patch("enoch.skills._github_text", side_effect=SkillsError("boom")):
+            with patch("enoch.skills._published_text", side_effect=SkillsError("boom")):
                 output = skills_command("skills missing", Path(directory), prefix="")
 
         self.assertIn("Enoch could not inspect skills", output)
@@ -183,7 +175,7 @@ class EnochSkillsTests(unittest.TestCase):
         self.assertIn("Enoch could not inspect skills", output)
 
     def test_skills_command_keeps_named_agent_independent_from_local_checkout(self) -> None:
-        def github_text(agent: str, path: str) -> str:
+        def published_text(agent: str, path: str, **_kwargs) -> str:
             if path == "src/adam/identity.yaml":
                 return "\n".join(
                     [
@@ -216,25 +208,27 @@ class EnochSkillsTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            with patch("enoch.skills._github_text", side_effect=github_text):
+            with patch("enoch.skills._published_text", side_effect=published_text):
                 output = skills_command("skills adam", enoch, prefix="")
 
         self.assertIn("Adam skills:", output)
         self.assertIn("github-main", output)
         self.assertNotIn("local-dirty", output)
 
-    @patch("enoch.skills.subprocess.run")
-    @patch("enoch.skills.shutil.which", return_value="/usr/local/bin/gh")
-    def test_github_text_uses_authenticated_gh_api(self, which, run) -> None:
-        run.return_value = subprocess.CompletedProcess(["gh"], 0, "name: Lucy\n", "")
+    @patch("enoch.skills.load_provider")
+    def test_published_text_uses_configured_forge(self, load_provider) -> None:
+        provider = load_provider.return_value
+        provider.read_text.return_value = "name: Lucy\n"
 
-        text = _github_text("lucy", "src/lucy/identity.yaml")
+        text = _published_text("lucy", "src/lucy/identity.yaml")
 
         self.assertEqual(text, "name: Lucy\n")
-        run.assert_called_once()
-        command = run.call_args.args[0]
-        self.assertEqual(command[:4], ["/usr/local/bin/gh", "api", "-H", "Accept: application/vnd.github.raw"])
-        self.assertEqual(command[-1], "repos/our-ark/lucy/contents/src/lucy/identity.yaml?ref=main")
+        load_provider.assert_called_once_with("forge", None)
+        provider.read_text.assert_called_once_with(
+            "our-ark/lucy",
+            "src/lucy/identity.yaml",
+            "main",
+        )
 
 
 if __name__ == "__main__":

@@ -23,7 +23,7 @@ class EnochCliTests(unittest.TestCase):
 
         self.assertIn("status      Show identity, model, and lineage.", output)
         self.assertIn("init        Create or claim a local Enoch instance worktree.", output)
-        self.assertIn("setup       Configure the built-in Telegram provider and setup status.", output)
+        self.assertIn("setup       Configure the selected chat provider and lineage.", output)
         self.assertIn("thinking    Show or set Enoch's Codex thinking level.", output)
         self.assertIn("mission     Show or update Enoch's mission.", output)
         self.assertNotIn("memory      Manage long-term memory", output)
@@ -247,7 +247,7 @@ class EnochCliTests(unittest.TestCase):
             )
 
             self.assertFalse((root / ".agent" / "lineage.yaml").exists())
-            self.assertEqual(output.count("Use bin/enoch setup ancestor <github-url>."), 3)
+            self.assertEqual(output.count("Use bin/enoch setup ancestor <repo-url>."), 3)
 
     def test_setup_ancestor_clear_removes_lineage_parent(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

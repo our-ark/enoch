@@ -6,9 +6,11 @@ from unittest.mock import MagicMock, patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "libraries" / "provider-kit" / "src"))
+sys.path.insert(0, str(ROOT / "libraries" / "github" / "src"))
 sys.path.insert(0, str(ROOT / "src"))
 
-from enoch.github.workflow import (
+from our_ark_github.workflow import (
     EvolutionProvenance,
     PublishError,
     PullRequestMergeStatus,
@@ -26,23 +28,23 @@ from enoch.immune import DoctorDiagnosis
 
 
 class EnochGithubWorkflowTests(unittest.TestCase):
-    @patch("enoch.github.workflow.current_branch", return_value="main")
+    @patch("our_ark_github.workflow.current_branch", return_value="main")
     def test_refuses_protected_branch_by_default(self, _current_branch: MagicMock) -> None:
         with self.assertRaisesRegex(PublishError, "Refusing to publish from main"):
             prepare_local_publish("Test commit", root=ROOT)
 
-    @patch("enoch.github.workflow.changed_files", return_value=[])
-    @patch("enoch.github.workflow.current_branch", return_value="feature/enoch")
+    @patch("our_ark_github.workflow.changed_files", return_value=[])
+    @patch("our_ark_github.workflow.current_branch", return_value="feature/enoch")
     def test_refuses_empty_diff(
         self, _current_branch: MagicMock, _changed_files: MagicMock
     ) -> None:
         with self.assertRaisesRegex(PublishError, "No local changes"):
             prepare_local_publish("Test commit", root=ROOT)
 
-    @patch("enoch.github.workflow.run_immune_system")
-    @patch("enoch.github.workflow.diff_summary", return_value="README.md | 1 +")
-    @patch("enoch.github.workflow.changed_files", return_value=["README.md"])
-    @patch("enoch.github.workflow.current_branch", return_value="feature/enoch")
+    @patch("our_ark_github.workflow.run_immune_system")
+    @patch("our_ark_github.workflow.diff_summary", return_value="README.md | 1 +")
+    @patch("our_ark_github.workflow.changed_files", return_value=["README.md"])
+    @patch("our_ark_github.workflow.current_branch", return_value="feature/enoch")
     def test_refuses_when_doctor_fails(
         self,
         _current_branch: MagicMock,
@@ -55,12 +57,12 @@ class EnochGithubWorkflowTests(unittest.TestCase):
         with self.assertRaisesRegex(PublishError, "Doctor failed"):
             prepare_local_publish("Test commit", root=ROOT)
 
-    @patch("enoch.github.workflow.read_section")
-    @patch("enoch.github.workflow.run_git")
-    @patch("enoch.github.workflow.run_immune_system")
-    @patch("enoch.github.workflow.diff_summary", return_value="README.md | 1 +")
-    @patch("enoch.github.workflow.changed_files", return_value=["README.md"])
-    @patch("enoch.github.workflow.current_branch", return_value="feature/enoch")
+    @patch("our_ark_github.workflow.read_section")
+    @patch("our_ark_github.workflow.run_git")
+    @patch("our_ark_github.workflow.run_immune_system")
+    @patch("our_ark_github.workflow.diff_summary", return_value="README.md | 1 +")
+    @patch("our_ark_github.workflow.changed_files", return_value=["README.md"])
+    @patch("our_ark_github.workflow.current_branch", return_value="feature/enoch")
     def test_stages_and_commits_after_doctor_passes(
         self,
         _current_branch: MagicMock,
@@ -102,12 +104,12 @@ class EnochGithubWorkflowTests(unittest.TestCase):
             ROOT,
         )
 
-    @patch("enoch.github.workflow.read_section", return_value={})
-    @patch("enoch.github.workflow.run_git")
-    @patch("enoch.github.workflow.run_immune_system")
-    @patch("enoch.github.workflow.diff_summary", return_value="README.md | 1 +")
-    @patch("enoch.github.workflow.changed_files", return_value=["README.md"])
-    @patch("enoch.github.workflow.current_branch", return_value="feature/enoch")
+    @patch("our_ark_github.workflow.read_section", return_value={})
+    @patch("our_ark_github.workflow.run_git")
+    @patch("our_ark_github.workflow.run_immune_system")
+    @patch("our_ark_github.workflow.diff_summary", return_value="README.md | 1 +")
+    @patch("our_ark_github.workflow.changed_files", return_value=["README.md"])
+    @patch("our_ark_github.workflow.current_branch", return_value="feature/enoch")
     def test_commit_author_falls_back_to_latest_noreply_email(
         self,
         _current_branch: MagicMock,
@@ -141,10 +143,10 @@ class EnochGithubWorkflowTests(unittest.TestCase):
             ROOT,
         )
 
-    @patch("enoch.github.workflow.run_immune_system")
-    @patch("enoch.github.workflow.diff_summary", return_value="README.md | 1 +\nscratch.txt | 1 +")
-    @patch("enoch.github.workflow.changed_files", return_value=["README.md", "scratch.txt"])
-    @patch("enoch.github.workflow.current_branch", return_value="feature/enoch")
+    @patch("our_ark_github.workflow.run_immune_system")
+    @patch("our_ark_github.workflow.diff_summary", return_value="README.md | 1 +\nscratch.txt | 1 +")
+    @patch("our_ark_github.workflow.changed_files", return_value=["README.md", "scratch.txt"])
+    @patch("our_ark_github.workflow.current_branch", return_value="feature/enoch")
     def test_publish_refuses_unexpected_files(
         self,
         _current_branch: MagicMock,
@@ -157,14 +159,14 @@ class EnochGithubWorkflowTests(unittest.TestCase):
         with self.assertRaisesRegex(PublishError, "unexpected files"):
             prepare_local_publish("Test commit", root=ROOT, allowed_files=("README.md",))
 
-    @patch("enoch.github.workflow.current_branch", return_value="main")
+    @patch("our_ark_github.workflow.current_branch", return_value="main")
     def test_push_refuses_protected_branch_by_default(self, _current_branch: MagicMock) -> None:
         with self.assertRaisesRegex(PublishError, "Refusing to push main"):
             push_current_branch(root=ROOT)
 
-    @patch("enoch.github.workflow.ensure_clean_worktree")
-    @patch("enoch.github.workflow.run_git")
-    @patch("enoch.github.workflow.current_branch", return_value="feature/enoch")
+    @patch("our_ark_github.workflow.ensure_clean_worktree")
+    @patch("our_ark_github.workflow.run_git")
+    @patch("our_ark_github.workflow.current_branch", return_value="feature/enoch")
     def test_push_refuses_when_branch_has_no_ahead_commits(
         self,
         _current_branch: MagicMock,
@@ -176,9 +178,9 @@ class EnochGithubWorkflowTests(unittest.TestCase):
         with self.assertRaisesRegex(PublishError, "no local commits ahead"):
             push_current_branch(root=ROOT)
 
-    @patch("enoch.github.workflow.ensure_clean_worktree")
-    @patch("enoch.github.workflow.run_git")
-    @patch("enoch.github.workflow.current_branch", return_value="feature/enoch")
+    @patch("our_ark_github.workflow.ensure_clean_worktree")
+    @patch("our_ark_github.workflow.run_git")
+    @patch("our_ark_github.workflow.current_branch", return_value="feature/enoch")
     def test_pushes_current_branch_and_returns_compare_url(
         self,
         _current_branch: MagicMock,
@@ -203,9 +205,9 @@ class EnochGithubWorkflowTests(unittest.TestCase):
         )
         run_git.assert_any_call(["push", "-u", "origin", "feature/enoch"], ROOT)
 
-    @patch("enoch.github.workflow.ensure_clean_worktree")
-    @patch("enoch.github.workflow.run_git")
-    @patch("enoch.github.workflow.current_branch", return_value="feature/enoch")
+    @patch("our_ark_github.workflow.ensure_clean_worktree")
+    @patch("our_ark_github.workflow.run_git")
+    @patch("our_ark_github.workflow.current_branch", return_value="feature/enoch")
     def test_push_count_for_new_branch_uses_base_branch(
         self,
         _current_branch: MagicMock,
@@ -224,9 +226,9 @@ class EnochGithubWorkflowTests(unittest.TestCase):
         self.assertEqual(result.ahead_count, 2)
         run_git.assert_any_call(["rev-list", "--count", "origin/main..HEAD"], ROOT)
 
-    @patch("enoch.github.workflow.ensure_clean_worktree")
-    @patch("enoch.github.workflow.run_git")
-    @patch("enoch.github.workflow.current_branch", return_value="feature/enoch")
+    @patch("our_ark_github.workflow.ensure_clean_worktree")
+    @patch("our_ark_github.workflow.run_git")
+    @patch("our_ark_github.workflow.current_branch", return_value="feature/enoch")
     def test_push_compare_url_allows_dots_in_repo_name(
         self,
         _current_branch: MagicMock,
@@ -246,14 +248,14 @@ class EnochGithubWorkflowTests(unittest.TestCase):
             "https://github.com/our-ark/enoch.agent/compare/main...feature/enoch?expand=1",
         )
 
-    @patch("enoch.github.workflow.current_branch", return_value="main")
+    @patch("our_ark_github.workflow.current_branch", return_value="main")
     def test_pr_refuses_protected_branch_by_default(self, _current_branch: MagicMock) -> None:
         with self.assertRaisesRegex(PublishError, "Refusing to open a PR from main"):
             create_pull_request(root=ROOT)
 
-    @patch("enoch.github.workflow.ensure_clean_worktree")
-    @patch("enoch.github.workflow.run_git")
-    @patch("enoch.github.workflow.current_branch", return_value="feature/enoch")
+    @patch("our_ark_github.workflow.ensure_clean_worktree")
+    @patch("our_ark_github.workflow.run_git")
+    @patch("our_ark_github.workflow.current_branch", return_value="feature/enoch")
     def test_pr_requires_pushed_branch(
         self,
         _current_branch: MagicMock,
@@ -265,10 +267,10 @@ class EnochGithubWorkflowTests(unittest.TestCase):
         with self.assertRaisesRegex(PublishError, "Push this branch first"):
             create_pull_request(root=ROOT)
 
-    @patch("enoch.github.workflow.shutil.which", return_value=None)
-    @patch("enoch.github.workflow.ensure_clean_worktree")
-    @patch("enoch.github.workflow.run_git")
-    @patch("enoch.github.workflow.current_branch", return_value="feature/enoch")
+    @patch("our_ark_github.workflow.shutil.which", return_value=None)
+    @patch("our_ark_github.workflow.ensure_clean_worktree")
+    @patch("our_ark_github.workflow.run_git")
+    @patch("our_ark_github.workflow.current_branch", return_value="feature/enoch")
     def test_pr_returns_fallback_url_when_gh_is_missing(
         self,
         _current_branch: MagicMock,
@@ -293,11 +295,11 @@ class EnochGithubWorkflowTests(unittest.TestCase):
             "https://github.com/our-ark/genesis/compare/main...feature/enoch?expand=1",
         )
 
-    @patch("enoch.github.workflow.subprocess.run")
-    @patch("enoch.github.workflow.shutil.which", return_value="/usr/local/bin/gh")
-    @patch("enoch.github.workflow.ensure_clean_worktree")
-    @patch("enoch.github.workflow.run_git")
-    @patch("enoch.github.workflow.current_branch", return_value="feature/enoch")
+    @patch("our_ark_github.workflow.subprocess.run")
+    @patch("our_ark_github.workflow.shutil.which", return_value="/usr/local/bin/gh")
+    @patch("our_ark_github.workflow.ensure_clean_worktree")
+    @patch("our_ark_github.workflow.run_git")
+    @patch("our_ark_github.workflow.current_branch", return_value="feature/enoch")
     def test_pr_creates_with_gh(
         self,
         _current_branch: MagicMock,
@@ -327,11 +329,11 @@ class EnochGithubWorkflowTests(unittest.TestCase):
         self.assertNotIn("--draft", args)
         self.assertFalse(result.draft)
 
-    @patch("enoch.github.workflow.subprocess.run")
-    @patch("enoch.github.workflow.shutil.which", return_value="/usr/local/bin/gh")
-    @patch("enoch.github.workflow.ensure_clean_worktree")
-    @patch("enoch.github.workflow.run_git")
-    @patch("enoch.github.workflow.current_branch", return_value="feature/enoch")
+    @patch("our_ark_github.workflow.subprocess.run")
+    @patch("our_ark_github.workflow.shutil.which", return_value="/usr/local/bin/gh")
+    @patch("our_ark_github.workflow.ensure_clean_worktree")
+    @patch("our_ark_github.workflow.run_git")
+    @patch("our_ark_github.workflow.current_branch", return_value="feature/enoch")
     def test_pr_appends_evolution_provenance(
         self,
         _current_branch: MagicMock,
@@ -378,11 +380,11 @@ class EnochGithubWorkflowTests(unittest.TestCase):
         args = run.call_args.args[0]
         self.assertEqual(args[args.index("--body") + 1], result.body)
 
-    @patch("enoch.github.workflow.subprocess.run")
-    @patch("enoch.github.workflow.shutil.which", return_value="/usr/local/bin/gh")
-    @patch("enoch.github.workflow.ensure_clean_worktree")
-    @patch("enoch.github.workflow.run_git")
-    @patch("enoch.github.workflow.current_branch", return_value="feature/enoch")
+    @patch("our_ark_github.workflow.subprocess.run")
+    @patch("our_ark_github.workflow.shutil.which", return_value="/usr/local/bin/gh")
+    @patch("our_ark_github.workflow.ensure_clean_worktree")
+    @patch("our_ark_github.workflow.run_git")
+    @patch("our_ark_github.workflow.current_branch", return_value="feature/enoch")
     def test_pr_uses_draft_only_when_explicitly_requested(
         self,
         _current_branch: MagicMock,
@@ -407,9 +409,9 @@ class EnochGithubWorkflowTests(unittest.TestCase):
         self.assertTrue(result.draft)
         self.assertIn("--draft", run.call_args.args[0])
 
-    @patch("enoch.github.workflow.subprocess.run")
-    @patch("enoch.github.workflow.shutil.which", return_value="/usr/local/bin/gh")
-    @patch("enoch.github.workflow.run_git")
+    @patch("our_ark_github.workflow.subprocess.run")
+    @patch("our_ark_github.workflow.shutil.which", return_value="/usr/local/bin/gh")
+    @patch("our_ark_github.workflow.run_git")
     def test_closes_pull_request_with_comment(
         self,
         run_git: MagicMock,
@@ -430,8 +432,8 @@ class EnochGithubWorkflowTests(unittest.TestCase):
             ["/usr/local/bin/gh", "pr", "close", "2", "--comment", "duplicate"],
         )
 
-    @patch("enoch.github.workflow.shutil.which", return_value=None)
-    @patch("enoch.github.workflow.run_git")
+    @patch("our_ark_github.workflow.shutil.which", return_value=None)
+    @patch("our_ark_github.workflow.run_git")
     def test_close_pull_request_reports_missing_gh(
         self,
         run_git: MagicMock,
@@ -445,9 +447,9 @@ class EnochGithubWorkflowTests(unittest.TestCase):
         self.assertEqual(result.note, "GitHub CLI is not available.")
         self.assertEqual(result.url, "https://github.com/our-ark/enoch/pull/2")
 
-    @patch("enoch.github.workflow.subprocess.run")
+    @patch("our_ark_github.workflow.subprocess.run")
     @patch(
-        "enoch.github.workflow.shutil.which",
+        "our_ark_github.workflow.shutil.which",
         return_value="/usr/local/bin/gh",
     )
     def test_inspects_pull_request_merge_evidence(
@@ -511,8 +513,8 @@ class EnochGithubWorkflowTests(unittest.TestCase):
             ):
                 parse_pull_request_target(target)
 
-    @patch("enoch.github.workflow.subprocess.run")
-    @patch("enoch.github.workflow.shutil.which", return_value="/usr/local/bin/gh")
+    @patch("our_ark_github.workflow.subprocess.run")
+    @patch("our_ark_github.workflow.shutil.which", return_value="/usr/local/bin/gh")
     def test_numeric_target_is_inspected_in_current_repository(
         self,
         _which: MagicMock,
@@ -533,8 +535,8 @@ class EnochGithubWorkflowTests(unittest.TestCase):
         self.assertEqual(result.number, 12)
         self.assertEqual(run.call_args.args[0][3], "12")
 
-    @patch("enoch.github.workflow.subprocess.run")
-    @patch("enoch.github.workflow.shutil.which", return_value="/usr/local/bin/gh")
+    @patch("our_ark_github.workflow.subprocess.run")
+    @patch("our_ark_github.workflow.shutil.which", return_value="/usr/local/bin/gh")
     def test_inaccessible_pull_request_url_reports_github_failure(
         self,
         _which: MagicMock,
@@ -548,8 +550,8 @@ class EnochGithubWorkflowTests(unittest.TestCase):
         with self.assertRaisesRegex(PublishError, "Could not resolve"):
             inspect_pull_request_merge("https://github.com/private/repo/pull/12", ROOT)
 
-    @patch("enoch.github.workflow.subprocess.run")
-    @patch("enoch.github.workflow.shutil.which", return_value="/usr/local/bin/gh")
+    @patch("our_ark_github.workflow.subprocess.run")
+    @patch("our_ark_github.workflow.shutil.which", return_value="/usr/local/bin/gh")
     def test_lists_open_pull_requests_without_mutation(
         self,
         _which: MagicMock,
@@ -577,8 +579,8 @@ class EnochGithubWorkflowTests(unittest.TestCase):
         self.assertEqual(command[1:4], ["pr", "list", "--state"])
         self.assertNotIn("merge", command)
 
-    @patch("enoch.github.workflow.subprocess.run")
-    @patch("enoch.github.workflow.shutil.which", return_value="/usr/local/bin/gh")
+    @patch("our_ark_github.workflow.subprocess.run")
+    @patch("our_ark_github.workflow.shutil.which", return_value="/usr/local/bin/gh")
     def test_inspects_draft_pull_request_without_requiring_mergeability(
         self,
         _which: MagicMock,
@@ -613,15 +615,15 @@ class EnochGithubWorkflowTests(unittest.TestCase):
         )
         for status, expected in cases:
             with self.subTest(expected=expected), patch(
-                "enoch.github.workflow.inspect_pull_request_merge",
+                "our_ark_github.workflow.inspect_pull_request_merge",
                 return_value=status,
             ):
                 with self.assertRaisesRegex(PublishError, expected):
                     merge_pull_request("12", ROOT)
 
-    @patch("enoch.github.workflow.subprocess.run")
-    @patch("enoch.github.workflow.shutil.which", return_value="/usr/local/bin/gh")
-    @patch("enoch.github.workflow.inspect_pull_request_merge", return_value=None)
+    @patch("our_ark_github.workflow.subprocess.run")
+    @patch("our_ark_github.workflow.shutil.which", return_value="/usr/local/bin/gh")
+    @patch("our_ark_github.workflow.inspect_pull_request_merge", return_value=None)
     def test_merges_inspected_head_with_supported_default_method(
         self,
         inspect: MagicMock,
@@ -666,9 +668,9 @@ class EnochGithubWorkflowTests(unittest.TestCase):
             {"sha": "abc123", "merge_method": "merge"},
         )
 
-    @patch("enoch.github.workflow.subprocess.run")
-    @patch("enoch.github.workflow.shutil.which", return_value="/usr/local/bin/gh")
-    @patch("enoch.github.workflow.inspect_pull_request_merge", return_value=None)
+    @patch("our_ark_github.workflow.subprocess.run")
+    @patch("our_ark_github.workflow.shutil.which", return_value="/usr/local/bin/gh")
+    @patch("our_ark_github.workflow.inspect_pull_request_merge", return_value=None)
     def test_merge_reports_github_api_failure(
         self,
         inspect: MagicMock,

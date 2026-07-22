@@ -33,7 +33,7 @@ from enoch.evolve import (
 from enoch.experience import load_experience_records, record_task_experience
 from enoch.evolve_events import load_evolve_events
 from enoch.git_tools import GitError
-from enoch.github.workflow import (
+from our_ark_github.workflow import (
     LocalPublishResult,
     PublishError,
     PullRequestMergeCandidate,
@@ -73,8 +73,8 @@ from enoch.task_queue import (
 )
 from enoch.task_events import load_task_events
 from enoch.task_worktree import TaskWorktree
-from enoch.telegram.bot import (
-    EnochTelegramBot,
+from enoch.application import (
+    EnochApplication,
     ShutdownRequested,
     TaskContextSnapshot,
     WorkStatusMessage,
@@ -88,13 +88,20 @@ from enoch.telegram.bot import (
     _signal_reason,
     _task_context_snapshot_prompt,
 )
-from enoch.telegram import bot as telegram
-from enoch.telegram.client import READ_ACK_EMOJI, TelegramClient, TelegramConfig, TelegramError, load_config
-from enoch.telegram.vision import MAX_TELEGRAM_IMAGE_BYTES
-from enoch.telegram.lifecycle import (
-    load_lifecycle_state as _load_lifecycle_state,
+from enoch import application as telegram
+from enoch.channel import (
+    MAX_IMAGE_BYTES as MAX_TELEGRAM_IMAGE_BYTES,
+    load_channel_lifecycle,
     previous_shutdown_warning as _previous_shutdown_warning,
-    save_telegram_offset as _real_save_telegram_offset,
+    save_channel_cursor,
+)
+from our_ark_telegram import (
+    READ_ACK_EMOJI,
+    TelegramClient,
+    TelegramConfig,
+    TelegramError,
+    load_config,
+    telegram_event,
 )
 from enoch.update_tools import (
     ensure_local_main_current,
@@ -102,7 +109,7 @@ from enoch.update_tools import (
 )
 
 
-_REAL_TASK_CONTEXT_RESOLVER = EnochTelegramBot._resolve_task_context_snapshot
+_REAL_TASK_CONTEXT_RESOLVER = EnochApplication._resolve_task_context_snapshot
 
 
 class _ImmediateTimer:
@@ -120,31 +127,31 @@ class _ImmediateTimer:
 class EnochTelegramTests(unittest.TestCase):
     def setUp(self) -> None:
         self._task_context_snapshot_patch = patch(
-            "enoch.telegram.bot.EnochTelegramBot._resolve_task_context_snapshot",
+            "enoch.application.EnochApplication._resolve_task_context_snapshot",
             return_value=TaskContextSnapshot(),
         )
         self.resolve_task_context_snapshot = self._task_context_snapshot_patch.start()
         self.addCleanup(self._task_context_snapshot_patch.stop)
-        self._sync_session_activity_patch = patch("enoch.telegram.bot._sync_session_activity")
+        self._sync_session_activity_patch = patch("enoch.application._sync_session_activity")
         self.sync_session_activity = self._sync_session_activity_patch.start()
         self.addCleanup(self._sync_session_activity_patch.stop)
         self._save_telegram_offset_patch = patch(
-            "enoch.telegram.bot._save_telegram_offset",
+            "enoch.application.save_channel_cursor",
             side_effect=_save_test_offset,
         )
         self.save_telegram_offset = self._save_telegram_offset_patch.start()
         self.addCleanup(self._save_telegram_offset_patch.stop)
-        self._log_conversation_turn_patch = patch("enoch.telegram.bot.log_conversation_turn")
+        self._log_conversation_turn_patch = patch("enoch.application.log_conversation_turn")
         self.log_conversation_turn = self._log_conversation_turn_patch.start()
         self.addCleanup(self._log_conversation_turn_patch.stop)
-        self._log_system_event_patch = patch("enoch.telegram.bot.log_system_event")
+        self._log_system_event_patch = patch("enoch.application.log_system_event")
         self.log_system_event = self._log_system_event_patch.start()
         self.addCleanup(self._log_system_event_patch.stop)
-        self._update_memory_patch = patch("enoch.telegram.bot.ensure_long_term_memory")
+        self._update_memory_patch = patch("enoch.application.ensure_long_term_memory")
         self.update_memory = self._update_memory_patch.start()
         self.addCleanup(self._update_memory_patch.stop)
 
-    def _capture_direct_work_worker(self, bot: EnochTelegramBot):
+    def _capture_direct_work_worker(self, bot: EnochApplication):
         started = []
 
         def start(job, *, session_key):
@@ -205,12 +212,12 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertTrue(request_object.full_url.endswith("/photos/image.jpg"))
         response.read.assert_called_once_with(1025)
 
-    @patch("enoch.telegram.bot.respond")
+    @patch("enoch.application.respond")
     def test_photo_is_downloaded_attached_and_deleted(self, respond: MagicMock) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
             def inspect_image(_identity, prompt, **kwargs):
                 image_path = kwargs["image_paths"][0]
@@ -221,7 +228,7 @@ class EnochTelegramTests(unittest.TestCase):
                 return "这是一朵向日葵。"
 
             respond.side_effect = inspect_image
-            bot.handle_update(_photo_update(chat_id=42, caption="这是什么花？"))
+            _handle_update(bot, _photo_update(chat_id=42, caption="这是什么花？"))
 
             image_dir = root / ".enoch" / "channels" / "telegram" / "images"
             self.assertEqual(list(image_dir.iterdir()), [])
@@ -229,7 +236,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual(client.downloads, [("large-photo", MAX_TELEGRAM_IMAGE_BYTES)])
         self.assertEqual(client.sent, [(42, "这是一朵向日葵。")])
 
-    @patch("enoch.telegram.bot.respond")
+    @patch("enoch.application.respond")
     def test_photo_without_caption_gets_natural_image_prompt(
         self,
         respond: MagicMock,
@@ -237,24 +244,24 @@ class EnochTelegramTests(unittest.TestCase):
         respond.return_value = "I can see a dog."
         with TemporaryDirectory() as temp:
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), Path(temp), client)
+            bot = EnochApplication(load_identity(), Path(temp), client)
 
-            bot.handle_update(_photo_update(chat_id=42))
+            _handle_update(bot, _photo_update(chat_id=42))
 
         prompt = respond.call_args.args[1]
         self.assertIn("without a caption", prompt)
         self.assertEqual(client.sent, [(42, "I can see a dog.")])
 
-    @patch("enoch.telegram.bot.respond")
+    @patch("enoch.application.respond")
     def test_photo_from_unlocked_chat_is_not_downloaded(
         self,
         respond: MagicMock,
     ) -> None:
         with TemporaryDirectory() as temp:
             client = FakeTelegramClient(allowed_chat_id=7)
-            bot = EnochTelegramBot(load_identity(), Path(temp), client)
+            bot = EnochApplication(load_identity(), Path(temp), client)
 
-            bot.handle_update(_photo_update(chat_id=42))
+            _handle_update(bot, _photo_update(chat_id=42))
 
         respond.assert_not_called()
         self.assertEqual(client.downloads, [])
@@ -294,7 +301,7 @@ class EnochTelegramTests(unittest.TestCase):
     @patch.dict("os.environ", {}, clear=True)
     def test_config_requires_token(self) -> None:
         with TemporaryDirectory() as temp:
-            with self.assertRaisesRegex(TelegramError, "setup-token"):
+            with self.assertRaisesRegex(TelegramError, "telegram.bot_token"):
                 load_config(root=Path(temp))
 
     @patch.dict(
@@ -332,17 +339,17 @@ class EnochTelegramTests(unittest.TestCase):
             try:
                 os.chdir(temp)
                 with self.assertRaises(SystemExit):
-                    telegram.main()
+                    telegram.main("telegram")
             finally:
                 os.chdir(previous)
 
         printed = print_.call_args.args[0]
-        self.assertIn("setup-token", printed)
+        self.assertIn("telegram.bot_token", printed)
         self.assertIn("ENOCH_TELEGRAM_BOT_TOKEN", printed)
 
-    @patch("enoch.telegram.bot.ensure_long_term_memory")
-    @patch("enoch.telegram.bot.log_conversation_turn")
-    @patch("enoch.telegram.bot.respond", return_value="Hello from Enoch")
+    @patch("enoch.application.ensure_long_term_memory")
+    @patch("enoch.application.log_conversation_turn")
+    @patch("enoch.application.respond", return_value="Hello from Enoch")
     def test_replies_to_allowed_chat(
         self,
         respond: MagicMock,
@@ -350,9 +357,9 @@ class EnochTelegramTests(unittest.TestCase):
         update_memory: MagicMock,
     ) -> None:
         client = FakeTelegramClient(allowed_chat_id=42)
-        bot = EnochTelegramBot(load_identity(), ROOT, client)
+        bot = EnochApplication(load_identity(), ROOT, client)
 
-        bot.handle_update(_message_update(chat_id=42, text="hello"))
+        _handle_update(bot, _message_update(chat_id=42, text="hello"))
 
         respond.assert_called_once()
         self.assertEqual(respond.call_args.kwargs["session_key"], "telegram:42")
@@ -367,8 +374,8 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("Hello from Enoch", log_conversation_turn.call_args.kwargs["reply"])
         update_memory.assert_called_once_with(ROOT)
 
-    @patch("enoch.telegram.bot.ensure_long_term_memory")
-    @patch("enoch.telegram.bot.log_conversation_turn")
+    @patch("enoch.application.ensure_long_term_memory")
+    @patch("enoch.application.log_conversation_turn")
     def test_replies_do_not_include_accumulated_input_tokens(
         self,
         _log_conversation_turn: MagicMock,
@@ -379,16 +386,16 @@ class EnochTelegramTests(unittest.TestCase):
             return "Hello from Enoch"
 
         client = FakeTelegramClient(allowed_chat_id=42)
-        bot = EnochTelegramBot(load_identity(), ROOT, client)
+        bot = EnochApplication(load_identity(), ROOT, client)
 
-        with patch("enoch.telegram.bot.respond", side_effect=answer):
-            bot.handle_update(_message_update(chat_id=42, text="hello"))
+        with patch("enoch.application.respond", side_effect=answer):
+            _handle_update(bot, _message_update(chat_id=42, text="hello"))
 
         self.assertEqual(client.sent, [(42, "Hello from Enoch")])
 
-    @patch("enoch.telegram.bot.ensure_long_term_memory")
-    @patch("enoch.telegram.bot.log_conversation_turn")
-    @patch("enoch.telegram.bot.respond", return_value="[PLAIN_TEXT_MARKER]\nIntent:\nAdd reminders")
+    @patch("enoch.application.ensure_long_term_memory")
+    @patch("enoch.application.log_conversation_turn")
+    @patch("enoch.application.respond", return_value="[PLAIN_TEXT_MARKER]\nIntent:\nAdd reminders")
     def test_plain_marker_text_is_not_special_for_normal_chat(
         self,
         respond: MagicMock,
@@ -398,19 +405,19 @@ class EnochTelegramTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
-            bot.handle_update(_message_update(chat_id=42, text="add reminders"))
+            _handle_update(bot, _message_update(chat_id=42, text="add reminders"))
 
         respond.assert_called_once()
         self.assertIn("[PLAIN_TEXT_MARKER]", client.sent[0][1])
         self.assertNotIn("local = edit on a feature branch", client.sent[0][1])
 
-    @patch("enoch.telegram.bot.ensure_long_term_memory")
-    @patch("enoch.telegram.bot.log_conversation_turn")
-    @patch("enoch.telegram.bot.remember_memory", return_value={"id": "mem_1", "text": "User likes apples."})
+    @patch("enoch.application.ensure_long_term_memory")
+    @patch("enoch.application.log_conversation_turn")
+    @patch("enoch.application.remember_memory", return_value={"id": "mem_1", "text": "User likes apples."})
     @patch(
-        "enoch.telegram.bot.respond",
+        "enoch.application.respond",
         return_value=(
             "I will remember that."
             f"\n\n{MEMORY_REQUEST_START}\nUser likes apples.\n{MEMORY_REQUEST_END}"
@@ -426,9 +433,9 @@ class EnochTelegramTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
-            bot.handle_update(_message_update(chat_id=42, text="I like apples"))
+            _handle_update(bot, _message_update(chat_id=42, text="I like apples"))
 
         respond.assert_called_once()
         remember_memory.assert_called_once_with("User likes apples.", root=root)
@@ -438,11 +445,11 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertNotIn(MEMORY_REQUEST_START, sent)
         self.assertNotIn(MEMORY_REQUEST_END, sent)
 
-    @patch("enoch.telegram.bot.ensure_long_term_memory")
-    @patch("enoch.telegram.bot.log_conversation_turn")
-    @patch("enoch.telegram.bot.remember_memory", side_effect=OSError("read-only"))
+    @patch("enoch.application.ensure_long_term_memory")
+    @patch("enoch.application.log_conversation_turn")
+    @patch("enoch.application.remember_memory", side_effect=OSError("read-only"))
     @patch(
-        "enoch.telegram.bot.respond",
+        "enoch.application.respond",
         return_value=(
             "I should remember that."
             f"\n\n{MEMORY_REQUEST_START}\nUser likes apples.\n{MEMORY_REQUEST_END}"
@@ -458,29 +465,29 @@ class EnochTelegramTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
-            bot.handle_update(_message_update(chat_id=42, text="I like apples"))
+            _handle_update(bot, _message_update(chat_id=42, text="I like apples"))
 
         remember_memory.assert_called_once_with("User likes apples.", root=root)
         sent = client.sent[0][1]
         self.assertIn("Enoch could not save that long-term memory.", sent)
         self.assertNotIn(MEMORY_REQUEST_START, sent)
 
-    @patch("enoch.telegram.bot.respond")
+    @patch("enoch.application.respond")
     def test_ignores_disallowed_chat(self, respond: MagicMock) -> None:
         client = FakeTelegramClient(allowed_chat_id=42)
-        bot = EnochTelegramBot(load_identity(), ROOT, client)
+        bot = EnochApplication(load_identity(), ROOT, client)
 
-        bot.handle_update(_message_update(chat_id=7, text="hello"))
+        _handle_update(bot, _message_update(chat_id=7, text="hello"))
 
         respond.assert_not_called()
         self.assertEqual(client.acks, [])
         self.assertEqual(client.sent, [])
 
-    @patch("enoch.telegram.bot.ensure_long_term_memory")
-    @patch("enoch.telegram.bot.log_conversation_turn")
-    @patch("enoch.telegram.bot.respond", return_value="natural reply")
+    @patch("enoch.application.ensure_long_term_memory")
+    @patch("enoch.application.log_conversation_turn")
+    @patch("enoch.application.respond", return_value="natural reply")
     def test_unknown_slash_command_routes_to_natural_conversation(
         self,
         respond: MagicMock,
@@ -488,9 +495,9 @@ class EnochTelegramTests(unittest.TestCase):
         update_memory: MagicMock,
     ) -> None:
         client = FakeTelegramClient(allowed_chat_id=42)
-        bot = EnochTelegramBot(load_identity(), ROOT, client)
+        bot = EnochApplication(load_identity(), ROOT, client)
 
-        bot.handle_update(_message_update(chat_id=42, text="/unknown"))
+        _handle_update(bot, _message_update(chat_id=42, text="/unknown"))
 
         respond.assert_called_once()
         self.assertEqual(respond.call_args.kwargs["session_key"], "telegram:42")
@@ -498,12 +505,12 @@ class EnochTelegramTests(unittest.TestCase):
         update_memory.assert_called_once_with(ROOT)
         self.assertEqual(client.sent[0][1], "natural reply")
 
-    @patch("enoch.telegram.bot.model_summary", return_value="AI model: gpt-5-codex")
+    @patch("enoch.application.model_summary", return_value="AI model: gpt-5-codex")
     def test_telegram_command_parser_accepts_bot_mentions(self, _model_summary: MagicMock) -> None:
         client = FakeTelegramClient(allowed_chat_id=42)
-        bot = EnochTelegramBot(load_identity(), ROOT, client)
+        bot = EnochApplication(load_identity(), ROOT, client)
 
-        bot.handle_update(_message_update(chat_id=42, text="/status@EnochBot"))
+        _handle_update(bot, _message_update(chat_id=42, text="/status@EnochBot"))
 
         self.assertIn("Enoch status:", client.sent[0][1])
 
@@ -511,7 +518,7 @@ class EnochTelegramTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
             bot.notify_startup()
 
@@ -525,7 +532,7 @@ class EnochTelegramTests(unittest.TestCase):
 
     def test_startup_notification_reports_previous_shutdown_warning(self) -> None:
         client = FakeTelegramClient(allowed_chat_id=42)
-        bot = EnochTelegramBot(
+        bot = EnochApplication(
             load_identity(),
             ROOT,
             client,
@@ -538,7 +545,7 @@ class EnochTelegramTests(unittest.TestCase):
 
     def test_startup_notification_requires_locked_chat(self) -> None:
         client = FakeTelegramClient(allowed_chat_id=None)
-        bot = EnochTelegramBot(load_identity(), ROOT, client)
+        bot = EnochApplication(load_identity(), ROOT, client)
 
         bot.notify_startup()
 
@@ -548,7 +555,7 @@ class EnochTelegramTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
             bot.notify_shutdown("SIGTERM")
 
@@ -559,7 +566,7 @@ class EnochTelegramTests(unittest.TestCase):
 
     def test_shutdown_notification_requires_locked_chat(self) -> None:
         client = FakeTelegramClient(allowed_chat_id=None)
-        bot = EnochTelegramBot(load_identity(), ROOT, client)
+        bot = EnochApplication(load_identity(), ROOT, client)
 
         bot.notify_shutdown("SIGTERM")
 
@@ -579,12 +586,14 @@ class EnochTelegramTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             (root / ".enoch").mkdir()
-            (root / ".enoch" / "telegram_lifecycle.json").write_text(
+            lifecycle = root / ".enoch" / "channels" / "telegram" / "lifecycle.json"
+            lifecycle.parent.mkdir(parents=True)
+            lifecycle.write_text(
                 json.dumps({"status": "running"}),
                 encoding="utf-8",
             )
 
-            warning = _begin_lifecycle_run(root)
+            warning = _begin_lifecycle_run(root, provider="telegram")
             state = _load_lifecycle_state(root)
 
         self.assertIn("Previous shutdown: unexpected", warning)
@@ -596,7 +605,7 @@ class EnochTelegramTests(unittest.TestCase):
             root = Path(temp)
 
             with patch("enoch.channel.current_head", current_head):
-                _begin_lifecycle_run(root)
+                _begin_lifecycle_run(root, provider="telegram")
             state = _load_lifecycle_state(root)
 
         current_head.assert_called_once_with(root)
@@ -620,7 +629,12 @@ class EnochTelegramTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
 
-            _record_lifecycle_shutdown(root, "SIGTERM", shutdown_notification_sent=True)
+            _record_lifecycle_shutdown(
+                root,
+                "SIGTERM",
+                shutdown_notification_sent=True,
+                provider="telegram",
+            )
             state = _load_lifecycle_state(root)
 
         self.assertEqual(state["status"], "stopped")
@@ -664,17 +678,17 @@ class EnochTelegramTests(unittest.TestCase):
 
     def test_start_points_to_help(self) -> None:
         client = FakeTelegramClient(allowed_chat_id=42)
-        bot = EnochTelegramBot(load_identity(), ROOT, client)
+        bot = EnochApplication(load_identity(), ROOT, client)
 
-        bot.handle_update(_message_update(chat_id=42, text="/start"))
+        _handle_update(bot, _message_update(chat_id=42, text="/start"))
 
         self.assertEqual(client.sent[0][1], "Use /help to see available commands.")
 
     def test_help_lists_safe_commands(self) -> None:
         client = FakeTelegramClient(allowed_chat_id=42)
-        bot = EnochTelegramBot(load_identity(), ROOT, client)
+        bot = EnochApplication(load_identity(), ROOT, client)
 
-        bot.handle_update(_message_update(chat_id=42, text="/help"))
+        _handle_update(bot, _message_update(chat_id=42, text="/help"))
 
         reply = client.sent[0][1]
         self.assertLess(reply.index("/help - show this command list"), reply.index("Common:"))
@@ -751,9 +765,9 @@ class EnochTelegramTests(unittest.TestCase):
 
     def test_help_config_shows_only_config_commands(self) -> None:
         client = FakeTelegramClient(allowed_chat_id=42)
-        bot = EnochTelegramBot(load_identity(), ROOT, client)
+        bot = EnochApplication(load_identity(), ROOT, client)
 
-        bot.handle_update(_message_update(chat_id=42, text="/help config"))
+        _handle_update(bot, _message_update(chat_id=42, text="/help config"))
 
         reply = client.sent[0][1]
         self.assertIn("Config commands:", reply)
@@ -767,37 +781,37 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("/config runtime codex executable auto", reply)
         self.assertNotIn("Enoch Telegram commands:", reply)
 
-    @patch("enoch.telegram.bot.merge_pull_request")
+    @patch("enoch.application.merge_pull_request")
     def test_pr_merge_requires_explicit_target(self, merge: MagicMock) -> None:
         client = FakeTelegramClient(allowed_chat_id=42)
-        bot = EnochTelegramBot(load_identity(), ROOT, client)
+        bot = EnochApplication(load_identity(), ROOT, client)
 
-        bot.handle_update(_message_update(chat_id=42, text="/pr merge"))
+        _handle_update(bot, _message_update(chat_id=42, text="/pr merge"))
 
-        self.assertIn("/pr merge <PR number or GitHub PR URL>", client.sent[0][1])
+        self.assertIn("/pr merge <PR number or PR URL>", client.sent[0][1])
         merge.assert_not_called()
 
-    @patch("enoch.telegram.bot.merge_pull_request")
+    @patch("enoch.application.merge_pull_request")
     def test_pr_merge_is_ignored_from_unauthorized_chat(self, merge: MagicMock) -> None:
         client = FakeTelegramClient(allowed_chat_id=42)
-        bot = EnochTelegramBot(load_identity(), ROOT, client)
+        bot = EnochApplication(load_identity(), ROOT, client)
 
-        bot.handle_update(_message_update(chat_id=99, text="/pr merge 12"))
+        _handle_update(bot, _message_update(chat_id=99, text="/pr merge 12"))
 
         self.assertEqual(client.sent, [])
         merge.assert_not_called()
 
-    @patch("enoch.telegram.bot.merge_pull_request")
+    @patch("enoch.application.merge_pull_request")
     def test_pr_merge_requires_configured_chat_lock(self, merge: MagicMock) -> None:
         client = FakeTelegramClient()
-        bot = EnochTelegramBot(load_identity(), ROOT, client)
+        bot = EnochApplication(load_identity(), ROOT, client)
 
-        bot.handle_update(_message_update(chat_id=42, text="/pr merge 12"))
+        _handle_update(bot, _message_update(chat_id=42, text="/pr merge 12"))
 
         self.assertIn("locked Telegram conversation", client.sent[0][1])
         merge.assert_not_called()
 
-    @patch("enoch.telegram.bot.merge_pull_request")
+    @patch("enoch.application.merge_pull_request")
     def test_pr_merge_reports_success_for_exact_target(self, merge: MagicMock) -> None:
         merge.return_value = PullRequestMergeResult(
             number=12,
@@ -807,9 +821,9 @@ class EnochTelegramTests(unittest.TestCase):
             message="Pull Request successfully merged",
         )
         client = FakeTelegramClient(allowed_chat_id=42)
-        bot = EnochTelegramBot(load_identity(), ROOT, client)
+        bot = EnochApplication(load_identity(), ROOT, client)
 
-        bot.handle_update(
+        _handle_update(bot,
             _message_update(
                 chat_id=42,
                 text="/pr merge https://github.com/our-ark/enoch/pull/12",
@@ -821,12 +835,12 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("https://github.com/our-ark/enoch/pull/12", client.sent[0][1])
         self.assertIn("Merge commit: def456", client.sent[0][1])
 
-    @patch("enoch.telegram.bot.merge_pull_request", side_effect=PublishError("PR #12 is a draft."))
+    @patch("enoch.application.merge_pull_request", side_effect=PublishError("PR #12 is a draft."))
     def test_pr_merge_reports_github_workflow_error(self, merge: MagicMock) -> None:
         client = FakeTelegramClient(allowed_chat_id=42)
-        bot = EnochTelegramBot(load_identity(), ROOT, client)
+        bot = EnochApplication(load_identity(), ROOT, client)
 
-        bot.handle_update(_message_update(chat_id=42, text="/pr merge 12"))
+        _handle_update(bot, _message_update(chat_id=42, text="/pr merge 12"))
 
         merge.assert_called_once_with("12", ROOT)
         self.assertEqual(
@@ -836,9 +850,9 @@ class EnochTelegramTests(unittest.TestCase):
 
     def test_help_resume_shows_only_resume_usage(self) -> None:
         client = FakeTelegramClient(allowed_chat_id=42)
-        bot = EnochTelegramBot(load_identity(), ROOT, client)
+        bot = EnochApplication(load_identity(), ROOT, client)
 
-        bot.handle_update(_message_update(chat_id=42, text="/help resume"))
+        _handle_update(bot, _message_update(chat_id=42, text="/help resume"))
 
         self.assertEqual(
             client.sent[0][1],
@@ -847,10 +861,10 @@ class EnochTelegramTests(unittest.TestCase):
 
     def test_help_lists_pr_and_explains_its_subcommands(self) -> None:
         client = FakeTelegramClient(allowed_chat_id=42)
-        bot = EnochTelegramBot(load_identity(), ROOT, client)
+        bot = EnochApplication(load_identity(), ROOT, client)
 
-        bot.handle_update(_message_update(chat_id=42, text="/help"))
-        bot.handle_update(_message_update(update_id=2, chat_id=42, text="/help pr"))
+        _handle_update(bot, _message_update(chat_id=42, text="/help"))
+        _handle_update(bot, _message_update(update_id=2, chat_id=42, text="/help pr"))
 
         self.assertIn(
             "/pr - list and manage pull requests",
@@ -858,11 +872,11 @@ class EnochTelegramTests(unittest.TestCase):
         )
         self.assertNotIn("/pr merge", client.sent[0][1])
         self.assertIn("/pr - list open pull requests", client.sent[1][1])
-        self.assertIn("/pr show <PR number or GitHub PR URL>", client.sent[1][1])
-        self.assertIn("/pr merge <PR number or GitHub PR URL>", client.sent[1][1])
+        self.assertIn("/pr show <PR number or PR URL>", client.sent[1][1])
+        self.assertIn("/pr merge <PR number or PR URL>", client.sent[1][1])
         self.assertIn("will not infer one", client.sent[1][1])
 
-    @patch("enoch.telegram.bot.list_open_pull_requests")
+    @patch("enoch.application.list_open_pull_requests")
     def test_pr_lists_open_pull_requests(
         self,
         list_open_pull_requests: MagicMock,
@@ -882,9 +896,9 @@ class EnochTelegramTests(unittest.TestCase):
             ),
         )
         client = FakeTelegramClient(allowed_chat_id=42)
-        bot = EnochTelegramBot(load_identity(), ROOT, client)
+        bot = EnochApplication(load_identity(), ROOT, client)
 
-        bot.handle_update(_message_update(chat_id=42, text="/pr"))
+        _handle_update(bot, _message_update(chat_id=42, text="/pr"))
 
         list_open_pull_requests.assert_called_once_with(ROOT)
         reply = client.sent[0][1]
@@ -893,20 +907,20 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("main <- feature/pr-commands", reply)
         self.assertIn("#12 [draft] Document config precedence", reply)
 
-    @patch("enoch.telegram.bot.list_open_pull_requests", return_value=())
+    @patch("enoch.application.list_open_pull_requests", return_value=())
     def test_pr_reports_when_no_pull_requests_are_open(
         self,
         list_open_pull_requests: MagicMock,
     ) -> None:
         client = FakeTelegramClient(allowed_chat_id=42)
-        bot = EnochTelegramBot(load_identity(), ROOT, client)
+        bot = EnochApplication(load_identity(), ROOT, client)
 
-        bot.handle_update(_message_update(chat_id=42, text="/pr"))
+        _handle_update(bot, _message_update(chat_id=42, text="/pr"))
 
         list_open_pull_requests.assert_called_once_with(ROOT)
         self.assertEqual(client.sent[0][1], "Open pull requests: none.")
 
-    @patch("enoch.telegram.bot.inspect_pull_request")
+    @patch("enoch.application.inspect_pull_request")
     def test_pr_show_reports_read_only_detail(
         self,
         inspect_pull_request: MagicMock,
@@ -918,9 +932,9 @@ class EnochTelegramTests(unittest.TestCase):
             author="enoch",
         )
         client = FakeTelegramClient(allowed_chat_id=42)
-        bot = EnochTelegramBot(load_identity(), ROOT, client)
+        bot = EnochApplication(load_identity(), ROOT, client)
 
-        bot.handle_update(_message_update(chat_id=42, text="/pr show 13"))
+        _handle_update(bot, _message_update(chat_id=42, text="/pr show 13"))
 
         inspect_pull_request.assert_called_once_with("13", ROOT)
         reply = client.sent[0][1]
@@ -933,14 +947,14 @@ class EnochTelegramTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
-            bot.handle_update(_message_update(chat_id=42, text="/config"))
-            bot.handle_update(_message_update(update_id=2, chat_id=42, text="/config task-timeout 30m"))
+            _handle_update(bot, _message_update(chat_id=42, text="/config"))
+            _handle_update(bot, _message_update(update_id=2, chat_id=42, text="/config task-timeout 30m"))
             configured = read_section("task", root)
-            bot.handle_update(_message_update(update_id=3, chat_id=42, text="/config task-timeout default"))
+            _handle_update(bot, _message_update(update_id=3, chat_id=42, text="/config task-timeout default"))
             reset = read_section("task", root)
-            bot.handle_update(_message_update(update_id=4, chat_id=42, text="/config task-timeout off"))
+            _handle_update(bot, _message_update(update_id=4, chat_id=42, text="/config task-timeout off"))
 
         self.assertIn("Task timeout: 10m (default)", client.sent[0][1])
         self.assertIn("Task timeout set to 30m.", client.sent[1][1])
@@ -962,18 +976,18 @@ class EnochTelegramTests(unittest.TestCase):
                 encoding="utf-8",
             )
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
             with patch.dict("os.environ", {"CODEX_HOME": codex_home}, clear=True):
-                bot.handle_update(_message_update(chat_id=42, text="/config"))
-                bot.handle_update(
+                _handle_update(bot, _message_update(chat_id=42, text="/config"))
+                _handle_update(bot,
                     _message_update(
                         update_id=2,
                         chat_id=42,
                         text="/config model gpt-enoch-local",
                     )
                 )
-                bot.handle_update(
+                _handle_update(bot,
                     _message_update(
                         update_id=3,
                         chat_id=42,
@@ -981,14 +995,14 @@ class EnochTelegramTests(unittest.TestCase):
                     )
                 )
                 configured = read_section("codex", root)
-                bot.handle_update(
+                _handle_update(bot,
                     _message_update(
                         update_id=4,
                         chat_id=42,
                         text="/config model default",
                     )
                 )
-                bot.handle_update(
+                _handle_update(bot,
                     _message_update(
                         update_id=5,
                         chat_id=42,
@@ -1037,9 +1051,9 @@ class EnochTelegramTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client, runtime=runtime)
+            bot = EnochApplication(load_identity(), root, client, runtime=runtime)
 
-            bot.handle_update(_message_update(chat_id=42, text="/config model"))
+            _handle_update(bot, _message_update(chat_id=42, text="/config model"))
 
         reply = client.sent[0][1]
         self.assertIn("Available GPT-5.6 models:", reply)
@@ -1051,9 +1065,9 @@ class EnochTelegramTests(unittest.TestCase):
 
     def test_help_inherit_shows_inherit_usage(self) -> None:
         client = FakeTelegramClient(allowed_chat_id=42)
-        bot = EnochTelegramBot(load_identity(), ROOT, client)
+        bot = EnochApplication(load_identity(), ROOT, client)
 
-        bot.handle_update(_message_update(chat_id=42, text="/help inherit"))
+        _handle_update(bot, _message_update(chat_id=42, text="/help inherit"))
 
         reply = client.sent[0][1]
         self.assertIn("Inherit commands:", reply)
@@ -1065,9 +1079,9 @@ class EnochTelegramTests(unittest.TestCase):
 
     def test_help_topic_shows_single_command_usage(self) -> None:
         client = FakeTelegramClient(allowed_chat_id=42)
-        bot = EnochTelegramBot(load_identity(), ROOT, client)
+        bot = EnochApplication(load_identity(), ROOT, client)
 
-        bot.handle_update(_message_update(chat_id=42, text="/help task cancel"))
+        _handle_update(bot, _message_update(chat_id=42, text="/help task cancel"))
 
         reply = client.sent[0][1]
         self.assertIn("Task commands:", reply)
@@ -1081,9 +1095,9 @@ class EnochTelegramTests(unittest.TestCase):
 
     def test_help_topic_supports_work_command_aliases(self) -> None:
         client = FakeTelegramClient(allowed_chat_id=42)
-        bot = EnochTelegramBot(load_identity(), ROOT, client)
+        bot = EnochApplication(load_identity(), ROOT, client)
 
-        bot.handle_update(_message_update(chat_id=42, text="/help /crons"))
+        _handle_update(bot, _message_update(chat_id=42, text="/help /crons"))
 
         reply = client.sent[0][1]
         self.assertIn("Cron commands:", reply)
@@ -1092,9 +1106,9 @@ class EnochTelegramTests(unittest.TestCase):
 
     def test_help_backlog_shows_backlog_subcommands(self) -> None:
         client = FakeTelegramClient(allowed_chat_id=42)
-        bot = EnochTelegramBot(load_identity(), ROOT, client)
+        bot = EnochApplication(load_identity(), ROOT, client)
 
-        bot.handle_update(_message_update(chat_id=42, text="/help backlog"))
+        _handle_update(bot, _message_update(chat_id=42, text="/help backlog"))
 
         reply = client.sent[0][1]
         self.assertIn("Backlog commands:", reply)
@@ -1104,9 +1118,9 @@ class EnochTelegramTests(unittest.TestCase):
 
     def test_help_evolve_shows_evolve_usage(self) -> None:
         client = FakeTelegramClient(allowed_chat_id=42)
-        bot = EnochTelegramBot(load_identity(), ROOT, client)
+        bot = EnochApplication(load_identity(), ROOT, client)
 
-        bot.handle_update(_message_update(chat_id=42, text="/help evolve"))
+        _handle_update(bot, _message_update(chat_id=42, text="/help evolve"))
 
         reply = client.sent[0][1]
         self.assertIn("Evolve commands:", reply)
@@ -1147,38 +1161,38 @@ class EnochTelegramTests(unittest.TestCase):
         for index, (topic, expected) in enumerate(topics.items(), start=1):
             with self.subTest(topic=topic):
                 client = FakeTelegramClient(allowed_chat_id=42)
-                bot = EnochTelegramBot(load_identity(), ROOT, client)
+                bot = EnochApplication(load_identity(), ROOT, client)
 
-                bot.handle_update(_message_update(update_id=index, chat_id=42, text=f"/help {topic}"))
+                _handle_update(bot, _message_update(update_id=index, chat_id=42, text=f"/help {topic}"))
 
                 self.assertEqual(client.sent[0][1], expected)
 
     def test_help_debug_reports_unknown_command(self) -> None:
         client = FakeTelegramClient(allowed_chat_id=42)
-        bot = EnochTelegramBot(load_identity(), ROOT, client)
+        bot = EnochApplication(load_identity(), ROOT, client)
 
-        bot.handle_update(_message_update(chat_id=42, text="/help /debug"))
+        _handle_update(bot, _message_update(chat_id=42, text="/help /debug"))
 
         self.assertEqual(client.sent[0][1], "No help found for /debug.\nUse /help to see available commands.")
 
     def test_help_shutdown_reports_removed_command(self) -> None:
         client = FakeTelegramClient(allowed_chat_id=42)
-        bot = EnochTelegramBot(load_identity(), ROOT, client)
+        bot = EnochApplication(load_identity(), ROOT, client)
 
-        bot.handle_update(_message_update(chat_id=42, text="/help shutdown"))
+        _handle_update(bot, _message_update(chat_id=42, text="/help shutdown"))
 
         self.assertEqual(client.sent[0][1], "No help found for /shutdown.\nUse /help to see available commands.")
 
     def test_help_topic_reports_unknown_command(self) -> None:
         client = FakeTelegramClient(allowed_chat_id=42)
-        bot = EnochTelegramBot(load_identity(), ROOT, client)
+        bot = EnochApplication(load_identity(), ROOT, client)
 
-        bot.handle_update(_message_update(chat_id=42, text="/help nope"))
+        _handle_update(bot, _message_update(chat_id=42, text="/help nope"))
 
         self.assertEqual(client.sent[0][1], "No help found for /nope.\nUse /help to see available commands.")
 
-    @patch("enoch.telegram.bot.ensure_long_term_memory")
-    @patch("enoch.telegram.bot.log_conversation_turn")
+    @patch("enoch.application.ensure_long_term_memory")
+    @patch("enoch.application.log_conversation_turn")
     def test_task_command_enqueues_persistent_fifo_job(
         self,
         _log_conversation_turn: MagicMock,
@@ -1187,9 +1201,9 @@ class EnochTelegramTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
-            bot.handle_update(_message_update(chat_id=42, text="/task add queued work"))
+            _handle_update(bot, _message_update(chat_id=42, text="/task add queued work"))
 
             data = json.loads(task_queue_path(root).read_text(encoding="utf-8"))
             events = load_task_events(root, task_id=1)
@@ -1209,8 +1223,8 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertTrue(all(event.event_actor == "human" for event in events))
         self.assertIsNone(data["running"])
 
-    @patch("enoch.telegram.bot.ensure_long_term_memory")
-    @patch("enoch.telegram.bot.log_conversation_turn")
+    @patch("enoch.application.ensure_long_term_memory")
+    @patch("enoch.application.log_conversation_turn")
     def test_task_command_includes_replied_message_context(
         self,
         _log_conversation_turn: MagicMock,
@@ -1219,9 +1233,9 @@ class EnochTelegramTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
-            bot.handle_update(
+            _handle_update(bot,
                 _message_update(
                     chat_id=42,
                     text="/task handle this",
@@ -1237,8 +1251,8 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("Original bug report details.", request)
         self.assertIn("Original bug report details.", client.sent[0][1])
 
-    @patch("enoch.telegram.bot.ensure_long_term_memory")
-    @patch("enoch.telegram.bot.log_conversation_turn")
+    @patch("enoch.application.ensure_long_term_memory")
+    @patch("enoch.application.log_conversation_turn")
     def test_task_command_stores_conversation_context_snapshot(
         self,
         _log_conversation_turn: MagicMock,
@@ -1251,9 +1265,9 @@ class EnochTelegramTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
-            bot.handle_update(_message_update(chat_id=42, text="/task do it"))
+            _handle_update(bot, _message_update(chat_id=42, text="/task do it"))
 
             data = json.loads(task_queue_path(root).read_text(encoding="utf-8"))
 
@@ -1264,8 +1278,8 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("Conversation context snapshot:", client.sent[0][1])
         self.assertIn("Build the reminders feature discussed earlier.", client.sent[0][1])
 
-    @patch("enoch.telegram.bot.ensure_long_term_memory")
-    @patch("enoch.telegram.bot.log_conversation_turn")
+    @patch("enoch.application.ensure_long_term_memory")
+    @patch("enoch.application.log_conversation_turn")
     def test_task_command_asks_for_clarification_before_queueing(
         self,
         _log_conversation_turn: MagicMock,
@@ -1277,30 +1291,30 @@ class EnochTelegramTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
-            bot.handle_update(_message_update(chat_id=42, text="/task do it"))
+            _handle_update(bot, _message_update(chat_id=42, text="/task do it"))
             status = task_queue_status(root)
 
         self.assertEqual(status.pending, ())
         self.assertIn("Which feature should Enoch implement?", client.sent[0][1])
 
-    @patch("enoch.telegram.bot.ensure_long_term_memory")
-    @patch("enoch.telegram.bot.log_conversation_turn")
+    @patch("enoch.application.ensure_long_term_memory")
+    @patch("enoch.application.log_conversation_turn")
     def test_task_command_requires_request(
         self,
         _log_conversation_turn: MagicMock,
         _update_memory: MagicMock,
     ) -> None:
         client = FakeTelegramClient(allowed_chat_id=42)
-        bot = EnochTelegramBot(load_identity(), ROOT, client)
+        bot = EnochApplication(load_identity(), ROOT, client)
 
-        bot.handle_update(_message_update(chat_id=42, text="/task"))
+        _handle_update(bot, _message_update(chat_id=42, text="/task"))
 
         self.assertEqual(client.sent[0][1], "Use /task <request> to queue background work.")
 
-    @patch("enoch.telegram.bot.ensure_long_term_memory")
-    @patch("enoch.telegram.bot.log_conversation_turn")
+    @patch("enoch.application.ensure_long_term_memory")
+    @patch("enoch.application.log_conversation_turn")
     def test_task_cancel_removes_pending_task_and_edits_status(
         self,
         _log_conversation_turn: MagicMock,
@@ -1309,10 +1323,10 @@ class EnochTelegramTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
-            bot.handle_update(_message_update(chat_id=42, text="/task add queued work"))
-            bot.handle_update(_message_update(update_id=2, chat_id=42, text="/task cancel 1"))
+            _handle_update(bot, _message_update(chat_id=42, text="/task add queued work"))
+            _handle_update(bot, _message_update(update_id=2, chat_id=42, text="/task cancel 1"))
             status = task_queue_status(root)
 
         self.assertEqual(status.pending, ())
@@ -1334,14 +1348,14 @@ class EnochTelegramTests(unittest.TestCase):
             begin_next_task(root)
             fail_task(original.id, root, result="temporary failure")
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
-            bot.handle_update(
+            _handle_update(bot,
                 _message_update(chat_id=42, text="/task retry 1")
             )
             status = task_queue_status(root)
             events = load_task_events(root, task_id=2)
-            bot.handle_update(
+            _handle_update(bot,
                 _message_update(update_id=2, chat_id=42, text="/tasks")
             )
             tasks_report = client.sent[-1][1]
@@ -1370,25 +1384,25 @@ class EnochTelegramTests(unittest.TestCase):
                 result="Worker state was lost before completion.",
             )
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
             existing_result = (
                 "Implemented and published ready for review: "
                 "https://github.com/our-ark/enoch/pull/13"
             )
 
             with patch(
-                "enoch.telegram.bot._latest_direct_action_result_for_task",
+                "enoch.application._latest_direct_action_result_for_task",
                 return_value=existing_result,
             ):
                 with patch(
-                    "enoch.telegram.bot.inspect_pull_request",
+                    "enoch.application.inspect_pull_request",
                     return_value=_pull_request_info(
                         number=13,
                         title="Add PR command",
                     ),
                 ) as inspect:
                     with patch.object(bot, "_maybe_start_task_worker"):
-                        bot.handle_update(
+                        _handle_update(bot,
                             _message_update(chat_id=42, text="/task retry 1")
                         )
             retry = task_queue_status(root).pending[0]
@@ -1428,11 +1442,11 @@ class EnochTelegramTests(unittest.TestCase):
         )
 
         with patch(
-            "enoch.telegram.bot._latest_direct_action_result_for_task",
+            "enoch.application._latest_direct_action_result_for_task",
             return_value="",
         ):
             with patch(
-                "enoch.telegram.bot.list_open_pull_requests",
+                "enoch.application.list_open_pull_requests",
                 return_value=(pull_request,),
             ) as list_pull_requests:
                 result = telegram._reconciled_retry_result(job, ROOT)
@@ -1446,7 +1460,7 @@ class EnochTelegramTests(unittest.TestCase):
             root = Path(temp)
             add_backlog_item(42, "retry evolve work", root, priority="p0")
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
             bot._evolve_approve("backlog-1")
             original = begin_next_task(root)
             with patch.object(
@@ -1462,7 +1476,7 @@ class EnochTelegramTests(unittest.TestCase):
             client.sent.clear()
             client.edited.clear()
 
-            bot.handle_update(
+            _handle_update(bot,
                 _message_update(chat_id=42, text="/task retry 1")
             )
             status = task_queue_status(root)
@@ -1478,7 +1492,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual(evolve_events[-1].retry_of_task_id, 1)
 
     @patch(
-        "enoch.telegram.bot.respond",
+        "enoch.application.respond",
         return_value=(
             "I found the regression and rolled it back.\n"
             f"{TASK_REGRESSION_START}\n"
@@ -1496,9 +1510,9 @@ class EnochTelegramTests(unittest.TestCase):
             original = enqueue_task(42, "ship risky work", root)
             complete_task(begin_next_task(root).id, root, result="Shipped.")
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
-            bot.handle_update(_message_update(chat_id=42, text="the last deploy broke recovery"))
+            _handle_update(bot, _message_update(chat_id=42, text="the last deploy broke recovery"))
             status = task_queue_status(root)
             events = load_task_events(root, task_id=original.id)
             record = next(
@@ -1526,7 +1540,7 @@ class EnochTelegramTests(unittest.TestCase):
             original = enqueue_task(42, "ship risky work", root)
             complete_task(begin_next_task(root).id, root, result="Shipped.")
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
             fix = enqueue_task(42, "repair recovery", root, parent_task_id=original.id)
             running_fix = begin_next_task(root)
             assert running_fix is not None
@@ -1540,7 +1554,7 @@ class EnochTelegramTests(unittest.TestCase):
             )
             with patch.object(bot, "_run_direct_work", return_value=result):
                 bot._run_task_job(running_fix)
-            bot.handle_update(
+            _handle_update(bot,
                 _message_update(update_id=2, chat_id=42, text="/experience")
             )
             status = task_queue_status(root)
@@ -1572,7 +1586,7 @@ class EnochTelegramTests(unittest.TestCase):
             original = enqueue_task(42, "ship risky work", root)
             complete_task(begin_next_task(root).id, root)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
             enqueue_task(42, "repair recovery", root, parent_task_id=original.id)
             running_fix = begin_next_task(root)
             assert running_fix is not None
@@ -1591,8 +1605,8 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual(status.history[0].status, "regressed")
         self.assertEqual(status.history[1].status, "failed")
 
-    @patch("enoch.telegram.bot.ensure_long_term_memory")
-    @patch("enoch.telegram.bot.log_conversation_turn")
+    @patch("enoch.application.ensure_long_term_memory")
+    @patch("enoch.application.log_conversation_turn")
     def test_stop_cancels_running_task_and_edits_status(
         self,
         _log_conversation_turn: MagicMock,
@@ -1601,17 +1615,17 @@ class EnochTelegramTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
             _started, start_worker = self._capture_direct_work_worker(bot)
             with start_worker:
-                bot.handle_update(_message_update(chat_id=42, text="/do long edit"))
+                _handle_update(bot, _message_update(chat_id=42, text="/do long edit"))
             status = task_queue_status(root)
             assert status.running is not None
             event = threading.Event()
             bot._task_cancellations[status.running.id] = event
 
-            bot.handle_update(_message_update(update_id=2, chat_id=42, text="/stop"))
+            _handle_update(bot, _message_update(update_id=2, chat_id=42, text="/stop"))
             status = task_queue_status(root)
 
         self.assertTrue(event.is_set())
@@ -1621,22 +1635,22 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("Status: cancelled", client.edited[-1][2])
         self.assertIn("Latest update: Stopped by /stop.", client.edited[-1][2])
 
-    @patch("enoch.telegram.bot.ensure_long_term_memory")
-    @patch("enoch.telegram.bot.log_conversation_turn")
+    @patch("enoch.application.ensure_long_term_memory")
+    @patch("enoch.application.log_conversation_turn")
     def test_stop_reports_when_no_task_is_running(
         self,
         _log_conversation_turn: MagicMock,
         _update_memory: MagicMock,
     ) -> None:
         client = FakeTelegramClient(allowed_chat_id=42)
-        bot = EnochTelegramBot(load_identity(), ROOT, client)
+        bot = EnochApplication(load_identity(), ROOT, client)
 
-        bot.handle_update(_message_update(chat_id=42, text="/stop"))
+        _handle_update(bot, _message_update(chat_id=42, text="/stop"))
 
         self.assertEqual(client.sent[0][1], "No running task to stop.")
 
-    @patch("enoch.telegram.bot.ensure_long_term_memory")
-    @patch("enoch.telegram.bot.log_conversation_turn")
+    @patch("enoch.application.ensure_long_term_memory")
+    @patch("enoch.application.log_conversation_turn")
     def test_tasks_command_shows_queue_and_history(
         self,
         _log_conversation_turn: MagicMock,
@@ -1645,20 +1659,20 @@ class EnochTelegramTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
-            bot.handle_update(_message_update(chat_id=42, text="/task first queued work"))
-            bot.handle_update(_message_update(update_id=2, chat_id=42, text="/task second queued work"))
-            bot.handle_update(_message_update(update_id=3, chat_id=42, text="/task cancel 2"))
-            bot.handle_update(_message_update(update_id=4, chat_id=42, text="/tasks"))
+            _handle_update(bot, _message_update(chat_id=42, text="/task first queued work"))
+            _handle_update(bot, _message_update(update_id=2, chat_id=42, text="/task second queued work"))
+            _handle_update(bot, _message_update(update_id=3, chat_id=42, text="/task cancel 2"))
+            _handle_update(bot, _message_update(update_id=4, chat_id=42, text="/tasks"))
 
         reply = client.sent[-1][1]
         self.assertIn("Running: none", reply)
         self.assertIn("#1 [pending] first queued work", reply)
         self.assertIn("#2 [cancelled] second queued work", reply)
 
-    @patch("enoch.telegram.bot.ensure_long_term_memory")
-    @patch("enoch.telegram.bot.log_conversation_turn")
+    @patch("enoch.application.ensure_long_term_memory")
+    @patch("enoch.application.log_conversation_turn")
     def test_tasks_command_shows_history_pr_url(
         self,
         _log_conversation_turn: MagicMock,
@@ -1667,20 +1681,20 @@ class EnochTelegramTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
-            bot.handle_update(_message_update(chat_id=42, text="/task add queued work"))
+            _handle_update(bot, _message_update(chat_id=42, text="/task add queued work"))
             job = begin_next_task(root)
             assert job is not None
             complete_task(job.id, root, result="Opened pull request: https://github.com/our-ark/enoch/pull/3")
-            bot.handle_update(_message_update(update_id=2, chat_id=42, text="/tasks"))
+            _handle_update(bot, _message_update(update_id=2, chat_id=42, text="/tasks"))
 
         reply = client.sent[-1][1]
         self.assertIn("#1 [completed] add queued work", reply)
         self.assertIn("PR: https://github.com/our-ark/enoch/pull/3", reply)
 
-    @patch("enoch.telegram.bot.ensure_long_term_memory")
-    @patch("enoch.telegram.bot.log_conversation_turn")
+    @patch("enoch.application.ensure_long_term_memory")
+    @patch("enoch.application.log_conversation_turn")
     def test_task_worker_edits_single_status_message(
         self,
         log_conversation_turn: MagicMock,
@@ -1693,8 +1707,8 @@ class EnochTelegramTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
-            bot.handle_update(_message_update(chat_id=42, text="/task add queued work"))
+            bot = EnochApplication(load_identity(), root, client)
+            _handle_update(bot, _message_update(chat_id=42, text="/task add queued work"))
             job = begin_next_task(root)
             assert job is not None
 
@@ -1725,8 +1739,8 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual(experiences[0].command, "/task")
         log_conversation_turn.assert_called()
 
-    @patch("enoch.telegram.bot.ensure_long_term_memory")
-    @patch("enoch.telegram.bot.log_conversation_turn")
+    @patch("enoch.application.ensure_long_term_memory")
+    @patch("enoch.application.log_conversation_turn")
     def test_evolve_task_worker_creates_one_status_message_for_all_progress(
         self,
         _log_conversation_turn: MagicMock,
@@ -1736,8 +1750,8 @@ class EnochTelegramTests(unittest.TestCase):
             root = Path(temp)
             add_backlog_item(42, "ship evolve status updates", root, priority="p1")
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
-            bot.handle_update(
+            bot = EnochApplication(load_identity(), root, client)
+            _handle_update(bot,
                 _message_update(chat_id=42, text="/evolve approve backlog-1")
             )
             job = begin_next_task(root)
@@ -1778,8 +1792,8 @@ class EnochTelegramTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
-            bot.handle_update(_message_update(chat_id=42, text="/task add queued work"))
+            bot = EnochApplication(load_identity(), root, client)
+            _handle_update(bot, _message_update(chat_id=42, text="/task add queued work"))
             job = begin_next_task(root)
             assert job is not None
 
@@ -1793,7 +1807,7 @@ class EnochTelegramTests(unittest.TestCase):
             paused_events = load_task_events(root, task_id=job.id)
 
             with patch.object(bot, "_maybe_start_task_worker") as start_worker:
-                bot.handle_update(_message_update(update_id=2, chat_id=42, text="/resume"))
+                _handle_update(bot, _message_update(update_id=2, chat_id=42, text="/resume"))
             resumed_status = task_queue_status(root)
             resumed_events = load_task_events(root, task_id=job.id)
 
@@ -1821,14 +1835,14 @@ class EnochTelegramTests(unittest.TestCase):
             pause_task(begin_next_task(root).id, root, result="No Codex access.")
             pause_task(begin_next_task(root).id, root, result="No Codex access.")
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
             with patch.object(bot, "_maybe_start_task_worker") as start_worker:
-                bot.handle_update(
+                _handle_update(bot,
                     _message_update(chat_id=42, text=f"/task resume {second.id}")
                 )
                 selected_status = task_queue_status(root)
-                bot.handle_update(
+                _handle_update(bot,
                     _message_update(
                         update_id=2,
                         chat_id=42,
@@ -1856,7 +1870,7 @@ class EnochTelegramTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
             enqueue_task(42, "first task", root)
             second = enqueue_task(42, "second task", root)
 
@@ -1880,9 +1894,9 @@ class EnochTelegramTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
-            bot.handle_update(_message_update(chat_id=42, text="/task preserve this work"))
+            _handle_update(bot, _message_update(chat_id=42, text="/task preserve this work"))
             status = task_queue_status(root)
 
         self.assertEqual(status.pending, ())
@@ -1895,8 +1909,8 @@ class EnochTelegramTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
-            bot.handle_update(_message_update(chat_id=42, text="/task add skill"))
+            bot = EnochApplication(load_identity(), root, client)
+            _handle_update(bot, _message_update(chat_id=42, text="/task add skill"))
             job = begin_next_task(root)
             assert job is not None
 
@@ -1913,12 +1927,12 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual(payload["skill_names"], ["cron"])
         self.assertEqual(payload["request"], "add skill")
 
-    @patch("enoch.telegram.bot.respond", return_value="Build the reminders feature discussed earlier.")
+    @patch("enoch.application.respond", return_value="Build the reminders feature discussed earlier.")
     def test_task_context_snapshot_resolver_uses_chat_session(self, respond: MagicMock) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
             snapshot = _REAL_TASK_CONTEXT_RESOLVER(bot, 42, "do it")
 
@@ -1936,8 +1950,8 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual(clarification.clarification, "Which file should Enoch update?")
         self.assertIn("NEEDS_CLARIFICATION:", _task_context_snapshot_prompt("do it"))
 
-    @patch("enoch.telegram.bot.ensure_long_term_memory")
-    @patch("enoch.telegram.bot.log_conversation_turn")
+    @patch("enoch.application.ensure_long_term_memory")
+    @patch("enoch.application.log_conversation_turn")
     def test_backlog_command_stores_priority_and_context_snapshot(
         self,
         _log_conversation_turn: MagicMock,
@@ -1950,10 +1964,10 @@ class EnochTelegramTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
             with patch.object(bot, "_maybe_start_task_worker"):
-                bot.handle_update(_message_update(chat_id=42, text="/backlog p0 do it later"))
+                _handle_update(bot, _message_update(chat_id=42, text="/backlog p0 do it later"))
             status = backlog_status(root)
 
         self.resolve_task_context_snapshot.assert_called_once_with(42, "do it later")
@@ -1962,8 +1976,8 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual(status.pending[0].context, "Use the backlog context snapshot.")
         self.assertIn("Backlog #1 [p0] saved.", client.sent[0][1])
 
-    @patch("enoch.telegram.bot.ensure_long_term_memory")
-    @patch("enoch.telegram.bot.log_conversation_turn")
+    @patch("enoch.application.ensure_long_term_memory")
+    @patch("enoch.application.log_conversation_turn")
     def test_backlog_command_defaults_to_p1(
         self,
         _log_conversation_turn: MagicMock,
@@ -1972,16 +1986,16 @@ class EnochTelegramTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
             with patch.object(bot, "_maybe_start_task_worker"):
-                bot.handle_update(_message_update(chat_id=42, text="/backlog do it eventually"))
+                _handle_update(bot, _message_update(chat_id=42, text="/backlog do it eventually"))
             status = backlog_status(root)
 
         self.assertEqual(status.pending[0].priority, "p1")
 
-    @patch("enoch.telegram.bot.ensure_long_term_memory")
-    @patch("enoch.telegram.bot.log_conversation_turn")
+    @patch("enoch.application.ensure_long_term_memory")
+    @patch("enoch.application.log_conversation_turn")
     def test_backlog_command_asks_for_clarification_before_adding(
         self,
         _log_conversation_turn: MagicMock,
@@ -1993,10 +2007,10 @@ class EnochTelegramTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
             with patch.object(bot, "_maybe_start_task_worker"):
-                bot.handle_update(_message_update(chat_id=42, text="/backlog do it"))
+                _handle_update(bot, _message_update(chat_id=42, text="/backlog do it"))
             status = backlog_status(root)
 
         self.assertEqual(status.pending, ())
@@ -2006,7 +2020,7 @@ class EnochTelegramTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
             backlog_item = add_backlog_item(
                 42,
                 "background cleanup",
@@ -2035,10 +2049,10 @@ class EnochTelegramTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
             add_backlog_item(42, "background cleanup", root, priority="p0")
             with patch.object(bot, "_maybe_start_task_worker"):
-                bot.handle_update(_message_update(chat_id=42, text="/task active work"))
+                _handle_update(bot, _message_update(chat_id=42, text="/task active work"))
 
             job = bot._promote_next_backlog_if_idle()
             queue = task_queue_status(root)
@@ -2048,8 +2062,8 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual(queue.pending_count, 1)
         self.assertEqual(backlog.pending_count, 1)
 
-    @patch("enoch.telegram.bot.ensure_long_term_memory")
-    @patch("enoch.telegram.bot.log_conversation_turn")
+    @patch("enoch.application.ensure_long_term_memory")
+    @patch("enoch.application.log_conversation_turn")
     def test_backlog_command_can_remove_and_reprioritize(
         self,
         _log_conversation_turn: MagicMock,
@@ -2058,12 +2072,12 @@ class EnochTelegramTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
             with patch.object(bot, "_maybe_start_task_worker"):
-                bot.handle_update(_message_update(chat_id=42, text="/backlog p2 first"))
-                bot.handle_update(_message_update(update_id=2, chat_id=42, text="/backlog priority 1 p0"))
-                bot.handle_update(_message_update(update_id=3, chat_id=42, text="/backlog remove 1"))
+                _handle_update(bot, _message_update(chat_id=42, text="/backlog p2 first"))
+                _handle_update(bot, _message_update(update_id=2, chat_id=42, text="/backlog priority 1 p0"))
+                _handle_update(bot, _message_update(update_id=3, chat_id=42, text="/backlog remove 1"))
             status = backlog_status(root)
 
         self.assertEqual(status.pending, ())
@@ -2071,8 +2085,8 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("priority is now p0", client.sent[1][1])
         self.assertIn("Removed backlog #1.", client.sent[2][1])
 
-    @patch("enoch.telegram.bot.ensure_long_term_memory")
-    @patch("enoch.telegram.bot.log_conversation_turn")
+    @patch("enoch.application.ensure_long_term_memory")
+    @patch("enoch.application.log_conversation_turn")
     def test_backlog_cancel_points_to_remove_without_adding_item(
         self,
         _log_conversation_turn: MagicMock,
@@ -2081,16 +2095,16 @@ class EnochTelegramTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
-            bot.handle_update(_message_update(chat_id=42, text="/backlog cancel 1"))
+            _handle_update(bot, _message_update(chat_id=42, text="/backlog cancel 1"))
             status = backlog_status(root)
 
         self.assertEqual(status.pending_count, 0)
         self.assertIn("Use /backlog remove <id>", client.sent[0][1])
 
-    @patch("enoch.telegram.bot.ensure_long_term_memory")
-    @patch("enoch.telegram.bot.log_conversation_turn")
+    @patch("enoch.application.ensure_long_term_memory")
+    @patch("enoch.application.log_conversation_turn")
     def test_backlog_command_can_manually_promote(
         self,
         _log_conversation_turn: MagicMock,
@@ -2099,11 +2113,11 @@ class EnochTelegramTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
             with patch.object(bot, "_maybe_start_task_worker"):
-                bot.handle_update(_message_update(chat_id=42, text="/backlog p1 first"))
-                bot.handle_update(_message_update(update_id=2, chat_id=42, text="/backlog promote 1"))
+                _handle_update(bot, _message_update(chat_id=42, text="/backlog p1 first"))
+                _handle_update(bot, _message_update(update_id=2, chat_id=42, text="/backlog promote 1"))
             queue = task_queue_status(root)
             backlog = backlog_status(root)
             events = load_task_events(root, task_id=queue.pending[0].id)
@@ -2116,8 +2130,8 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual(events[0].trigger, "/backlog promote")
         self.assertIn("Promoted backlog #1 to task #1.", client.sent[2][1])
 
-    @patch("enoch.telegram.bot.ensure_long_term_memory")
-    @patch("enoch.telegram.bot.log_conversation_turn")
+    @patch("enoch.application.ensure_long_term_memory")
+    @patch("enoch.application.log_conversation_turn")
     def test_backlog_report_lists_pending_and_history(
         self,
         _log_conversation_turn: MagicMock,
@@ -2126,11 +2140,11 @@ class EnochTelegramTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
             with patch.object(bot, "_maybe_start_task_worker"):
-                bot.handle_update(_message_update(chat_id=42, text="/backlog p0 first"))
-                bot.handle_update(_message_update(update_id=2, chat_id=42, text="/backlog"))
+                _handle_update(bot, _message_update(chat_id=42, text="/backlog p0 first"))
+                _handle_update(bot, _message_update(update_id=2, chat_id=42, text="/backlog"))
 
         self.assertIn("Backlog:", client.sent[1][1])
         self.assertIn("#1 [p0 pending] first", client.sent[1][1])
@@ -2140,9 +2154,9 @@ class EnochTelegramTests(unittest.TestCase):
             root = Path(temp)
             add_backlog_item(42, "improve Telegram work UX", root, priority="p0")
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
-            bot.handle_update(_message_update(chat_id=42, text="/evolve"))
+            _handle_update(bot, _message_update(chat_id=42, text="/evolve"))
 
         reply = client.sent[0][1]
         self.assertIn("Evolve:", reply)
@@ -2152,10 +2166,10 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("wait for human approval", reply)
 
     @patch(
-        "enoch.telegram.bot.format_reconcile_result",
+        "enoch.application.format_reconcile_result",
         return_value="Recorded governed promotion.",
     )
-    @patch("enoch.telegram.bot.reconcile_evolve_candidate")
+    @patch("enoch.application.reconcile_evolve_candidate")
     def test_evolve_reconcile_supports_explicit_backfill(
         self,
         reconcile_evolve_candidate: MagicMock,
@@ -2164,9 +2178,9 @@ class EnochTelegramTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
-            bot.handle_update(
+            _handle_update(bot,
                 _message_update(
                     chat_id=42,
                     text="/evolve reconcile feedback-c3ed71fd1d2d backfill",
@@ -2190,9 +2204,9 @@ class EnochTelegramTests(unittest.TestCase):
                 root=root,
             )
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
-            bot.handle_update(_message_update(chat_id=42, text="/feedback"))
+            _handle_update(bot, _message_update(chat_id=42, text="/feedback"))
 
         reply = client.sent[0][1]
         self.assertIn("Feedback:", reply)
@@ -2203,9 +2217,9 @@ class EnochTelegramTests(unittest.TestCase):
             root = Path(temp)
             add_cron_job(42, "review recurring recovery", 3600, root)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
-            bot.handle_update(_message_update(chat_id=42, text="/experience"))
+            _handle_update(bot, _message_update(chat_id=42, text="/experience"))
 
         reply = client.sent[0][1]
         self.assertIn("Experience:", reply)
@@ -2230,9 +2244,9 @@ class EnochTelegramTests(unittest.TestCase):
                 command="/task",
             )
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
-            bot.handle_update(_message_update(chat_id=42, text="/experience"))
+            _handle_update(bot, _message_update(chat_id=42, text="/experience"))
 
         reply = client.sent[0][1]
         self.assertIn("Task statistics:", reply)
@@ -2251,9 +2265,9 @@ class EnochTelegramTests(unittest.TestCase):
             root = Path(temp)
             add_backlog_item(42, "improve Telegram work UX", root, priority="p0")
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
-            bot.handle_update(_message_update(chat_id=42, text="/propose"))
+            _handle_update(bot, _message_update(chat_id=42, text="/propose"))
             candidates = load_evolve_candidates(root)
             events = load_evolve_events(root)
 
@@ -2275,13 +2289,13 @@ class EnochTelegramTests(unittest.TestCase):
             root = Path(temp)
             add_backlog_item(42, "improve Telegram work UX", root, priority="p0")
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
-            bot.handle_update(_message_update(chat_id=42, text="/propose"))
-            bot.handle_update(
+            _handle_update(bot, _message_update(chat_id=42, text="/propose"))
+            _handle_update(bot,
                 _message_update(update_id=2, chat_id=42, text="/propose")
             )
-            bot.handle_update(
+            _handle_update(bot,
                 _message_update(update_id=3, chat_id=42, text="/experience")
             )
             events = load_evolve_events(root)
@@ -2303,10 +2317,10 @@ class EnochTelegramTests(unittest.TestCase):
             root = Path(temp)
             add_backlog_item(42, "remove proposed cleanup", root, priority="p1")
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
-            bot.handle_update(_message_update(chat_id=42, text="/propose"))
-            bot.handle_update(
+            _handle_update(bot, _message_update(chat_id=42, text="/propose"))
+            _handle_update(bot,
                 _message_update(
                     update_id=2,
                     chat_id=42,
@@ -2335,10 +2349,10 @@ class EnochTelegramTests(unittest.TestCase):
             root = Path(temp)
             set_evolve_theme("proposal observability", root)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
             with patch.object(bot, "_respond_read_only_turn", return_value=response) as respond:
-                bot.handle_update(_message_update(chat_id=42, text="/propose"))
+                _handle_update(bot, _message_update(chat_id=42, text="/propose"))
             candidates = load_evolve_candidates(root)
 
         self.assertIn("Fallback brainstorm added 1 candidate(s).", client.sent[0][1])
@@ -2353,12 +2367,12 @@ class EnochTelegramTests(unittest.TestCase):
             add_backlog_item(42, "low value cleanup", root, priority="p2")
             add_backlog_item(42, "important Telegram recovery", root, priority="p0")
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
-            bot.handle_update(_message_update(chat_id=42, text="/evolve list"))
-            bot.handle_update(_message_update(update_id=2, chat_id=42, text="/evolve remove backlog-1"))
-            bot.handle_update(_message_update(update_id=3, chat_id=42, text="/evolve list"))
-            bot.handle_update(_message_update(update_id=4, chat_id=42, text="/evolve list all"))
+            _handle_update(bot, _message_update(chat_id=42, text="/evolve list"))
+            _handle_update(bot, _message_update(update_id=2, chat_id=42, text="/evolve remove backlog-1"))
+            _handle_update(bot, _message_update(update_id=3, chat_id=42, text="/evolve list"))
+            _handle_update(bot, _message_update(update_id=4, chat_id=42, text="/evolve list all"))
             events = load_evolve_events(root)
 
         self.assertIn("Evolve candidates:", client.sent[0][1])
@@ -2377,9 +2391,9 @@ class EnochTelegramTests(unittest.TestCase):
                 root = Path(temp)
                 add_backlog_item(42, "keep this candidate", root, priority="p1")
                 client = FakeTelegramClient(allowed_chat_id=42)
-                bot = EnochTelegramBot(load_identity(), root, client)
+                bot = EnochApplication(load_identity(), root, client)
 
-                bot.handle_update(
+                _handle_update(bot,
                     _message_update(update_id=index, chat_id=42, text=f"/evolve {command} backlog-1")
                 )
                 candidates = evolve_report(root).candidates
@@ -2394,9 +2408,9 @@ class EnochTelegramTests(unittest.TestCase):
             root = Path(temp)
             add_backlog_item(42, "ship evolve approval", root, priority="p1")
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
-            bot.handle_update(_message_update(chat_id=42, text="/evolve approve backlog-1"))
+            _handle_update(bot, _message_update(chat_id=42, text="/evolve approve backlog-1"))
             queued = task_queue_status(root)
             events = load_evolve_events(root)
 
@@ -2431,7 +2445,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual(events[-1].candidate_actor, "agent")
         self.assertEqual(events[-1].approval_actor, "human")
 
-    @patch("enoch.telegram.bot.create_pull_request")
+    @patch("enoch.application.create_pull_request")
     def test_evolve_pr_helper_passes_current_task_provenance(
         self,
         create_pull_request: MagicMock,
@@ -2486,9 +2500,9 @@ class EnochTelegramTests(unittest.TestCase):
             begin_next_task(root)
             fail_task(original.id, root, result="Worktree branch failed.")
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
-            bot.handle_update(_message_update(chat_id=42, text="/evolve approve task-1"))
+            _handle_update(bot, _message_update(chat_id=42, text="/evolve approve task-1"))
             queued = task_queue_status(root).pending[0]
             worker_context = telegram._task_worker_context(queued)
 
@@ -2507,10 +2521,10 @@ class EnochTelegramTests(unittest.TestCase):
             root = Path(temp)
             add_backlog_item(42, "remove this candidate", root, priority="p1")
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
-            bot.handle_update(_message_update(chat_id=42, text="/evolve remove backlog-1"))
-            bot.handle_update(_message_update(update_id=2, chat_id=42, text="/evolve approve backlog-1"))
+            _handle_update(bot, _message_update(chat_id=42, text="/evolve remove backlog-1"))
+            _handle_update(bot, _message_update(update_id=2, chat_id=42, text="/evolve approve backlog-1"))
             queued = task_queue_status(root)
 
         self.assertIn("cannot be approved from status removed", client.sent[1][1])
@@ -2521,10 +2535,10 @@ class EnochTelegramTests(unittest.TestCase):
             root = Path(temp)
             add_backlog_item(42, "cancel queued evolution", root, priority="p1")
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
-            bot.handle_update(_message_update(chat_id=42, text="/evolve approve backlog-1"))
-            bot.handle_update(_message_update(update_id=2, chat_id=42, text="/task cancel 1"))
+            _handle_update(bot, _message_update(chat_id=42, text="/evolve approve backlog-1"))
+            _handle_update(bot, _message_update(update_id=2, chat_id=42, text="/task cancel 1"))
             events = load_evolve_events(root, candidate_id="backlog-1")
             candidate = load_evolve_candidates(root, include_inactive=True)[0]
 
@@ -2533,8 +2547,8 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual(events[-1].trigger, "/task cancel")
         self.assertEqual(candidate.status, "cancelled")
 
-    @patch("enoch.telegram.bot.ensure_long_term_memory")
-    @patch("enoch.telegram.bot.log_conversation_turn")
+    @patch("enoch.application.ensure_long_term_memory")
+    @patch("enoch.application.log_conversation_turn")
     def test_evolve_approved_candidate_is_marked_done_after_task_completion(
         self,
         _log_conversation_turn: MagicMock,
@@ -2544,9 +2558,9 @@ class EnochTelegramTests(unittest.TestCase):
             root = Path(temp)
             add_backlog_item(42, "ship evolve completion", root, priority="p1")
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
-            bot.handle_update(_message_update(chat_id=42, text="/evolve approve backlog-1"))
+            _handle_update(bot, _message_update(chat_id=42, text="/evolve approve backlog-1"))
             job = begin_next_task(root)
             assert job is not None
             with patch.object(bot, "_run_direct_work", return_value="Done with evolve work."):
@@ -2559,8 +2573,8 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual(all_candidates[0].status, "done")
         self.assertIn("Final status: completed", client.sent[-1][1])
 
-    @patch("enoch.telegram.bot.ensure_long_term_memory")
-    @patch("enoch.telegram.bot.log_conversation_turn")
+    @patch("enoch.application.ensure_long_term_memory")
+    @patch("enoch.application.log_conversation_turn")
     def test_selected_proposal_tracks_task_completion_and_funnel(
         self,
         _log_conversation_turn: MagicMock,
@@ -2570,10 +2584,10 @@ class EnochTelegramTests(unittest.TestCase):
             root = Path(temp)
             add_backlog_item(42, "ship tracked proposal", root, priority="p1")
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
-            bot.handle_update(_message_update(chat_id=42, text="/propose"))
-            bot.handle_update(
+            _handle_update(bot, _message_update(chat_id=42, text="/propose"))
+            _handle_update(bot,
                 _message_update(
                     update_id=2,
                     chat_id=42,
@@ -2584,7 +2598,7 @@ class EnochTelegramTests(unittest.TestCase):
             assert job is not None
             with patch.object(bot, "_run_direct_work", return_value="Done with evolve work."):
                 bot._run_task_job(job)
-            bot.handle_update(
+            _handle_update(bot,
                 _message_update(update_id=3, chat_id=42, text="/experience")
             )
             events = load_evolve_events(root, candidate_id="backlog-1")
@@ -2605,8 +2619,8 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("Selected proposal outcomes:", client.sent[-1][1])
         self.assertIn("completed 1", client.sent[-1][1])
 
-    @patch("enoch.telegram.bot.ensure_long_term_memory")
-    @patch("enoch.telegram.bot.log_conversation_turn")
+    @patch("enoch.application.ensure_long_term_memory")
+    @patch("enoch.application.log_conversation_turn")
     def test_evolve_approved_candidate_is_marked_failed_after_task_failure(
         self,
         _log_conversation_turn: MagicMock,
@@ -2616,9 +2630,9 @@ class EnochTelegramTests(unittest.TestCase):
             root = Path(temp)
             add_backlog_item(42, "ship failing evolve", root, priority="p1")
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
-            bot.handle_update(_message_update(chat_id=42, text="/evolve approve backlog-1"))
+            _handle_update(bot, _message_update(chat_id=42, text="/evolve approve backlog-1"))
             job = begin_next_task(root)
             assert job is not None
             with patch.object(bot, "_run_direct_work", return_value="Enoch could not publish this edit as a pull request: GH007"):
@@ -2633,8 +2647,8 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("experience", report.counts_by_source)
         self.assertIn("Final status: failed", client.sent[-1][1])
 
-    @patch("enoch.telegram.bot.ensure_long_term_memory")
-    @patch("enoch.telegram.bot.log_conversation_turn")
+    @patch("enoch.application.ensure_long_term_memory")
+    @patch("enoch.application.log_conversation_turn")
     def test_propose_suggests_retry_and_retry_links_new_task_to_failure(
         self,
         _log_conversation_turn: MagicMock,
@@ -2644,9 +2658,9 @@ class EnochTelegramTests(unittest.TestCase):
             root = Path(temp)
             add_backlog_item(42, "ship retryable evolve work", root, priority="p1")
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
-            bot.handle_update(_message_update(chat_id=42, text="/evolve approve backlog-1"))
+            _handle_update(bot, _message_update(chat_id=42, text="/evolve approve backlog-1"))
             failed_job = begin_next_task(root)
             assert failed_job is not None
             with patch.object(
@@ -2656,9 +2670,9 @@ class EnochTelegramTests(unittest.TestCase):
             ):
                 bot._run_task_job(failed_job)
 
-            bot.handle_update(_message_update(update_id=2, chat_id=42, text="/propose"))
+            _handle_update(bot, _message_update(update_id=2, chat_id=42, text="/propose"))
             proposal_reply = client.sent[-1][1]
-            bot.handle_update(
+            _handle_update(bot,
                 _message_update(
                     update_id=3,
                     chat_id=42,
@@ -2702,8 +2716,8 @@ class EnochTelegramTests(unittest.TestCase):
             client.sent[-1][1],
         )
 
-    @patch("enoch.telegram.bot.ensure_long_term_memory")
-    @patch("enoch.telegram.bot.log_conversation_turn")
+    @patch("enoch.application.ensure_long_term_memory")
+    @patch("enoch.application.log_conversation_turn")
     def test_evolve_task_regression_and_resolution_are_journaled(
         self,
         _log_conversation_turn: MagicMock,
@@ -2713,9 +2727,9 @@ class EnochTelegramTests(unittest.TestCase):
             root = Path(temp)
             add_backlog_item(42, "ship regressing evolve work", root, priority="p1")
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
-            bot.handle_update(
+            _handle_update(bot,
                 _message_update(chat_id=42, text="/evolve approve backlog-1")
             )
             job = begin_next_task(root)
@@ -2729,8 +2743,8 @@ class EnochTelegramTests(unittest.TestCase):
                 '"resolution": "reverted"}\n'
                 f"{TASK_REGRESSION_END}"
             )
-            with patch("enoch.telegram.bot.respond", return_value=regression_reply):
-                bot.handle_update(
+            with patch("enoch.application.respond", return_value=regression_reply):
+                _handle_update(bot,
                     _message_update(
                         update_id=2,
                         chat_id=42,
@@ -2754,10 +2768,10 @@ class EnochTelegramTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
-            bot.handle_update(_message_update(chat_id=42, text="/evolve theme improve recovery"))
-            bot.handle_update(_message_update(update_id=2, chat_id=42, text="/evolve mode disabled"))
+            _handle_update(bot, _message_update(chat_id=42, text="/evolve theme improve recovery"))
+            _handle_update(bot, _message_update(update_id=2, chat_id=42, text="/evolve mode disabled"))
 
         self.assertIn("Theme: improve recovery", client.sent[0][1])
         self.assertIn("Mode: disabled", client.sent[1][1])
@@ -2767,18 +2781,18 @@ class EnochTelegramTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
-            bot.handle_update(_message_update(chat_id=42, text="/evolve theme"))
-            bot.handle_update(_message_update(update_id=2, chat_id=42, text="/evolve theme improve recovery"))
-            bot.handle_update(_message_update(update_id=3, chat_id=42, text="/evolve theme"))
+            _handle_update(bot, _message_update(chat_id=42, text="/evolve theme"))
+            _handle_update(bot, _message_update(update_id=2, chat_id=42, text="/evolve theme improve recovery"))
+            _handle_update(bot, _message_update(update_id=3, chat_id=42, text="/evolve theme"))
 
         self.assertIn("Evolve theme:\nnot set", client.sent[0][1])
         self.assertIn("Evolve theme:\nimprove recovery", client.sent[2][1])
         self.assertIn("Set with /evolve theme <text>.", client.sent[2][1])
 
     @patch(
-        "enoch.telegram.bot.respond",
+        "enoch.application.respond",
         return_value=json.dumps(
             [
                 {
@@ -2796,23 +2810,23 @@ class EnochTelegramTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
-            bot.handle_update(_message_update(chat_id=42, text="/evolve theme auditable evolution"))
-            bot.handle_update(_message_update(update_id=2, chat_id=42, text="/evolve brainstorm"))
+            _handle_update(bot, _message_update(chat_id=42, text="/evolve theme auditable evolution"))
+            _handle_update(bot, _message_update(update_id=2, chat_id=42, text="/evolve brainstorm"))
 
         self.assertIn("Added 1 theme-guided brainstorming candidate", client.sent[1][1])
         self.assertIn("brainstorming: 1", client.sent[1][1])
         self.assertIn("Current evolution theme: auditable evolution", respond.call_args.args[1])
 
-    @patch("enoch.telegram.bot.respond")
+    @patch("enoch.application.respond")
     def test_evolve_brainstorm_requires_theme(self, respond: MagicMock) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
-            bot.handle_update(_message_update(chat_id=42, text="/evolve brainstorm"))
+            _handle_update(bot, _message_update(chat_id=42, text="/evolve brainstorm"))
 
         self.assertIn("Set a theme", client.sent[0][1])
         respond.assert_not_called()
@@ -2821,9 +2835,9 @@ class EnochTelegramTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
-            bot.handle_update(_message_update(chat_id=42, text="/evolve explore enosh"))
+            _handle_update(bot, _message_update(chat_id=42, text="/evolve explore enosh"))
 
         self.assertNotIn("peer-learning candidate", client.sent[0][1])
         self.assertNotIn("/evolve explore", client.sent[0][1])
@@ -2833,9 +2847,9 @@ class EnochTelegramTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
-            bot.handle_update(_message_update(chat_id=42, text="/evolve candidates"))
+            _handle_update(bot, _message_update(chat_id=42, text="/evolve candidates"))
 
         self.assertIn("Use /evolve list", client.sent[0][1])
         self.assertNotIn("Evolve candidates:", client.sent[0][1])
@@ -2844,9 +2858,9 @@ class EnochTelegramTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
-            bot.handle_update(_message_update(chat_id=42, text="/evolve auto-evovle"))
+            _handle_update(bot, _message_update(chat_id=42, text="/evolve auto-evovle"))
 
         self.assertIn("Mode: auto-evolve", client.sent[0][1])
 
@@ -2854,10 +2868,10 @@ class EnochTelegramTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
-            bot.handle_update(_message_update(chat_id=42, text="/evolve schedule every 1d"))
-            bot.handle_update(_message_update(update_id=2, chat_id=42, text="/evolve schedule off"))
+            _handle_update(bot, _message_update(chat_id=42, text="/evolve schedule every 1d"))
+            _handle_update(bot, _message_update(update_id=2, chat_id=42, text="/evolve schedule off"))
 
         self.assertIn("Schedule: every 1d; next", client.sent[0][1])
         self.assertIn("Schedule: off", client.sent[1][1])
@@ -2866,9 +2880,9 @@ class EnochTelegramTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
-            bot.handle_update(_message_update(chat_id=42, text="/evolve schedule once a day"))
+            _handle_update(bot, _message_update(chat_id=42, text="/evolve schedule once a day"))
 
         self.assertIn("Schedule: every 1d; next", client.sent[0][1])
 
@@ -2876,9 +2890,9 @@ class EnochTelegramTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
-            bot.handle_update(_message_update(chat_id=42, text="/evolve schedule once a day at 09:30"))
+            _handle_update(bot, _message_update(chat_id=42, text="/evolve schedule once a day at 09:30"))
 
         self.assertIn("Schedule: daily 09:30; next", client.sent[0][1])
 
@@ -2886,9 +2900,9 @@ class EnochTelegramTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
-            bot.handle_update(_message_update(chat_id=42, text='/evolve schedule "once a day"'))
+            _handle_update(bot, _message_update(chat_id=42, text='/evolve schedule "once a day"'))
 
         self.assertIn("Schedule: every 1d; next", client.sent[0][1])
 
@@ -2896,9 +2910,9 @@ class EnochTelegramTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
-            bot.handle_update(_message_update(chat_id=42, text="/evolve schedule 30 9 * * *"))
+            _handle_update(bot, _message_update(chat_id=42, text="/evolve schedule 30 9 * * *"))
 
         self.assertIn("Schedule: cron 30 9 * * *; next", client.sent[0][1])
 
@@ -2906,9 +2920,9 @@ class EnochTelegramTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
-            bot.handle_update(_message_update(chat_id=42, text="/evolve schedule every day at 09:30"))
+            _handle_update(bot, _message_update(chat_id=42, text="/evolve schedule every day at 09:30"))
 
         self.assertIn("Schedule: daily 09:30; next", client.sent[0][1])
 
@@ -2916,9 +2930,9 @@ class EnochTelegramTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
-            bot.handle_update(_message_update(chat_id=42, text="/evolve schedule daily 09:30"))
+            _handle_update(bot, _message_update(chat_id=42, text="/evolve schedule daily 09:30"))
 
         self.assertIn("Schedule: daily 09:30; next", client.sent[0][1])
 
@@ -2926,9 +2940,9 @@ class EnochTelegramTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
-            bot.handle_update(_message_update(chat_id=42, text="/evolve schedule cron 30 9 * * *"))
+            _handle_update(bot, _message_update(chat_id=42, text="/evolve schedule cron 30 9 * * *"))
 
         self.assertIn("Schedule: cron 30 9 * * *; next", client.sent[0][1])
 
@@ -2942,7 +2956,7 @@ class EnochTelegramTests(unittest.TestCase):
                 now=datetime(2020, 1, 1, tzinfo=timezone.utc),
             )
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
             job = bot._run_due_evolve_schedule()
             events = load_evolve_events(root)
@@ -2967,7 +2981,7 @@ class EnochTelegramTests(unittest.TestCase):
                 now=datetime(2020, 1, 1, tzinfo=timezone.utc),
             )
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
             job = bot._run_due_evolve_schedule()
             queued = task_queue_status(root)
@@ -3004,8 +3018,8 @@ class EnochTelegramTests(unittest.TestCase):
         }
         self.assertEqual(len(proposal_ids), 1)
 
-    @patch("enoch.telegram.bot.ensure_long_term_memory")
-    @patch("enoch.telegram.bot.log_conversation_turn")
+    @patch("enoch.application.ensure_long_term_memory")
+    @patch("enoch.application.log_conversation_turn")
     def test_due_auto_evolve_proposes_failed_candidate_without_automatic_retry(
         self,
         _log_conversation_turn: MagicMock,
@@ -3015,8 +3029,8 @@ class EnochTelegramTests(unittest.TestCase):
             root = Path(temp)
             add_backlog_item(42, "retry only with human approval", root, priority="p1")
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
-            bot.handle_update(_message_update(chat_id=42, text="/evolve approve backlog-1"))
+            bot = EnochApplication(load_identity(), root, client)
+            _handle_update(bot, _message_update(chat_id=42, text="/evolve approve backlog-1"))
             failed_job = begin_next_task(root)
             assert failed_job is not None
             with patch.object(
@@ -3050,7 +3064,7 @@ class EnochTelegramTests(unittest.TestCase):
             set_evolve_mode(MODE_AUTO_EVOLVE, root)
             set_evolve_schedule(60, root, now=datetime(2020, 1, 1, tzinfo=timezone.utc))
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
             first = bot._run_due_evolve_schedule()
             set_evolve_schedule(60, root, now=datetime(2020, 1, 1, tzinfo=timezone.utc))
@@ -3080,7 +3094,7 @@ class EnochTelegramTests(unittest.TestCase):
             set_evolve_mode(MODE_AUTO_EVOLVE, root)
             set_evolve_schedule(60, root, now=datetime(2020, 1, 1, tzinfo=timezone.utc))
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
             with patch.object(bot, "_respond_read_only_turn", return_value=response) as respond:
                 job = bot._run_due_evolve_schedule()
@@ -3088,7 +3102,7 @@ class EnochTelegramTests(unittest.TestCase):
             events = load_task_events(root, task_id=queued.pending[0].id)
             evolve_events = load_evolve_events(root, task_id=queued.pending[0].id)
             candidate_id = load_evolve_candidates(root)[0].id
-            bot.handle_update(_message_update(update_id=2, chat_id=42, text="/experience"))
+            _handle_update(bot, _message_update(update_id=2, chat_id=42, text="/experience"))
 
         self.assertIsNotNone(job)
         self.assertEqual(queued.pending[0].source, "brainstorming")
@@ -3109,8 +3123,8 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("candidate by agent", experience_reply)
         self.assertEqual(respond.call_args.kwargs["session_key"], "telegram:42:evolve-scheduler")
 
-    @patch("enoch.telegram.bot.ensure_long_term_memory")
-    @patch("enoch.telegram.bot.log_conversation_turn")
+    @patch("enoch.application.ensure_long_term_memory")
+    @patch("enoch.application.log_conversation_turn")
     def test_cron_command_schedules_recurring_work_with_context(
         self,
         _log_conversation_turn: MagicMock,
@@ -3123,9 +3137,9 @@ class EnochTelegramTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
-            bot.handle_update(_message_update(chat_id=42, text="/cron every 10m run scheduled cleanup"))
+            _handle_update(bot, _message_update(chat_id=42, text="/cron every 10m run scheduled cleanup"))
             status = cron_status(root)
 
         self.resolve_task_context_snapshot.assert_called_once_with(42, "run scheduled cleanup")
@@ -3136,8 +3150,8 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("Cron #1 scheduled every 10m.", client.sent[0][1])
         self.assertIn("Next run:", client.sent[0][1])
 
-    @patch("enoch.telegram.bot.ensure_long_term_memory")
-    @patch("enoch.telegram.bot.log_conversation_turn")
+    @patch("enoch.application.ensure_long_term_memory")
+    @patch("enoch.application.log_conversation_turn")
     def test_cron_command_can_cancel_and_report(
         self,
         _log_conversation_turn: MagicMock,
@@ -3146,11 +3160,11 @@ class EnochTelegramTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
-            bot.handle_update(_message_update(chat_id=42, text="/cron every 1h scheduled cleanup"))
-            bot.handle_update(_message_update(update_id=2, chat_id=42, text="/cron"))
-            bot.handle_update(_message_update(update_id=3, chat_id=42, text="/cron cancel 1"))
+            _handle_update(bot, _message_update(chat_id=42, text="/cron every 1h scheduled cleanup"))
+            _handle_update(bot, _message_update(update_id=2, chat_id=42, text="/cron"))
+            _handle_update(bot, _message_update(update_id=3, chat_id=42, text="/cron cancel 1"))
             status = cron_status(root)
 
         self.assertIn("Cron:", client.sent[1][1])
@@ -3163,7 +3177,7 @@ class EnochTelegramTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
             cron = add_cron_job(
                 42,
                 "scheduled cleanup",
@@ -3194,8 +3208,8 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("Task #1", client.sent[0][1])
         self.assertIn("Latest update: Scheduled by cron #1.", client.sent[0][1])
 
-    @patch("enoch.telegram.bot.ensure_long_term_memory")
-    @patch("enoch.telegram.bot.log_conversation_turn")
+    @patch("enoch.application.ensure_long_term_memory")
+    @patch("enoch.application.log_conversation_turn")
     def test_task_worker_marks_publish_failure_failed(
         self,
         log_conversation_turn: MagicMock,
@@ -3204,8 +3218,8 @@ class EnochTelegramTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
-            bot.handle_update(_message_update(chat_id=42, text="/task add queued work"))
+            bot = EnochApplication(load_identity(), root, client)
+            _handle_update(bot, _message_update(chat_id=42, text="/task add queued work"))
             job = begin_next_task(root)
             assert job is not None
 
@@ -3233,7 +3247,7 @@ class EnochTelegramTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
             queued = enqueue_task(42, "edit from a dirty worktree", root)
             job = begin_next_task(root)
 
@@ -3263,12 +3277,12 @@ class EnochTelegramTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
             queued = enqueue_task(42, "survive a network interruption", root)
             first = begin_next_task(root)
 
             with patch(
-                "enoch.telegram.bot.automatic_retry_delay_seconds",
+                "enoch.application.automatic_retry_delay_seconds",
                 return_value=0,
             ):
                 with patch.object(
@@ -3315,12 +3329,12 @@ class EnochTelegramTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
-            bot.handle_update(_message_update(chat_id=42, text="/task long queued work"))
+            bot = EnochApplication(load_identity(), root, client)
+            _handle_update(bot, _message_update(chat_id=42, text="/task long queued work"))
             job = begin_next_task(root)
             assert job is not None
 
-            with patch("enoch.telegram.bot.threading.Timer", _ImmediateTimer):
+            with patch("enoch.application.threading.Timer", _ImmediateTimer):
                 with patch.object(bot, "_run_direct_work", return_value="Done."):
                     bot._run_task_job(job)
             status = task_queue_status(root)
@@ -3337,12 +3351,12 @@ class EnochTelegramTests(unittest.TestCase):
             root = Path(temp)
             add_backlog_item(42, "time out evolution safely", root, priority="p1")
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
-            bot.handle_update(_message_update(chat_id=42, text="/evolve approve backlog-1"))
+            bot = EnochApplication(load_identity(), root, client)
+            _handle_update(bot, _message_update(chat_id=42, text="/evolve approve backlog-1"))
             job = begin_next_task(root)
             assert job is not None
 
-            with patch("enoch.telegram.bot.threading.Timer", _ImmediateTimer):
+            with patch("enoch.application.threading.Timer", _ImmediateTimer):
                 with patch.object(bot, "_run_direct_work", return_value="Done."):
                     bot._run_task_job(job)
             events = load_evolve_events(root, task_id=job.id)
@@ -3357,8 +3371,8 @@ class EnochTelegramTests(unittest.TestCase):
             root = Path(temp)
             add_backlog_item(42, "pause evolution safely", root, priority="p1")
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
-            bot.handle_update(_message_update(chat_id=42, text="/evolve approve backlog-1"))
+            bot = EnochApplication(load_identity(), root, client)
+            _handle_update(bot, _message_update(chat_id=42, text="/evolve approve backlog-1"))
             job = begin_next_task(root)
             assert job is not None
 
@@ -3369,7 +3383,7 @@ class EnochTelegramTests(unittest.TestCase):
             ):
                 bot._run_task_job(job)
             with patch.object(bot, "_maybe_start_task_worker"):
-                bot.handle_update(_message_update(update_id=2, chat_id=42, text="/resume"))
+                _handle_update(bot, _message_update(update_id=2, chat_id=42, text="/resume"))
             events = load_evolve_events(root, task_id=job.id)
             candidate = next(
                 item
@@ -3385,8 +3399,8 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual(events[-1].event_actor, "human")
         self.assertEqual(candidate.status, "running")
 
-    @patch("enoch.telegram.bot.ensure_long_term_memory")
-    @patch("enoch.telegram.bot.log_conversation_turn")
+    @patch("enoch.application.ensure_long_term_memory")
+    @patch("enoch.application.log_conversation_turn")
     def test_task_worker_does_not_rerun_task_with_recorded_pr(
         self,
         log_conversation_turn: MagicMock,
@@ -3395,8 +3409,8 @@ class EnochTelegramTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
-            bot.handle_update(_message_update(chat_id=42, text="/task add queued work"))
+            bot = EnochApplication(load_identity(), root, client)
+            _handle_update(bot, _message_update(chat_id=42, text="/task add queued work"))
             job = begin_next_task(root)
             assert job is not None
             result = "Opened pull request: https://github.com/our-ark/enoch/pull/3"
@@ -3459,7 +3473,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("Enoch opened a pull request.\nPR URL: https://github.com/our-ark/enoch/pull/21", message)
         self.assertNotIn("Enoch committed this change. Branch:", message)
 
-    @patch("enoch.telegram.bot.ensure_long_term_memory")
+    @patch("enoch.application.ensure_long_term_memory")
     def test_startup_completes_running_task_from_matching_direct_action_log(
         self,
         _update_memory: MagicMock,
@@ -3476,7 +3490,7 @@ class EnochTelegramTests(unittest.TestCase):
                 details={"request": queued.text, "result": result},
             )
 
-            EnochTelegramBot(load_identity(), root, FakeTelegramClient(allowed_chat_id=42))
+            EnochApplication(load_identity(), root, FakeTelegramClient(allowed_chat_id=42))
             status = task_queue_status(root)
 
         self.assertIsNone(status.running)
@@ -3485,7 +3499,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual(status.history[-1].status, "completed")
         self.assertEqual(status.history[-1].result, result)
 
-    @patch("enoch.telegram.bot.ensure_long_term_memory")
+    @patch("enoch.application.ensure_long_term_memory")
     def test_startup_fails_running_task_from_matching_failure_log(
         self,
         _update_memory: MagicMock,
@@ -3502,7 +3516,7 @@ class EnochTelegramTests(unittest.TestCase):
                 details={"request": queued.text, "result": result},
             )
 
-            EnochTelegramBot(load_identity(), root, FakeTelegramClient(allowed_chat_id=42))
+            EnochApplication(load_identity(), root, FakeTelegramClient(allowed_chat_id=42))
             status = task_queue_status(root)
 
         self.assertIsNone(status.running)
@@ -3510,15 +3524,15 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual(status.history[-1].status, "failed")
         self.assertEqual(status.history[-1].result, result)
 
-    @patch("enoch.telegram.bot.create_pull_request")
-    @patch("enoch.telegram.bot.push_current_branch")
-    @patch("enoch.telegram.bot.switch_branch")
-    @patch("enoch.telegram.bot.ensure_clean_worktree")
-    @patch("enoch.telegram.bot.current_branch", return_value="agent/enoch-gary")
-    @patch("enoch.telegram.bot.act_in_session")
-    @patch("enoch.telegram.bot.respond")
-    @patch("enoch.telegram.bot.ensure_long_term_memory")
-    @patch("enoch.telegram.bot.log_conversation_turn")
+    @patch("enoch.application.create_pull_request")
+    @patch("enoch.application.push_current_branch")
+    @patch("enoch.application.switch_branch")
+    @patch("enoch.application.ensure_clean_worktree")
+    @patch("enoch.application.current_branch", return_value="agent/enoch-gary")
+    @patch("enoch.application.act_in_session")
+    @patch("enoch.application.respond")
+    @patch("enoch.application.ensure_long_term_memory")
+    @patch("enoch.application.log_conversation_turn")
     def test_task_publish_existing_branch_runs_as_job_action(
         self,
         log_conversation_turn: MagicMock,
@@ -3555,8 +3569,8 @@ class EnochTelegramTests(unittest.TestCase):
                 encoding="utf-8",
             )
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
-            bot.handle_update(
+            bot = EnochApplication(load_identity(), root, client)
+            _handle_update(bot,
                 _message_update(
                     chat_id=42,
                     text="/task publish existing local branch `enoch/existing` as a PR against `main`",
@@ -3566,11 +3580,11 @@ class EnochTelegramTests(unittest.TestCase):
             assert job is not None
 
             with patch(
-                "enoch.telegram.bot.prepare_existing_branch_worktree",
+                "enoch.application.prepare_existing_branch_worktree",
                 return_value=TaskWorktree(job.id, root, "enoch/existing", True),
             ):
                 with patch(
-                    "enoch.telegram.bot.remove_task_worktree",
+                    "enoch.application.remove_task_worktree",
                     return_value="Removed task worktree.",
                 ):
                     bot._run_task_job(job)
@@ -3583,12 +3597,12 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("https://github.com/our-ark/enoch/pull/3", client.edited[-1][2])
         log_conversation_turn.assert_called()
 
-    @patch("enoch.telegram.bot.skills_command", return_value="Lucy skills:")
+    @patch("enoch.application.skills_command", return_value="Lucy skills:")
     def test_skills_command_shows_declared_skills(self, skills_command: MagicMock) -> None:
         client = FakeTelegramClient(allowed_chat_id=42)
-        bot = EnochTelegramBot(load_identity(), ROOT, client)
+        bot = EnochApplication(load_identity(), ROOT, client)
 
-        bot.handle_update(_message_update(chat_id=42, text="/skills lucy"))
+        _handle_update(bot, _message_update(chat_id=42, text="/skills lucy"))
 
         skills_command.assert_called_once_with("/skills lucy", ROOT)
         self.assertIn("Lucy skills:", client.sent[0][1])
@@ -3601,11 +3615,11 @@ class EnochTelegramTests(unittest.TestCase):
             identity_file.parent.mkdir(parents=True)
             identity_file.write_text((ROOT / "src" / "enoch" / "identity.yaml").read_text(encoding="utf-8"), encoding="utf-8")
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
-            bot.handle_update(_message_update(chat_id=42, text="/mission"))
-            bot.handle_update(_message_update(chat_id=42, text="/mission Build calm agent networks"))
-            bot.handle_update(_message_update(chat_id=42, text="/self"))
+            _handle_update(bot, _message_update(chat_id=42, text="/mission"))
+            _handle_update(bot, _message_update(chat_id=42, text="/mission Build calm agent networks"))
+            _handle_update(bot, _message_update(chat_id=42, text="/self"))
             identity_text = identity_file.read_text(encoding="utf-8")
 
             self.assertIn("Enoch mission:", client.sent[0][1])
@@ -3615,30 +3629,30 @@ class EnochTelegramTests(unittest.TestCase):
             self.assertIn("Mission: Build calm agent networks", client.sent[2][1])
             self.assertIn("Build calm agent networks", identity_text)
 
-    @patch("enoch.telegram.bot.respond", return_value="Memory is managed internally now.")
+    @patch("enoch.application.respond", return_value="Memory is managed internally now.")
     def test_memory_command_is_not_user_facing(self, respond: MagicMock) -> None:
         client = FakeTelegramClient(allowed_chat_id=42)
-        bot = EnochTelegramBot(load_identity(), ROOT, client)
+        bot = EnochApplication(load_identity(), ROOT, client)
 
-        bot.handle_update(_message_update(chat_id=42, text="/memory"))
+        _handle_update(bot, _message_update(chat_id=42, text="/memory"))
 
         respond.assert_called_once()
         self.assertIn("Memory is managed internally now.", client.sent[0][1])
 
-    @patch("enoch.telegram.bot.respond", return_value="Teaching is automatic now.")
+    @patch("enoch.application.respond", return_value="Teaching is automatic now.")
     def test_teach_command_is_not_user_facing(self, respond: MagicMock) -> None:
         client = FakeTelegramClient(allowed_chat_id=42)
-        bot = EnochTelegramBot(load_identity(), ROOT, client)
+        bot = EnochApplication(load_identity(), ROOT, client)
 
-        bot.handle_update(_message_update(chat_id=42, text="/teach natural agency"))
+        _handle_update(bot, _message_update(chat_id=42, text="/teach natural agency"))
 
         respond.assert_called_once()
         self.assertIn("Teaching is automatic now.", client.sent[0][1])
         self.assertNotIn("Input tokens:", client.sent[0][1])
 
-    @patch("enoch.telegram.bot.record_peer_learning_observation")
-    @patch("enoch.telegram.bot.learn_skill_prompt", return_value="learn prompt")
-    @patch("enoch.telegram.bot.respond", return_value="This skill does not fit Enoch yet.")
+    @patch("enoch.application.record_peer_learning_observation")
+    @patch("enoch.application.learn_skill_prompt", return_value="learn prompt")
+    @patch("enoch.application.respond", return_value="This skill does not fit Enoch yet.")
     def test_learn_skill_uses_read_only_session(
         self,
         respond: MagicMock,
@@ -3646,9 +3660,9 @@ class EnochTelegramTests(unittest.TestCase):
         record_peer_learning_observation: MagicMock,
     ) -> None:
         client = FakeTelegramClient(allowed_chat_id=42)
-        bot = EnochTelegramBot(load_identity(), ROOT, client)
+        bot = EnochApplication(load_identity(), ROOT, client)
 
-        bot.handle_update(_message_update(chat_id=42, text="/learn teach from lucy"))
+        _handle_update(bot, _message_update(chat_id=42, text="/learn teach from lucy"))
 
         learn_skill_prompt.assert_called_once_with("/learn teach from lucy", root=ROOT)
         record_peer_learning_observation.assert_called_once()
@@ -3662,7 +3676,7 @@ class EnochTelegramTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
             with patch.object(bot, "_run_direct_work", return_value="Adapted the skill."):
                 reply = bot._run_tracked_inline_work(
@@ -3686,9 +3700,9 @@ class EnochTelegramTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
-            with patch("enoch.telegram.bot.threading.Timer", _ImmediateTimer):
+            with patch("enoch.application.threading.Timer", _ImmediateTimer):
                 with patch.object(bot, "_run_direct_work", return_value="Done."):
                     reply = bot._run_tracked_inline_work(
                         42,
@@ -3706,12 +3720,12 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual(events[-1].event_actor, "system")
         self.assertEqual(events[-1].trigger, "task-timeout")
 
-    @patch("enoch.telegram.bot.model_summary", return_value="AI model: gpt-5-codex")
+    @patch("enoch.application.model_summary", return_value="AI model: gpt-5-codex")
     def test_self_reports_identity_without_runtime_status(self, model_summary: MagicMock) -> None:
         client = FakeTelegramClient(allowed_chat_id=42)
-        bot = EnochTelegramBot(load_identity(), ROOT, client)
+        bot = EnochApplication(load_identity(), ROOT, client)
 
-        bot.handle_update(_message_update(chat_id=42, text="/self"))
+        _handle_update(bot, _message_update(chat_id=42, text="/self"))
 
         model_summary.assert_not_called()
         self.assertIn("I am Enoch.", client.sent[0][1])
@@ -3723,12 +3737,12 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertNotIn("Local state:", client.sent[0][1])
         self.assertNotIn("AI model:", client.sent[0][1])
 
-    @patch("enoch.telegram.bot.model_summary", return_value="AI model: gpt-5-codex")
+    @patch("enoch.application.model_summary", return_value="AI model: gpt-5-codex")
     def test_status_reports_runtime_state_and_chat_lock(self, model_summary: MagicMock) -> None:
         client = FakeTelegramClient(allowed_chat_id=42)
-        bot = EnochTelegramBot(load_identity(), ROOT, client)
+        bot = EnochApplication(load_identity(), ROOT, client)
 
-        bot.handle_update(_message_update(chat_id=42, text="/status"))
+        _handle_update(bot, _message_update(chat_id=42, text="/status"))
 
         model_summary.assert_called_once_with(ROOT)
         self.assertIn("Enoch status:", client.sent[0][1])
@@ -3741,7 +3755,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertNotIn("Mission:", client.sent[0][1])
         self.assertNotIn("current evolution", client.sent[0][1])
 
-    @patch("enoch.telegram.bot.model_summary", return_value="AI model: gpt-5-codex")
+    @patch("enoch.application.model_summary", return_value="AI model: gpt-5-codex")
     def test_self_uses_lineage_parent_before_identity_ancestor(self, model_summary: MagicMock) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
@@ -3752,9 +3766,9 @@ class EnochTelegramTests(unittest.TestCase):
                 encoding="utf-8",
             )
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
-            bot.handle_update(_message_update(chat_id=42, text="/self"))
+            _handle_update(bot, _message_update(chat_id=42, text="/self"))
 
         self.assertIn("Ancestor: Adam", client.sent[0][1])
         self.assertNotIn("Ancestor: Lucy", client.sent[0][1])
@@ -3762,22 +3776,22 @@ class EnochTelegramTests(unittest.TestCase):
 
     def test_status_includes_setup_hint_without_chat_lock(self) -> None:
         client = FakeTelegramClient(allowed_chat_id=None)
-        bot = EnochTelegramBot(load_identity(), ROOT, client)
+        bot = EnochApplication(load_identity(), ROOT, client)
 
-        bot.handle_update(_message_update(chat_id=42, text="/status"))
+        _handle_update(bot, _message_update(chat_id=42, text="/status"))
 
         self.assertIn("Telegram conversation lock: not set", client.sent[0][1])
-        self.assertIn("bin/enoch setup-chat 42", client.sent[0][1])
-        self.assertIn("bin/enoch-daemon restart", client.sent[0][1])
+        self.assertIn("Configure the Telegram provider", client.sent[0][1])
+        self.assertIn("restart Enoch", client.sent[0][1])
 
-    @patch("enoch.telegram.bot.respond", return_value="Thinking config is managed locally.")
+    @patch("enoch.application.respond", return_value="Thinking config is managed locally.")
     def test_thinking_is_no_longer_a_telegram_command(self, respond: MagicMock) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
-            bot.handle_update(_message_update(chat_id=42, text="/thinking high"))
+            _handle_update(bot, _message_update(chat_id=42, text="/thinking high"))
 
         respond.assert_called_once()
         self.assertNotIn("reasoning_effort", read_section("codex", root))
@@ -3787,16 +3801,16 @@ class EnochTelegramTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
-            bot.handle_update(_message_update(chat_id=42, text="/ancestors"))
+            _handle_update(bot, _message_update(chat_id=42, text="/ancestors"))
 
         self.assertIn("no direct parent configured", client.sent[0][1])
         self.assertIn(".agent/lineage.yaml", client.sent[0][1])
         self.assertIn("Ancestor commands:", client.sent[0][1])
         self.assertIn("/inherit", client.sent[0][1])
 
-    @patch("enoch.telegram.bot.resolve_lineage")
+    @patch("enoch.application.resolve_lineage")
     def test_ancestors_reports_resolution_warnings(self, resolve_lineage: MagicMock) -> None:
         resolve_lineage.return_value = LineageResolution(
             ancestors=(AncestorLink(name="Enoch", repo="our-ark/enoch", branch="main", depth=1),),
@@ -3805,23 +3819,23 @@ class EnochTelegramTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
-            bot.handle_update(_message_update(chat_id=42, text="/ancestors"))
+            _handle_update(bot, _message_update(chat_id=42, text="/ancestors"))
 
         resolve_lineage.assert_called_once_with(root)
         self.assertIn("Warnings:", client.sent[0][1])
         self.assertIn("private repo", client.sent[0][1])
         self.assertIn("Ancestor commands:", client.sent[0][1])
 
-    @patch("enoch.telegram.bot.inherit_command", return_value="Direct parent inheritance checked.\nour-ark/enoch#32")
+    @patch("enoch.application.inherit_command", return_value="Direct parent inheritance checked.\nour-ark/enoch#32")
     def test_inherit_uses_shared_command(self, inherit_command: MagicMock) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
-            bot.handle_update(_message_update(chat_id=42, text="/inherit"))
+            _handle_update(bot, _message_update(chat_id=42, text="/inherit"))
 
         inherit_command.assert_called_once()
         self.assertEqual(inherit_command.call_args.args[:2], ("/inherit", root))
@@ -3841,9 +3855,9 @@ class EnochTelegramTests(unittest.TestCase):
                 encoding="utf-8",
             )
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
-            bot.handle_update(_message_update(chat_id=42, text="/inherit inspect our-ark/enoch#32"))
+            _handle_update(bot, _message_update(chat_id=42, text="/inherit inspect our-ark/enoch#32"))
 
         self.assertIn("Status: pending", client.sent[0][1])
         self.assertIn("src/enoch/telegram/bot.py", client.sent[0][1])
@@ -3852,10 +3866,10 @@ class EnochTelegramTests(unittest.TestCase):
 
     def test_inherit_candidate_id_uses_lineage_adoption_flow(self) -> None:
         client = FakeTelegramClient(allowed_chat_id=42)
-        bot = EnochTelegramBot(load_identity(), ROOT, client)
+        bot = EnochApplication(load_identity(), ROOT, client)
 
         with patch.object(bot, "_adopt_lineage_candidate", return_value="adopted change") as adopt:
-            bot.handle_update(_message_update(chat_id=42, text="/inherit our-ark/enoch#32"))
+            _handle_update(bot, _message_update(chat_id=42, text="/inherit our-ark/enoch#32"))
 
         adopt.assert_called_once_with(42, "our-ark/enoch#32")
         self.assertEqual(client.sent[0][1], "adopted change")
@@ -3871,9 +3885,9 @@ class EnochTelegramTests(unittest.TestCase):
             inbox = root / ".agent" / "lineage_inbox.json"
             inbox.write_text(json.dumps({"schema_version": 1, "candidates": [candidate.__dict__]}), encoding="utf-8")
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
-            bot.handle_update(_message_update(chat_id=42, text="/inherit our-ark/enoch#32"))
+            _handle_update(bot, _message_update(chat_id=42, text="/inherit our-ark/enoch#32"))
 
         self.assertIn("could not find direct-parent change", client.sent[0][1])
 
@@ -3881,9 +3895,9 @@ class EnochTelegramTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
-            bot.handle_update(_message_update(chat_id=42, text="/ancestors unknown our-ark/enoch#32"))
+            _handle_update(bot, _message_update(chat_id=42, text="/ancestors unknown our-ark/enoch#32"))
 
         self.assertIn("Ancestor commands:", client.sent[0][1])
 
@@ -3898,14 +3912,14 @@ class EnochTelegramTests(unittest.TestCase):
             state.parent.mkdir()
             state.write_text('{"mode":"conversation-only"}', encoding="utf-8")
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
             self.assertTrue(bot._action_allowed())
             self.assertEqual(_action_sandbox(root), "danger-full-access")
 
     def test_progress_update_uses_minutes_at_default_interval(self) -> None:
         client = FakeTelegramClient(allowed_chat_id=42)
-        bot = EnochTelegramBot(load_identity(), ROOT, client)
+        bot = EnochApplication(load_identity(), ROOT, client)
 
         bot._send_progress(42, 60, "workspace-write")
 
@@ -3944,7 +3958,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("Worktree status: unknown", result)
         self.assertIn("not a git repository", result)
 
-    @patch("enoch.telegram.bot.run_immune_system")
+    @patch("enoch.application.run_immune_system")
     def test_doctor_runs_health_checks(self, run_immune_system: MagicMock) -> None:
         run_immune_system.return_value = MagicMock(
             passed=True,
@@ -3952,16 +3966,16 @@ class EnochTelegramTests(unittest.TestCase):
             diagnosis=MagicMock(summary="All tests passed.", suggested_action="Keep going.", failing_tests=[]),
         )
         client = FakeTelegramClient(allowed_chat_id=42)
-        bot = EnochTelegramBot(load_identity(), ROOT, client)
+        bot = EnochApplication(load_identity(), ROOT, client)
 
-        bot.handle_update(_message_update(chat_id=42, text="/doctor"))
+        _handle_update(bot, _message_update(chat_id=42, text="/doctor"))
 
         run_immune_system.assert_called_once_with(ROOT)
         self.assertIn("Doctor passed.", client.sent[0][1])
         self.assertIn("All tests passed.", client.sent[0][1])
 
-    @patch("enoch.telegram.bot._schedule_daemon_restart")
-    @patch("enoch.telegram.bot.update_from_main")
+    @patch("enoch.application._schedule_daemon_restart")
+    @patch("enoch.application.update_from_main")
     def test_update_uses_shared_updater_and_restarts_when_safe(
         self,
         update_from_main: MagicMock,
@@ -3971,17 +3985,17 @@ class EnochTelegramTests(unittest.TestCase):
         update_from_main.return_value.direct_action_result = "Updating 1111111..2222222"
         update_from_main.return_value.restart_required = True
         client = FakeTelegramClient(allowed_chat_id=42)
-        bot = EnochTelegramBot(load_identity(), ROOT, client)
+        bot = EnochApplication(load_identity(), ROOT, client)
 
-        bot.handle_update(_message_update(chat_id=42, text="/update"))
+        _handle_update(bot, _message_update(chat_id=42, text="/update"))
 
         update_from_main.assert_called_once_with(ROOT)
         schedule_restart.assert_called_once_with(ROOT)
         self.assertIn("Enoch pulled latest main and doctor passed.", client.sent[0][1])
         self.assertIn("Restarting now.", client.sent[0][1])
 
-    @patch("enoch.telegram.bot._schedule_daemon_restart")
-    @patch("enoch.telegram.bot.update_from_main")
+    @patch("enoch.application._schedule_daemon_restart")
+    @patch("enoch.application.update_from_main")
     def test_update_does_not_restart_when_shared_result_does_not_request_it(
         self,
         update_from_main: MagicMock,
@@ -3991,52 +4005,52 @@ class EnochTelegramTests(unittest.TestCase):
         update_from_main.return_value.direct_action_result = "Already up to date."
         update_from_main.return_value.restart_required = False
         client = FakeTelegramClient(allowed_chat_id=42)
-        bot = EnochTelegramBot(load_identity(), ROOT, client)
+        bot = EnochApplication(load_identity(), ROOT, client)
 
-        bot.handle_update(_message_update(chat_id=42, text="/update"))
+        _handle_update(bot, _message_update(chat_id=42, text="/update"))
 
         update_from_main.assert_called_once_with(ROOT)
         schedule_restart.assert_not_called()
         self.assertIn("Enoch is already up to date.", client.sent[0][1])
 
-    @patch("enoch.telegram.bot.update_from_main")
+    @patch("enoch.application.update_from_main")
     def test_update_requires_locked_chat(self, update_from_main: MagicMock) -> None:
         client = FakeTelegramClient(allowed_chat_id=None)
-        bot = EnochTelegramBot(load_identity(), ROOT, client)
+        bot = EnochApplication(load_identity(), ROOT, client)
 
-        bot.handle_update(_message_update(chat_id=42, text="/update"))
+        _handle_update(bot, _message_update(chat_id=42, text="/update"))
 
         update_from_main.assert_not_called()
         self.assertIn("locked to one conversation", client.sent[0][1])
 
-    @patch("enoch.telegram.bot._schedule_daemon_restart")
+    @patch("enoch.application._schedule_daemon_restart")
     def test_restart_schedules_daemon_restart_after_reply(self, schedule_restart: MagicMock) -> None:
         client = FakeTelegramClient(allowed_chat_id=42)
-        bot = EnochTelegramBot(load_identity(), ROOT, client)
+        bot = EnochApplication(load_identity(), ROOT, client)
 
-        bot.handle_update(_message_update(chat_id=42, text="/restart"))
+        _handle_update(bot, _message_update(chat_id=42, text="/restart"))
 
         schedule_restart.assert_called_once_with(ROOT)
         self.assertIn("Enoch is restarting.", client.sent[0][1])
 
-    @patch("enoch.telegram.bot._schedule_daemon_restart")
+    @patch("enoch.application._schedule_daemon_restart")
     def test_restart_requires_locked_chat(self, schedule_restart: MagicMock) -> None:
         client = FakeTelegramClient(allowed_chat_id=None)
-        bot = EnochTelegramBot(load_identity(), ROOT, client)
+        bot = EnochApplication(load_identity(), ROOT, client)
 
-        bot.handle_update(_message_update(chat_id=42, text="/restart"))
+        _handle_update(bot, _message_update(chat_id=42, text="/restart"))
 
         schedule_restart.assert_not_called()
         self.assertIn("locked to one conversation", client.sent[0][1])
 
-    @patch("enoch.telegram.bot.respond", return_value="Let's think through reminders first.")
+    @patch("enoch.application.respond", return_value="Let's think through reminders first.")
     def test_natural_feature_request_uses_read_only_wrapper(self, respond: MagicMock) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
-            bot.handle_update(_message_update(chat_id=42, text="我想让 Enoch 支持 reminders"))
+            _handle_update(bot, _message_update(chat_id=42, text="我想让 Enoch 支持 reminders"))
 
         respond.assert_called_once()
         self.assertEqual(respond.call_args.kwargs["session_key"], "telegram:42")
@@ -4046,10 +4060,10 @@ class EnochTelegramTests(unittest.TestCase):
         self.sync_session_activity.assert_not_called()
         self.assertIn("Let's think through reminders first.", client.sent[0][1])
 
-    @patch("enoch.telegram.bot.ensure_long_term_memory")
-    @patch("enoch.telegram.bot.log_conversation_turn")
-    @patch("enoch.telegram.bot.respond")
-    @patch("enoch.telegram.bot.act_in_session")
+    @patch("enoch.application.ensure_long_term_memory")
+    @patch("enoch.application.log_conversation_turn")
+    @patch("enoch.application.respond")
+    @patch("enoch.application.act_in_session")
     def test_natural_edit_request_does_not_auto_run_work(
         self,
         act_in_session: MagicMock,
@@ -4063,9 +4077,9 @@ class EnochTelegramTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
-        bot.handle_update(_message_update(chat_id=42, text="make the README clearer"))
+        _handle_update(bot, _message_update(chat_id=42, text="make the README clearer"))
 
         self.assertEqual(respond.call_args.kwargs["session_key"], "telegram:42")
         self.assertIn("/do", respond.call_args.args[1])
@@ -4076,10 +4090,10 @@ class EnochTelegramTests(unittest.TestCase):
         act_in_session.assert_not_called()
         self.sync_session_activity.assert_not_called()
 
-    @patch("enoch.telegram.bot.ensure_long_term_memory")
-    @patch("enoch.telegram.bot.log_conversation_turn")
-    @patch("enoch.telegram.bot.respond", return_value="I can talk that through first.")
-    @patch("enoch.telegram.bot.prepare_local_publish")
+    @patch("enoch.application.ensure_long_term_memory")
+    @patch("enoch.application.log_conversation_turn")
+    @patch("enoch.application.respond", return_value="I can talk that through first.")
+    @patch("enoch.application.prepare_local_publish")
     def test_natural_message_without_marker_does_not_publish_pr(
         self,
         prepare_local_publish: MagicMock,
@@ -4090,23 +4104,23 @@ class EnochTelegramTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
-            bot.handle_update(_message_update(chat_id=42, text="commit then open a PR for it"))
+            _handle_update(bot, _message_update(chat_id=42, text="commit then open a PR for it"))
 
         respond.assert_called_once()
         prepare_local_publish.assert_not_called()
         self.assertIn("I can talk that through first.", client.sent[0][1])
 
-    @patch("enoch.telegram.bot.create_pull_request")
-    @patch("enoch.telegram.bot.push_current_branch")
-    @patch("enoch.telegram.bot.switch_branch")
-    @patch("enoch.telegram.bot.ensure_clean_worktree")
-    @patch("enoch.telegram.bot.current_branch", return_value="agent/enoch-gary")
-    @patch("enoch.telegram.bot.act_in_session")
-    @patch("enoch.telegram.bot.respond")
-    @patch("enoch.telegram.bot.ensure_long_term_memory")
-    @patch("enoch.telegram.bot.log_conversation_turn")
+    @patch("enoch.application.create_pull_request")
+    @patch("enoch.application.push_current_branch")
+    @patch("enoch.application.switch_branch")
+    @patch("enoch.application.ensure_clean_worktree")
+    @patch("enoch.application.current_branch", return_value="agent/enoch-gary")
+    @patch("enoch.application.act_in_session")
+    @patch("enoch.application.respond")
+    @patch("enoch.application.ensure_long_term_memory")
+    @patch("enoch.application.log_conversation_turn")
     def test_do_publish_existing_branch_runs_as_job_action(
         self,
         _log_conversation_turn: MagicMock,
@@ -4143,19 +4157,19 @@ class EnochTelegramTests(unittest.TestCase):
                 encoding="utf-8",
             )
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
             started, start_worker = self._capture_direct_work_worker(bot)
             with patch(
-                "enoch.telegram.bot.prepare_existing_branch_worktree",
+                "enoch.application.prepare_existing_branch_worktree",
                 return_value=TaskWorktree(1, root, "enoch/existing", True),
             ):
                 with patch(
-                    "enoch.telegram.bot.remove_task_worktree",
+                    "enoch.application.remove_task_worktree",
                     return_value="Removed task worktree.",
                 ):
                     with start_worker:
-                        bot.handle_update(
+                        _handle_update(bot,
                             _message_update(
                                 chat_id=42,
                                 text="/do publish existing local branch `enoch/existing` as a PR against `main`",
@@ -4176,22 +4190,22 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("Status: completed", client.edited[-1][2])
         self.assertIn("https://github.com/our-ark/enoch/pull/3", client.edited[-1][2])
 
-    @patch("enoch.telegram.bot.create_pull_request")
-    @patch("enoch.telegram.bot.push_current_branch")
-    @patch("enoch.telegram.bot.prepare_local_publish")
-    @patch("enoch.telegram.bot.run_immune_system")
-    @patch("enoch.telegram.bot.delete_branch")
-    @patch("enoch.telegram.bot.switch_branch")
-    @patch("enoch.telegram.bot._task_branch_base", return_value="origin/main")
-    @patch("enoch.telegram.bot.ensure_clean_worktree")
-    @patch("enoch.telegram.bot.current_branch", side_effect=["main", "enoch/readme", "enoch/readme"])
-    @patch("enoch.telegram.bot.changed_files", return_value=["README.md"])
-    @patch("enoch.telegram.bot._worktree_snapshot", side_effect=["clean", "changed"])
-    @patch("enoch.telegram.bot.act_in_session", return_value="Updated README.")
-    @patch("enoch.telegram.bot.respond")
-    @patch("enoch.telegram.bot.ensure_long_term_memory")
-    @patch("enoch.telegram.bot.log_conversation_turn")
-    @patch("enoch.telegram.bot.time.time", return_value=789)
+    @patch("enoch.application.create_pull_request")
+    @patch("enoch.application.push_current_branch")
+    @patch("enoch.application.prepare_local_publish")
+    @patch("enoch.application.run_immune_system")
+    @patch("enoch.application.delete_branch")
+    @patch("enoch.application.switch_branch")
+    @patch("enoch.application._task_branch_base", return_value="origin/main")
+    @patch("enoch.application.ensure_clean_worktree")
+    @patch("enoch.application.current_branch", side_effect=["main", "enoch/readme", "enoch/readme"])
+    @patch("enoch.application.changed_files", return_value=["README.md"])
+    @patch("enoch.application._worktree_snapshot", side_effect=["clean", "changed"])
+    @patch("enoch.application.act_in_session", return_value="Updated README.")
+    @patch("enoch.application.respond")
+    @patch("enoch.application.ensure_long_term_memory")
+    @patch("enoch.application.log_conversation_turn")
+    @patch("enoch.application.time.time", return_value=789)
     def test_do_runs_direct_work_as_job(
         self,
         _time: MagicMock,
@@ -4242,19 +4256,19 @@ class EnochTelegramTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
             started, start_worker = self._capture_direct_work_worker(bot)
             with patch(
-                "enoch.telegram.bot.prepare_task_worktree",
+                "enoch.application.prepare_task_worktree",
                 return_value=TaskWorktree(1, root, "enoch/readme", True),
             ) as prepare_task_worktree:
                 with patch(
-                    "enoch.telegram.bot.remove_task_worktree",
+                    "enoch.application.remove_task_worktree",
                     return_value="Removed task #1 worktree.",
                 ):
                     with start_worker:
-                        bot.handle_update(_message_update(chat_id=42, text="/do Update README directly."))
+                        _handle_update(bot, _message_update(chat_id=42, text="/do Update README directly."))
                     self.assertEqual(len(started), 1)
                     bot._run_direct_task_job(started[0][0], session_key=started[0][1])
             status = task_queue_status(root)
@@ -4284,8 +4298,8 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual(status.history[-1].context, "Use the earlier README scope decision.")
         self.assertIn("https://github.com/our-ark/enoch/pull/2", status.history[-1].result)
 
-    @patch("enoch.telegram.bot.ensure_long_term_memory")
-    @patch("enoch.telegram.bot.log_conversation_turn")
+    @patch("enoch.application.ensure_long_term_memory")
+    @patch("enoch.application.log_conversation_turn")
     def test_do_starts_worker_and_keeps_telegram_responsive(
         self,
         _log_conversation_turn: MagicMock,
@@ -4294,25 +4308,25 @@ class EnochTelegramTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
             started, start_worker = self._capture_direct_work_worker(bot)
             with patch.object(bot, "_run_direct_work") as run_direct_work:
                 with start_worker:
-                    bot.handle_update(_message_update(chat_id=42, text="/do long edit"))
+                    _handle_update(bot, _message_update(chat_id=42, text="/do long edit"))
                     run_direct_work.assert_not_called()
                     self.assertEqual(len(started), 1)
                     status = task_queue_status(root)
                     self.assertIsNotNone(status.running)
 
-                    bot.handle_update(_message_update(update_id=2, chat_id=42, text="/status"))
+                    _handle_update(bot, _message_update(update_id=2, chat_id=42, text="/status"))
 
         self.assertIn("Task #1", client.sent[0][1])
         self.assertIn("Tasks:", client.sent[-1][1])
         self.assertIn("- running: #1 long edit", client.sent[-1][1])
 
-    @patch("enoch.telegram.bot.ensure_long_term_memory")
-    @patch("enoch.telegram.bot.log_conversation_turn")
+    @patch("enoch.application.ensure_long_term_memory")
+    @patch("enoch.application.log_conversation_turn")
     def test_do_asks_for_clarification_before_running(
         self,
         _log_conversation_turn: MagicMock,
@@ -4324,10 +4338,10 @@ class EnochTelegramTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
             with patch.object(bot, "_run_direct_work") as run_direct_work:
-                bot.handle_update(_message_update(chat_id=42, text="/do do it"))
+                _handle_update(bot, _message_update(chat_id=42, text="/do do it"))
             status = task_queue_status(root)
 
         run_direct_work.assert_not_called()
@@ -4335,8 +4349,8 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual(status.history, ())
         self.assertIn("Which change should Enoch make?", client.sent[0][1])
 
-    @patch("enoch.telegram.bot.ensure_long_term_memory")
-    @patch("enoch.telegram.bot.log_conversation_turn")
+    @patch("enoch.application.ensure_long_term_memory")
+    @patch("enoch.application.log_conversation_turn")
     def test_do_marks_work_failure_status_failed(
         self,
         _log_conversation_turn: MagicMock,
@@ -4345,7 +4359,7 @@ class EnochTelegramTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
             started, start_worker = self._capture_direct_work_worker(bot)
             with patch.object(
@@ -4354,7 +4368,7 @@ class EnochTelegramTests(unittest.TestCase):
                 return_value="Enoch could not complete the requested work yet: usage limit",
             ):
                 with start_worker:
-                    bot.handle_update(_message_update(chat_id=42, text="/do Update README directly."))
+                    _handle_update(bot, _message_update(chat_id=42, text="/do Update README directly."))
                 self.assertEqual(len(started), 1)
                 bot._run_direct_task_job(started[0][0], session_key=started[0][1])
             status = task_queue_status(root)
@@ -4367,8 +4381,8 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual(status.history[-1].status, "failed")
         self.assertIn("usage limit", status.history[-1].result)
 
-    @patch("enoch.telegram.bot.ensure_long_term_memory")
-    @patch("enoch.telegram.bot.log_conversation_turn")
+    @patch("enoch.application.ensure_long_term_memory")
+    @patch("enoch.application.log_conversation_turn")
     def test_do_command_includes_replied_message_context(
         self,
         _log_conversation_turn: MagicMock,
@@ -4377,12 +4391,12 @@ class EnochTelegramTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
             started, start_worker = self._capture_direct_work_worker(bot)
             with patch.object(bot, "_run_direct_work", return_value="Done.") as run_direct_work:
                 with start_worker:
-                    bot.handle_update(
+                    _handle_update(bot,
                         _message_update(
                             chat_id=42,
                             text="/do handle this",
@@ -4398,8 +4412,8 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("Context from replied Telegram message:", request)
         self.assertIn("Original bug report details.", request)
 
-    @patch("enoch.telegram.bot.ensure_long_term_memory")
-    @patch("enoch.telegram.bot.log_conversation_turn")
+    @patch("enoch.application.ensure_long_term_memory")
+    @patch("enoch.application.log_conversation_turn")
     def test_do_uses_new_action_session_for_each_direct_task(
         self,
         _log_conversation_turn: MagicMock,
@@ -4408,16 +4422,16 @@ class EnochTelegramTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
             started, start_worker = self._capture_direct_work_worker(bot)
             with patch.object(bot, "_run_direct_work", return_value="Done.") as run_direct_work:
                 with start_worker:
-                    bot.handle_update(_message_update(chat_id=42, text="/do first"))
+                    _handle_update(bot, _message_update(chat_id=42, text="/do first"))
                     self.assertEqual(len(started), 1)
                     bot._run_direct_task_job(started[0][0], session_key=started[0][1])
 
-                    bot.handle_update(_message_update(update_id=2, chat_id=42, text="/do second"))
+                    _handle_update(bot, _message_update(update_id=2, chat_id=42, text="/do second"))
                     self.assertEqual(len(started), 2)
                     bot._run_direct_task_job(started[1][0], session_key=started[1][1])
 
@@ -4426,8 +4440,8 @@ class EnochTelegramTests(unittest.TestCase):
             ["telegram:42:do:1", "telegram:42:do:2"],
         )
 
-    @patch("enoch.telegram.bot.ensure_long_term_memory")
-    @patch("enoch.telegram.bot.log_conversation_turn")
+    @patch("enoch.application.ensure_long_term_memory")
+    @patch("enoch.application.log_conversation_turn")
     def test_do_queues_next_when_task_is_running(
         self,
         _log_conversation_turn: MagicMock,
@@ -4440,14 +4454,14 @@ class EnochTelegramTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
-            bot.handle_update(_message_update(chat_id=42, text="/task existing work"))
+            bot = EnochApplication(load_identity(), root, client)
+            _handle_update(bot, _message_update(chat_id=42, text="/task existing work"))
             job = begin_next_task(root)
             assert job is not None
             already_queued = enqueue_task(42, "already queued work", root)
 
             with patch.object(bot, "_run_direct_work") as run_direct_work:
-                bot.handle_update(_message_update(update_id=2, chat_id=42, text="/do new work"))
+                _handle_update(bot, _message_update(update_id=2, chat_id=42, text="/do new work"))
             status = task_queue_status(root)
 
         run_direct_work.assert_not_called()
@@ -4458,8 +4472,8 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("Status: queued", client.sent[-1][1])
         self.assertIn("Queued next after running task #1.", client.sent[-1][1])
 
-    @patch("enoch.telegram.bot.ensure_long_term_memory")
-    @patch("enoch.telegram.bot.log_conversation_turn")
+    @patch("enoch.application.ensure_long_term_memory")
+    @patch("enoch.application.log_conversation_turn")
     def test_finished_do_checks_for_queued_work(
         self,
         _log_conversation_turn: MagicMock,
@@ -4468,12 +4482,12 @@ class EnochTelegramTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
             started, start_worker = self._capture_direct_work_worker(bot)
             with patch.object(bot, "_run_direct_work", return_value="Done."):
                 with start_worker:
-                    bot.handle_update(_message_update(chat_id=42, text="/do first"))
+                    _handle_update(bot, _message_update(chat_id=42, text="/do first"))
                 self.assertEqual(len(started), 1)
                 enqueue_task(42, "queued next", root)
                 with patch.object(bot, "_maybe_start_task_worker") as maybe_start:
@@ -4481,8 +4495,8 @@ class EnochTelegramTests(unittest.TestCase):
 
         maybe_start.assert_called_once()
 
-    @patch("enoch.telegram.bot.ensure_long_term_memory")
-    @patch("enoch.telegram.bot.log_conversation_turn")
+    @patch("enoch.application.ensure_long_term_memory")
+    @patch("enoch.application.log_conversation_turn")
     def test_stale_worker_does_not_announce_completed_after_authoritative_failure(
         self,
         _log_conversation_turn: MagicMock,
@@ -4491,11 +4505,11 @@ class EnochTelegramTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
             started, start_worker = self._capture_direct_work_worker(bot)
 
             with start_worker:
-                bot.handle_update(_message_update(chat_id=42, text="/do isolated work"))
+                _handle_update(bot, _message_update(chat_id=42, text="/do isolated work"))
             job = started[0][0]
 
             def authoritative_failure(*_args, **_kwargs) -> str:
@@ -4515,7 +4529,7 @@ class EnochTelegramTests(unittest.TestCase):
     def test_stop_workers_cancels_active_work_and_waits_for_workers(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
-            bot = EnochTelegramBot(
+            bot = EnochApplication(
                 load_identity(),
                 root,
                 FakeTelegramClient(allowed_chat_id=42),
@@ -4536,13 +4550,13 @@ class EnochTelegramTests(unittest.TestCase):
         direct_worker.join.assert_called_once()
         queued_worker.join.assert_called_once()
 
-    @patch("enoch.telegram.bot.create_pull_request")
-    @patch("enoch.telegram.bot.push_current_branch")
-    @patch("enoch.telegram.bot.prepare_local_publish")
-    @patch("enoch.telegram.bot.delete_branch")
-    @patch("enoch.telegram.bot.switch_branch")
-    @patch("enoch.telegram.bot.ensure_clean_worktree")
-    @patch("enoch.telegram.bot.current_branch", return_value="enoch/readme")
+    @patch("enoch.application.create_pull_request")
+    @patch("enoch.application.push_current_branch")
+    @patch("enoch.application.prepare_local_publish")
+    @patch("enoch.application.delete_branch")
+    @patch("enoch.application.switch_branch")
+    @patch("enoch.application.ensure_clean_worktree")
+    @patch("enoch.application.current_branch", return_value="enoch/readme")
     def test_task_publish_records_pr_url_before_worker_completion(
         self,
         _current_branch: MagicMock,
@@ -4579,9 +4593,9 @@ class EnochTelegramTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
             bot._resident_branch = "agent/enoch-gary"
-            bot.handle_update(_message_update(chat_id=42, text="/task Update README directly."))
+            _handle_update(bot, _message_update(chat_id=42, text="/task Update README directly."))
             job = begin_next_task(root)
             assert job is not None
             status_message = WorkStatusMessage(
@@ -4604,9 +4618,9 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("https://github.com/our-ark/enoch/pull/2", status.running.result)
         self.assertIn("Enoch opened a pull request.", status.running.result)
 
-    @patch("enoch.telegram.bot.close_pull_request")
-    @patch("enoch.telegram.bot.ensure_long_term_memory")
-    @patch("enoch.telegram.bot.log_conversation_turn")
+    @patch("enoch.application.close_pull_request")
+    @patch("enoch.application.ensure_long_term_memory")
+    @patch("enoch.application.log_conversation_turn")
     def test_do_closes_duplicate_pull_requests(
         self,
         _log_conversation_turn: MagicMock,
@@ -4620,11 +4634,11 @@ class EnochTelegramTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
             started, start_worker = self._capture_direct_work_worker(bot)
             with start_worker:
-                bot.handle_update(_message_update(chat_id=42, text="/do 保留 #1，关闭重复的 #2 和 #3"))
+                _handle_update(bot, _message_update(chat_id=42, text="/do 保留 #1，关闭重复的 #2 和 #3"))
             self.assertEqual(len(started), 1)
             bot._run_direct_task_job(started[0][0], session_key=started[0][1])
 
@@ -4676,7 +4690,7 @@ class EnochTelegramTests(unittest.TestCase):
             root = Path(temp)
             client = FakeTelegramClient()
             client.updates = [_message_update(update_id=10, chat_id=42, text="/status")]
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
             bot.run_once()
 
@@ -4688,10 +4702,10 @@ class EnochTelegramTests(unittest.TestCase):
             root = Path(temp)
             client = FakeTelegramClient()
             client.updates = [_message_update(update_id=10, chat_id=42, text="/status")]
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
             bot.run_once()
-            restarted_bot = EnochTelegramBot(load_identity(), root, client)
+            restarted_bot = EnochApplication(load_identity(), root, client)
             restarted_bot.run_once()
 
             self.assertEqual(bot.offset, 11)
@@ -4699,8 +4713,8 @@ class EnochTelegramTests(unittest.TestCase):
             self.assertEqual(client.offsets, [None, 11])
             self.assertEqual(len(client.sent), 1)
 
-    @patch("enoch.telegram.bot.ensure_long_term_memory")
-    @patch("enoch.telegram.bot.log_conversation_turn")
+    @patch("enoch.application.ensure_long_term_memory")
+    @patch("enoch.application.log_conversation_turn")
     def test_final_send_failure_still_records_and_advances_offset(
         self,
         log_conversation_turn: MagicMock,
@@ -4709,25 +4723,25 @@ class EnochTelegramTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FailingTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
-            bot.handle_update(_message_update(update_id=10, chat_id=42, text="/status"))
+            _handle_update(bot, _message_update(update_id=10, chat_id=42, text="/status"))
 
         self.assertEqual(bot.offset, 11)
         log_conversation_turn.assert_called_once()
         self.assertIn("Telegram send failed", log_conversation_turn.call_args.kwargs["reply"])
 
-    @patch("enoch.telegram.bot.ensure_long_term_memory")
-    @patch("enoch.telegram.bot.log_conversation_turn")
+    @patch("enoch.application.ensure_long_term_memory")
+    @patch("enoch.application.log_conversation_turn")
     def test_read_ack_failure_is_logged_without_blocking_reply(
         self,
         _log_conversation_turn: MagicMock,
         _update_memory: MagicMock,
     ) -> None:
         client = FailingAckTelegramClient(allowed_chat_id=42)
-        bot = EnochTelegramBot(load_identity(), ROOT, client)
+        bot = EnochApplication(load_identity(), ROOT, client)
 
-        bot.handle_update(_message_update(update_id=10, chat_id=42, text="/status"))
+        _handle_update(bot, _message_update(update_id=10, chat_id=42, text="/status"))
 
         self.log_system_event.assert_any_call(
             "chat_read_ack_failed",
@@ -4744,21 +4758,21 @@ class EnochTelegramTests(unittest.TestCase):
 
     def test_progress_send_failure_does_not_abort_action(self) -> None:
         client = FailingTelegramClient(allowed_chat_id=42)
-        bot = EnochTelegramBot(load_identity(), ROOT, client)
+        bot = EnochApplication(load_identity(), ROOT, client)
 
         bot._send_progress(42, 60, "danger-full-access")
 
         self.assertEqual(client.sent, [])
 
     @patch("builtins.print")
-    @patch("enoch.telegram.bot.time.sleep")
+    @patch("enoch.application.time.sleep")
     def test_run_forever_continues_after_polling_error(
         self,
         sleep: MagicMock,
         _print: MagicMock,
     ) -> None:
         client = FakeTelegramClient(allowed_chat_id=42)
-        bot = EnochTelegramBot(load_identity(), ROOT, client)
+        bot = EnochApplication(load_identity(), ROOT, client)
         bot.run_once = MagicMock(side_effect=[OSError("network down"), KeyboardInterrupt])
 
         with self.assertRaises(KeyboardInterrupt):
@@ -4780,8 +4794,8 @@ class EnochTelegramTests(unittest.TestCase):
 
         run_git.assert_any_call(["pull", "--ff-only", "origin", "main"], ROOT)
 
-    @patch("enoch.telegram.bot.ensure_long_term_memory")
-    @patch("enoch.telegram.bot.log_system_event", side_effect=OSError("disk full"))
+    @patch("enoch.application.ensure_long_term_memory")
+    @patch("enoch.application.log_system_event", side_effect=OSError("disk full"))
     def test_direct_action_system_log_failure_does_not_abort_workflow(
         self,
         _log_system_event: MagicMock,
@@ -4791,10 +4805,10 @@ class EnochTelegramTests(unittest.TestCase):
 
         update_memory.assert_not_called()
 
-    @patch("enoch.telegram.bot.ensure_long_term_memory")
-    @patch("enoch.telegram.bot.log_conversation_turn")
-    @patch("enoch.telegram.bot._schedule_daemon_restart")
-    @patch("enoch.telegram.bot.update_from_main")
+    @patch("enoch.application.ensure_long_term_memory")
+    @patch("enoch.application.log_conversation_turn")
+    @patch("enoch.application._schedule_daemon_restart")
+    @patch("enoch.application.update_from_main")
     def test_restart_triggering_update_saves_offset_before_restart(
         self,
         update_from_main: MagicMock,
@@ -4810,20 +4824,23 @@ class EnochTelegramTests(unittest.TestCase):
 
             def assert_offset_saved(restart_root: Path) -> None:
                 self.assertEqual(restart_root, root)
-                offset_file = root / ".enoch" / "telegram_offset.json"
-                self.assertEqual(json.loads(offset_file.read_text(encoding="utf-8"))["offset"], 11)
+                offset_file = root / ".enoch" / "channels" / "telegram" / "cursor.json"
+                self.assertEqual(json.loads(offset_file.read_text(encoding="utf-8"))["cursor"], 11)
 
             schedule_restart.side_effect = assert_offset_saved
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochTelegramBot(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client)
 
-            bot.handle_update(_message_update(update_id=10, chat_id=42, text="/update"))
+            _handle_update(bot, _message_update(update_id=10, chat_id=42, text="/update"))
 
         schedule_restart.assert_called_once_with(root)
         self.assertEqual(bot.offset, 11)
 
 
 class FakeTelegramClient:
+    name = "telegram"
+    provider_kind = "chat"
+
     def __init__(self, allowed_chat_id=None) -> None:
         self.config = TelegramConfig(token="token", allowed_chat_id=allowed_chat_id)
         self.acks = []
@@ -4838,6 +4855,13 @@ class FakeTelegramClient:
         if offset is None:
             return self.updates
         return [update for update in self.updates if int(update["update_id"]) >= offset]
+
+    def receive(self, cursor=None):
+        return [
+            event
+            for update in self.get_updates(cursor)
+            if (event := telegram_event(update)) is not None
+        ]
 
     def send_message(self, chat_id, text):
         self.sent.append((chat_id, text))
@@ -4928,10 +4952,20 @@ def _photo_update(update_id=1, chat_id=42, caption=""):
     return {"update_id": update_id, "message": message}
 
 
-def _save_test_offset(offset: int, root: Path) -> None:
+def _handle_update(bot: EnochApplication, update: dict) -> None:
+    event = telegram_event(update)
+    if event is not None:
+        bot.handle_event(event)
+
+
+def _save_test_offset(name: str, offset: int, root: Path) -> None:
     if root == ROOT:
         return
-    _real_save_telegram_offset(offset, root)
+    save_channel_cursor(name, offset, root)
+
+
+def _load_lifecycle_state(root: Path) -> dict:
+    return load_channel_lifecycle("telegram", root)
 
 
 def _doctor_result():

@@ -9,7 +9,7 @@ from typing import Callable
 from enoch.memory.paths import clean_text, now as current_time
 from enoch.paths import enoch_home
 from enoch.lineage.core import lineage_file, parse_lineage_parent
-from enoch.skills import AgentSkills, SkillsError, _github_text, _parse_simple_yaml, load_agent_skills
+from enoch.skills import AgentSkills, SkillsError, _parse_simple_yaml, _published_text, load_agent_skills
 
 
 MAX_SKILL_DOC_CHARS = 12000
@@ -138,14 +138,19 @@ def explore_peer_skills(
     return tuple(observations)
 
 
-def load_published_skill(skill: str, agent: str) -> PublishedSkill:
+def load_published_skill(
+    skill: str,
+    agent: str,
+    *,
+    root: Path | None = None,
+) -> PublishedSkill:
     skill_name = skill.strip()
     agent_name = agent.strip().lower()
     if not skill_name or not agent_name:
         raise LearnError("Use /learn <skill> from <agent>.")
 
     try:
-        identity_text = _github_text(agent_name, f"src/{agent_name}/identity.yaml")
+        identity_text = _published_text(agent_name, f"src/{agent_name}/identity.yaml", root=root)
     except SkillsError as error:
         raise LearnError(f"Could not read published Our-Ark agent {agent_name}.") from error
 
@@ -163,8 +168,8 @@ def load_published_skill(skill: str, agent: str) -> PublishedSkill:
     if not path:
         raise LearnError(f"{declared_agent_name}'s {skill_name} skill has no path.")
 
-    metadata = _optional_github_text(agent_name, f"{path}/skill.yaml")
-    instructions = _optional_github_text(agent_name, f"{path}/SKILL.md")
+    metadata = _optional_published_text(agent_name, f"{path}/skill.yaml", root=root)
+    instructions = _optional_published_text(agent_name, f"{path}/SKILL.md", root=root)
     description = str(matching_skill.get("description") or "").strip()
     if not metadata and not instructions and not description:
         raise LearnError(f"{declared_agent_name}'s {skill_name} skill has no learnable description.")
@@ -184,7 +189,7 @@ def learn_skill_prompt(text: str, *, root: Path | None = None) -> str:
     request = parse_learn_request(text)
     if request is None:
         raise LearnError("Use /learn <skill> from <agent>.")
-    skill = load_published_skill(request.skill, request.agent)
+    skill = load_published_skill(request.skill, request.agent, root=root)
     return "\n\n".join(
         [
             f"Consider whether Enoch should learn the published skill {skill.name} from {skill.agent_name}.",
@@ -192,7 +197,7 @@ def learn_skill_prompt(text: str, *, root: Path | None = None) -> str:
             "If the skill should be adapted, return a concise Enoch edit request using the normal edit-request marker.",
             "If it should not be adapted, explain why and do not request an edit.",
             "",
-            f"Source: github.com/our-ark/{skill.agent}@main",
+            f"Source: our-ark/{skill.agent}@main via configured forge",
             f"Skill path: {skill.path}",
             f"Declared description: {skill.description or '(none)'}",
             "skill.yaml:",
@@ -209,7 +214,7 @@ def learn_command(text: str, root: Path, *, prefix: str = "/") -> str:
     if request is None:
         return f"Use {command} <skill> from <agent>."
     try:
-        skill = load_published_skill(request.skill, request.agent)
+        skill = load_published_skill(request.skill, request.agent, root=root)
     except LearnError as error:
         return f"Enoch could not inspect that skill: {error}"
     return format_published_skill(skill)
@@ -232,7 +237,7 @@ def format_published_skill(skill: PublishedSkill) -> str:
     return "\n".join(
         [
             f"Enoch inspected {skill.agent_name}'s {skill.name} skill.",
-            f"Source: github.com/our-ark/{skill.agent}@main",
+            f"Source: our-ark/{skill.agent}@main via configured forge",
             f"Path: {skill.path}",
             f"skill.yaml: {len(skill.metadata)} chars",
             f"SKILL.md: {len(skill.instructions)} chars",
@@ -251,9 +256,9 @@ def _find_skill(raw_skills: list[object], skill_name: str) -> dict[str, object] 
     return None
 
 
-def _optional_github_text(agent: str, path: str) -> str:
+def _optional_published_text(agent: str, path: str, *, root: Path | None = None) -> str:
     try:
-        return _github_text(agent, path)
+        return _published_text(agent, path, root=root)
     except SkillsError:
         return ""
 

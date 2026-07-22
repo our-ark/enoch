@@ -27,7 +27,7 @@ from enoch.task_events import normalize_task_initiator, normalize_task_source, r
 
 SCHEMA_VERSION = 5
 DEFAULT_MAX_ATTEMPTS = 3
-PULL_REQUEST_URL_PATTERN = re.compile(r"https://github\.com/[^/\s]+/[^/\s]+/pull/\d+")
+PULL_REQUEST_URL_PATTERN = re.compile(r"https://[^\s]+/(?:pull|pulls|merge_requests)/\d+")
 _QUEUE_THREAD_LOCK = threading.RLock()
 
 

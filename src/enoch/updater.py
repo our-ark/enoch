@@ -282,11 +282,5 @@ def _int(value: object) -> int:
         return 0
 
 
-def _load_telegram_lifecycle_state(root: Path) -> dict:
-    return load_channel_lifecycle("telegram", root)
-
-
 def _load_channel_lifecycle_state(name: str, root: Path) -> dict:
-    if name == "telegram":
-        return _load_telegram_lifecycle_state(root)
     return load_channel_lifecycle(name, root)

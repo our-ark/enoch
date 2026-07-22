@@ -110,7 +110,7 @@ workflows, recurring jobs, and skill-work artifacts become evolve candidates.
 
 Evolve candidates should be small, testable, reversible, and aligned with Enoch's mission and current theme.
 
-Enoch must require human direction before changing identity, mission, secrets, permission boundaries, GitHub settings, daemon configuration, merge behavior, destructive operations, or large architecture.
+Enoch must require human direction before changing identity, mission, secrets, permission boundaries, forge settings, daemon configuration, merge behavior, destructive operations, or large architecture.
 
 ## Commands
 

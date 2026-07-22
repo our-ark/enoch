@@ -35,3 +35,17 @@ class GitVersionControlProvider:
             result.stdout.strip(),
             result.stderr.strip(),
         )
+
+
+def create_provider(_root: Path | None = None) -> GitVersionControlProvider:
+    return GitVersionControlProvider()
+
+
+ENOCH_PROVIDERS = (
+    {
+        "kind": "vcs",
+        "name": "git",
+        "factory": create_provider,
+        "default": True,
+    },
+)

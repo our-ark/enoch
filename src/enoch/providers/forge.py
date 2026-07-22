@@ -4,6 +4,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+from enoch.providers.contracts import EvolutionProvenance
+from enoch.providers.registry import load_provider
+
 
 @dataclass
 class FunctionForgeProvider:
@@ -13,7 +16,7 @@ class FunctionForgeProvider:
     inspect_merge_fn: Callable[..., Any]
     list_fn: Callable[..., tuple[Any, ...]]
     merge_fn: Callable[..., Any]
-    name: str = "github"
+    name: str = "function-forge"
     provider_kind: str = "forge"
 
     def close_pull_request(
@@ -52,22 +55,60 @@ class FunctionForgeProvider:
         return self.merge_fn(reference, root)
 
 
-class GithubForgeProvider(FunctionForgeProvider):
-    def __init__(self) -> None:
-        from enoch.github.workflow import (
-            close_pull_request,
-            create_pull_request,
-            inspect_pull_request,
-            inspect_pull_request_merge,
-            list_open_pull_requests,
-            merge_pull_request,
-        )
+def feature_title(text: str, root: Path | None = None) -> str:
+    return load_provider("forge", root).feature_title(text)
 
-        super().__init__(
-            close_fn=close_pull_request,
-            create_fn=create_pull_request,
-            inspect_fn=inspect_pull_request,
-            inspect_merge_fn=inspect_pull_request_merge,
-            list_fn=list_open_pull_requests,
-            merge_fn=merge_pull_request,
-        )
+
+def prepare_local_publish(commit_message: str, **kwargs: Any) -> Any:
+    return load_provider("forge", kwargs.get("root")).prepare_local_publish(
+        commit_message,
+        **kwargs,
+    )
+
+
+def push_current_branch(**kwargs: Any) -> Any:
+    return load_provider("forge", kwargs.get("root")).push_current_branch(**kwargs)
+
+
+def format_evolution_provenance(
+    provenance: EvolutionProvenance,
+    root: Path | None = None,
+) -> str:
+    return load_provider("forge", root).format_evolution_provenance(provenance)
+
+
+def close_pull_request(
+    number: int,
+    *,
+    root: Path | None = None,
+    comment: str | None = None,
+) -> Any:
+    return load_provider("forge", root).close_pull_request(
+        number,
+        root=root,
+        comment=comment,
+    )
+
+
+def create_pull_request(**kwargs: Any) -> Any:
+    return load_provider("forge", kwargs.get("root")).create_pull_request(**kwargs)
+
+
+def inspect_pull_request(reference: str, root: Path | None = None) -> Any:
+    return load_provider("forge", root).inspect_pull_request(reference, root)
+
+
+def inspect_pull_request_merge(reference: str, root: Path | None = None) -> Any:
+    return load_provider("forge", root).inspect_pull_request_merge(reference, root)
+
+
+def list_open_pull_requests(
+    root: Path | None = None,
+    *,
+    limit: int = 20,
+) -> tuple[Any, ...]:
+    return load_provider("forge", root).list_open_pull_requests(root, limit=limit)
+
+
+def merge_pull_request(reference: str, root: Path | None = None) -> Any:
+    return load_provider("forge", root).merge_pull_request(reference, root)

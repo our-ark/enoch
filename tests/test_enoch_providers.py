@@ -23,7 +23,7 @@ from enoch.providers import (
     provider_name,
     register_provider,
 )
-from enoch.telegram.bot import EnochApplication
+from enoch.application import EnochApplication
 from enoch.task_queue import enqueue_task, record_task_status_message, task_queue_status
 
 
@@ -234,9 +234,9 @@ class EnochProviderTests(unittest.TestCase):
             )
 
             with (
-                patch("enoch.telegram.bot.log_conversation_turn"),
-                patch("enoch.telegram.bot.ensure_long_term_memory"),
-                patch("enoch.telegram.bot._save_telegram_offset"),
+                patch("enoch.application.log_conversation_turn"),
+                patch("enoch.application.ensure_long_term_memory"),
+                patch("enoch.application.save_channel_cursor"),
                 patch.object(bot, "_queue_session_sync"),
             ):
                 bot.handle_event(event)

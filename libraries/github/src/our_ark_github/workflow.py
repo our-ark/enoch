@@ -19,7 +19,18 @@ from enoch.git_tools import (
     run_git,
 )
 from enoch.immune import ImmuneResult, run_immune_system
-from enoch.providers.contracts import ForgeProviderError
+from our_ark_provider_kit import (
+    EvolutionProvenance,
+    ForgeProviderError,
+    LocalPublishResult,
+    PullRequestCloseResult,
+    PullRequestMergeCandidate,
+    PullRequestMergeResult,
+    PullRequestMergeStatus,
+    PullRequestResult,
+    PullRequestTarget,
+    RemotePublishResult,
+)
 from enoch.runtime import DEFAULT_BRANCH, DEFAULT_REMOTE, PROTECTED_BRANCHES
 
 
@@ -36,110 +47,6 @@ class PublishError(ForgeProviderError):
 def feature_title(text: str) -> str:
     normalized = " ".join(text.strip().split())
     return normalized[:72].strip() or "Enoch feature"
-
-
-@dataclass(frozen=True)
-class LocalPublishResult:
-    branch: str
-    commit_message: str
-    changed_files: list[str]
-    diff: str
-    doctor: ImmuneResult
-    commit_sha: str
-
-
-@dataclass(frozen=True)
-class RemotePublishResult:
-    branch: str
-    remote: str
-    pushed: bool
-    ahead_count: int
-    compare_url: str | None
-
-
-@dataclass(frozen=True)
-class PullRequestResult:
-    branch: str
-    title: str
-    body: str
-    created: bool
-    url: str | None
-    fallback_url: str | None
-    note: str | None = None
-    draft: bool = False
-
-
-@dataclass(frozen=True)
-class EvolutionProvenance:
-    candidate_id: str
-    evidence_source: str
-    signal_actor: str
-    candidate_actor: str
-    approval_actor: str
-    task_id: int
-    parent_candidate_id: str = ""
-    source_task_id: int | None = None
-    retry_of_task_id: int | None = None
-
-
-@dataclass(frozen=True)
-class PullRequestCloseResult:
-    number: int
-    closed: bool
-    url: str
-    note: str | None = None
-
-
-@dataclass(frozen=True)
-class PullRequestMergeStatus:
-    reference: str
-    url: str
-    state: str
-    base_branch: str
-    merge_commit: str
-    merged_at: str
-    number: int = 0
-    repository: str = ""
-    is_draft: bool = False
-    mergeable: str = ""
-    merge_state_status: str = ""
-    head_sha: str = ""
-    note: str | None = None
-
-
-@dataclass(frozen=True)
-class PullRequestTarget:
-    reference: str
-    number: int
-    repository: str = ""
-
-
-@dataclass(frozen=True)
-class PullRequestMergeCandidate:
-    target: PullRequestTarget
-    number: int
-    repository: str
-    url: str
-    state: str
-    is_draft: bool
-    mergeable: str
-    merge_state_status: str
-    head_oid: str
-    base_branch: str
-    title: str = ""
-    head_branch: str = ""
-    author: str = ""
-    updated_at: str = ""
-    merged_at: str = ""
-
-
-@dataclass(frozen=True)
-class PullRequestMergeResult:
-    number: int
-    url: str
-    method: str
-    merge_commit: str
-    message: str
 
 
 _PR_VIEW_FIELDS = (

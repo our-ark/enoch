@@ -171,7 +171,7 @@ class EnochUpdaterTests(unittest.TestCase):
         self.assertIn("verified adoption after restart", result.message)
 
     @patch(
-        "enoch.updater._load_telegram_lifecycle_state",
+        "enoch.updater._load_channel_lifecycle_state",
         return_value={
             "status": "running",
             "pid": os.getpid(),
@@ -204,7 +204,7 @@ class EnochUpdaterTests(unittest.TestCase):
         self.assertIn("Run /restart to load the current code.", result.direct_action_result)
 
     @patch(
-        "enoch.updater._load_telegram_lifecycle_state",
+        "enoch.updater._load_channel_lifecycle_state",
         return_value={
             "status": "running",
             "pid": 1,

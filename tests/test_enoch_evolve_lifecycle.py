@@ -23,7 +23,7 @@ from enoch.evolve_lifecycle import (
     reconcile_evolve_candidate,
     stage_promoted_evolve_adoptions,
 )
-from enoch.github.workflow import PullRequestMergeStatus
+from our_ark_github.workflow import PullRequestMergeStatus
 from enoch.task_queue import (
     begin_next_task,
     complete_task,

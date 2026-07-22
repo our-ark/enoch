@@ -1,24 +1,27 @@
 from __future__ import annotations
 
-from importlib import metadata
+from importlib import import_module, metadata
 from inspect import Parameter, signature
 import os
 from pathlib import Path
 from typing import Any, Callable, Literal
 
 from enoch.config import read_section
+from enoch.runtime_dependencies import load_runtime_dependencies
 
 
 ProviderKind = Literal["chat", "runtime", "vcs", "forge"]
 ProviderFactory = Callable[[Path | None], Any]
+ProviderSetup = Callable[..., str]
+PROVIDER_KINDS: tuple[ProviderKind, ...] = ("chat", "runtime", "vcs", "forge")
 ENTRY_POINT_GROUP = "enoch.providers"
-DEFAULT_PROVIDERS: dict[ProviderKind, str] = {
-    "chat": "telegram",
-    "runtime": "codex",
-    "vcs": "git",
-    "forge": "github",
-}
+PLUGIN_ATTRIBUTE = "ENOCH_PROVIDERS"
+CORE_PROVIDER_MODULES = ("enoch.providers.runtime", "enoch.providers.vcs")
+SOURCE_PROJECT_ROOT = Path(__file__).resolve().parents[3]
 _REGISTERED: dict[tuple[ProviderKind, str], ProviderFactory] = {}
+_DEFAULTS: dict[ProviderKind, str] = {}
+_SETUP_HANDLERS: dict[tuple[ProviderKind, str], ProviderSetup] = {}
+_LOADED_PLUGIN_MODULES: set[str] = set()
 
 
 class ProviderError(RuntimeError):
@@ -35,25 +38,61 @@ def register_provider(
     factory: ProviderFactory,
     *,
     replace: bool = False,
+    default: bool = False,
 ) -> None:
+    if kind not in PROVIDER_KINDS:
+        raise ProviderError(f"Invalid provider kind {kind!r}.")
     normalized = _provider_id(name)
     key = (kind, normalized)
     if key in _REGISTERED and not replace:
         raise ProviderError(f"Provider {kind}.{normalized} is already registered.")
     _REGISTERED[key] = factory
+    if default:
+        _DEFAULTS[kind] = normalized
+
+
+def configure_provider(
+    kind: ProviderKind,
+    text: str,
+    root: Path,
+    *,
+    name: str = "",
+    prompt: Callable[[str], str] | None = None,
+    prefix: str = "",
+) -> str:
+    _load_provider_plugins(root)
+    selected = _provider_id(name) if name else provider_name(kind, root)
+    handler = _SETUP_HANDLERS.get((kind, selected))
+    if handler is None:
+        raise ProviderError(f"Provider {kind}.{selected} does not expose setup commands.")
+    return handler(text, root, prompt=prompt, prefix=prefix)
 
 
 def provider_name(kind: ProviderKind, root: Path | None = None) -> str:
+    _require_kind(kind)
+    _load_provider_plugins(root)
     env_name = f"ENOCH_{kind.upper()}_PROVIDER"
     configured = os.environ.get(env_name, "").strip()
     if not configured:
         configured = read_section("providers", root).get(kind, "").strip()
-    return _provider_id(configured or DEFAULT_PROVIDERS[kind])
+    if configured:
+        return _provider_id(configured)
+    if default := _DEFAULTS.get(kind):
+        return default
+    choices = available_providers(kind, root)
+    if len(choices) == 1:
+        return choices[0]
+    if not choices:
+        raise ProviderNotFound(f"No {kind} provider is installed.")
+    raise ProviderError(
+        f"Multiple {kind} providers are installed. Configure one of: {', '.join(choices)}."
+    )
 
 
-def available_providers(kind: ProviderKind) -> tuple[str, ...]:
+def available_providers(kind: ProviderKind, root: Path | None = None) -> tuple[str, ...]:
+    _require_kind(kind)
+    _load_provider_plugins(root)
     names = {name for registered_kind, name in _REGISTERED if registered_kind == kind}
-    names.add(DEFAULT_PROVIDERS[kind])
     for entry_point in _entry_points():
         parsed = _entry_point_key(entry_point.name)
         if parsed is not None and parsed[0] == kind:
@@ -67,14 +106,13 @@ def load_provider(
     *,
     name: str = "",
 ) -> Any:
+    _load_provider_plugins(root)
     selected = _provider_id(name) if name else provider_name(kind, root)
     factory = _REGISTERED.get((kind, selected))
     if factory is None:
-        factory = _builtin_factory(kind, selected)
-    if factory is None:
         factory = _entry_point_factory(kind, selected)
     if factory is None:
-        available = ", ".join(available_providers(kind)) or "none"
+        available = ", ".join(available_providers(kind, root)) or "none"
         raise ProviderNotFound(
             f"Unknown {kind} provider {selected!r}. Available providers: {available}."
         )
@@ -87,24 +125,50 @@ def load_provider(
     return provider
 
 
-def _builtin_factory(kind: ProviderKind, name: str) -> ProviderFactory | None:
-    if kind == "runtime" and name == "codex":
-        from enoch.providers.runtime import CodexRuntime
+def _load_provider_plugins(root: Path | None) -> None:
+    modules = [*CORE_PROVIDER_MODULES]
+    dependencies = load_runtime_dependencies(root)
+    if not dependencies and root is not None:
+        dependencies = load_runtime_dependencies(SOURCE_PROJECT_ROOT)
+    modules.extend(
+        dependency.import_name
+        for dependency in dependencies
+        if dependency.import_name
+    )
+    for module_name in modules:
+        if module_name in _LOADED_PLUGIN_MODULES:
+            continue
+        try:
+            module = import_module(module_name)
+        except ImportError:
+            continue
+        _register_module_plugins(module_name, getattr(module, PLUGIN_ATTRIBUTE, ()))
+        _LOADED_PLUGIN_MODULES.add(module_name)
 
-        return lambda root=None: CodexRuntime(root)
-    if kind == "chat" and name == "telegram":
-        from enoch.telegram.client import TelegramClient, load_config
 
-        return lambda root=None: TelegramClient(load_config(root))
-    if kind == "forge" and name == "github":
-        from enoch.providers.forge import GithubForgeProvider
-
-        return lambda _root=None: GithubForgeProvider()
-    if kind == "vcs" and name == "git":
-        from enoch.providers.vcs import GitVersionControlProvider
-
-        return lambda _root=None: GitVersionControlProvider()
-    return None
+def _register_module_plugins(module_name: str, specs: object) -> None:
+    if not isinstance(specs, (tuple, list)):
+        raise ProviderError(f"{module_name}.{PLUGIN_ATTRIBUTE} must be a list or tuple.")
+    for spec in specs:
+        if not isinstance(spec, dict):
+            raise ProviderError(f"{module_name} provider descriptors must be mappings.")
+        kind = str(spec.get("kind") or "").strip().lower()
+        name = str(spec.get("name") or "").strip()
+        factory = spec.get("factory")
+        if kind not in PROVIDER_KINDS or not callable(factory):
+            raise ProviderError(f"{module_name} exports an invalid provider descriptor.")
+        register_provider(
+            kind,  # type: ignore[arg-type]
+            name,
+            factory,
+            replace=True,
+            default=bool(spec.get("default")),
+        )
+        setup = spec.get("setup")
+        if setup is not None:
+            if not callable(setup):
+                raise ProviderError(f"{module_name} provider setup must be callable.")
+            _SETUP_HANDLERS[(kind, _provider_id(name))] = setup  # type: ignore[index]
 
 
 def _entry_point_factory(kind: ProviderKind, name: str) -> ProviderFactory | None:
@@ -143,13 +207,21 @@ def _entry_points() -> tuple[metadata.EntryPoint, ...]:
 
 def _entry_point_key(value: str) -> tuple[ProviderKind, str] | None:
     kind_text, separator, name = value.partition(".")
-    if not separator or kind_text not in DEFAULT_PROVIDERS:
+    if not separator or kind_text not in PROVIDER_KINDS:
         return None
     return kind_text, _provider_id(name)  # type: ignore[return-value]
 
 
+def _require_kind(kind: str) -> None:
+    if kind not in PROVIDER_KINDS:
+        raise ProviderError(f"Invalid provider kind {kind!r}.")
+
+
 def _provider_id(value: str) -> str:
     normalized = value.strip().lower().replace("_", "-")
-    if not normalized or any(character not in "abcdefghijklmnopqrstuvwxyz0123456789-" for character in normalized):
+    if not normalized or any(
+        character not in "abcdefghijklmnopqrstuvwxyz0123456789-"
+        for character in normalized
+    ):
         raise ProviderError(f"Invalid provider name {value!r}.")
     return normalized

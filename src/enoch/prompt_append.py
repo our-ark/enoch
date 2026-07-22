@@ -175,7 +175,7 @@ def _work_request_wrapper_block() -> str:
             "When implementation is complete and validation passes, publish the pull request as ready for review, not draft.",
             "Use a draft pull request only when work is intentionally incomplete or the human explicitly requests a draft.",
             "When the task supplies an Evolution provenance section, preserve it verbatim in the pull request body.",
-            "Never merge a pull request from a work request. Only an explicit human /pr merge <PR number or GitHub PR URL> command from Enoch's locked chat-provider conversation authorizes that exact merge.",
+            "Never merge a pull request from a work request. Only an explicit human /pr merge <PR number or PR URL> command from Enoch's locked chat-provider conversation authorizes that exact merge.",
             "Keep changes scoped to the request.",
         ]
     )

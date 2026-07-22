@@ -13,7 +13,7 @@ from enoch import daemon
 
 
 class EnochDaemonTests(unittest.TestCase):
-    def test_plist_runs_telegram_bridge_with_keepalive(self) -> None:
+    def test_plist_runs_configured_agent_with_keepalive(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             home = root / "home"
@@ -23,7 +23,7 @@ class EnochDaemonTests(unittest.TestCase):
 
         self.assertEqual(payload["Label"], "com.ourark.enoch")
         resolved_root = root.resolve()
-        self.assertEqual(payload["ProgramArguments"], [str(resolved_root / "bin" / "enoch-telegram")])
+        self.assertEqual(payload["ProgramArguments"], [str(resolved_root / "bin" / "enoch-agent")])
         self.assertEqual(payload["WorkingDirectory"], str(resolved_root))
         self.assertTrue(payload["RunAtLoad"])
         self.assertTrue(payload["KeepAlive"])
@@ -103,7 +103,7 @@ class EnochDaemonTests(unittest.TestCase):
     @patch("enoch.daemon.platform.system", return_value="Darwin")
     def test_start_requires_local_config_token(self, _system: MagicMock) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            with self.assertRaisesRegex(daemon.DaemonError, "setup-token"):
+            with self.assertRaisesRegex(daemon.DaemonError, "Configure the selected chat provider"):
                 daemon.start(root=Path(directory))
 
 

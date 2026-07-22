@@ -83,10 +83,11 @@ automatic discovery. The daemon reads this instance setting directly.
 
 ## Providers
 
-Telegram, Codex, Git, and GitHub are built-in providers rather than required
-fork points. Installed Python packages can add chat, agent runtime, version
-control, and code forge providers through the `enoch.providers` entry-point
-group. Select them in `.enoch/config.yaml` or with `/config provider`.
+Codex and Git are core defaults. Telegram and GitHub are reference provider
+packages under `libraries/`. Installed Python packages can add or replace chat,
+agent runtime, version control, and code forge providers through the
+`enoch.providers` entry-point group. Select them in `.enoch/config.yaml` or with
+`/config provider`.
 
 Provider contracts, packaging examples, provider-specific settings, normalized
 chat events, and migration compatibility are documented in
@@ -126,10 +127,10 @@ Genesis stages the descendant, runs Enoch's inherited tests, and accepts birth
 only if validation passes without modifying the staged body.
 
 Reusable provider and skill implementations may live under `libraries/`, outside
-the inherited body. Enoch's Telegram transport and vision implementation use
-this model: descendants inherit the thin adapters, skill definitions, and tests,
-while `genesis.toml` keeps immutable dependencies on the public library commits
-instead of copying those libraries into every descendant repository.
+the inherited body. Enoch's Telegram, Telegram vision, and GitHub integrations
+use this model: descendants inherit provider contracts, configuration, and core
+behavior, while `genesis.toml` keeps immutable dependencies on selected provider
+commits instead of copying concrete integrations into every descendant body.
 
 ## Lineage
 

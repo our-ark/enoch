@@ -4,7 +4,7 @@ summary: Coordinate remote collaboration through GitHub, including branches, pul
 owner: Enoch
 status: active
 mode: external-tool
-entrypoint: src/enoch/github/workflow.py
+entrypoint: our_ark_github.workflow
 permissions:
   github:
     read_repo: true

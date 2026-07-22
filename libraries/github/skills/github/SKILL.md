@@ -54,7 +54,7 @@ Use `/pr` and `/pr show <PR number or GitHub PR URL>` for read-only status check
 
 ## Local Publish Prep
 
-Enoch has a conservative local helper at `src/enoch/github/workflow.py`.
+The reference implementation lives in `our_ark_github.workflow`.
 Use `prepare_local_publish()` when the human explicitly asks Enoch to prepare local changes for publication.
 
 The helper:

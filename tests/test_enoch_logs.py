@@ -21,7 +21,7 @@ class EnochLogsTests(unittest.TestCase):
 
             self.assertEqual(path, root.resolve() / ".enoch" / "logs" / "conversations" / _today_name())
             records = _read_jsonl(path)
-            self.assertEqual(records[0]["channel"], "telegram")
+            self.assertEqual(records[0]["channel"], "chat")
             self.assertEqual(records[0]["chat_id"], 42)
             self.assertEqual(records[0]["message"], "hello")
             self.assertEqual(records[0]["reply"], "hi")

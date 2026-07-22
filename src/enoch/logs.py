@@ -35,7 +35,7 @@ def log_conversation_turn(
     message: str,
     reply: str,
     root: Path | None = None,
-    channel: str = "telegram",
+    channel: str = "chat",
     details: dict[str, Any] | None = None,
 ) -> Path:
     timestamp = _now()

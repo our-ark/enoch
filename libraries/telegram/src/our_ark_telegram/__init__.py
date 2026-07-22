@@ -8,6 +8,24 @@ from our_ark_telegram.core import (
     chunks,
     telegram_event,
 )
+from our_ark_telegram.integration import load_config, setup_provider
+
+
+def create_provider(root=None):
+    from our_ark_telegram.integration import create_provider as factory
+
+    return factory(root)
+
+
+ENOCH_PROVIDERS = (
+    {
+        "kind": "chat",
+        "name": "telegram",
+        "factory": create_provider,
+        "setup": setup_provider,
+        "default": True,
+    },
+)
 
 
 __all__ = [
@@ -17,6 +35,9 @@ __all__ = [
     "TelegramClient",
     "TelegramConfig",
     "TelegramError",
+    "create_provider",
+    "load_config",
+    "setup_provider",
     "chunks",
     "telegram_event",
 ]

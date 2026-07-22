@@ -7,13 +7,13 @@ from tempfile import TemporaryDirectory
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from enoch.telegram.client import TelegramError
-from enoch.telegram.vision import (
+from our_ark_telegram_vision import (
     MAX_TELEGRAM_IMAGE_BYTES,
     TelegramImage,
+    TelegramVisionError,
     select_telegram_image,
     telegram_image_prompt,
-    temporary_telegram_image,
+    temporary_telegram_image as _temporary_telegram_image,
 )
 
 
@@ -54,10 +54,10 @@ class TelegramVisionTests(unittest.TestCase):
         client = FakeDownloader(b"\xff\xd8\xfftelegram-photo")
         with TemporaryDirectory() as temp:
             root = Path(temp)
-            with temporary_telegram_image(
+            with _temporary_telegram_image(
                 client,
                 TelegramImage(file_id="photo", suffix=".jpg"),
-                root,
+                root / ".enoch" / "channels" / "telegram" / "images",
             ) as path:
                 self.assertTrue(path.exists())
                 self.assertEqual(path.stat().st_mode & 0o777, 0o600)
@@ -72,15 +72,15 @@ class TelegramVisionTests(unittest.TestCase):
         client = FakeDownloader(b"not an image")
         with TemporaryDirectory() as temp:
             root = Path(temp)
-            with self.assertRaisesRegex(TelegramError, "unsupported or invalid"):
-                with temporary_telegram_image(
+            with self.assertRaisesRegex(TelegramVisionError, "unsupported or invalid"):
+                with _temporary_telegram_image(
                     client,
                     TelegramImage(file_id="photo", suffix=".jpg"),
-                    root,
+                    root / ".enoch" / "channels" / "telegram" / "images",
                 ):
                     pass
 
-            image_dir = root / ".enoch" / "telegram" / "images"
+            image_dir = root / ".enoch" / "channels" / "telegram" / "images"
             self.assertEqual(list(image_dir.iterdir()), [])
 
     def test_image_prompt_separates_caption_from_untrusted_image_text(self) -> None:

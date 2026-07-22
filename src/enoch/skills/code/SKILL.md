@@ -13,7 +13,7 @@ Use this skill when the human asks Enoch to inspect, modify, test, explain, refa
 ## Do Not Use When
 
 - The human explicitly asks for conversation only.
-- The request is primarily about remote GitHub collaboration.
+- The request is primarily about remote forge collaboration.
 - The request requires credentials Enoch does not have.
 
 ## Procedure

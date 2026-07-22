@@ -51,11 +51,11 @@ class EnochImmuneTests(unittest.TestCase):
         self.assertTrue(result.passed)
         self.assertIn("-m unittest discover -s tests", result.command)
         self.assertIn("import enoch.cli", result.command)
-        self.assertIn("import enoch.github.workflow", result.command)
+        self.assertIn("import enoch.providers", result.command)
         self.assertIn("import enoch.lineage", result.command)
         self.assertIn("import enoch.learn", result.command)
         self.assertIn("import enoch.skills", result.command)
-        self.assertIn("import enoch.telegram.bot", result.command)
+        self.assertIn("import enoch.application", result.command)
         self.assertIn("OK", result.output)
         self.assertEqual(
             [check.name for check in result.checks],

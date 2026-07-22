@@ -190,7 +190,7 @@ class EnochLineageTests(unittest.TestCase):
         self.assertIn("   Relation: current agent", formatted)
         self.assertIn("   Source: src/enoch/identity.yaml", formatted)
         self.assertIn(
-            "   New skills: telegram-vision, skill-library, github, evolve",
+            "   New skills: skill-library, evolve",
             formatted,
         )
 
@@ -200,7 +200,7 @@ class EnochLineageTests(unittest.TestCase):
         self.assertIsNotNone(current_agent)
         assert current_agent is not None
         self.assertEqual(current_agent.name, "Enoch")
-        self.assertIn("github", current_agent.skills)
+        self.assertIn("code", current_agent.skills)
         self.assertIn("evolve", current_agent.skills)
 
     def test_parse_declared_skills_from_identity_yaml(self) -> None:

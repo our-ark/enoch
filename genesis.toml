@@ -30,6 +30,12 @@ import_name = "our_ark_telegram"
 local_source = "libraries/telegram/src"
 
 [[runtime_dependencies]]
+name = "github"
+requirement = "our-ark-github @ git+https://github.com/our-ark/enoch.git@01348f9dd5ec1e55a71ff69525828b3466e95526#subdirectory=libraries/github"
+import_name = "our_ark_github"
+local_source = "libraries/github/src"
+
+[[runtime_dependencies]]
 name = "skill-catalog"
 requirement = "our-ark-skill-catalog @ git+https://github.com/our-ark/enoch.git@946ff26f93bff3f6eefeb5deb81ca4db1127266f#subdirectory=libraries/skill-catalog"
 import_name = "our_ark_skill_catalog"

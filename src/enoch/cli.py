@@ -30,7 +30,7 @@ HELP = """Commands:
   help        Show this help.
   init        Create or claim a local Enoch instance worktree.
   status      Show identity, model, and lineage.
-  setup       Configure the built-in Telegram provider and setup status.
+  setup       Configure the selected chat provider and lineage.
   config      Show settings or select installed providers.
   thinking    Show or set Enoch's Codex thinking level.
   mission     Show or update Enoch's mission.

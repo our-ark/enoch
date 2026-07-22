@@ -3,7 +3,7 @@
 Enoch separates replaceable infrastructure from agent behavior through four
 provider capabilities:
 
-| Kind | Built-in | Responsibility |
+| Kind | Reference provider | Responsibility |
 | --- | --- | --- |
 | `chat` | `telegram` | Receive normalized chat events and deliver messages |
 | `runtime` | `codex` | Answer, edit, resume sessions, report models, and cancel work |
@@ -132,10 +132,9 @@ def download_attachment(self, attachment, destination, *, max_bytes):
 ```
 
 The channel-neutral application lives in `src/enoch/application.py`. Telegram's
-Bot API transport lives in the reusable `our-ark-telegram` library; the local
-`src/enoch/telegram/client.py` module only loads Enoch's Telegram configuration.
-The `telegram-talk` skill is therefore an integration manifest for that provider,
-not the owner of Enoch's command, task, or evolution behavior.
+Bot API transport, Enoch config adapter, setup handler, and integration skill
+live in `libraries/telegram`. Core code receives only normalized `ChatEvent`
+values and does not import that package.
 
 Runtime providers expose `health()` so doctor checks the selected runtime
 instead of assuming a Codex binary. They should raise
@@ -144,13 +143,18 @@ failures and `AgentRuntimeCancelled` for human cancellation. Forge and VCS
 providers should raise their matching provider errors. This preserves Enoch's
 pause, resume, failure, and audit behavior across implementations.
 
-## Compatibility
+## Provider-owned setup
 
-The built-in adapters preserve the existing `telegram:` and `codex:` settings.
-`bin/enoch-telegram` remains available, while `bin/enoch-agent` starts whichever
-chat provider is selected. Provider packages do not need to modify Enoch core or
-fork the Enoch application.
+Provider descriptors may include a `setup` callable alongside their factory.
+`bin/enoch setup` forwards provider-specific setup commands to that handler
+without constructing a provider first, so credentials can be configured before
+the provider is operational. The reference Telegram adapter preserves the
+existing `telegram:` settings through this hook.
 
-Lineage discovery and cross-agent skill lookup currently use GitHub-specific
-source conventions. The replaceable forge boundary covers task publication,
-pull-request management, retry reconciliation, and evolution promotion.
+`bin/enoch-agent` starts whichever chat provider is selected. Provider packages
+do not need to modify Enoch core or fork the application.
+
+Forge providers own task publication, pull-request management, evolution
+promotion, lineage discovery, and published skill reads. A replacement forge
+implements the PR contract plus `read_text` and the lineage methods used by
+`LineageProvider`.

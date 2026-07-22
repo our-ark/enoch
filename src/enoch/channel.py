@@ -61,8 +61,6 @@ def save_channel_cursor(name: str, cursor: Cursor, root: Path | None = None) -> 
 
 def channel_cursor_path(name: str, root: Path | None = None) -> Path:
     safe_name = _safe_provider_name(name)
-    if safe_name == "telegram":
-        return enoch_home(root) / "telegram_offset.json"
     return enoch_home(root) / "channels" / safe_name / "cursor.json"
 
 
@@ -124,8 +122,6 @@ def save_channel_lifecycle(
 
 def channel_lifecycle_path(name: str, root: Path | None = None) -> Path:
     safe_name = _safe_provider_name(name)
-    if safe_name == "telegram":
-        return enoch_home(root) / "telegram_lifecycle.json"
     return enoch_home(root) / "channels" / safe_name / "lifecycle.json"
 
 

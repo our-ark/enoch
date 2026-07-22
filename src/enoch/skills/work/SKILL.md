@@ -51,7 +51,7 @@ When work is queued:
    new id and `parent_task_id`; never rewrite the original failure. Preserve the
    request, context, source, provenance, and any recoverable task
    worktree/branch. Before new execution, reconcile recorded and logged PR
-   results with GitHub; reuse a validated open or merged PR instead of
+   results with the configured forge; reuse a validated open or merged PR instead of
    duplicating work. If a retry fails, retry that latest failed task so the
    causal chain remains linear.
 10. Give each running task a worker lease. Recovery must not requeue a task while
