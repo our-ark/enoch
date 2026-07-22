@@ -1,0 +1,18 @@
+cff-version: 1.2.0
+message: "If you use Enoch, please cite this software release."
+title: "Enoch: A Genesis-Created Agent-Owned Software Body"
+type: software
+authors:
+  - family-names: Zhao
+    given-names: Gary
+version: 0.1.0
+date-released: 2026-07-21
+license: Apache-2.0
+repository-code: "https://github.com/our-ark/enoch"
+url: "https://github.com/our-ark/enoch/releases/tag/v0.1.0"
+keywords:
+  - agent-owned software
+  - personal agents
+  - co-evolution
+  - software lineage
+  - self-evolving agents

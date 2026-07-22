@@ -6,6 +6,29 @@ Enoch is a Genesis-created agent descended from Seth.
 
 Seth's self-evolving descendant: walk with her code body, inspect her own work, and grow through safe autonomous improvements while preserving human sovereignty.
 
+## Requirements
+
+- Python 3.11, 3.12, or 3.13
+- Git
+- A working Codex CLI login for reasoning and evolution tasks
+- GitHub CLI authentication when publishing branches or pull requests
+- Telegram credentials only when using the optional Telegram interface
+
+## Quick Start
+
+Clone the repository and start Enoch from its checked-out software body:
+
+```bash
+git clone https://github.com/our-ark/enoch.git
+cd enoch
+bin/enoch --help
+bin/enoch
+```
+
+The launchers select a supported Python interpreter and keep runtime state,
+downloaded dependencies, credentials, memories, and logs under ignored local
+paths. Do not commit files from `.enoch/` or `.agent/instance.yaml`.
+
 ## Run
 
 ```bash
@@ -114,6 +137,23 @@ library into every descendant repository.
 - ancestor: Seth
 - codebase: body
 - Git history: lineage
+
+Seth is a private predecessor and is not part of the v1 open-source release.
+Enoch is the first publicly released reference body; using or descending from
+Enoch does not require access to Seth.
+
+## Security and Autonomy
+
+Enoch can invoke local agent runtimes and Git tooling, create branches, and
+prepare changes for human review. Run it only in repositories and accounts you
+intend it to access, keep credentials in ignored instance state, and inspect
+proposed changes before adoption. See [SECURITY.md](SECURITY.md) for the trust
+boundary and private reporting process.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development checks and contribution
+guidelines.
 
 ## License
 
