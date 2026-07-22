@@ -24,7 +24,8 @@ class EnochIdentityTests(unittest.TestCase):
     def test_identity_has_human_ancestry_signal(self) -> None:
         identity = load_identity()
 
-        self.assertTrue(identity.mission)
+        self.assertIn("bounded, testable, human-governed change", identity.mission)
+        self.assertEqual(identity.ancestor, "Seth")
 
     def test_identity_yaml_is_the_only_versioned_identity_source(self) -> None:
         self.assertTrue((ROOT / "src" / "enoch" / "identity.yaml").exists())
@@ -33,7 +34,7 @@ class EnochIdentityTests(unittest.TestCase):
     def test_identity_declares_evolution_constraints(self) -> None:
         identity = load_identity()
 
-        self.assertIn("Treat code as body and Git history as lineage.", identity.principles)
+        self.assertIn("Treat code as body and repository history as lineage.", identity.principles)
         self.assertIn("Change code through direct human requests, tests, and human review.", identity.principles)
         self.assertIn("Prefer fewer manual commands and more natural agency.", identity.principles)
 

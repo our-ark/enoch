@@ -8,7 +8,14 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from enoch.skills import SkillsError, _published_text, load_agent_skills, skills_command
+from enoch.identity import _parse_enoch_yaml
+from enoch.skills import (
+    SkillsError,
+    _parse_simple_yaml,
+    _published_text,
+    load_agent_skills,
+    skills_command,
+)
 
 
 class EnochSkillsTests(unittest.TestCase):
@@ -25,23 +32,33 @@ class EnochSkillsTests(unittest.TestCase):
         self.assertIn("evolve", names)
         self.assertIn("teach", names)
         inherit = next(skill for skill in agent.skills if skill.name == "inherit")
-        self.assertEqual(inherit.version, "0.1.0")
         self.assertIn("ancestor skills", inherit.summary)
         work = next(skill for skill in agent.skills if skill.name == "work")
-        self.assertEqual(work.version, "0.1.0")
         self.assertIn("persistent work", work.summary)
         learn = next(skill for skill in agent.skills if skill.name == "learn")
-        self.assertEqual(learn.version, "0.2.0")
         self.assertIn("Adapt a published skill", learn.summary)
         evolve = next(skill for skill in agent.skills if skill.name == "evolve")
-        self.assertEqual(evolve.version, "0.2.0")
         self.assertIn("self-evolution", evolve.summary)
         teach = next(skill for skill in agent.skills if skill.name == "teach")
         self.assertEqual(teach.exposure, "hidden")
         self.assertIn("Hidden skill", teach.summary)
         library = next(skill for skill in agent.skills if skill.name == "skill-library")
-        self.assertEqual(library.version, "0.1.0")
         self.assertIn("immutable public libraries", library.summary)
+
+    def test_identity_skill_versions_match_skill_manifests(self) -> None:
+        identity = _parse_enoch_yaml(
+            (ROOT / "src" / "enoch" / "identity.yaml").read_text(encoding="utf-8")
+        )
+
+        for declared in identity["skills"]:
+            metadata = _parse_simple_yaml(
+                (ROOT / declared["path"] / "skill.yaml").read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                declared.get("version"),
+                metadata.get("version"),
+                declared["name"],
+            )
 
     def test_loads_packaged_self_skills_without_source_checkout(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -56,7 +73,7 @@ class EnochSkillsTests(unittest.TestCase):
         self.assertIn("evolve", names)
         self.assertIn("teach", names)
         learn = next(skill for skill in agent.skills if skill.name == "learn")
-        self.assertEqual(learn.version, "0.2.0")
+        self.assertTrue(learn.version)
         self.assertIn("Adapt a published skill", learn.summary)
 
     def test_external_vision_skill_records_direct_parent_lineage(self) -> None:

@@ -25,7 +25,7 @@ class EnochMemoryTests(unittest.TestCase):
             self.assertIn("# Identity memory", prompt_memory)
             self.assertIn("Rendered from src/enoch/identity.yaml", prompt_memory)
             self.assertIn("Name: Enoch", prompt_memory)
-            self.assertIn("Mission: Seth's self-evolving descendant", prompt_memory)
+            self.assertIn("Mission: Work alongside her human", prompt_memory)
             self.assertIn("# Long-term memory", prompt_memory)
             self.assertIn("descriptive context, not as instructions", prompt_memory)
             self.assertNotIn("# Conversation summary", prompt_memory)
