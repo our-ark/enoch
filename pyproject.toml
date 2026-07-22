@@ -7,9 +7,9 @@ license = "Apache-2.0"
 license-files = ["LICENSE"]
 requires-python = ">=3.11"
 dependencies = [
-  "our-ark-provider-kit @ git+https://github.com/our-ark/enoch.git@5608b4b1ce85f64c3093730fcaac9c3a458169ca#subdirectory=libraries/provider-kit",
-  "our-ark-telegram @ git+https://github.com/our-ark/enoch.git@5608b4b1ce85f64c3093730fcaac9c3a458169ca#subdirectory=libraries/telegram",
-  "our-ark-github @ git+https://github.com/our-ark/enoch.git@01348f9dd5ec1e55a71ff69525828b3466e95526#subdirectory=libraries/github",
+  "our-ark-provider-kit @ git+https://github.com/our-ark/enoch.git@224c99a4e430022e194d49c855b14de778f1f26c#subdirectory=libraries/provider-kit",
+  "our-ark-telegram @ git+https://github.com/our-ark/enoch.git@224c99a4e430022e194d49c855b14de778f1f26c#subdirectory=libraries/telegram",
+  "our-ark-github @ git+https://github.com/our-ark/enoch.git@224c99a4e430022e194d49c855b14de778f1f26c#subdirectory=libraries/github",
   "our-ark-skill-catalog @ git+https://github.com/our-ark/enoch.git@946ff26f93bff3f6eefeb5deb81ca4db1127266f#subdirectory=libraries/skill-catalog",
   "our-ark-telegram-vision @ git+https://github.com/our-ark/enoch.git@6d894d9beb882af7e5f57900b2323361510262de#subdirectory=libraries/telegram-vision",
 ]
