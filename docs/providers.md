@@ -114,7 +114,7 @@ selected service provider, so core code does not invoke either service manager.
 A provider package registers factories with Python package entry points:
 
 ```toml
-[project.entry-points."enoch.providers"]
+[project.entry-points."our_ark.providers"]
 "chat.slack" = "enoch_slack:create_provider"
 "runtime.claude" = "enoch_claude:create_provider"
 "vcs.jj" = "enoch_jj:create_provider"

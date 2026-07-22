@@ -53,7 +53,7 @@ launchd, or systemd directly. A portable deployment only needs to add `chat`
 and `vcs` providers: Enoch supplies the Codex runtime and a local-only forge
 fallback, while a background service manager is optional. Provider packages
 can be added through the
-`enoch.providers` Python entry-point group and selected in the private
+`our_ark.providers` Python entry-point group and selected in the private
 `.enoch/config.yaml` file, with `/config provider`, or with environment
 variables. Add `runtime`, `forge`, or `service` providers only when the
 built-in or foreground behavior is not sufficient.
@@ -136,7 +136,7 @@ Codex, Git, and a local-only forge are core defaults. Telegram, GitHub,
 launchd, and systemd are reference provider packages under `libraries/`.
 Installed Python packages can
 add or replace chat, agent runtime, version control, code forge, and host
-service providers through the `enoch.providers` entry-point group. Select them
+service providers through the `our_ark.providers` entry-point group. Select them
 in `.enoch/config.yaml` or with `/config provider`. launchd is selected on
 macOS; systemd user services are selected on Linux. Install the complete
 reference stack with `pip install '.[reference]'` when working from a clone.
