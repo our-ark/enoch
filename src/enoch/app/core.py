@@ -185,6 +185,7 @@ from enoch.providers.contracts import (
     ForgeProvider,
     ForgeProviderError,
     MessageId,
+    normalize_message_id,
 )
 from enoch.providers.forge import FunctionForgeProvider
 from enoch.providers.registry import ProviderError, load_provider
@@ -1419,7 +1420,7 @@ class EnochApplication:
         task_status.latest_update = latest_update
         if pr_url and pr_url not in task_status.prs:
             task_status.prs.append(pr_url)
-        if task_status.message_id <= 0:
+        if normalize_message_id(task_status.message_id) is None:
             return True
         self._safe_edit_message(
             task_status.chat_id,

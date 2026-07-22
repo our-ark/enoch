@@ -47,3 +47,15 @@ event, provenance, and PR command behavior remain real.
 
 Live GitHub, Telegram, and Codex smoke tests should remain opt-in. They exercise
 credentials and external services, so they do not belong in pull request CI.
+
+## Portable installation E2E
+
+`tests/test_enoch_portable_install.py` installs the Enoch wheel surface, shared
+contracts, skill catalog, and a temporary third-party provider distribution
+into an empty target without network access. The provider contributes only
+`chat` and `vcs` entry points. The installed Enoch then uses its built-in Codex
+runtime adapter and local forge to complete, validate, and commit a real task
+while preserving the unpushed task branch.
+
+This catches packaging metadata conflicts and source-checkout imports that unit
+tests can accidentally hide.
