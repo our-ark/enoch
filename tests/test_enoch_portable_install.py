@@ -37,6 +37,24 @@ class EnochPortableInstallTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertRegex(requirements, r"(?m)^setuptools==\d+\.\d+\.\d+ \\$\n")
         self.assertRegex(requirements, r"--hash=sha256:[0-9a-f]{64}$")
+        locked_version = next(
+            line.split("==", 1)[1].split()[0]
+            for line in requirements.splitlines()
+            if line.startswith("setuptools==")
+        )
+        self.assertGreaterEqual(
+            tuple(int(part) for part in locked_version.split(".")),
+            (83, 0, 0),
+        )
+
+    def test_release_metadata_matches_project_version(self) -> None:
+        metadata = _project_metadata(ROOT / "pyproject.toml")
+        version = metadata["project"]["version"]
+        citation = (ROOT / "CITATION.cff").read_text(encoding="utf-8")
+
+        self.assertIn(f"version: {version}", citation)
+        self.assertIn(f"/releases/tag/v{version}", citation)
+        self.assertTrue((ROOT / "docs" / "releases" / f"v{version}.md").is_file())
 
     def test_reference_providers_share_the_core_contract_pin(self) -> None:
         root_metadata = _project_metadata(ROOT / "pyproject.toml")
@@ -142,7 +160,7 @@ class EnochPortableInstallTests(unittest.TestCase):
         self.assertEqual(result["vcs"], "portable-vcs")
         self.assertEqual(result["runtime"], "codex")
         self.assertEqual(result["forge"], "local")
-        self.assertEqual(result["enoch_version"], "0.1.0")
+        self.assertEqual(result["enoch_version"], "0.2.0")
         self.assertEqual(result["chat_provider_version"], "0.0.1")
         self.assertEqual(result["vcs_provider_version"], "0.0.1")
         self.assertGreater(result["startup_messages"], 0)
