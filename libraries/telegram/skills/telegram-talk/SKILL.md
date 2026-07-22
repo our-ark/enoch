@@ -84,8 +84,9 @@ future rollouts.
 - Use `telegram.allowed_chat_id` before enabling code-changing natural agency.
 - Keep remote writes behind explicit human approval.
 - Keep a finite task timeout so a stuck agent run cannot consume tokens indefinitely.
-- Pause work and show `/resume` when Codex authentication, quota, or rate limits
-  are unavailable; do not classify that recoverable condition as task failure.
+- Pause work and show `/task resume <id|all>` when Codex authentication, quota,
+  or rate limits are unavailable; do not classify that recoverable condition as
+  task failure.
 - Record discovered task regressions and their revert or forward-fix resolution
   through the internal regression signal; never ask the human to maintain those
   statuses with commands.

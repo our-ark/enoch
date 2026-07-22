@@ -352,7 +352,7 @@ class EnochTaskQueueTests(unittest.TestCase):
         self.assertEqual(resumed[0].status, "pending")
         self.assertEqual([event.event for event in events[-2:]], ["paused", "resumed"])
         self.assertEqual(events[-1].event_actor, "human")
-        self.assertEqual(events[-1].trigger, "/resume")
+        self.assertEqual(events[-1].trigger, "/task resume")
 
     def test_resume_can_select_one_paused_task(self) -> None:
         with TemporaryDirectory() as temp:

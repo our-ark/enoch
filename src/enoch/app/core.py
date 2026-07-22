@@ -502,12 +502,10 @@ class EnochApplication:
                 reply = self._do(chat_id, work_text)
             elif command == "/task":
                 reply = self._task(chat_id, work_text)
-            elif command == "/tasks":
+            elif command in {"/queue", "/tasks"}:
                 reply = _format_tasks_report(self.root)
             elif command == "/stop":
                 reply = self._stop_running_job()
-            elif command == "/resume":
-                reply = self._resume_tasks(argument)
             elif command in {"/backlog", "/backlogs"}:
                 reply = self._backlog(chat_id, work_text)
             elif command in {"/cron", "/crons"}:
@@ -664,7 +662,10 @@ class EnochApplication:
             return self._action_lock_message()
         queue_status = task_queue_status(self.root)
         if queue_status.paused_count:
-            return "Enoch has paused tasks. Restore agent runtime access and use /resume before starting /do."
+            return (
+                "Enoch has paused tasks. Restore agent runtime access and use "
+                "/task resume <id|all> before starting /do."
+            )
         running = queue_status.running
         snapshot = self._resolve_task_context_snapshot(chat_id, argument)
         if snapshot.codex_unavailable_reason:
@@ -771,7 +772,10 @@ class EnochApplication:
         session_key: str,
     ) -> str:
         if task_queue_status(self.root).paused_count:
-            return "Enoch has paused tasks. Restore agent runtime access and use /resume before starting more work."
+            return (
+                "Enoch has paused tasks. Restore agent runtime access and use "
+                "/task resume <id|all> before starting more work."
+            )
         try:
             job = begin_direct_task(
                 chat_id,
@@ -1745,7 +1749,10 @@ class EnochApplication:
                     started_at=time.monotonic(),
                     task_id=job.id,
                     status="paused",
-                    latest_update=f"{reason} Use /resume when agent runtime access is available again.",
+                    latest_update=(
+                        f"{reason} Use /task resume {job.id} when agent runtime access "
+                        "is available again."
+                    ),
                     context=job.context,
                 )
             ),
@@ -1756,12 +1763,10 @@ class EnochApplication:
             return ""
         return warning
 
-    def _resume_tasks(self, argument: str, *, trigger: str = "/resume") -> str:
+    def _resume_tasks(self, argument: str, *, trigger: str = "/task resume") -> str:
         cleaned = argument.strip().lower()
-        if trigger == "/resume" and cleaned:
-            return "Use /resume to continue tasks paused because agent runtime access was unavailable."
         task_id = None
-        if trigger == "/task resume" and cleaned != "all":
+        if cleaned != "all":
             try:
                 task_id = int(cleaned.lstrip("#"))
             except ValueError:
@@ -3718,7 +3723,7 @@ def _codex_pause_warning(task_id: int, reason: str) -> str:
         [
             f"Task #{task_id} was paused because agent runtime access is unavailable.",
             reason.strip() or "Agent runtime access is unavailable.",
-            "When agent runtime access is available again, use /resume.",
+            f"When agent runtime access is available again, use /task resume {task_id}.",
         ]
     )
 

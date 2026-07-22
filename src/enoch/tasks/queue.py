@@ -651,7 +651,7 @@ def resume_paused_tasks(
     *,
     task_id: int | None = None,
     event_actor: str = "human",
-    trigger: str = "/resume",
+    trigger: str = "/task resume",
 ) -> tuple[TaskJob, ...]:
     with _queue_transaction(root):
         data = _load_queue(root)

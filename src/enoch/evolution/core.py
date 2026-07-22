@@ -682,7 +682,7 @@ def resume_evolve_candidate_for_task(
     *,
     theme: str = "",
     event_actor: str = "human",
-    trigger: str = "/resume",
+    trigger: str = "/task resume",
     reason: str = "",
 ) -> EvolveCandidate | None:
     return _record_evolve_candidate_task_event(

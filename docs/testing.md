@@ -34,11 +34,11 @@ The suite verifies:
   worker or accepting a stale final status;
 - permanent failures such as a dirty worktree fail immediately, while only
   classified transient failures retry with a three-attempt ceiling;
-- `/task resume <id|all>` preserves paused task ids, while `/resume` remains
-  the resume-all alias;
+- `/task resume <id|all>` preserves paused task ids and can resume one or all
+  paused tasks;
 - a failed task can be retried without rewriting history, and retry reconciles
   journaled or branch-linked PRs before starting duplicate work;
-- reference-runtime authentication failure pauses a task and `/resume`
+- reference-runtime authentication failure pauses a task and `/task resume`
   completes that same task after access returns;
 - reference-channel progress updates edit one Telegram status message;
 - failed work creates an experience candidate with its complete causal chain.

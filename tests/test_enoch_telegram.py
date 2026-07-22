@@ -699,16 +699,14 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertLess(reply.index("Inherit:"), reply.index("Learn:"))
         self.assertLess(reply.index("Learn:"), reply.index("/skills"))
         self.assertLess(reply.index("Learn:"), reply.index("Evolve:"))
-        self.assertLess(reply.index("Learn:"), reply.index("Vision:"))
-        self.assertLess(reply.index("Vision:"), reply.index("Evolve:"))
         self.assertLess(reply.index("Evolve:"), reply.index("/evolve"))
         self.assertLess(reply.index("Evolve:"), reply.index("System:"))
         self.assertIn("Common:", client.sent[0][1])
         self.assertNotIn("Memory:", client.sent[0][1])
         self.assertIn("Inherit:", client.sent[0][1])
         self.assertIn("Learn:", client.sent[0][1])
-        self.assertIn("Vision:", client.sent[0][1])
-        self.assertIn("Send a photo", client.sent[0][1])
+        self.assertNotIn("Vision:", client.sent[0][1])
+        self.assertNotIn("Send a photo", client.sent[0][1])
         self.assertIn("Evolve:", client.sent[0][1])
         self.assertIn("Work:", client.sent[0][1])
         self.assertIn("System:", client.sent[0][1])
@@ -731,7 +729,8 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("/do <request> - run work now instead of queueing it", client.sent[0][1])
         self.assertIn("/task <request> - queue background work for Enoch", client.sent[0][1])
         self.assertNotIn("/task cancel <id> - cancel a queued background task", client.sent[0][1])
-        self.assertIn("/tasks - show running, queued, and recent task history", client.sent[0][1])
+        self.assertIn("/queue - show running, queued, and recent task history", client.sent[0][1])
+        self.assertNotIn("/tasks", client.sent[0][1])
         self.assertIn("/stop - stop the currently running task", client.sent[0][1])
         self.assertIn("/backlog [p0|p1|p2] <request> - save deferred work for idle time", client.sent[0][1])
         self.assertNotIn("/backlog remove <id> - remove a pending backlog item", client.sent[0][1])
@@ -758,10 +757,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertNotIn("/evolve schedule cron '30 9 * * *' - run evolve with a cron-style daily schedule", client.sent[0][1])
         self.assertIn("/update", client.sent[0][1])
         self.assertIn("/config - show or update local system settings", client.sent[0][1])
-        self.assertIn(
-            "/resume - continue tasks paused while agent runtime access was unavailable",
-            client.sent[0][1],
-        )
+        self.assertNotIn("/resume", client.sent[0][1])
         self.assertIn("/restart - restart Enoch's chat daemon from the locked conversation", client.sent[0][1])
         self.assertNotIn("/shutdown", client.sent[0][1])
         self.assertIn("say the request naturally", client.sent[0][1])
@@ -851,7 +847,7 @@ class EnochTelegramTests(unittest.TestCase):
             "Enoch could not merge that pull request: PR #12 is a draft.",
         )
 
-    def test_help_resume_shows_only_resume_usage(self) -> None:
+    def test_help_resume_reports_removed_command(self) -> None:
         client = FakeTelegramClient(allowed_chat_id=42)
         bot = EnochApplication(load_identity(), ROOT, client)
 
@@ -859,7 +855,7 @@ class EnochTelegramTests(unittest.TestCase):
 
         self.assertEqual(
             client.sent[0][1],
-            "/resume - continue tasks paused while agent runtime access was unavailable",
+            "No help found for /resume.\nUse /help to see available commands.",
         )
 
     def test_help_lists_pr_and_explains_its_subcommands(self) -> None:
@@ -1108,6 +1104,17 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("Cron commands:", reply)
         self.assertIn("/cron every <interval> <request>", reply)
         self.assertIn("/cron cancel <id>", reply)
+
+    def test_help_queue_shows_canonical_queue_command(self) -> None:
+        client = FakeTelegramClient(allowed_chat_id=42)
+        bot = EnochApplication(load_identity(), ROOT, client)
+
+        _handle_update(bot, _message_update(chat_id=42, text="/help queue"))
+
+        self.assertEqual(
+            client.sent[0][1],
+            "/queue - show running, queued, and recent task history",
+        )
 
     def test_help_backlog_shows_backlog_subcommands(self) -> None:
         client = FakeTelegramClient(allowed_chat_id=42)
@@ -1361,7 +1368,7 @@ class EnochTelegramTests(unittest.TestCase):
             status = task_queue_status(root)
             events = load_task_events(root, task_id=2)
             _handle_update(bot,
-                _message_update(update_id=2, chat_id=42, text="/tasks")
+                _message_update(update_id=2, chat_id=42, text="/queue")
             )
             tasks_report = client.sent[-1][1]
 
@@ -1656,7 +1663,7 @@ class EnochTelegramTests(unittest.TestCase):
 
     @patch("enoch.app.core.ensure_long_term_memory")
     @patch("enoch.app.core.log_conversation_turn")
-    def test_tasks_command_shows_queue_and_history(
+    def test_queue_command_shows_queue_and_history(
         self,
         _log_conversation_turn: MagicMock,
         _update_memory: MagicMock,
@@ -1669,7 +1676,7 @@ class EnochTelegramTests(unittest.TestCase):
             _handle_update(bot, _message_update(chat_id=42, text="/task first queued work"))
             _handle_update(bot, _message_update(update_id=2, chat_id=42, text="/task second queued work"))
             _handle_update(bot, _message_update(update_id=3, chat_id=42, text="/task cancel 2"))
-            _handle_update(bot, _message_update(update_id=4, chat_id=42, text="/tasks"))
+            _handle_update(bot, _message_update(update_id=4, chat_id=42, text="/queue"))
 
         reply = client.sent[-1][1]
         self.assertIn("Running: none", reply)
@@ -1678,7 +1685,7 @@ class EnochTelegramTests(unittest.TestCase):
 
     @patch("enoch.app.core.ensure_long_term_memory")
     @patch("enoch.app.core.log_conversation_turn")
-    def test_tasks_command_shows_history_pr_url(
+    def test_queue_command_shows_history_pr_url(
         self,
         _log_conversation_turn: MagicMock,
         _update_memory: MagicMock,
@@ -1692,11 +1699,27 @@ class EnochTelegramTests(unittest.TestCase):
             job = begin_next_task(root)
             assert job is not None
             complete_task(job.id, root, result="Opened pull request: https://github.com/our-ark/enoch/pull/3")
-            _handle_update(bot, _message_update(update_id=2, chat_id=42, text="/tasks"))
+            _handle_update(bot, _message_update(update_id=2, chat_id=42, text="/queue"))
 
         reply = client.sent[-1][1]
         self.assertIn("#1 [completed] add queued work", reply)
         self.assertIn("PR: https://github.com/our-ark/enoch/pull/3", reply)
+
+    @patch("enoch.app.core.ensure_long_term_memory")
+    @patch("enoch.app.core.log_conversation_turn")
+    def test_tasks_command_remains_a_hidden_queue_alias(
+        self,
+        _log_conversation_turn: MagicMock,
+        _update_memory: MagicMock,
+    ) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            client = FakeTelegramClient(allowed_chat_id=42)
+            bot = EnochApplication(load_identity(), root, client)
+
+            _handle_update(bot, _message_update(chat_id=42, text="/tasks"))
+
+        self.assertIn("Running: none", client.sent[0][1])
 
     @patch("enoch.app.core.ensure_long_term_memory")
     @patch("enoch.app.core.log_conversation_turn")
@@ -1812,7 +1835,14 @@ class EnochTelegramTests(unittest.TestCase):
             paused_events = load_task_events(root, task_id=job.id)
 
             with patch.object(bot, "_maybe_start_task_worker") as start_worker:
-                _handle_update(bot, _message_update(update_id=2, chat_id=42, text="/resume"))
+                _handle_update(
+                    bot,
+                    _message_update(
+                        update_id=2,
+                        chat_id=42,
+                        text=f"/task resume {job.id}",
+                    ),
+                )
             resumed_status = task_queue_status(root)
             resumed_events = load_task_events(root, task_id=job.id)
 
@@ -1823,11 +1853,11 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual(paused_events[-1].event, "paused")
         self.assertEqual(paused_events[-1].trigger, "codex-unavailable")
         self.assertIn("Status: paused", client.edited[-2][2])
-        self.assertIn("use /resume", client.sent[-2][1])
+        self.assertIn(f"use /task resume {job.id}", client.sent[-2][1].lower())
         self.assertEqual(resumed_status.paused, ())
         self.assertEqual(resumed_status.pending[0].id, job.id)
         self.assertEqual(resumed_events[-1].event, "resumed")
-        self.assertEqual(resumed_events[-1].trigger, "/resume")
+        self.assertEqual(resumed_events[-1].trigger, "/task resume")
         self.assertIn("Resumed 1 task: #1.", client.sent[-1][1])
         self.assertIn("Status: queued", client.edited[-1][2])
         start_worker.assert_called_once()
@@ -1908,7 +1938,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual(status.paused_count, 1)
         self.assertEqual(status.paused[0].text, "preserve this work")
         self.assertIn("Status: paused", client.sent[0][1])
-        self.assertIn("Use /resume", client.sent[0][1])
+        self.assertIn("Use /task resume 1", client.sent[0][1])
 
     def test_task_worker_records_learning_only_for_skill_changes(self) -> None:
         with TemporaryDirectory() as temp:
@@ -3388,7 +3418,14 @@ class EnochTelegramTests(unittest.TestCase):
             ):
                 bot._run_task_job(job)
             with patch.object(bot, "_maybe_start_task_worker"):
-                _handle_update(bot, _message_update(update_id=2, chat_id=42, text="/resume"))
+                _handle_update(
+                    bot,
+                    _message_update(
+                        update_id=2,
+                        chat_id=42,
+                        text=f"/task resume {job.id}",
+                    ),
+                )
             events = load_evolve_events(root, task_id=job.id)
             candidate = next(
                 item

@@ -170,11 +170,11 @@ class EnochEvolutionEndToEndTests(unittest.TestCase):
         self.assertEqual(paused.paused_count, 1)
         self.assertEqual(paused.paused[0].id, 1)
         self.assertIn("Task #1 paused", self.client.sent[-1][1])
-        self.assertIn("use /resume", self.client.sent[-1][1].lower())
+        self.assertIn("use /task resume 1", self.client.sent[-1][1].lower())
 
         self._set_codex_mode("success")
         with patch.object(self.bot, "_maybe_start_task_worker"):
-            reply = self._command("/resume")
+            reply = self._command("/task resume 1")
         self.assertEqual(reply, "Resumed 1 task: #1.")
 
         completed = self._run_next_task()

@@ -83,7 +83,7 @@ it is running the verified version.
 Every tracked task writes append-only lifecycle events to `.enoch/task_events.jsonl`.
 Events include `created`, `queued`, `started`, `completed`, `failed`, `cancelled`,
 `paused`, `resumed`, `regressed`, `reverted`, and `forward-fixed`. Agent runtime access
-interruptions are recorded as `paused` and `/resume` transitions without
+interruptions are recorded as `paused` and `/task resume` transitions without
 closing the task or its linked evolve proposal. A regression is recorded after
 a task was completed; `reverted` and `forward-fixed` are separate resolution
 events so regression counts remain durable. Enoch owns this bookkeeping:

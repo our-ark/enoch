@@ -39,8 +39,8 @@ When work is queued:
 6. Claim due cron jobs atomically before enqueueing them, so one due event creates one task.
 7. When agent runtime authentication, quota, or rate limits are unavailable, move the
    active task to `paused`, stop the worker before it consumes later tasks, and
-   warn the human. `/resume` moves paused tasks back to the front with the same
-   ids and context after access is available again.
+   warn the human. `/task resume <id|all>` moves selected paused tasks back to
+   the front with the same ids and context after access is available again.
 8. Keep the agent-instance branch as the resident control worktree. Give every
    code task its own linked worktree and branch from the latest available
    authoritative revision supplied by the VCS provider, and run the agent runtime,
@@ -66,8 +66,7 @@ When work is queued:
     Record attempt, failure code, failure class, and retry disposition in task
     events. Keep `/task retry <id>` as the explicit human override.
 12. `/task resume <id|all>` resumes only paused tasks without changing their
-    ids or causal history. `/resume` remains the system-level alias for
-    `/task resume all`.
+    ids or causal history.
 
 ## Inheritance
 
