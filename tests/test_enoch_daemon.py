@@ -4,7 +4,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 
-from enoch import daemon
+from enoch.operations import daemon
 from enoch.providers.contracts import ServiceProviderError
 
 
@@ -54,8 +54,8 @@ class EnochDaemonTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             with (
-                patch("enoch.daemon._require_daemon_config") as require_config,
-                patch("enoch.daemon._service", return_value=service),
+                patch("enoch.operations.daemon._require_daemon_config") as require_config,
+                patch("enoch.operations.daemon._service", return_value=service),
             ):
                 result = daemon.install(root)
 
@@ -68,8 +68,8 @@ class EnochDaemonTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             with (
-                patch("enoch.daemon._require_daemon_config"),
-                patch("enoch.daemon._service", return_value=service),
+                patch("enoch.operations.daemon._require_daemon_config"),
+                patch("enoch.operations.daemon._service", return_value=service),
             ):
                 result = daemon.restart(root)
 
@@ -78,7 +78,7 @@ class EnochDaemonTests(unittest.TestCase):
 
     def test_dispatch_routes_status_logs_and_manifest(self) -> None:
         service = _Service()
-        with patch("enoch.daemon._service", return_value=service):
+        with patch("enoch.operations.daemon._service", return_value=service):
             self.assertEqual(daemon.dispatch("status"), "running")
             self.assertEqual(daemon.dispatch("logs", lines=12), "logs:12")
             self.assertEqual(daemon.dispatch("manifest"), "service manifest")
@@ -88,9 +88,9 @@ class EnochDaemonTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             with (
-                patch("enoch.daemon._has_daemon_config", return_value=True),
-                patch("enoch.daemon.provider_name", return_value="test-chat"),
-                patch("enoch.daemon._service", return_value=service),
+                patch("enoch.operations.daemon._has_daemon_config", return_value=True),
+                patch("enoch.operations.daemon.provider_name", return_value="test-chat"),
+                patch("enoch.operations.daemon._service", return_value=service),
             ):
                 result = daemon.doctor(root)
 
@@ -99,7 +99,7 @@ class EnochDaemonTests(unittest.TestCase):
         self.assertIn("Service provider: test-service", result)
 
     @patch("builtins.print")
-    @patch("enoch.daemon.dispatch", side_effect=ServiceProviderError("service unavailable"))
+    @patch("enoch.operations.daemon.dispatch", side_effect=ServiceProviderError("service unavailable"))
     def test_main_reports_service_provider_errors(self, _dispatch: MagicMock, print_: MagicMock) -> None:
         with self.assertRaises(SystemExit):
             daemon.main(["status"])
@@ -109,7 +109,7 @@ class EnochDaemonTests(unittest.TestCase):
     def test_start_requires_configured_chat(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            with patch("enoch.daemon._has_daemon_config", return_value=False):
+            with patch("enoch.operations.daemon._has_daemon_config", return_value=False):
                 with self.assertRaisesRegex(daemon.DaemonError, "Configure the selected chat provider"):
                     daemon.start(root)
 

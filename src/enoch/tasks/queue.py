@@ -22,7 +22,7 @@ from enoch.providers.contracts import (
     normalize_conversation_id,
     normalize_message_id,
 )
-from enoch.task_events import normalize_task_initiator, normalize_task_source, record_task_event
+from enoch.tasks.events import normalize_task_initiator, normalize_task_source, record_task_event
 
 
 SCHEMA_VERSION = 5

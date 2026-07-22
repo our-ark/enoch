@@ -11,7 +11,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from enoch.git_tools import GitError
 from enoch.immune import DoctorDiagnosis
-from enoch.updater import run_update_doctor, update_from_main
+from enoch.operations.updater import run_update_doctor, update_from_main
 
 
 class EnochUpdaterTests(unittest.TestCase):
@@ -42,7 +42,10 @@ class EnochUpdaterTests(unittest.TestCase):
             package = root / "src" / "enoch"
             package.mkdir(parents=True)
             (package / "__init__.py").write_text("", encoding="utf-8")
-            (package / "update_doctor.py").write_text(
+            operations = package / "operations"
+            operations.mkdir()
+            (operations / "__init__.py").write_text("", encoding="utf-8")
+            (operations / "update_doctor.py").write_text(
                 "\n".join(
                     [
                         "import json",
@@ -64,19 +67,19 @@ class EnochUpdaterTests(unittest.TestCase):
         self.assertEqual(result.diagnosis.summary, "Updated doctor passed.")
         self.assertEqual(result.checks[0].summary, "loaded from disk")
 
-    @patch("enoch.updater.run_update_doctor")
+    @patch("enoch.operations.updater.run_update_doctor")
     @patch(
-        "enoch.updater.pull_origin_main",
+        "enoch.operations.updater.pull_origin_main",
         return_value=(
             "Fast-forward\n"
-            " src/enoch/updater.py | 2 +-\n"
+            " src/enoch/operations/updater.py | 2 +-\n"
             " 1 file changed, 1 insertion(+), 1 deletion(-)"
         ),
     )
-    @patch("enoch.updater.current_head", side_effect=["1111111111111111111111111111111111111111", "2222222222222222222222222222222222222222"])
-    @patch("enoch.updater.current_branch", return_value="main")
-    @patch("enoch.updater.fetch_origin_main")
-    @patch("enoch.updater.ensure_clean_worktree")
+    @patch("enoch.operations.updater.current_head", side_effect=["1111111111111111111111111111111111111111", "2222222222222222222222222222222222222222"])
+    @patch("enoch.operations.updater.current_branch", return_value="main")
+    @patch("enoch.operations.updater.fetch_origin_main")
+    @patch("enoch.operations.updater.ensure_clean_worktree")
     def test_update_pulls_runs_doctor_and_requests_restart(
         self,
         ensure_clean_worktree: MagicMock,
@@ -103,12 +106,12 @@ class EnochUpdaterTests(unittest.TestCase):
         self.assertIn("Fast-forward", result.direct_action_result)
         self.assertIn("Restarting into 2222222.", result.direct_action_result)
 
-    @patch("enoch.updater.run_update_doctor")
-    @patch("enoch.updater.pull_origin_main", return_value="Already up to date.")
-    @patch("enoch.updater.current_head", side_effect=["1111111111111111111111111111111111111111", "1111111111111111111111111111111111111111"])
-    @patch("enoch.updater.current_branch", return_value="main")
-    @patch("enoch.updater.fetch_origin_main")
-    @patch("enoch.updater.ensure_clean_worktree")
+    @patch("enoch.operations.updater.run_update_doctor")
+    @patch("enoch.operations.updater.pull_origin_main", return_value="Already up to date.")
+    @patch("enoch.operations.updater.current_head", side_effect=["1111111111111111111111111111111111111111", "1111111111111111111111111111111111111111"])
+    @patch("enoch.operations.updater.current_branch", return_value="main")
+    @patch("enoch.operations.updater.fetch_origin_main")
+    @patch("enoch.operations.updater.ensure_clean_worktree")
     def test_update_does_not_restart_when_already_up_to_date(
         self,
         _ensure_clean_worktree: MagicMock,
@@ -126,25 +129,25 @@ class EnochUpdaterTests(unittest.TestCase):
         self.assertEqual(result.direct_action_result, "Already up to date.")
 
     @patch(
-        "enoch.updater.stage_promoted_evolve_adoptions",
+        "enoch.operations.updater.stage_promoted_evolve_adoptions",
         return_value=(MagicMock(),),
     )
     @patch(
-        "enoch.updater.promotions_pending_adoption",
+        "enoch.operations.updater.promotions_pending_adoption",
         return_value=(MagicMock(),),
     )
-    @patch("enoch.updater.run_update_doctor")
-    @patch("enoch.updater.pull_origin_main", return_value="Already up to date.")
+    @patch("enoch.operations.updater.run_update_doctor")
+    @patch("enoch.operations.updater.pull_origin_main", return_value="Already up to date.")
     @patch(
-        "enoch.updater.current_head",
+        "enoch.operations.updater.current_head",
         side_effect=[
             "1111111111111111111111111111111111111111",
             "1111111111111111111111111111111111111111",
         ],
     )
-    @patch("enoch.updater.current_branch", return_value="main")
-    @patch("enoch.updater.fetch_origin_main")
-    @patch("enoch.updater.ensure_clean_worktree")
+    @patch("enoch.operations.updater.current_branch", return_value="main")
+    @patch("enoch.operations.updater.fetch_origin_main")
+    @patch("enoch.operations.updater.ensure_clean_worktree")
     def test_update_verifies_pending_adoption_even_when_code_is_current(
         self,
         _ensure_clean_worktree: MagicMock,
@@ -171,19 +174,19 @@ class EnochUpdaterTests(unittest.TestCase):
         self.assertIn("verified adoption after restart", result.message)
 
     @patch(
-        "enoch.updater._load_channel_lifecycle_state",
+        "enoch.operations.updater._load_channel_lifecycle_state",
         return_value={
             "status": "running",
             "pid": os.getpid(),
             "started_head": "0000000000000000000000000000000000000000",
         },
     )
-    @patch("enoch.updater.run_update_doctor")
-    @patch("enoch.updater.pull_origin_main", return_value="Already up to date.")
-    @patch("enoch.updater.current_head", side_effect=["1111111111111111111111111111111111111111", "1111111111111111111111111111111111111111"])
-    @patch("enoch.updater.current_branch", return_value="main")
-    @patch("enoch.updater.fetch_origin_main")
-    @patch("enoch.updater.ensure_clean_worktree")
+    @patch("enoch.operations.updater.run_update_doctor")
+    @patch("enoch.operations.updater.pull_origin_main", return_value="Already up to date.")
+    @patch("enoch.operations.updater.current_head", side_effect=["1111111111111111111111111111111111111111", "1111111111111111111111111111111111111111"])
+    @patch("enoch.operations.updater.current_branch", return_value="main")
+    @patch("enoch.operations.updater.fetch_origin_main")
+    @patch("enoch.operations.updater.ensure_clean_worktree")
     def test_update_warns_when_running_commit_is_stale_but_disk_is_current(
         self,
         _ensure_clean_worktree: MagicMock,
@@ -204,18 +207,18 @@ class EnochUpdaterTests(unittest.TestCase):
         self.assertIn("Run /restart to load the current code.", result.direct_action_result)
 
     @patch(
-        "enoch.updater._load_channel_lifecycle_state",
+        "enoch.operations.updater._load_channel_lifecycle_state",
         return_value={
             "status": "running",
             "pid": 1,
             "started_head": "0000000000000000000000000000000000000000",
         },
     )
-    @patch("enoch.updater.pull_origin_main", return_value="Already up to date.")
-    @patch("enoch.updater.current_head", side_effect=["1111111111111111111111111111111111111111", "1111111111111111111111111111111111111111"])
-    @patch("enoch.updater.current_branch", return_value="main")
-    @patch("enoch.updater.fetch_origin_main")
-    @patch("enoch.updater.ensure_clean_worktree")
+    @patch("enoch.operations.updater.pull_origin_main", return_value="Already up to date.")
+    @patch("enoch.operations.updater.current_head", side_effect=["1111111111111111111111111111111111111111", "1111111111111111111111111111111111111111"])
+    @patch("enoch.operations.updater.current_branch", return_value="main")
+    @patch("enoch.operations.updater.fetch_origin_main")
+    @patch("enoch.operations.updater.ensure_clean_worktree")
     def test_update_ignores_lifecycle_for_other_process(
         self,
         _ensure_clean_worktree: MagicMock,
@@ -230,13 +233,13 @@ class EnochUpdaterTests(unittest.TestCase):
         self.assertNotIn("Run /restart", result.message)
         self.assertEqual(result.direct_action_result, "Already up to date.")
 
-    @patch("enoch.updater.run_update_doctor")
-    @patch("enoch.updater.reset_hard")
-    @patch("enoch.updater.pull_origin_main", return_value="Updating 1111111..2222222")
-    @patch("enoch.updater.current_head", side_effect=["1111111111111111111111111111111111111111", "2222222222222222222222222222222222222222"])
-    @patch("enoch.updater.current_branch", return_value="main")
-    @patch("enoch.updater.fetch_origin_main")
-    @patch("enoch.updater.ensure_clean_worktree")
+    @patch("enoch.operations.updater.run_update_doctor")
+    @patch("enoch.operations.updater.reset_hard")
+    @patch("enoch.operations.updater.pull_origin_main", return_value="Updating 1111111..2222222")
+    @patch("enoch.operations.updater.current_head", side_effect=["1111111111111111111111111111111111111111", "2222222222222222222222222222222222222222"])
+    @patch("enoch.operations.updater.current_branch", return_value="main")
+    @patch("enoch.operations.updater.fetch_origin_main")
+    @patch("enoch.operations.updater.ensure_clean_worktree")
     def test_update_rolls_back_when_doctor_fails(
         self,
         _ensure_clean_worktree: MagicMock,
@@ -265,12 +268,12 @@ class EnochUpdaterTests(unittest.TestCase):
         self.assertIn("Rolled back to 1111111.", result.message)
         self.assertEqual(result.direct_action_result, "")
 
-    @patch("enoch.updater.head_merged_into_origin_main", return_value=True)
-    @patch("enoch.updater.pull_origin_main", return_value="Already up to date.")
-    @patch("enoch.updater.current_head", side_effect=["1111111111111111111111111111111111111111", "1111111111111111111111111111111111111111"])
-    @patch("enoch.updater.current_branch", return_value="enoch/old-merged-branch")
-    @patch("enoch.updater.fetch_origin_main")
-    @patch("enoch.updater.ensure_clean_worktree")
+    @patch("enoch.operations.updater.head_merged_into_origin_main", return_value=True)
+    @patch("enoch.operations.updater.pull_origin_main", return_value="Already up to date.")
+    @patch("enoch.operations.updater.current_head", side_effect=["1111111111111111111111111111111111111111", "1111111111111111111111111111111111111111"])
+    @patch("enoch.operations.updater.current_branch", return_value="enoch/old-merged-branch")
+    @patch("enoch.operations.updater.fetch_origin_main")
+    @patch("enoch.operations.updater.ensure_clean_worktree")
     def test_update_fast_forwards_merged_branch_without_switching_to_main(
         self,
         _ensure_clean_worktree: MagicMock,
@@ -286,10 +289,10 @@ class EnochUpdaterTests(unittest.TestCase):
         pull_origin_main.assert_called_once_with(ROOT)
         self.assertIn("Enoch is already up to date.", result.message)
 
-    @patch("enoch.updater.head_merged_into_origin_main", return_value=False)
-    @patch("enoch.updater.current_branch", return_value="enoch/unmerged-work")
-    @patch("enoch.updater.fetch_origin_main")
-    @patch("enoch.updater.ensure_clean_worktree")
+    @patch("enoch.operations.updater.head_merged_into_origin_main", return_value=False)
+    @patch("enoch.operations.updater.current_branch", return_value="enoch/unmerged-work")
+    @patch("enoch.operations.updater.fetch_origin_main")
+    @patch("enoch.operations.updater.ensure_clean_worktree")
     def test_update_refuses_unmerged_feature_branch(
         self,
         _ensure_clean_worktree: MagicMock,
@@ -301,8 +304,8 @@ class EnochUpdaterTests(unittest.TestCase):
 
         self.assertIn("has commits that are not merged into origin/main", result.message)
 
-    @patch("enoch.updater.fetch_origin_main")
-    @patch("enoch.updater.ensure_clean_worktree", side_effect=GitError("dirty"))
+    @patch("enoch.operations.updater.fetch_origin_main")
+    @patch("enoch.operations.updater.ensure_clean_worktree", side_effect=GitError("dirty"))
     def test_update_refuses_dirty_worktree(
         self,
         _ensure_clean_worktree: MagicMock,

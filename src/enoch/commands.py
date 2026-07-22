@@ -42,7 +42,7 @@ from enoch.providers.registry import (
 )
 from enoch.providers.runtime import FunctionAgentRuntime
 from enoch.skills import skills_command
-from enoch.task_config import (
+from enoch.tasks.config import (
     format_task_timeout,
     parse_task_timeout,
     save_task_timeout,

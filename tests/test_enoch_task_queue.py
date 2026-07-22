@@ -10,7 +10,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from enoch.task_queue import (
+from enoch.tasks.queue import (
     TaskRetryError,
     begin_direct_task,
     begin_next_task,
@@ -35,8 +35,8 @@ from enoch.task_queue import (
     task_result_has_pull_request,
     task_queue_status,
 )
-from enoch.task_events import load_task_events
-from enoch import task_queue
+from enoch.tasks.events import load_task_events
+from enoch.tasks import queue as task_queue
 
 
 class EnochTaskQueueTests(unittest.TestCase):
@@ -738,7 +738,7 @@ class EnochTaskQueueTests(unittest.TestCase):
                 root,
             )
 
-            with patch("enoch.task_queue.os.kill", side_effect=ProcessLookupError):
+            with patch("enoch.tasks.queue.os.kill", side_effect=ProcessLookupError):
                 recovered = recover_interrupted_task(root)
 
             status = task_queue_status(root)

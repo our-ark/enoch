@@ -4,11 +4,11 @@ summary: Run leased persistent work in isolated task worktrees through queues, b
 owner: Enoch
 status: active
 mode: background-work
-entrypoint: src/enoch/application.py
+entrypoint: src/enoch/app/core.py
 capabilities:
-  task_queue: src/enoch/task_queue.py
-  task_failure_classification: src/enoch/task_failures.py
-  task_worktrees: src/enoch/task_worktree.py
+  task_queue: src/enoch/tasks/queue.py
+  task_failure_classification: src/enoch/tasks/failures.py
+  task_worktrees: src/enoch/tasks/worktree.py
   backlog: src/enoch/backlog.py
   cron: src/enoch/cron.py
   automatic_learning: src/enoch/automatic_learning.py

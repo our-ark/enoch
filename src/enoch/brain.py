@@ -30,7 +30,7 @@ from enoch.providers.contracts import (
     AgentRuntimeError,
 )
 from enoch.runtime import ACTION_SANDBOX_READ_ONLY, WORKSPACE_WRITE_SANDBOX
-from enoch.task_config import task_timeout_seconds
+from enoch.tasks.config import task_timeout_seconds
 
 
 DEFAULT_TIMEOUT_SECONDS = 600

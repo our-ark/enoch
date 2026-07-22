@@ -12,7 +12,7 @@ from typing import Any, Iterator, Sequence
 from enoch.identity import Identity
 from enoch.paths import enoch_home
 from enoch.providers.contracts import Attachment, ChatProvider, Cursor
-from enoch.update_tools import current_head, main_pull_summary
+from enoch.operations.update_tools import current_head, main_pull_summary
 
 
 MAX_IMAGE_BYTES = 20 * 1024 * 1024

@@ -6,7 +6,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from enoch.task_failures import classify_task_failure
+from enoch.tasks.failures import classify_task_failure
 
 
 class EnochTaskFailureTests(unittest.TestCase):

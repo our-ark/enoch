@@ -21,10 +21,12 @@ DEFAULT_IMPORTANT_TITLE_WORDS = (
 DEFAULT_IMPORTANT_FILE_PREFIXES = (
     "src/enoch/brain.py",
     "src/enoch/config.py",
-    "src/enoch/daemon.py",
+    "src/enoch/operations/",
     "src/enoch/providers/",
     "src/enoch/immune.py",
-    "src/enoch/application.py",
+    "src/enoch/app/",
+    "src/enoch/tasks/",
+    "src/enoch/evolution/",
 )
 
 

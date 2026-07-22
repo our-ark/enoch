@@ -19,7 +19,7 @@ class EnochLauncherTests(unittest.TestCase):
 
             cases = [
                 ("bin/enoch", ["doctor"], "python3.11 -m enoch doctor"),
-                ("bin/enoch-daemon", ["status"], "python3.11 -m enoch.daemon status"),
+                ("bin/enoch-daemon", ["status"], "python3.11 -m enoch.operations.daemon status"),
                 ("bin/enoch-agent", [], "python3.11 -m enoch.agent"),
             ]
 

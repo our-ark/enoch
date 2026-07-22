@@ -95,6 +95,9 @@ Provider contracts, packaging examples, provider-specific settings, normalized
 chat events, and migration compatibility are documented in
 [`docs/providers.md`](docs/providers.md).
 
+Core package boundaries and dependency direction are documented in
+[`docs/architecture.md`](docs/architecture.md).
+
 ## Testing
 
 Run the unit and hermetic evolution E2E tests with:

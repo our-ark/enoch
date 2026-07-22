@@ -4,11 +4,11 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 
-from enoch.update_tools import schedule_daemon_restart, schedule_daemon_stop
+from enoch.operations.update_tools import schedule_daemon_restart, schedule_daemon_stop
 
 
 class EnochUpdateToolsTests(unittest.TestCase):
-    @patch("enoch.update_tools.load_provider")
+    @patch("enoch.operations.update_tools.load_provider")
     def test_scheduled_restart_uses_selected_service_provider(
         self,
         load_provider: MagicMock,
@@ -22,7 +22,7 @@ class EnochUpdateToolsTests(unittest.TestCase):
         load_provider.assert_called_once_with("service", root)
         service.schedule_restart.assert_called_once_with(root)
 
-    @patch("enoch.update_tools.load_provider")
+    @patch("enoch.operations.update_tools.load_provider")
     def test_scheduled_stop_uses_selected_service_provider(
         self,
         load_provider: MagicMock,

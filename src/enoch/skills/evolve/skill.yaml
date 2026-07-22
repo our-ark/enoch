@@ -4,20 +4,20 @@ summary: Collect, rank, and propose bounded self-evolution candidates under huma
 owner: Enoch
 status: active
 mode: co-evolution
-entrypoint: src/enoch/evolve.py
+entrypoint: src/enoch/evolution/core.py
 capabilities:
-  state: src/enoch/evolve.py
-  scheduler: src/enoch/evolve.py
-  event_journal: src/enoch/evolve_events.py
+  state: src/enoch/evolution/core.py
+  scheduler: src/enoch/evolution/core.py
+  event_journal: src/enoch/evolution/events.py
   candidate_collection:
     - src/enoch/backlog.py
-    - src/enoch/feedback.py
-    - src/enoch/task_queue.py
+    - src/enoch/evolution/sources/feedback.py
+    - src/enoch/tasks/queue.py
     - src/enoch/cron.py
     - src/enoch/lineage/core.py
     - src/enoch/learn.py
-    - src/enoch/brainstorming.py
-  command_surface: src/enoch/application.py
+    - src/enoch/evolution/sources/brainstorming.py
+  command_surface: src/enoch/app/core.py
 permissions:
   filesystem:
     read:

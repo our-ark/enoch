@@ -11,9 +11,9 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from enoch.backlog import add_backlog_item
 from enoch.automatic_learning import record_learning_artifact
-from enoch.brainstorming import generate_brainstorm_ideas
+from enoch.evolution.sources.brainstorming import generate_brainstorm_ideas
 from enoch.cron import add_cron_job
-from enoch.evolve import (
+from enoch.evolution.core import (
     MODE_DISABLED,
     cancel_evolve_candidate_for_task,
     claim_due_evolve_schedule,
@@ -38,13 +38,13 @@ from enoch.evolve import (
     set_evolve_theme,
     sync_evolve_candidates,
 )
-from enoch.evolve_events import load_evolve_events
-from enoch.experience import record_task_experience
+from enoch.evolution.events import load_evolve_events
+from enoch.evolution.sources.experience import record_task_experience
 from enoch.identity import load_identity
 from enoch.learn import LearnRequest, record_peer_learning_observation
 from enoch.lineage.core import LineageCandidate
 from enoch.logs import log_conversation_turn
-from enoch.task_queue import TaskJob, begin_next_task, enqueue_task, fail_task
+from enoch.tasks.queue import TaskJob, begin_next_task, enqueue_task, fail_task
 
 
 class EnochEvolveTests(unittest.TestCase):

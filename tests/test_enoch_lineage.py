@@ -341,7 +341,7 @@ class EnochLineageTests(unittest.TestCase):
         self.assertEqual(settings.important_title_words, ("thinking", "upgrade"))
         self.assertEqual(settings.important_file_prefixes, ("README.md", "docs/"))
         self.assertIn("fix", DEFAULT_IMPORTANT_TITLE_WORDS)
-        self.assertIn("src/enoch/application.py", DEFAULT_IMPORTANT_FILE_PREFIXES)
+        self.assertIn("src/enoch/app/", DEFAULT_IMPORTANT_FILE_PREFIXES)
         self.assertNotIn("src/enoch/agency.py", DEFAULT_IMPORTANT_FILE_PREFIXES)
 
     def test_lineage_title_ranking_uses_configured_words(self) -> None:
@@ -403,7 +403,7 @@ class EnochLineageTests(unittest.TestCase):
         assert candidate is not None
         self.assertIn("Status: pending", format_candidate(candidate))
         self.assertIn("Consider whether Enoch should adapt", lineage_adopt_prompt(candidate))
-        self.assertIn("src/enoch/application.py", lineage_adopt_prompt(candidate))
+        self.assertIn("src/enoch/app/", lineage_adopt_prompt(candidate))
 
 
 class FakeLineageClient:
@@ -457,7 +457,7 @@ class FakeLineageClient:
 
     def pr_files(self, repo: str, number: int) -> tuple[str, ...]:
         if repo == "our-ark/enoch":
-            return ("src/enoch/application.py",)
+            return ("src/enoch/app/core.py",)
         if number == 7:
             return ("src/enoch/immune.py",)
         return ("README.md",)

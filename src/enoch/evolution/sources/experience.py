@@ -7,10 +7,10 @@ from typing import TYPE_CHECKING
 
 from enoch.memory.paths import clean_text
 from enoch.paths import enoch_home
-from enoch.task_events import TaskEvent, load_task_events, record_task_event
+from enoch.tasks.events import TaskEvent, load_task_events, record_task_event
 
 if TYPE_CHECKING:
-    from enoch.task_queue import TaskJob
+    from enoch.tasks.queue import TaskJob
 
 
 TERMINAL_OUTCOMES = {

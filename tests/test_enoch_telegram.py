@@ -21,7 +21,7 @@ from enoch.backlog import add_backlog_item, backlog_status
 from enoch.config import read_section
 from enoch.command_surface import checktree as _checktree
 from enoch.cron import add_cron_job, cron_status
-from enoch.evolve import (
+from enoch.evolution.core import (
     MODE_AUTO_EVOLVE,
     evolve_report,
     get_evolve_candidate,
@@ -30,8 +30,8 @@ from enoch.evolve import (
     set_evolve_schedule,
     set_evolve_theme,
 )
-from enoch.experience import load_experience_records, record_task_experience
-from enoch.evolve_events import load_evolve_events
+from enoch.evolution.sources.experience import load_experience_records, record_task_experience
+from enoch.evolution.events import load_evolve_events
 from enoch.git_tools import GitError
 from our_ark_github.workflow import (
     LocalPublishResult,
@@ -60,7 +60,7 @@ from enoch.prompt_append import (
     TASK_REGRESSION_START,
 )
 from enoch.providers.runtime import FunctionAgentRuntime
-from enoch.task_queue import (
+from enoch.tasks.queue import (
     TaskJob,
     begin_next_task,
     complete_task,
@@ -71,9 +71,9 @@ from enoch.task_queue import (
     task_queue_path,
     task_queue_status,
 )
-from enoch.task_events import load_task_events
-from enoch.task_worktree import TaskWorktree
-from enoch.application import (
+from enoch.tasks.events import load_task_events
+from enoch.tasks.worktree import TaskWorktree
+from enoch.app.core import (
     EnochApplication,
     ShutdownRequested,
     TaskContextSnapshot,
@@ -88,7 +88,7 @@ from enoch.application import (
     _signal_reason,
     _task_context_snapshot_prompt,
 )
-from enoch import application as telegram
+from enoch.app import core as telegram
 from enoch.channel import (
     MAX_IMAGE_BYTES as MAX_TELEGRAM_IMAGE_BYTES,
     load_channel_lifecycle,
@@ -103,7 +103,7 @@ from our_ark_telegram import (
     load_config,
     telegram_event,
 )
-from enoch.update_tools import (
+from enoch.operations.update_tools import (
     ensure_local_main_current,
     main_pull_summary as _main_pull_summary,
 )
@@ -127,27 +127,27 @@ class _ImmediateTimer:
 class EnochTelegramTests(unittest.TestCase):
     def setUp(self) -> None:
         self._task_context_snapshot_patch = patch(
-            "enoch.application.EnochApplication._resolve_task_context_snapshot",
+            "enoch.app.core.EnochApplication._resolve_task_context_snapshot",
             return_value=TaskContextSnapshot(),
         )
         self.resolve_task_context_snapshot = self._task_context_snapshot_patch.start()
         self.addCleanup(self._task_context_snapshot_patch.stop)
-        self._sync_session_activity_patch = patch("enoch.application._sync_session_activity")
+        self._sync_session_activity_patch = patch("enoch.app.core._sync_session_activity")
         self.sync_session_activity = self._sync_session_activity_patch.start()
         self.addCleanup(self._sync_session_activity_patch.stop)
         self._save_telegram_offset_patch = patch(
-            "enoch.application.save_channel_cursor",
+            "enoch.app.core.save_channel_cursor",
             side_effect=_save_test_offset,
         )
         self.save_telegram_offset = self._save_telegram_offset_patch.start()
         self.addCleanup(self._save_telegram_offset_patch.stop)
-        self._log_conversation_turn_patch = patch("enoch.application.log_conversation_turn")
+        self._log_conversation_turn_patch = patch("enoch.app.core.log_conversation_turn")
         self.log_conversation_turn = self._log_conversation_turn_patch.start()
         self.addCleanup(self._log_conversation_turn_patch.stop)
-        self._log_system_event_patch = patch("enoch.application.log_system_event")
+        self._log_system_event_patch = patch("enoch.app.core.log_system_event")
         self.log_system_event = self._log_system_event_patch.start()
         self.addCleanup(self._log_system_event_patch.stop)
-        self._update_memory_patch = patch("enoch.application.ensure_long_term_memory")
+        self._update_memory_patch = patch("enoch.app.core.ensure_long_term_memory")
         self.update_memory = self._update_memory_patch.start()
         self.addCleanup(self._update_memory_patch.stop)
 
@@ -212,7 +212,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertTrue(request_object.full_url.endswith("/photos/image.jpg"))
         response.read.assert_called_once_with(1025)
 
-    @patch("enoch.application.respond")
+    @patch("enoch.app.core.respond")
     def test_photo_is_downloaded_attached_and_deleted(self, respond: MagicMock) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
@@ -236,7 +236,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual(client.downloads, [("large-photo", MAX_TELEGRAM_IMAGE_BYTES)])
         self.assertEqual(client.sent, [(42, "这是一朵向日葵。")])
 
-    @patch("enoch.application.respond")
+    @patch("enoch.app.core.respond")
     def test_photo_without_caption_gets_natural_image_prompt(
         self,
         respond: MagicMock,
@@ -252,7 +252,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("without a caption", prompt)
         self.assertEqual(client.sent, [(42, "I can see a dog.")])
 
-    @patch("enoch.application.respond")
+    @patch("enoch.app.core.respond")
     def test_photo_from_unlocked_chat_is_not_downloaded(
         self,
         respond: MagicMock,
@@ -347,9 +347,9 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("telegram.bot_token", printed)
         self.assertIn("ENOCH_TELEGRAM_BOT_TOKEN", printed)
 
-    @patch("enoch.application.ensure_long_term_memory")
-    @patch("enoch.application.log_conversation_turn")
-    @patch("enoch.application.respond", return_value="Hello from Enoch")
+    @patch("enoch.app.core.ensure_long_term_memory")
+    @patch("enoch.app.core.log_conversation_turn")
+    @patch("enoch.app.core.respond", return_value="Hello from Enoch")
     def test_replies_to_allowed_chat(
         self,
         respond: MagicMock,
@@ -374,8 +374,8 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("Hello from Enoch", log_conversation_turn.call_args.kwargs["reply"])
         update_memory.assert_called_once_with(ROOT)
 
-    @patch("enoch.application.ensure_long_term_memory")
-    @patch("enoch.application.log_conversation_turn")
+    @patch("enoch.app.core.ensure_long_term_memory")
+    @patch("enoch.app.core.log_conversation_turn")
     def test_replies_do_not_include_accumulated_input_tokens(
         self,
         _log_conversation_turn: MagicMock,
@@ -388,14 +388,14 @@ class EnochTelegramTests(unittest.TestCase):
         client = FakeTelegramClient(allowed_chat_id=42)
         bot = EnochApplication(load_identity(), ROOT, client)
 
-        with patch("enoch.application.respond", side_effect=answer):
+        with patch("enoch.app.core.respond", side_effect=answer):
             _handle_update(bot, _message_update(chat_id=42, text="hello"))
 
         self.assertEqual(client.sent, [(42, "Hello from Enoch")])
 
-    @patch("enoch.application.ensure_long_term_memory")
-    @patch("enoch.application.log_conversation_turn")
-    @patch("enoch.application.respond", return_value="[PLAIN_TEXT_MARKER]\nIntent:\nAdd reminders")
+    @patch("enoch.app.core.ensure_long_term_memory")
+    @patch("enoch.app.core.log_conversation_turn")
+    @patch("enoch.app.core.respond", return_value="[PLAIN_TEXT_MARKER]\nIntent:\nAdd reminders")
     def test_plain_marker_text_is_not_special_for_normal_chat(
         self,
         respond: MagicMock,
@@ -413,11 +413,11 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("[PLAIN_TEXT_MARKER]", client.sent[0][1])
         self.assertNotIn("local = edit on a feature branch", client.sent[0][1])
 
-    @patch("enoch.application.ensure_long_term_memory")
-    @patch("enoch.application.log_conversation_turn")
-    @patch("enoch.application.remember_memory", return_value={"id": "mem_1", "text": "User likes apples."})
+    @patch("enoch.app.core.ensure_long_term_memory")
+    @patch("enoch.app.core.log_conversation_turn")
+    @patch("enoch.app.core.remember_memory", return_value={"id": "mem_1", "text": "User likes apples."})
     @patch(
-        "enoch.application.respond",
+        "enoch.app.core.respond",
         return_value=(
             "I will remember that."
             f"\n\n{MEMORY_REQUEST_START}\nUser likes apples.\n{MEMORY_REQUEST_END}"
@@ -445,11 +445,11 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertNotIn(MEMORY_REQUEST_START, sent)
         self.assertNotIn(MEMORY_REQUEST_END, sent)
 
-    @patch("enoch.application.ensure_long_term_memory")
-    @patch("enoch.application.log_conversation_turn")
-    @patch("enoch.application.remember_memory", side_effect=OSError("read-only"))
+    @patch("enoch.app.core.ensure_long_term_memory")
+    @patch("enoch.app.core.log_conversation_turn")
+    @patch("enoch.app.core.remember_memory", side_effect=OSError("read-only"))
     @patch(
-        "enoch.application.respond",
+        "enoch.app.core.respond",
         return_value=(
             "I should remember that."
             f"\n\n{MEMORY_REQUEST_START}\nUser likes apples.\n{MEMORY_REQUEST_END}"
@@ -474,7 +474,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("Enoch could not save that long-term memory.", sent)
         self.assertNotIn(MEMORY_REQUEST_START, sent)
 
-    @patch("enoch.application.respond")
+    @patch("enoch.app.core.respond")
     def test_ignores_disallowed_chat(self, respond: MagicMock) -> None:
         client = FakeTelegramClient(allowed_chat_id=42)
         bot = EnochApplication(load_identity(), ROOT, client)
@@ -485,9 +485,9 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual(client.acks, [])
         self.assertEqual(client.sent, [])
 
-    @patch("enoch.application.ensure_long_term_memory")
-    @patch("enoch.application.log_conversation_turn")
-    @patch("enoch.application.respond", return_value="natural reply")
+    @patch("enoch.app.core.ensure_long_term_memory")
+    @patch("enoch.app.core.log_conversation_turn")
+    @patch("enoch.app.core.respond", return_value="natural reply")
     def test_unknown_slash_command_routes_to_natural_conversation(
         self,
         respond: MagicMock,
@@ -505,7 +505,7 @@ class EnochTelegramTests(unittest.TestCase):
         update_memory.assert_called_once_with(ROOT)
         self.assertEqual(client.sent[0][1], "natural reply")
 
-    @patch("enoch.application.model_summary", return_value="AI model: gpt-5-codex")
+    @patch("enoch.app.core.model_summary", return_value="AI model: gpt-5-codex")
     def test_telegram_command_parser_accepts_bot_mentions(self, _model_summary: MagicMock) -> None:
         client = FakeTelegramClient(allowed_chat_id=42)
         bot = EnochApplication(load_identity(), ROOT, client)
@@ -641,7 +641,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual(state["reason"], "SIGTERM")
         self.assertTrue(state["shutdown_notification_sent"])
 
-    @patch("enoch.update_tools.run_git")
+    @patch("enoch.operations.update_tools.run_git")
     def test_main_pull_summary_reports_fetch_head_timestamp_and_main_sha(self, run_git: MagicMock) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
@@ -660,7 +660,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("2023-", summary)
         self.assertIn("origin/main abc1234", summary)
 
-    @patch("enoch.update_tools.run_git")
+    @patch("enoch.operations.update_tools.run_git")
     def test_main_pull_summary_is_unavailable_without_main_fetch(self, run_git: MagicMock) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
@@ -781,7 +781,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("/config runtime codex executable auto", reply)
         self.assertNotIn("Enoch Telegram commands:", reply)
 
-    @patch("enoch.application.merge_pull_request")
+    @patch("enoch.app.core.merge_pull_request")
     def test_pr_merge_requires_explicit_target(self, merge: MagicMock) -> None:
         client = FakeTelegramClient(allowed_chat_id=42)
         bot = EnochApplication(load_identity(), ROOT, client)
@@ -791,7 +791,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("/pr merge <PR number or PR URL>", client.sent[0][1])
         merge.assert_not_called()
 
-    @patch("enoch.application.merge_pull_request")
+    @patch("enoch.app.core.merge_pull_request")
     def test_pr_merge_is_ignored_from_unauthorized_chat(self, merge: MagicMock) -> None:
         client = FakeTelegramClient(allowed_chat_id=42)
         bot = EnochApplication(load_identity(), ROOT, client)
@@ -801,7 +801,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual(client.sent, [])
         merge.assert_not_called()
 
-    @patch("enoch.application.merge_pull_request")
+    @patch("enoch.app.core.merge_pull_request")
     def test_pr_merge_requires_configured_chat_lock(self, merge: MagicMock) -> None:
         client = FakeTelegramClient()
         bot = EnochApplication(load_identity(), ROOT, client)
@@ -811,7 +811,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("locked Telegram conversation", client.sent[0][1])
         merge.assert_not_called()
 
-    @patch("enoch.application.merge_pull_request")
+    @patch("enoch.app.core.merge_pull_request")
     def test_pr_merge_reports_success_for_exact_target(self, merge: MagicMock) -> None:
         merge.return_value = PullRequestMergeResult(
             number=12,
@@ -835,7 +835,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("https://github.com/our-ark/enoch/pull/12", client.sent[0][1])
         self.assertIn("Merge commit: def456", client.sent[0][1])
 
-    @patch("enoch.application.merge_pull_request", side_effect=PublishError("PR #12 is a draft."))
+    @patch("enoch.app.core.merge_pull_request", side_effect=PublishError("PR #12 is a draft."))
     def test_pr_merge_reports_github_workflow_error(self, merge: MagicMock) -> None:
         client = FakeTelegramClient(allowed_chat_id=42)
         bot = EnochApplication(load_identity(), ROOT, client)
@@ -876,7 +876,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("/pr merge <PR number or PR URL>", client.sent[1][1])
         self.assertIn("will not infer one", client.sent[1][1])
 
-    @patch("enoch.application.list_open_pull_requests")
+    @patch("enoch.app.core.list_open_pull_requests")
     def test_pr_lists_open_pull_requests(
         self,
         list_open_pull_requests: MagicMock,
@@ -907,7 +907,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("main <- feature/pr-commands", reply)
         self.assertIn("#12 [draft] Document config precedence", reply)
 
-    @patch("enoch.application.list_open_pull_requests", return_value=())
+    @patch("enoch.app.core.list_open_pull_requests", return_value=())
     def test_pr_reports_when_no_pull_requests_are_open(
         self,
         list_open_pull_requests: MagicMock,
@@ -920,7 +920,7 @@ class EnochTelegramTests(unittest.TestCase):
         list_open_pull_requests.assert_called_once_with(ROOT)
         self.assertEqual(client.sent[0][1], "Open pull requests: none.")
 
-    @patch("enoch.application.inspect_pull_request")
+    @patch("enoch.app.core.inspect_pull_request")
     def test_pr_show_reports_read_only_detail(
         self,
         inspect_pull_request: MagicMock,
@@ -1191,8 +1191,8 @@ class EnochTelegramTests(unittest.TestCase):
 
         self.assertEqual(client.sent[0][1], "No help found for /nope.\nUse /help to see available commands.")
 
-    @patch("enoch.application.ensure_long_term_memory")
-    @patch("enoch.application.log_conversation_turn")
+    @patch("enoch.app.core.ensure_long_term_memory")
+    @patch("enoch.app.core.log_conversation_turn")
     def test_task_command_enqueues_persistent_fifo_job(
         self,
         _log_conversation_turn: MagicMock,
@@ -1223,8 +1223,8 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertTrue(all(event.event_actor == "human" for event in events))
         self.assertIsNone(data["running"])
 
-    @patch("enoch.application.ensure_long_term_memory")
-    @patch("enoch.application.log_conversation_turn")
+    @patch("enoch.app.core.ensure_long_term_memory")
+    @patch("enoch.app.core.log_conversation_turn")
     def test_task_command_includes_replied_message_context(
         self,
         _log_conversation_turn: MagicMock,
@@ -1251,8 +1251,8 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("Original bug report details.", request)
         self.assertIn("Original bug report details.", client.sent[0][1])
 
-    @patch("enoch.application.ensure_long_term_memory")
-    @patch("enoch.application.log_conversation_turn")
+    @patch("enoch.app.core.ensure_long_term_memory")
+    @patch("enoch.app.core.log_conversation_turn")
     def test_task_command_stores_conversation_context_snapshot(
         self,
         _log_conversation_turn: MagicMock,
@@ -1278,8 +1278,8 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("Conversation context snapshot:", client.sent[0][1])
         self.assertIn("Build the reminders feature discussed earlier.", client.sent[0][1])
 
-    @patch("enoch.application.ensure_long_term_memory")
-    @patch("enoch.application.log_conversation_turn")
+    @patch("enoch.app.core.ensure_long_term_memory")
+    @patch("enoch.app.core.log_conversation_turn")
     def test_task_command_asks_for_clarification_before_queueing(
         self,
         _log_conversation_turn: MagicMock,
@@ -1299,8 +1299,8 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual(status.pending, ())
         self.assertIn("Which feature should Enoch implement?", client.sent[0][1])
 
-    @patch("enoch.application.ensure_long_term_memory")
-    @patch("enoch.application.log_conversation_turn")
+    @patch("enoch.app.core.ensure_long_term_memory")
+    @patch("enoch.app.core.log_conversation_turn")
     def test_task_command_requires_request(
         self,
         _log_conversation_turn: MagicMock,
@@ -1313,8 +1313,8 @@ class EnochTelegramTests(unittest.TestCase):
 
         self.assertEqual(client.sent[0][1], "Use /task <request> to queue background work.")
 
-    @patch("enoch.application.ensure_long_term_memory")
-    @patch("enoch.application.log_conversation_turn")
+    @patch("enoch.app.core.ensure_long_term_memory")
+    @patch("enoch.app.core.log_conversation_turn")
     def test_task_cancel_removes_pending_task_and_edits_status(
         self,
         _log_conversation_turn: MagicMock,
@@ -1391,11 +1391,11 @@ class EnochTelegramTests(unittest.TestCase):
             )
 
             with patch(
-                "enoch.application._latest_direct_action_result_for_task",
+                "enoch.app.core._latest_direct_action_result_for_task",
                 return_value=existing_result,
             ):
                 with patch(
-                    "enoch.application.inspect_pull_request",
+                    "enoch.app.core.inspect_pull_request",
                     return_value=_pull_request_info(
                         number=13,
                         title="Add PR command",
@@ -1442,11 +1442,11 @@ class EnochTelegramTests(unittest.TestCase):
         )
 
         with patch(
-            "enoch.application._latest_direct_action_result_for_task",
+            "enoch.app.core._latest_direct_action_result_for_task",
             return_value="",
         ):
             with patch(
-                "enoch.application.list_open_pull_requests",
+                "enoch.app.core.list_open_pull_requests",
                 return_value=(pull_request,),
             ) as list_pull_requests:
                 result = telegram._reconciled_retry_result(job, ROOT)
@@ -1492,7 +1492,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual(evolve_events[-1].retry_of_task_id, 1)
 
     @patch(
-        "enoch.application.respond",
+        "enoch.app.core.respond",
         return_value=(
             "I found the regression and rolled it back.\n"
             f"{TASK_REGRESSION_START}\n"
@@ -1605,8 +1605,8 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual(status.history[0].status, "regressed")
         self.assertEqual(status.history[1].status, "failed")
 
-    @patch("enoch.application.ensure_long_term_memory")
-    @patch("enoch.application.log_conversation_turn")
+    @patch("enoch.app.core.ensure_long_term_memory")
+    @patch("enoch.app.core.log_conversation_turn")
     def test_stop_cancels_running_task_and_edits_status(
         self,
         _log_conversation_turn: MagicMock,
@@ -1635,8 +1635,8 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("Status: cancelled", client.edited[-1][2])
         self.assertIn("Latest update: Stopped by /stop.", client.edited[-1][2])
 
-    @patch("enoch.application.ensure_long_term_memory")
-    @patch("enoch.application.log_conversation_turn")
+    @patch("enoch.app.core.ensure_long_term_memory")
+    @patch("enoch.app.core.log_conversation_turn")
     def test_stop_reports_when_no_task_is_running(
         self,
         _log_conversation_turn: MagicMock,
@@ -1649,8 +1649,8 @@ class EnochTelegramTests(unittest.TestCase):
 
         self.assertEqual(client.sent[0][1], "No running task to stop.")
 
-    @patch("enoch.application.ensure_long_term_memory")
-    @patch("enoch.application.log_conversation_turn")
+    @patch("enoch.app.core.ensure_long_term_memory")
+    @patch("enoch.app.core.log_conversation_turn")
     def test_tasks_command_shows_queue_and_history(
         self,
         _log_conversation_turn: MagicMock,
@@ -1671,8 +1671,8 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("#1 [pending] first queued work", reply)
         self.assertIn("#2 [cancelled] second queued work", reply)
 
-    @patch("enoch.application.ensure_long_term_memory")
-    @patch("enoch.application.log_conversation_turn")
+    @patch("enoch.app.core.ensure_long_term_memory")
+    @patch("enoch.app.core.log_conversation_turn")
     def test_tasks_command_shows_history_pr_url(
         self,
         _log_conversation_turn: MagicMock,
@@ -1693,8 +1693,8 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("#1 [completed] add queued work", reply)
         self.assertIn("PR: https://github.com/our-ark/enoch/pull/3", reply)
 
-    @patch("enoch.application.ensure_long_term_memory")
-    @patch("enoch.application.log_conversation_turn")
+    @patch("enoch.app.core.ensure_long_term_memory")
+    @patch("enoch.app.core.log_conversation_turn")
     def test_task_worker_edits_single_status_message(
         self,
         log_conversation_turn: MagicMock,
@@ -1739,8 +1739,8 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual(experiences[0].command, "/task")
         log_conversation_turn.assert_called()
 
-    @patch("enoch.application.ensure_long_term_memory")
-    @patch("enoch.application.log_conversation_turn")
+    @patch("enoch.app.core.ensure_long_term_memory")
+    @patch("enoch.app.core.log_conversation_turn")
     def test_evolve_task_worker_creates_one_status_message_for_all_progress(
         self,
         _log_conversation_turn: MagicMock,
@@ -1927,7 +1927,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual(payload["skill_names"], ["cron"])
         self.assertEqual(payload["request"], "add skill")
 
-    @patch("enoch.application.respond", return_value="Build the reminders feature discussed earlier.")
+    @patch("enoch.app.core.respond", return_value="Build the reminders feature discussed earlier.")
     def test_task_context_snapshot_resolver_uses_chat_session(self, respond: MagicMock) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
@@ -1950,8 +1950,8 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual(clarification.clarification, "Which file should Enoch update?")
         self.assertIn("NEEDS_CLARIFICATION:", _task_context_snapshot_prompt("do it"))
 
-    @patch("enoch.application.ensure_long_term_memory")
-    @patch("enoch.application.log_conversation_turn")
+    @patch("enoch.app.core.ensure_long_term_memory")
+    @patch("enoch.app.core.log_conversation_turn")
     def test_backlog_command_stores_priority_and_context_snapshot(
         self,
         _log_conversation_turn: MagicMock,
@@ -1976,8 +1976,8 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual(status.pending[0].context, "Use the backlog context snapshot.")
         self.assertIn("Backlog #1 [p0] saved.", client.sent[0][1])
 
-    @patch("enoch.application.ensure_long_term_memory")
-    @patch("enoch.application.log_conversation_turn")
+    @patch("enoch.app.core.ensure_long_term_memory")
+    @patch("enoch.app.core.log_conversation_turn")
     def test_backlog_command_defaults_to_p1(
         self,
         _log_conversation_turn: MagicMock,
@@ -1994,8 +1994,8 @@ class EnochTelegramTests(unittest.TestCase):
 
         self.assertEqual(status.pending[0].priority, "p1")
 
-    @patch("enoch.application.ensure_long_term_memory")
-    @patch("enoch.application.log_conversation_turn")
+    @patch("enoch.app.core.ensure_long_term_memory")
+    @patch("enoch.app.core.log_conversation_turn")
     def test_backlog_command_asks_for_clarification_before_adding(
         self,
         _log_conversation_turn: MagicMock,
@@ -2062,8 +2062,8 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual(queue.pending_count, 1)
         self.assertEqual(backlog.pending_count, 1)
 
-    @patch("enoch.application.ensure_long_term_memory")
-    @patch("enoch.application.log_conversation_turn")
+    @patch("enoch.app.core.ensure_long_term_memory")
+    @patch("enoch.app.core.log_conversation_turn")
     def test_backlog_command_can_remove_and_reprioritize(
         self,
         _log_conversation_turn: MagicMock,
@@ -2085,8 +2085,8 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("priority is now p0", client.sent[1][1])
         self.assertIn("Removed backlog #1.", client.sent[2][1])
 
-    @patch("enoch.application.ensure_long_term_memory")
-    @patch("enoch.application.log_conversation_turn")
+    @patch("enoch.app.core.ensure_long_term_memory")
+    @patch("enoch.app.core.log_conversation_turn")
     def test_backlog_cancel_points_to_remove_without_adding_item(
         self,
         _log_conversation_turn: MagicMock,
@@ -2103,8 +2103,8 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual(status.pending_count, 0)
         self.assertIn("Use /backlog remove <id>", client.sent[0][1])
 
-    @patch("enoch.application.ensure_long_term_memory")
-    @patch("enoch.application.log_conversation_turn")
+    @patch("enoch.app.core.ensure_long_term_memory")
+    @patch("enoch.app.core.log_conversation_turn")
     def test_backlog_command_can_manually_promote(
         self,
         _log_conversation_turn: MagicMock,
@@ -2130,8 +2130,8 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual(events[0].trigger, "/backlog promote")
         self.assertIn("Promoted backlog #1 to task #1.", client.sent[2][1])
 
-    @patch("enoch.application.ensure_long_term_memory")
-    @patch("enoch.application.log_conversation_turn")
+    @patch("enoch.app.core.ensure_long_term_memory")
+    @patch("enoch.app.core.log_conversation_turn")
     def test_backlog_report_lists_pending_and_history(
         self,
         _log_conversation_turn: MagicMock,
@@ -2166,10 +2166,10 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("wait for human approval", reply)
 
     @patch(
-        "enoch.application.format_reconcile_result",
+        "enoch.app.core.format_reconcile_result",
         return_value="Recorded governed promotion.",
     )
-    @patch("enoch.application.reconcile_evolve_candidate")
+    @patch("enoch.app.core.reconcile_evolve_candidate")
     def test_evolve_reconcile_supports_explicit_backfill(
         self,
         reconcile_evolve_candidate: MagicMock,
@@ -2445,7 +2445,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual(events[-1].candidate_actor, "agent")
         self.assertEqual(events[-1].approval_actor, "human")
 
-    @patch("enoch.application.create_pull_request")
+    @patch("enoch.app.core.create_pull_request")
     def test_evolve_pr_helper_passes_current_task_provenance(
         self,
         create_pull_request: MagicMock,
@@ -2547,8 +2547,8 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual(events[-1].trigger, "/task cancel")
         self.assertEqual(candidate.status, "cancelled")
 
-    @patch("enoch.application.ensure_long_term_memory")
-    @patch("enoch.application.log_conversation_turn")
+    @patch("enoch.app.core.ensure_long_term_memory")
+    @patch("enoch.app.core.log_conversation_turn")
     def test_evolve_approved_candidate_is_marked_done_after_task_completion(
         self,
         _log_conversation_turn: MagicMock,
@@ -2573,8 +2573,8 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual(all_candidates[0].status, "done")
         self.assertIn("Final status: completed", client.sent[-1][1])
 
-    @patch("enoch.application.ensure_long_term_memory")
-    @patch("enoch.application.log_conversation_turn")
+    @patch("enoch.app.core.ensure_long_term_memory")
+    @patch("enoch.app.core.log_conversation_turn")
     def test_selected_proposal_tracks_task_completion_and_funnel(
         self,
         _log_conversation_turn: MagicMock,
@@ -2619,8 +2619,8 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("Selected proposal outcomes:", client.sent[-1][1])
         self.assertIn("completed 1", client.sent[-1][1])
 
-    @patch("enoch.application.ensure_long_term_memory")
-    @patch("enoch.application.log_conversation_turn")
+    @patch("enoch.app.core.ensure_long_term_memory")
+    @patch("enoch.app.core.log_conversation_turn")
     def test_evolve_approved_candidate_is_marked_failed_after_task_failure(
         self,
         _log_conversation_turn: MagicMock,
@@ -2647,8 +2647,8 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("experience", report.counts_by_source)
         self.assertIn("Final status: failed", client.sent[-1][1])
 
-    @patch("enoch.application.ensure_long_term_memory")
-    @patch("enoch.application.log_conversation_turn")
+    @patch("enoch.app.core.ensure_long_term_memory")
+    @patch("enoch.app.core.log_conversation_turn")
     def test_propose_suggests_retry_and_retry_links_new_task_to_failure(
         self,
         _log_conversation_turn: MagicMock,
@@ -2716,8 +2716,8 @@ class EnochTelegramTests(unittest.TestCase):
             client.sent[-1][1],
         )
 
-    @patch("enoch.application.ensure_long_term_memory")
-    @patch("enoch.application.log_conversation_turn")
+    @patch("enoch.app.core.ensure_long_term_memory")
+    @patch("enoch.app.core.log_conversation_turn")
     def test_evolve_task_regression_and_resolution_are_journaled(
         self,
         _log_conversation_turn: MagicMock,
@@ -2743,7 +2743,7 @@ class EnochTelegramTests(unittest.TestCase):
                 '"resolution": "reverted"}\n'
                 f"{TASK_REGRESSION_END}"
             )
-            with patch("enoch.application.respond", return_value=regression_reply):
+            with patch("enoch.app.core.respond", return_value=regression_reply):
                 _handle_update(bot,
                     _message_update(
                         update_id=2,
@@ -2792,7 +2792,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("Set with /evolve theme <text>.", client.sent[2][1])
 
     @patch(
-        "enoch.application.respond",
+        "enoch.app.core.respond",
         return_value=json.dumps(
             [
                 {
@@ -2819,7 +2819,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("brainstorming: 1", client.sent[1][1])
         self.assertIn("Current evolution theme: auditable evolution", respond.call_args.args[1])
 
-    @patch("enoch.application.respond")
+    @patch("enoch.app.core.respond")
     def test_evolve_brainstorm_requires_theme(self, respond: MagicMock) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
@@ -3018,8 +3018,8 @@ class EnochTelegramTests(unittest.TestCase):
         }
         self.assertEqual(len(proposal_ids), 1)
 
-    @patch("enoch.application.ensure_long_term_memory")
-    @patch("enoch.application.log_conversation_turn")
+    @patch("enoch.app.core.ensure_long_term_memory")
+    @patch("enoch.app.core.log_conversation_turn")
     def test_due_auto_evolve_proposes_failed_candidate_without_automatic_retry(
         self,
         _log_conversation_turn: MagicMock,
@@ -3123,8 +3123,8 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("candidate by agent", experience_reply)
         self.assertEqual(respond.call_args.kwargs["session_key"], "telegram:42:evolve-scheduler")
 
-    @patch("enoch.application.ensure_long_term_memory")
-    @patch("enoch.application.log_conversation_turn")
+    @patch("enoch.app.core.ensure_long_term_memory")
+    @patch("enoch.app.core.log_conversation_turn")
     def test_cron_command_schedules_recurring_work_with_context(
         self,
         _log_conversation_turn: MagicMock,
@@ -3150,8 +3150,8 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("Cron #1 scheduled every 10m.", client.sent[0][1])
         self.assertIn("Next run:", client.sent[0][1])
 
-    @patch("enoch.application.ensure_long_term_memory")
-    @patch("enoch.application.log_conversation_turn")
+    @patch("enoch.app.core.ensure_long_term_memory")
+    @patch("enoch.app.core.log_conversation_turn")
     def test_cron_command_can_cancel_and_report(
         self,
         _log_conversation_turn: MagicMock,
@@ -3208,8 +3208,8 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("Task #1", client.sent[0][1])
         self.assertIn("Latest update: Scheduled by cron #1.", client.sent[0][1])
 
-    @patch("enoch.application.ensure_long_term_memory")
-    @patch("enoch.application.log_conversation_turn")
+    @patch("enoch.app.core.ensure_long_term_memory")
+    @patch("enoch.app.core.log_conversation_turn")
     def test_task_worker_marks_publish_failure_failed(
         self,
         log_conversation_turn: MagicMock,
@@ -3282,7 +3282,7 @@ class EnochTelegramTests(unittest.TestCase):
             first = begin_next_task(root)
 
             with patch(
-                "enoch.application.automatic_retry_delay_seconds",
+                "enoch.app.core.automatic_retry_delay_seconds",
                 return_value=0,
             ):
                 with patch.object(
@@ -3334,7 +3334,7 @@ class EnochTelegramTests(unittest.TestCase):
             job = begin_next_task(root)
             assert job is not None
 
-            with patch("enoch.application.threading.Timer", _ImmediateTimer):
+            with patch("enoch.app.core.threading.Timer", _ImmediateTimer):
                 with patch.object(bot, "_run_direct_work", return_value="Done."):
                     bot._run_task_job(job)
             status = task_queue_status(root)
@@ -3356,7 +3356,7 @@ class EnochTelegramTests(unittest.TestCase):
             job = begin_next_task(root)
             assert job is not None
 
-            with patch("enoch.application.threading.Timer", _ImmediateTimer):
+            with patch("enoch.app.core.threading.Timer", _ImmediateTimer):
                 with patch.object(bot, "_run_direct_work", return_value="Done."):
                     bot._run_task_job(job)
             events = load_evolve_events(root, task_id=job.id)
@@ -3399,8 +3399,8 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual(events[-1].event_actor, "human")
         self.assertEqual(candidate.status, "running")
 
-    @patch("enoch.application.ensure_long_term_memory")
-    @patch("enoch.application.log_conversation_turn")
+    @patch("enoch.app.core.ensure_long_term_memory")
+    @patch("enoch.app.core.log_conversation_turn")
     def test_task_worker_does_not_rerun_task_with_recorded_pr(
         self,
         log_conversation_turn: MagicMock,
@@ -3473,7 +3473,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("Enoch opened a pull request.\nPR URL: https://github.com/our-ark/enoch/pull/21", message)
         self.assertNotIn("Enoch committed this change. Branch:", message)
 
-    @patch("enoch.application.ensure_long_term_memory")
+    @patch("enoch.app.core.ensure_long_term_memory")
     def test_startup_completes_running_task_from_matching_direct_action_log(
         self,
         _update_memory: MagicMock,
@@ -3499,7 +3499,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual(status.history[-1].status, "completed")
         self.assertEqual(status.history[-1].result, result)
 
-    @patch("enoch.application.ensure_long_term_memory")
+    @patch("enoch.app.core.ensure_long_term_memory")
     def test_startup_fails_running_task_from_matching_failure_log(
         self,
         _update_memory: MagicMock,
@@ -3524,15 +3524,15 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual(status.history[-1].status, "failed")
         self.assertEqual(status.history[-1].result, result)
 
-    @patch("enoch.application.create_pull_request")
-    @patch("enoch.application.push_current_branch")
-    @patch("enoch.application.switch_branch")
-    @patch("enoch.application.ensure_clean_worktree")
-    @patch("enoch.application.current_branch", return_value="agent/enoch-gary")
-    @patch("enoch.application.act_in_session")
-    @patch("enoch.application.respond")
-    @patch("enoch.application.ensure_long_term_memory")
-    @patch("enoch.application.log_conversation_turn")
+    @patch("enoch.app.core.create_pull_request")
+    @patch("enoch.app.core.push_current_branch")
+    @patch("enoch.app.core.switch_branch")
+    @patch("enoch.app.core.ensure_clean_worktree")
+    @patch("enoch.app.core.current_branch", return_value="agent/enoch-gary")
+    @patch("enoch.app.core.act_in_session")
+    @patch("enoch.app.core.respond")
+    @patch("enoch.app.core.ensure_long_term_memory")
+    @patch("enoch.app.core.log_conversation_turn")
     def test_task_publish_existing_branch_runs_as_job_action(
         self,
         log_conversation_turn: MagicMock,
@@ -3580,11 +3580,11 @@ class EnochTelegramTests(unittest.TestCase):
             assert job is not None
 
             with patch(
-                "enoch.application.prepare_existing_branch_worktree",
+                "enoch.app.core.prepare_existing_branch_worktree",
                 return_value=TaskWorktree(job.id, root, "enoch/existing", True),
             ):
                 with patch(
-                    "enoch.application.remove_task_worktree",
+                    "enoch.app.core.remove_task_worktree",
                     return_value="Removed task worktree.",
                 ):
                     bot._run_task_job(job)
@@ -3597,7 +3597,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("https://github.com/our-ark/enoch/pull/3", client.edited[-1][2])
         log_conversation_turn.assert_called()
 
-    @patch("enoch.application.skills_command", return_value="Lucy skills:")
+    @patch("enoch.app.core.skills_command", return_value="Lucy skills:")
     def test_skills_command_shows_declared_skills(self, skills_command: MagicMock) -> None:
         client = FakeTelegramClient(allowed_chat_id=42)
         bot = EnochApplication(load_identity(), ROOT, client)
@@ -3629,7 +3629,7 @@ class EnochTelegramTests(unittest.TestCase):
             self.assertIn("Mission: Build calm agent networks", client.sent[2][1])
             self.assertIn("Build calm agent networks", identity_text)
 
-    @patch("enoch.application.respond", return_value="Memory is managed internally now.")
+    @patch("enoch.app.core.respond", return_value="Memory is managed internally now.")
     def test_memory_command_is_not_user_facing(self, respond: MagicMock) -> None:
         client = FakeTelegramClient(allowed_chat_id=42)
         bot = EnochApplication(load_identity(), ROOT, client)
@@ -3639,7 +3639,7 @@ class EnochTelegramTests(unittest.TestCase):
         respond.assert_called_once()
         self.assertIn("Memory is managed internally now.", client.sent[0][1])
 
-    @patch("enoch.application.respond", return_value="Teaching is automatic now.")
+    @patch("enoch.app.core.respond", return_value="Teaching is automatic now.")
     def test_teach_command_is_not_user_facing(self, respond: MagicMock) -> None:
         client = FakeTelegramClient(allowed_chat_id=42)
         bot = EnochApplication(load_identity(), ROOT, client)
@@ -3650,9 +3650,9 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("Teaching is automatic now.", client.sent[0][1])
         self.assertNotIn("Input tokens:", client.sent[0][1])
 
-    @patch("enoch.application.record_peer_learning_observation")
-    @patch("enoch.application.learn_skill_prompt", return_value="learn prompt")
-    @patch("enoch.application.respond", return_value="This skill does not fit Enoch yet.")
+    @patch("enoch.app.core.record_peer_learning_observation")
+    @patch("enoch.app.core.learn_skill_prompt", return_value="learn prompt")
+    @patch("enoch.app.core.respond", return_value="This skill does not fit Enoch yet.")
     def test_learn_skill_uses_read_only_session(
         self,
         respond: MagicMock,
@@ -3702,7 +3702,7 @@ class EnochTelegramTests(unittest.TestCase):
             client = FakeTelegramClient(allowed_chat_id=42)
             bot = EnochApplication(load_identity(), root, client)
 
-            with patch("enoch.application.threading.Timer", _ImmediateTimer):
+            with patch("enoch.app.core.threading.Timer", _ImmediateTimer):
                 with patch.object(bot, "_run_direct_work", return_value="Done."):
                     reply = bot._run_tracked_inline_work(
                         42,
@@ -3720,7 +3720,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual(events[-1].event_actor, "system")
         self.assertEqual(events[-1].trigger, "task-timeout")
 
-    @patch("enoch.application.model_summary", return_value="AI model: gpt-5-codex")
+    @patch("enoch.app.core.model_summary", return_value="AI model: gpt-5-codex")
     def test_self_reports_identity_without_runtime_status(self, model_summary: MagicMock) -> None:
         client = FakeTelegramClient(allowed_chat_id=42)
         bot = EnochApplication(load_identity(), ROOT, client)
@@ -3737,7 +3737,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertNotIn("Local state:", client.sent[0][1])
         self.assertNotIn("AI model:", client.sent[0][1])
 
-    @patch("enoch.application.model_summary", return_value="AI model: gpt-5-codex")
+    @patch("enoch.app.core.model_summary", return_value="AI model: gpt-5-codex")
     def test_status_reports_runtime_state_and_chat_lock(self, model_summary: MagicMock) -> None:
         client = FakeTelegramClient(allowed_chat_id=42)
         bot = EnochApplication(load_identity(), ROOT, client)
@@ -3755,7 +3755,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertNotIn("Mission:", client.sent[0][1])
         self.assertNotIn("current evolution", client.sent[0][1])
 
-    @patch("enoch.application.model_summary", return_value="AI model: gpt-5-codex")
+    @patch("enoch.app.core.model_summary", return_value="AI model: gpt-5-codex")
     def test_self_uses_lineage_parent_before_identity_ancestor(self, model_summary: MagicMock) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
@@ -3784,7 +3784,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("Configure the Telegram provider", client.sent[0][1])
         self.assertIn("restart Enoch", client.sent[0][1])
 
-    @patch("enoch.application.respond", return_value="Thinking config is managed locally.")
+    @patch("enoch.app.core.respond", return_value="Thinking config is managed locally.")
     def test_thinking_is_no_longer_a_telegram_command(self, respond: MagicMock) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
@@ -3810,7 +3810,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("Ancestor commands:", client.sent[0][1])
         self.assertIn("/inherit", client.sent[0][1])
 
-    @patch("enoch.application.resolve_lineage")
+    @patch("enoch.app.core.resolve_lineage")
     def test_ancestors_reports_resolution_warnings(self, resolve_lineage: MagicMock) -> None:
         resolve_lineage.return_value = LineageResolution(
             ancestors=(AncestorLink(name="Enoch", repo="our-ark/enoch", branch="main", depth=1),),
@@ -3828,7 +3828,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("private repo", client.sent[0][1])
         self.assertIn("Ancestor commands:", client.sent[0][1])
 
-    @patch("enoch.application.inherit_command", return_value="Direct parent inheritance checked.\nour-ark/enoch#32")
+    @patch("enoch.app.core.inherit_command", return_value="Direct parent inheritance checked.\nour-ark/enoch#32")
     def test_inherit_uses_shared_command(self, inherit_command: MagicMock) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
@@ -3958,7 +3958,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("Worktree status: unknown", result)
         self.assertIn("not a git repository", result)
 
-    @patch("enoch.application.run_immune_system")
+    @patch("enoch.app.core.run_immune_system")
     def test_doctor_runs_health_checks(self, run_immune_system: MagicMock) -> None:
         run_immune_system.return_value = MagicMock(
             passed=True,
@@ -3974,8 +3974,8 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("Doctor passed.", client.sent[0][1])
         self.assertIn("All tests passed.", client.sent[0][1])
 
-    @patch("enoch.application._schedule_daemon_restart")
-    @patch("enoch.application.update_from_main")
+    @patch("enoch.app.core._schedule_daemon_restart")
+    @patch("enoch.app.core.update_from_main")
     def test_update_uses_shared_updater_and_restarts_when_safe(
         self,
         update_from_main: MagicMock,
@@ -3994,8 +3994,8 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("Enoch pulled latest main and doctor passed.", client.sent[0][1])
         self.assertIn("Restarting now.", client.sent[0][1])
 
-    @patch("enoch.application._schedule_daemon_restart")
-    @patch("enoch.application.update_from_main")
+    @patch("enoch.app.core._schedule_daemon_restart")
+    @patch("enoch.app.core.update_from_main")
     def test_update_does_not_restart_when_shared_result_does_not_request_it(
         self,
         update_from_main: MagicMock,
@@ -4013,7 +4013,7 @@ class EnochTelegramTests(unittest.TestCase):
         schedule_restart.assert_not_called()
         self.assertIn("Enoch is already up to date.", client.sent[0][1])
 
-    @patch("enoch.application.update_from_main")
+    @patch("enoch.app.core.update_from_main")
     def test_update_requires_locked_chat(self, update_from_main: MagicMock) -> None:
         client = FakeTelegramClient(allowed_chat_id=None)
         bot = EnochApplication(load_identity(), ROOT, client)
@@ -4023,7 +4023,7 @@ class EnochTelegramTests(unittest.TestCase):
         update_from_main.assert_not_called()
         self.assertIn("locked to one conversation", client.sent[0][1])
 
-    @patch("enoch.application._schedule_daemon_restart")
+    @patch("enoch.app.core._schedule_daemon_restart")
     def test_restart_schedules_daemon_restart_after_reply(self, schedule_restart: MagicMock) -> None:
         client = FakeTelegramClient(allowed_chat_id=42)
         bot = EnochApplication(load_identity(), ROOT, client)
@@ -4033,7 +4033,7 @@ class EnochTelegramTests(unittest.TestCase):
         schedule_restart.assert_called_once_with(ROOT)
         self.assertIn("Enoch is restarting.", client.sent[0][1])
 
-    @patch("enoch.application._schedule_daemon_restart")
+    @patch("enoch.app.core._schedule_daemon_restart")
     def test_restart_requires_locked_chat(self, schedule_restart: MagicMock) -> None:
         client = FakeTelegramClient(allowed_chat_id=None)
         bot = EnochApplication(load_identity(), ROOT, client)
@@ -4043,7 +4043,7 @@ class EnochTelegramTests(unittest.TestCase):
         schedule_restart.assert_not_called()
         self.assertIn("locked to one conversation", client.sent[0][1])
 
-    @patch("enoch.application.respond", return_value="Let's think through reminders first.")
+    @patch("enoch.app.core.respond", return_value="Let's think through reminders first.")
     def test_natural_feature_request_uses_read_only_wrapper(self, respond: MagicMock) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
@@ -4060,10 +4060,10 @@ class EnochTelegramTests(unittest.TestCase):
         self.sync_session_activity.assert_not_called()
         self.assertIn("Let's think through reminders first.", client.sent[0][1])
 
-    @patch("enoch.application.ensure_long_term_memory")
-    @patch("enoch.application.log_conversation_turn")
-    @patch("enoch.application.respond")
-    @patch("enoch.application.act_in_session")
+    @patch("enoch.app.core.ensure_long_term_memory")
+    @patch("enoch.app.core.log_conversation_turn")
+    @patch("enoch.app.core.respond")
+    @patch("enoch.app.core.act_in_session")
     def test_natural_edit_request_does_not_auto_run_work(
         self,
         act_in_session: MagicMock,
@@ -4090,10 +4090,10 @@ class EnochTelegramTests(unittest.TestCase):
         act_in_session.assert_not_called()
         self.sync_session_activity.assert_not_called()
 
-    @patch("enoch.application.ensure_long_term_memory")
-    @patch("enoch.application.log_conversation_turn")
-    @patch("enoch.application.respond", return_value="I can talk that through first.")
-    @patch("enoch.application.prepare_local_publish")
+    @patch("enoch.app.core.ensure_long_term_memory")
+    @patch("enoch.app.core.log_conversation_turn")
+    @patch("enoch.app.core.respond", return_value="I can talk that through first.")
+    @patch("enoch.app.core.prepare_local_publish")
     def test_natural_message_without_marker_does_not_publish_pr(
         self,
         prepare_local_publish: MagicMock,
@@ -4112,15 +4112,15 @@ class EnochTelegramTests(unittest.TestCase):
         prepare_local_publish.assert_not_called()
         self.assertIn("I can talk that through first.", client.sent[0][1])
 
-    @patch("enoch.application.create_pull_request")
-    @patch("enoch.application.push_current_branch")
-    @patch("enoch.application.switch_branch")
-    @patch("enoch.application.ensure_clean_worktree")
-    @patch("enoch.application.current_branch", return_value="agent/enoch-gary")
-    @patch("enoch.application.act_in_session")
-    @patch("enoch.application.respond")
-    @patch("enoch.application.ensure_long_term_memory")
-    @patch("enoch.application.log_conversation_turn")
+    @patch("enoch.app.core.create_pull_request")
+    @patch("enoch.app.core.push_current_branch")
+    @patch("enoch.app.core.switch_branch")
+    @patch("enoch.app.core.ensure_clean_worktree")
+    @patch("enoch.app.core.current_branch", return_value="agent/enoch-gary")
+    @patch("enoch.app.core.act_in_session")
+    @patch("enoch.app.core.respond")
+    @patch("enoch.app.core.ensure_long_term_memory")
+    @patch("enoch.app.core.log_conversation_turn")
     def test_do_publish_existing_branch_runs_as_job_action(
         self,
         _log_conversation_turn: MagicMock,
@@ -4161,11 +4161,11 @@ class EnochTelegramTests(unittest.TestCase):
 
             started, start_worker = self._capture_direct_work_worker(bot)
             with patch(
-                "enoch.application.prepare_existing_branch_worktree",
+                "enoch.app.core.prepare_existing_branch_worktree",
                 return_value=TaskWorktree(1, root, "enoch/existing", True),
             ):
                 with patch(
-                    "enoch.application.remove_task_worktree",
+                    "enoch.app.core.remove_task_worktree",
                     return_value="Removed task worktree.",
                 ):
                     with start_worker:
@@ -4190,22 +4190,22 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("Status: completed", client.edited[-1][2])
         self.assertIn("https://github.com/our-ark/enoch/pull/3", client.edited[-1][2])
 
-    @patch("enoch.application.create_pull_request")
-    @patch("enoch.application.push_current_branch")
-    @patch("enoch.application.prepare_local_publish")
-    @patch("enoch.application.run_immune_system")
-    @patch("enoch.application.delete_branch")
-    @patch("enoch.application.switch_branch")
-    @patch("enoch.application._task_branch_base", return_value="origin/main")
-    @patch("enoch.application.ensure_clean_worktree")
-    @patch("enoch.application.current_branch", side_effect=["main", "enoch/readme", "enoch/readme"])
-    @patch("enoch.application.changed_files", return_value=["README.md"])
-    @patch("enoch.application._worktree_snapshot", side_effect=["clean", "changed"])
-    @patch("enoch.application.act_in_session", return_value="Updated README.")
-    @patch("enoch.application.respond")
-    @patch("enoch.application.ensure_long_term_memory")
-    @patch("enoch.application.log_conversation_turn")
-    @patch("enoch.application.time.time", return_value=789)
+    @patch("enoch.app.core.create_pull_request")
+    @patch("enoch.app.core.push_current_branch")
+    @patch("enoch.app.core.prepare_local_publish")
+    @patch("enoch.app.core.run_immune_system")
+    @patch("enoch.app.core.delete_branch")
+    @patch("enoch.app.core.switch_branch")
+    @patch("enoch.app.core._task_branch_base", return_value="origin/main")
+    @patch("enoch.app.core.ensure_clean_worktree")
+    @patch("enoch.app.core.current_branch", side_effect=["main", "enoch/readme", "enoch/readme"])
+    @patch("enoch.app.core.changed_files", return_value=["README.md"])
+    @patch("enoch.app.core._worktree_snapshot", side_effect=["clean", "changed"])
+    @patch("enoch.app.core.act_in_session", return_value="Updated README.")
+    @patch("enoch.app.core.respond")
+    @patch("enoch.app.core.ensure_long_term_memory")
+    @patch("enoch.app.core.log_conversation_turn")
+    @patch("enoch.app.core.time.time", return_value=789)
     def test_do_runs_direct_work_as_job(
         self,
         _time: MagicMock,
@@ -4260,11 +4260,11 @@ class EnochTelegramTests(unittest.TestCase):
 
             started, start_worker = self._capture_direct_work_worker(bot)
             with patch(
-                "enoch.application.prepare_task_worktree",
+                "enoch.app.core.prepare_task_worktree",
                 return_value=TaskWorktree(1, root, "enoch/readme", True),
             ) as prepare_task_worktree:
                 with patch(
-                    "enoch.application.remove_task_worktree",
+                    "enoch.app.core.remove_task_worktree",
                     return_value="Removed task #1 worktree.",
                 ):
                     with start_worker:
@@ -4298,8 +4298,8 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual(status.history[-1].context, "Use the earlier README scope decision.")
         self.assertIn("https://github.com/our-ark/enoch/pull/2", status.history[-1].result)
 
-    @patch("enoch.application.ensure_long_term_memory")
-    @patch("enoch.application.log_conversation_turn")
+    @patch("enoch.app.core.ensure_long_term_memory")
+    @patch("enoch.app.core.log_conversation_turn")
     def test_do_starts_worker_and_keeps_telegram_responsive(
         self,
         _log_conversation_turn: MagicMock,
@@ -4325,8 +4325,8 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("Tasks:", client.sent[-1][1])
         self.assertIn("- running: #1 long edit", client.sent[-1][1])
 
-    @patch("enoch.application.ensure_long_term_memory")
-    @patch("enoch.application.log_conversation_turn")
+    @patch("enoch.app.core.ensure_long_term_memory")
+    @patch("enoch.app.core.log_conversation_turn")
     def test_do_asks_for_clarification_before_running(
         self,
         _log_conversation_turn: MagicMock,
@@ -4349,8 +4349,8 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual(status.history, ())
         self.assertIn("Which change should Enoch make?", client.sent[0][1])
 
-    @patch("enoch.application.ensure_long_term_memory")
-    @patch("enoch.application.log_conversation_turn")
+    @patch("enoch.app.core.ensure_long_term_memory")
+    @patch("enoch.app.core.log_conversation_turn")
     def test_do_marks_work_failure_status_failed(
         self,
         _log_conversation_turn: MagicMock,
@@ -4381,8 +4381,8 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual(status.history[-1].status, "failed")
         self.assertIn("usage limit", status.history[-1].result)
 
-    @patch("enoch.application.ensure_long_term_memory")
-    @patch("enoch.application.log_conversation_turn")
+    @patch("enoch.app.core.ensure_long_term_memory")
+    @patch("enoch.app.core.log_conversation_turn")
     def test_do_command_includes_replied_message_context(
         self,
         _log_conversation_turn: MagicMock,
@@ -4412,8 +4412,8 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("Context from replied Telegram message:", request)
         self.assertIn("Original bug report details.", request)
 
-    @patch("enoch.application.ensure_long_term_memory")
-    @patch("enoch.application.log_conversation_turn")
+    @patch("enoch.app.core.ensure_long_term_memory")
+    @patch("enoch.app.core.log_conversation_turn")
     def test_do_uses_new_action_session_for_each_direct_task(
         self,
         _log_conversation_turn: MagicMock,
@@ -4440,8 +4440,8 @@ class EnochTelegramTests(unittest.TestCase):
             ["telegram:42:do:1", "telegram:42:do:2"],
         )
 
-    @patch("enoch.application.ensure_long_term_memory")
-    @patch("enoch.application.log_conversation_turn")
+    @patch("enoch.app.core.ensure_long_term_memory")
+    @patch("enoch.app.core.log_conversation_turn")
     def test_do_queues_next_when_task_is_running(
         self,
         _log_conversation_turn: MagicMock,
@@ -4472,8 +4472,8 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("Status: queued", client.sent[-1][1])
         self.assertIn("Queued next after running task #1.", client.sent[-1][1])
 
-    @patch("enoch.application.ensure_long_term_memory")
-    @patch("enoch.application.log_conversation_turn")
+    @patch("enoch.app.core.ensure_long_term_memory")
+    @patch("enoch.app.core.log_conversation_turn")
     def test_finished_do_checks_for_queued_work(
         self,
         _log_conversation_turn: MagicMock,
@@ -4495,8 +4495,8 @@ class EnochTelegramTests(unittest.TestCase):
 
         maybe_start.assert_called_once()
 
-    @patch("enoch.application.ensure_long_term_memory")
-    @patch("enoch.application.log_conversation_turn")
+    @patch("enoch.app.core.ensure_long_term_memory")
+    @patch("enoch.app.core.log_conversation_turn")
     def test_stale_worker_does_not_announce_completed_after_authoritative_failure(
         self,
         _log_conversation_turn: MagicMock,
@@ -4550,13 +4550,13 @@ class EnochTelegramTests(unittest.TestCase):
         direct_worker.join.assert_called_once()
         queued_worker.join.assert_called_once()
 
-    @patch("enoch.application.create_pull_request")
-    @patch("enoch.application.push_current_branch")
-    @patch("enoch.application.prepare_local_publish")
-    @patch("enoch.application.delete_branch")
-    @patch("enoch.application.switch_branch")
-    @patch("enoch.application.ensure_clean_worktree")
-    @patch("enoch.application.current_branch", return_value="enoch/readme")
+    @patch("enoch.app.core.create_pull_request")
+    @patch("enoch.app.core.push_current_branch")
+    @patch("enoch.app.core.prepare_local_publish")
+    @patch("enoch.app.core.delete_branch")
+    @patch("enoch.app.core.switch_branch")
+    @patch("enoch.app.core.ensure_clean_worktree")
+    @patch("enoch.app.core.current_branch", return_value="enoch/readme")
     def test_task_publish_records_pr_url_before_worker_completion(
         self,
         _current_branch: MagicMock,
@@ -4618,9 +4618,9 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("https://github.com/our-ark/enoch/pull/2", status.running.result)
         self.assertIn("Enoch opened a pull request.", status.running.result)
 
-    @patch("enoch.application.close_pull_request")
-    @patch("enoch.application.ensure_long_term_memory")
-    @patch("enoch.application.log_conversation_turn")
+    @patch("enoch.app.core.close_pull_request")
+    @patch("enoch.app.core.ensure_long_term_memory")
+    @patch("enoch.app.core.log_conversation_turn")
     def test_do_closes_duplicate_pull_requests(
         self,
         _log_conversation_turn: MagicMock,
@@ -4713,8 +4713,8 @@ class EnochTelegramTests(unittest.TestCase):
             self.assertEqual(client.offsets, [None, 11])
             self.assertEqual(len(client.sent), 1)
 
-    @patch("enoch.application.ensure_long_term_memory")
-    @patch("enoch.application.log_conversation_turn")
+    @patch("enoch.app.core.ensure_long_term_memory")
+    @patch("enoch.app.core.log_conversation_turn")
     def test_final_send_failure_still_records_and_advances_offset(
         self,
         log_conversation_turn: MagicMock,
@@ -4731,8 +4731,8 @@ class EnochTelegramTests(unittest.TestCase):
         log_conversation_turn.assert_called_once()
         self.assertIn("Telegram send failed", log_conversation_turn.call_args.kwargs["reply"])
 
-    @patch("enoch.application.ensure_long_term_memory")
-    @patch("enoch.application.log_conversation_turn")
+    @patch("enoch.app.core.ensure_long_term_memory")
+    @patch("enoch.app.core.log_conversation_turn")
     def test_read_ack_failure_is_logged_without_blocking_reply(
         self,
         _log_conversation_turn: MagicMock,
@@ -4765,7 +4765,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual(client.sent, [])
 
     @patch("builtins.print")
-    @patch("enoch.application.time.sleep")
+    @patch("enoch.app.core.time.sleep")
     def test_run_forever_continues_after_polling_error(
         self,
         sleep: MagicMock,
@@ -4780,7 +4780,7 @@ class EnochTelegramTests(unittest.TestCase):
 
         sleep.assert_called_once_with(5)
 
-    @patch("enoch.update_tools.run_git")
+    @patch("enoch.operations.update_tools.run_git")
     def test_ensure_local_main_current_pulls_stale_main(self, run_git: MagicMock) -> None:
         run_git.side_effect = [
             MagicMock(returncode=0, stdout="", stderr=""),
@@ -4794,8 +4794,8 @@ class EnochTelegramTests(unittest.TestCase):
 
         run_git.assert_any_call(["pull", "--ff-only", "origin", "main"], ROOT)
 
-    @patch("enoch.application.ensure_long_term_memory")
-    @patch("enoch.application.log_system_event", side_effect=OSError("disk full"))
+    @patch("enoch.app.core.ensure_long_term_memory")
+    @patch("enoch.app.core.log_system_event", side_effect=OSError("disk full"))
     def test_direct_action_system_log_failure_does_not_abort_workflow(
         self,
         _log_system_event: MagicMock,
@@ -4805,10 +4805,10 @@ class EnochTelegramTests(unittest.TestCase):
 
         update_memory.assert_not_called()
 
-    @patch("enoch.application.ensure_long_term_memory")
-    @patch("enoch.application.log_conversation_turn")
-    @patch("enoch.application._schedule_daemon_restart")
-    @patch("enoch.application.update_from_main")
+    @patch("enoch.app.core.ensure_long_term_memory")
+    @patch("enoch.app.core.log_conversation_turn")
+    @patch("enoch.app.core._schedule_daemon_restart")
+    @patch("enoch.app.core.update_from_main")
     def test_restart_triggering_update_saves_offset_before_restart(
         self,
         update_from_main: MagicMock,

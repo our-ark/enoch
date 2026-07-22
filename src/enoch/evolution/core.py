@@ -9,20 +9,20 @@ from typing import Callable, Iterable
 
 from enoch.backlog import BacklogItem, backlog_status
 from enoch.automatic_learning import LearningArtifact, learning_index_path
-from enoch.brainstorming import BrainstormIdea, load_brainstorm_ideas
+from enoch.evolution.sources.brainstorming import BrainstormIdea, load_brainstorm_ideas
 from enoch.cron import CronJob, cron_status, format_cron_interval
-from enoch.experience import ExperienceRecord, load_experience_records
-from enoch.evolve_events import (
+from enoch.evolution.sources.experience import ExperienceRecord, load_experience_records
+from enoch.evolution.events import (
     latest_open_proposal_id,
     linked_proposal_id,
     record_evolve_event,
 )
-from enoch.feedback import FeedbackSignal, extract_feedback_signals
+from enoch.evolution.sources.feedback import FeedbackSignal, extract_feedback_signals
 from enoch.learn import PeerLearningObservation, load_peer_learning_observations
 from enoch.lineage.core import LineageCandidate, load_parent_inbox_candidates
 from enoch.memory.paths import atomic_write, clean_text, now as current_time
 from enoch.paths import enoch_home
-from enoch.task_queue import TaskJob, task_queue_status
+from enoch.tasks.queue import TaskJob, task_queue_status
 
 
 SCHEMA_VERSION = 1

@@ -162,7 +162,7 @@ def download_attachment(self, attachment, destination, *, max_bytes):
     ...
 ```
 
-The channel-neutral application lives in `src/enoch/application.py`. Telegram's
+The channel-neutral application lives in `src/enoch/app/`. Telegram's
 Bot API transport, Enoch config adapter, setup handler, and integration skill
 live in `libraries/telegram`. Core code receives only normalized `ChatEvent`
 values and does not import that package.

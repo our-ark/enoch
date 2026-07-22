@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from enoch.instance import instance_branch
-from enoch.task_worktree import prepare_task_worktree, remove_task_worktree
+from enoch.tasks.worktree import prepare_task_worktree, remove_task_worktree
 
 
 class EnochWorktreeLifecycleTests(unittest.TestCase):

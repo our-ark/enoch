@@ -7,9 +7,9 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from enoch.experience import experience_path, load_experience_records, record_task_experience
-from enoch.task_events import TASK_EVENT_TYPES, TASK_SOURCES, load_task_events, task_event_path
-from enoch.task_queue import (
+from enoch.evolution.sources.experience import experience_path, load_experience_records, record_task_experience
+from enoch.tasks.events import TASK_EVENT_TYPES, TASK_SOURCES, load_task_events, task_event_path
+from enoch.tasks.queue import (
     TaskJob,
     begin_next_task,
     complete_task,

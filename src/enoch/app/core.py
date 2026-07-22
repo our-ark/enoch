@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from collections import Counter
 from contextvars import ContextVar
-from dataclasses import dataclass, field, replace
+from dataclasses import replace
 import json
 import os
 from pathlib import Path
@@ -19,7 +18,6 @@ from enoch.backlog import (
     backlog_item,
     backlog_status,
     next_backlog_item,
-    normalize_priority,
     promote_backlog_item,
     remove_backlog_item,
     reprioritize_backlog_item,
@@ -33,7 +31,7 @@ from enoch.brain import (
     reset_token_usage,
     respond,
 )
-from enoch.brainstorming import generate_brainstorm_ideas
+from enoch.evolution.sources.brainstorming import generate_brainstorm_ideas
 from enoch.channel import (
     ChannelAttachmentError,
     begin_channel_lifecycle,
@@ -58,14 +56,12 @@ from enoch.cron import (
     parse_cron_interval,
     record_cron_task,
 )
-from enoch.evolve import (
+from enoch.evolution.core import (
     MODE_AUTO_EVOLVE,
     MODE_CO_EVOLVE,
     MODE_DISABLED,
     EvolveCandidate,
     EvolveProposal,
-    EvolveReport,
-    EvolveState,
     cancel_evolve_candidate_for_task,
     claim_due_evolve_schedule,
     collect_experience_candidates,
@@ -92,22 +88,18 @@ from enoch.evolve import (
     set_evolve_mode,
     set_evolve_theme,
 )
-from enoch.evolve_events import (
-    EVOLVE_SOURCES,
+from enoch.evolution.events import (
     EvolveEvent,
     close_open_proposals,
     latest_open_proposal_id,
-    load_evolve_events,
     record_evolve_event,
 )
-from enoch.evolve_lifecycle import (
+from enoch.evolution.lifecycle import (
     EvolveLifecycleError,
     finalize_promoted_evolve_adoptions,
     format_reconcile_result,
     reconcile_evolve_candidate,
 )
-from enoch.experience import ExperienceRecord, load_experience_records
-from enoch.feedback import FeedbackSignal, extract_feedback_signals
 from enoch.git_tools import (
     GitError,
     changed_files,
@@ -132,8 +124,6 @@ from enoch.providers.contracts import (
     EvolutionProvenance,
     LocalPublishResult,
     PullRequestCloseResult,
-    PullRequestMergeCandidate,
-    PullRequestMergeResult,
     PullRequestResult,
     RemotePublishResult,
 )
@@ -204,7 +194,7 @@ from enoch.runtime import (
     DEFAULT_BRANCH,
     WORKSPACE_WRITE_SANDBOX,
 )
-from enoch.task_queue import (
+from enoch.tasks.queue import (
     TaskJob,
     TaskRetryError,
     begin_direct_task,
@@ -230,7 +220,7 @@ from enoch.task_queue import (
     task_queue_status,
     task_worker_is_active,
 )
-from enoch.task_events import TASK_SOURCES
+from enoch.tasks.events import TASK_SOURCES
 from enoch.commands import (
     action_lock_message as _format_action_lock_message,
     config_command,
@@ -244,78 +234,72 @@ from enoch.commands import (
     skills_command,
     status_message,
 )
-from enoch.task_config import format_task_timeout, task_timeout_seconds
-from enoch.task_failures import (
+from enoch.tasks.config import format_task_timeout, task_timeout_seconds
+from enoch.tasks.failures import (
     TaskFailure,
     automatic_retry_delay_seconds,
     classify_task_failure,
 )
-from enoch.task_worktree import (
+from enoch.tasks.worktree import (
     TaskWorktree,
     prepare_existing_branch_worktree,
     prepare_task_worktree,
     remove_task_worktree,
 )
-from enoch.update_tools import (
+from enoch.operations.update_tools import (
     schedule_daemon_restart as _schedule_daemon_restart,
     task_branch_base as _task_branch_base,
 )
-from enoch.updater import update_from_main
-
-
-class ShutdownRequested(RuntimeError):
-    def __init__(self, reason: str) -> None:
-        super().__init__(reason)
-        self.reason = reason
-
-
-@dataclass
-class WorkStatusMessage:
-    chat_id: ConversationId
-    message_id: MessageId
-    request: str
-    started_at: float
-    task_id: int | None = None
-    status: str = "queued"
-    latest_update: str = "Queued."
-    prs: list[str] = field(default_factory=list)
-    context: str = ""
-
-
-@dataclass(frozen=True)
-class ForgeMaintenanceRequest:
-    close_numbers: tuple[int, ...]
-    keep_number: int | None = None
-
-
-@dataclass(frozen=True)
-class TaskContextSnapshot:
-    context: str = ""
-    source: str = ""
-    clarification: str = ""
-    error: str = ""
-    codex_unavailable_reason: str = ""
-
-
-@dataclass
-class TaskDeadline:
-    timeout_seconds: int
-    cancellation_event: threading.Event
-    expired: threading.Event = field(default_factory=threading.Event)
-    timer: threading.Timer | None = None
-
-    def start(self) -> None:
-        self.timer = threading.Timer(self.timeout_seconds, self._expire)
-        self.timer.daemon = True
-        self.timer.start()
-
-    def cancel(self) -> None:
-        if self.timer is not None:
-            self.timer.cancel()
-
-    def _expire(self) -> None:
-        self.expired.set()
-        self.cancellation_event.set()
+from enoch.operations.updater import update_from_main
+from enoch.app.models import (
+    ForgeMaintenanceRequest,
+    ShutdownRequested,
+    TaskContextSnapshot,
+    TaskDeadline,
+    WorkStatusMessage,
+)
+from enoch.app.parsing import (
+    backlog_item_id as _backlog_item_id,
+    backlog_priority_and_request as _backlog_priority_and_request,
+    backlog_priority_update as _backlog_priority_update,
+    cron_job_id as _cron_job_id,
+    existing_branch_publish_request as _existing_branch_publish_request,
+    forge_maintenance_request as _forge_maintenance_request,
+    parse_chat_command as _parse_chat_command,
+    task_cancel_id as _task_cancel_id,
+    task_resume_target as _task_resume_target,
+    task_retry_id as _task_retry_id,
+    unquote_schedule_text as _unquote_schedule_text,
+)
+from enoch.app.presentation import (
+    backlog_usage as _backlog_usage,
+    clip_activity_block as _clip_activity_block,
+    clip_activity_text as _clip_activity_text,
+    cron_usage as _cron_usage,
+    evolve_usage as _evolve_usage,
+    final_task_status_update as _final_task_status_update,
+    format_elapsed as _format_elapsed,
+    format_open_pull_requests as _format_open_pull_requests,
+    format_pull_request as _format_pull_request,
+    format_pull_request_merge_result as _format_pull_request_merge_result,
+    format_task_final_message as _format_task_final_message,
+    format_work_status_message as _format_work_status_message,
+)
+from enoch.app.reporting import (
+    _evolve_check_reason,
+    _evolve_skip_reason,
+    _format_backlog_report,
+    _format_cron_report,
+    _format_evolve_candidate,
+    _format_evolve_candidates,
+    _format_evolve_proposal,
+    _format_evolve_report,
+    _format_evolve_theme,
+    _format_experience_report,
+    _format_feedback_report,
+    _format_tasks_report,
+    _task_status_message,
+)
 
 
 TASK_CONTEXT_SOURCE_CHAT = "chat-snapshot"
@@ -3171,14 +3155,6 @@ def _find_lineage_adopt_candidate(candidate_id: str, root: Path):
     return find_parent_inbox_candidate(candidate_id, root)
 
 
-def _parse_chat_command(text: str) -> tuple[str, str]:
-    first, _separator, rest = text.strip().partition(" ")
-    if not first.startswith("/"):
-        return "", text.strip()
-    command = first.split("@", 1)[0].lower()
-    return command, rest.strip()
-
-
 def _allowed_conversation_id(client: object) -> ConversationId | None:
     if hasattr(client, "allowed_conversation_id"):
         return getattr(client, "allowed_conversation_id")
@@ -3191,84 +3167,6 @@ def _chat_provider_name(client: object) -> str:
     return name or "chat"
 
 
-def _format_pull_request_merge_result(result: PullRequestMergeResult) -> str:
-    commit = result.merge_commit or "reported by the forge"
-    return "\n".join(
-        [
-            f"Merged PR #{result.number}.",
-            f"URL: {result.url}",
-            f"Method: {result.method}",
-            f"Merge commit: {commit}",
-            f"Forge result: {result.message}",
-        ]
-    )
-
-
-def _format_open_pull_requests(
-    pull_requests: tuple[PullRequestMergeCandidate, ...],
-) -> str:
-    if not pull_requests:
-        return "Open pull requests: none."
-    lines = [f"Open pull requests ({len(pull_requests)}):"]
-    for pull_request in pull_requests:
-        lines.extend(
-            [
-                "",
-                f"#{pull_request.number} [{_pull_request_readiness(pull_request)}] "
-                f"{pull_request.title or 'Untitled pull request'}",
-                _pull_request_branch_line(pull_request),
-                pull_request.url,
-            ]
-        )
-    return "\n".join(lines)
-
-
-def _format_pull_request(pull_request: PullRequestMergeCandidate) -> str:
-    lines = [
-        f"Pull request #{pull_request.number}",
-        f"Title: {pull_request.title or 'Untitled pull request'}",
-        f"Status: {_pull_request_readiness(pull_request)}",
-        f"State: {pull_request.state.lower() or 'unknown'}",
-        (
-            "Merge: "
-            f"{pull_request.mergeable.lower() or 'unknown'} / "
-            f"{pull_request.merge_state_status.lower() or 'unknown'}"
-        ),
-        f"Branch: {_pull_request_branch_line(pull_request)}",
-    ]
-    if pull_request.author:
-        lines.append(f"Author: {pull_request.author}")
-    if pull_request.updated_at:
-        lines.append(f"Updated: {pull_request.updated_at}")
-    lines.append(f"URL: {pull_request.url}")
-    return "\n".join(lines)
-
-
-def _pull_request_readiness(pull_request: PullRequestMergeCandidate) -> str:
-    if pull_request.state == "MERGED" or pull_request.merged_at:
-        return "merged"
-    if pull_request.state == "CLOSED":
-        return "closed"
-    if pull_request.is_draft:
-        return "draft"
-    if pull_request.mergeable == "CONFLICTING":
-        return "conflicts"
-    if (
-        pull_request.mergeable == "MERGEABLE"
-        and pull_request.merge_state_status in {"CLEAN", "UNSTABLE"}
-    ):
-        return "ready"
-    if pull_request.merge_state_status in {"BLOCKED", "DIRTY", "BEHIND"}:
-        return "blocked"
-    return "checking"
-
-
-def _pull_request_branch_line(pull_request: PullRequestMergeCandidate) -> str:
-    base = pull_request.base_branch or "unknown"
-    head = pull_request.head_branch or "unknown"
-    return f"{base} <- {head}"
-
-
 def _action_sandbox(_root: Path) -> str:
     return ACTION_SANDBOX_FULL_ACCESS
 
@@ -3279,20 +3177,6 @@ def _sandbox_description(sandbox: str) -> str:
     if sandbox == ACTION_SANDBOX_FULL_ACCESS:
         return "working with full filesystem access"
     return "thinking in read-only mode"
-
-
-def _format_elapsed(elapsed_seconds: int) -> str:
-    if elapsed_seconds < 60:
-        return "<1 minute"
-    minutes = elapsed_seconds // 60
-    if minutes < 60:
-        return f"{minutes} minute" + ("" if minutes == 1 else "s")
-    hours, remaining_minutes = divmod(minutes, 60)
-    hour_text = f"{hours} hour" + ("" if hours == 1 else "s")
-    if remaining_minutes == 0:
-        return hour_text
-    minute_text = f"{remaining_minutes} minute" + ("" if remaining_minutes == 1 else "s")
-    return f"{hour_text} {minute_text}"
 
 
 def _worktree_snapshot(root: Path) -> str:
@@ -3603,594 +3487,50 @@ def _latest_direct_action_result_for_task(job: TaskJob, root: Path) -> str:
     return latest_result
 
 
-def _task_status_message(root: Path) -> str:
-    status = task_queue_status(root)
-    backlog = backlog_status(root)
-    cron = cron_status(root)
-    lines = ["Tasks:"]
-    if status.running is None:
-        lines.append("- running: none")
-    else:
-        lines.append(f"- running: #{status.running.id} {_clip_activity_text(status.running.text, limit=80)}")
-    lines.append(f"- queued: {status.pending_count}")
-    lines.append(f"- paused: {status.paused_count}")
-    lines.append(f"- backlog: {backlog.pending_count}")
-    lines.append(f"- cron: {cron.active_count}")
-    return "\n".join(lines)
 
 
-def _format_tasks_report(root: Path) -> str:
-    status = task_queue_status(root)
-    backlog = backlog_status(root)
-    cron = cron_status(root)
-    lines = ["Tasks:"]
-    if status.running is None:
-        lines.append("Running: none")
-    else:
-        lines.append(f"Running: {_format_task_list_item(status.running)}")
-
-    lines.append("")
-    lines.append("Queued:")
-    if status.pending:
-        lines.extend(f"- {_format_task_list_item(job)}" for job in status.pending)
-    else:
-        lines.append("- none")
-
-    lines.append("")
-    lines.append("Paused:")
-    if status.paused:
-        lines.extend(f"- {_format_task_list_item(job)}" for job in status.paused)
-    else:
-        lines.append("- none")
-
-    lines.append("")
-    lines.append("Recent history:")
-    if status.history:
-        lines.extend(f"- {_format_task_list_item(job)}" for job in status.history[-10:])
-    else:
-        lines.append("- none")
-    lines.append("")
-    lines.append(f"Backlog: {backlog.pending_count}")
-    lines.append(f"Cron: {cron.active_count}")
-    return "\n".join(lines)
 
 
-def _format_task_list_item(job: TaskJob) -> str:
-    item = f"#{job.id} [{job.status}] {_clip_activity_text(job.text, limit=120)}"
-    details = []
-    if job.parent_task_id is not None:
-        details.append(f"retry of #{job.parent_task_id}")
-    if job.pr_urls:
-        label = "PR" if len(job.pr_urls) == 1 else "PRs"
-        details.append(f"{label}: {', '.join(job.pr_urls)}")
-    return f"{item} ({'; '.join(details)})" if details else item
 
 
-def _format_backlog_report(root: Path) -> str:
-    status = backlog_status(root)
-    lines = ["Backlog:"]
-    lines.append("")
-    lines.append("Pending:")
-    if status.pending:
-        lines.extend(f"- {_format_backlog_list_item(item)}" for item in status.pending)
-    else:
-        lines.append("- none")
-
-    lines.append("")
-    lines.append("Recent history:")
-    if status.history:
-        lines.extend(f"- {_format_backlog_list_item(item)}" for item in status.history[-10:])
-    else:
-        lines.append("- none")
-    return "\n".join(lines)
 
 
-def _format_backlog_list_item(item: BacklogItem) -> str:
-    label = f"#{item.id} [{item.priority} {item.status}] {_clip_activity_text(item.text, limit=120)}"
-    if item.promoted_task_id is None:
-        return label
-    return f"{label} (task #{item.promoted_task_id})"
 
 
-def _format_cron_report(root: Path) -> str:
-    status = cron_status(root)
-    lines = ["Cron:"]
-    lines.append("")
-    lines.append("Active:")
-    if status.active:
-        lines.extend(f"- {_format_cron_list_item(job)}" for job in status.active)
-    else:
-        lines.append("- none")
-
-    lines.append("")
-    lines.append("Recent history:")
-    if status.history:
-        lines.extend(f"- {_format_cron_list_item(job)}" for job in status.history[-10:])
-    else:
-        lines.append("- none")
-    return "\n".join(lines)
 
 
-def _format_cron_list_item(job: CronJob) -> str:
-    label = (
-        f"#{job.id} [{job.status}] every {format_cron_interval(job.interval_seconds)} "
-        f"next {job.next_run_at} {_clip_activity_text(job.text, limit=100)}"
-    )
-    if job.last_task_id is None:
-        return label
-    return f"{label} (last task #{job.last_task_id})"
 
 
-def _format_feedback_report(root: Path) -> str:
-    signals = extract_feedback_signals(root)
-    lines = ["Feedback:"]
-    if not signals:
-        lines.append("- none")
-        return "\n".join(lines)
-    for signal in signals[:20]:
-        lines.extend(_format_feedback_signal(signal))
-    if len(signals) > 20:
-        lines.append(f"- {len(signals) - 20} more")
-    return "\n".join(lines)
 
 
-def _format_feedback_signal(signal: FeedbackSignal) -> list[str]:
-    lines = [
-        (
-            f"- {signal.id} [{signal.kind} x{signal.occurrences}] "
-            f"{_clip_activity_text(signal.message, limit=140)}"
-        )
-    ]
-    if signal.last_seen_at:
-        lines.append(f"  Last seen: {signal.last_seen_at}")
-    return lines
 
 
-def _format_experience_report(root: Path) -> str:
-    state = load_evolve_state(root)
-    records = load_experience_records(root, limit=10_000)
-    evolve_events = load_evolve_events(root, limit=10_000)
-    candidates = rank_evolve_candidates(collect_experience_candidates(root), theme=state.theme)
-    lines = ["Experience:", "", "Task statistics:"]
-    if records:
-        outcomes = Counter(record.outcome for record in records)
-        sources = Counter({source: 0 for source in TASK_SOURCES})
-        sources.update(record.source for record in records)
-        initiators = Counter({"human": 0, "agent": 0})
-        initiators.update(record.initiated_by for record in records)
-        regressions = [record for record in records if record.regressed]
-        completed_tasks = sum(
-            record.outcome in {"completed", "regressed", "reverted", "forward-fixed"}
-            for record in records
-        )
-        regression_resolutions = Counter(
-            {"unresolved": 0, "reverted": 0, "forward-fixed": 0}
-        )
-        regression_resolutions.update(
-            record.regression_resolution or "unresolved"
-            for record in regressions
-        )
-        regression_sources = Counter({source: 0 for source in TASK_SOURCES})
-        regression_sources.update(record.source for record in regressions)
-        regression_initiators = Counter({"human": 0, "agent": 0})
-        regression_initiators.update(record.initiated_by for record in regressions)
-        regression_rate = (
-            f"{len(regressions) / completed_tasks:.1%}" if completed_tasks else "0.0%"
-        )
-        lines.extend(
-            [
-                f"- Total tasks: {len(records)}",
-                f"- Outcomes: {_format_counter(outcomes)}",
-                (
-                    f"- Regressions: {len(regressions)}/{completed_tasks} completed tasks "
-                    f"({regression_rate})"
-                ),
-                f"- Regression resolution: {_format_counter(regression_resolutions)}",
-                f"- Regression sources: {_format_counter(regression_sources)}",
-                f"- Regression initiated by: {_format_counter(regression_initiators)}",
-                f"- Sources: {_format_counter(sources)}",
-                f"- Initiated by: {_format_counter(initiators)}",
-            ]
-        )
-    else:
-        lines.append("- none")
-    lines.extend(["", "Evolution statistics:"])
-    if evolve_events:
-        proposals = {
-            event.proposal_id: event
-            for event in evolve_events
-            if event.event == "proposed" and event.proposal_id
-        }
-        proposal_dispositions = {
-            event.proposal_id: event.event
-            for event in evolve_events
-            if event.proposal_id
-            and event.event in {"selected", "removed", "no-action"}
-        }
-        disposition_counts = Counter(
-            {
-                "selected": 0,
-                "removed": 0,
-                "no-action": 0,
-                "pending": 0,
-                "untracked": 0,
-            }
-        )
-        for proposal_id in proposals:
-            if proposal_id.startswith("legacy-proposal-"):
-                disposition_counts["untracked"] += 1
-            else:
-                disposition_counts[
-                    proposal_dispositions.get(proposal_id, "pending")
-                ] += 1
-        tracked_proposals = len(proposals) - disposition_counts["untracked"]
-        accepted_proposals = disposition_counts["selected"]
-        acceptance_rate = (
-            f"{accepted_proposals / tracked_proposals:.1%}"
-            if tracked_proposals
-            else "0.0%"
-        )
-        proposal_sources = Counter({source: 0 for source in EVOLVE_SOURCES})
-        proposal_sources.update(event.source for event in proposals.values())
-        proposal_triggers = Counter(event.trigger or "unknown" for event in proposals.values())
-        selected_outcomes = Counter(
-            {
-                "pending": 0,
-                "completed": 0,
-                "failed": 0,
-                "cancelled": 0,
-                "regressed": 0,
-                "reverted": 0,
-                "forward-fixed": 0,
-                "queue-failed": 0,
-            }
-        )
-        for proposal_id, disposition in proposal_dispositions.items():
-            if disposition != "selected":
-                continue
-            proposal_events = [
-                event
-                for event in evolve_events
-                if event.proposal_id == proposal_id
-            ]
-            outcome = next(
-                (
-                    event.event
-                    for event in reversed(proposal_events)
-                    if event.event
-                    in {
-                        "completed",
-                        "failed",
-                        "cancelled",
-                        "regressed",
-                        "reverted",
-                        "forward-fixed",
-                    }
-                ),
-                "pending",
-            )
-            if outcome == "pending" and any(
-                event.event == "skipped" and event.reason == "queue-failed"
-                for event in proposal_events
-            ):
-                outcome = "queue-failed"
-            selected_outcomes[outcome] += 1
-        queued = [event for event in evolve_events if event.event == "queued"]
-        outcomes = Counter(
-            event.event
-            for event in evolve_events
-            if event.event
-            in {
-                "completed",
-                "failed",
-                "cancelled",
-                "regressed",
-                "reverted",
-                "forward-fixed",
-            }
-        )
-        signal_actors = Counter({"human": 0, "agent": 0, "system": 0})
-        signal_actors.update(event.signal_actor for event in queued if event.signal_actor)
-        candidate_actors = Counter({"human": 0, "agent": 0, "system": 0})
-        candidate_actors.update(event.candidate_actor for event in queued if event.candidate_actor)
-        approval_actors = Counter({"human": 0, "agent": 0, "system": 0})
-        approval_actors.update(event.approval_actor for event in queued if event.approval_actor)
-        autonomous = sum(
-            event.event_actor == "system" and event.trigger == "evolve-scheduler"
-            for event in queued
-        )
-        human_approved = sum(
-            event.event_actor == "human" and event.trigger == "/evolve approve"
-            for event in queued
-        )
-        lifecycle = Counter({"promoted": 0, "adopted": 0})
-        lifecycle.update(
-            event.event
-            for event in evolve_events
-            if event.event in {"promoted", "adopted"}
-        )
-        lines.extend(
-            [
-                f"- Checks: {sum(event.event == 'checked' for event in evolve_events)}",
-                f"- Proposed: {len(proposals)}",
-                f"- Proposal disposition: {_format_counter(disposition_counts)}",
-                (
-                    f"- Proposal acceptance: {accepted_proposals}/{tracked_proposals} "
-                    f"({acceptance_rate})"
-                ),
-                f"- Proposal sources: {_format_counter(proposal_sources)}",
-                f"- Proposal triggers: {_format_counter(proposal_triggers)}",
-                f"- Selected proposal outcomes: {_format_counter(selected_outcomes)}",
-                (
-                    f"- Queued: {len(queued)} "
-                    f"(autonomous {autonomous}, human-approved {human_approved})"
-                ),
-                f"- Queued signal actors: {_format_counter(signal_actors)}",
-                f"- Queued candidate actors: {_format_counter(candidate_actors)}",
-                f"- Queued approval actors: {_format_counter(approval_actors)}",
-                f"- Outcomes: {_format_counter(outcomes)}",
-                f"- Governed lifecycle: {_format_counter(lifecycle)}",
-            ]
-        )
-    else:
-        lines.append("- none")
-    lines.extend(["", "Recent tasks:"])
-    if records:
-        for record in records[:10]:
-            lines.extend(_format_experience_record(record))
-    else:
-        lines.append("- none")
-    lines.extend(["", "Recent evolution events:"])
-    if evolve_events:
-        for event in evolve_events[-10:][::-1]:
-            lines.extend(_format_evolve_event(event))
-    else:
-        lines.append("- none")
-    lines.extend(["", "Current evolve candidates:"])
-    if candidates:
-        for candidate in candidates[:10]:
-            lines.extend(_format_evolve_candidate(candidate))
-        if len(candidates) > 10:
-            lines.append(f"- {len(candidates) - 10} more")
-    else:
-        lines.append("- none")
-    return "\n".join(lines)
 
 
-def _format_experience_record(record: ExperienceRecord) -> list[str]:
-    lines = [
-        f"- task-{record.task_id} [{record.outcome}] {_clip_activity_text(record.request, limit=120)}",
-    ]
-    details = [
-        f"source {record.source}",
-        f"initiated by {record.initiated_by}",
-        f"trigger {record.command or 'unknown'}",
-    ]
-    if record.context_source:
-        details.append(f"context {record.context_source}")
-    if record.candidate_id:
-        details.extend(
-            [
-                f"evidence {record.evidence_source or record.source}",
-                f"signal by {record.signal_actor or 'unknown'}",
-                f"candidate by {record.candidate_actor or 'unknown'}",
-                f"approved by {record.approval_actor or 'unknown'}",
-            ]
-        )
-    if record.parent_candidate_id:
-        details.append(f"parent candidate {record.parent_candidate_id}")
-    if record.source_task_id is not None:
-        details.append(f"source task-{record.source_task_id}")
-    if record.changed_files:
-        details.append(f"{len(record.changed_files)} changed file(s)")
-    if record.pr_urls:
-        details.append(f"{len(record.pr_urls)} PR(s)")
-    if record.regressed:
-        resolution = record.regression_resolution or "unresolved"
-        regression_detail = f"regression {resolution}"
-        if record.regression_related_task_id is not None:
-            regression_detail += f" by task-{record.regression_related_task_id}"
-        details.append(regression_detail)
-    lines.append(f"  {'; '.join(details)}")
-    if record.result_summary:
-        lines.append(f"  Result: {_clip_activity_text(record.result_summary, limit=180)}")
-    return lines
 
 
-def _format_evolve_event(event: EvolveEvent) -> list[str]:
-    target = event.candidate_id or "no candidate"
-    if event.task_id is not None:
-        target += f" -> task-{event.task_id}"
-    lines = [f"- {event.event} [{event.event_actor}] {target}"]
-    details = [f"trigger {event.trigger or 'unknown'}"]
-    if event.proposal_id:
-        details.append(f"proposal {_short_proposal_id(event.proposal_id)}")
-    if event.source:
-        details.append(f"evidence {event.evidence_source or event.source}")
-    if event.signal_actor:
-        details.append(f"signal by {event.signal_actor}")
-    if event.candidate_actor:
-        details.append(f"candidate by {event.candidate_actor}")
-    if event.approval_actor:
-        details.append(f"approved by {event.approval_actor}")
-    if event.parent_candidate_id:
-        details.append(f"parent candidate {event.parent_candidate_id}")
-    if event.source_task_id is not None:
-        details.append(f"source task-{event.source_task_id}")
-    if event.retry_of_task_id is not None:
-        details.append(f"retry of task-{event.retry_of_task_id}")
-    if event.mode:
-        details.append(f"mode {event.mode}")
-    if event.pr_url:
-        details.append(f"PR {event.pr_url}")
-    if event.merge_commit:
-        details.append(f"merge {event.merge_commit[:12]}")
-    if event.authoritative_branch:
-        details.append(f"authoritative {event.authoritative_branch}")
-    if event.version:
-        details.append(f"version {event.version[:12]}")
-    if event.health_check:
-        details.append(f"health {event.health_check}")
-    if event.recording_mode:
-        details.append(f"recording {event.recording_mode}")
-    lines.append(f"  {'; '.join(details)}")
-    if event.reason:
-        lines.append(f"  Reason: {_clip_activity_text(event.reason, limit=180)}")
-    return lines
 
 
-def _short_proposal_id(proposal_id: str) -> str:
-    if proposal_id.startswith("proposal-"):
-        return proposal_id[:21]
-    return proposal_id
 
 
-def _format_counter(counts: Counter[str]) -> str:
-    return ", ".join(f"{key} {counts[key]}" for key in sorted(counts)) or "none"
 
 
-def _evolve_check_reason(proposal: EvolveProposal) -> str:
-    parts = [f"ranked-{len(proposal.candidates)}-candidate(s)"]
-    if proposal.brainstorm_attempted:
-        parts.append(f"fallback-brainstorm-added-{proposal.brainstorm_added}")
-    elif proposal.brainstorm_skip_reason:
-        parts.append(f"fallback-{proposal.brainstorm_skip_reason}")
-    if proposal.brainstorm_error:
-        parts.append(f"fallback-error-{proposal.brainstorm_error}")
-    return "; ".join(parts)
 
 
-def _evolve_skip_reason(proposal: EvolveProposal) -> str:
-    if proposal.brainstorm_error:
-        return f"brainstorm-failed: {proposal.brainstorm_error}"
-    if proposal.brainstorm_skip_reason:
-        return proposal.brainstorm_skip_reason
-    if proposal.brainstorm_attempted:
-        return "no-candidate-after-brainstorm"
-    return "no-candidate"
 
 
-def _format_evolve_proposal(proposal: EvolveProposal) -> str:
-    report = proposal.report
-    if report.state.mode == MODE_DISABLED:
-        return "Evolve is disabled. Use /evolve mode co-evolve or /evolve mode auto-evolve before proposing."
-    candidate = proposal.top_candidate
-    if candidate is None:
-        if proposal.brainstorm_skip_reason == "candidate-running":
-            return "Enoch found no new evolve candidate because evolve work is already running."
-        if proposal.brainstorm_skip_reason == "theme-not-set":
-            return "Enoch found no new evolve candidate. Set a theme with /evolve theme <text> to enable fallback brainstorming."
-        if proposal.brainstorm_skip_reason == "cooldown":
-            return "Enoch found no new evolve candidate. Fallback brainstorming for this theme is on a 24-hour cooldown."
-        if proposal.brainstorm_error:
-            return f"Enoch found no new evolve candidate. Fallback brainstorming failed: {proposal.brainstorm_error}"
-        if proposal.brainstorm_attempted:
-            return "Enoch found no new evolve candidate after fallback brainstorming."
-        return "Enoch found no new evolve candidate to propose."
-    lines = [
-        "Enoch proposes:",
-        f"Theme: {report.state.theme or 'not set'}",
-        f"Ranked {len(proposal.candidates)} actionable candidate(s) from the six evolve sources.",
-    ]
-    if proposal.brainstorm_attempted:
-        lines.append(f"Fallback brainstorm added {proposal.brainstorm_added} candidate(s).")
-    lines.append("")
-    lines.extend(_format_evolve_candidate(candidate))
-    lines.append("")
-    if candidate.status == "failed":
-        lines.append(f"Retry with /evolve retry {candidate.id}.")
-    else:
-        lines.append(f"Approve with /evolve approve {candidate.id}.")
-    lines.append(f"Remove with /evolve remove {candidate.id}.")
-    return "\n".join(lines)
 
 
-def _format_evolve_report(report: EvolveReport) -> str:
-    state = report.state
-    lines = [
-        "Evolve:",
-        f"Mode: {state.mode}",
-        f"Theme: {state.theme or 'not set'}",
-        f"Schedule: {_format_evolve_schedule(state)}",
-        "",
-        "Candidate counts:",
-    ]
-    if report.counts_by_source:
-        for source in sorted(report.counts_by_source):
-            lines.append(f"- {source}: {report.counts_by_source[source]}")
-    else:
-        lines.append("- none")
-    lines.extend(["", "Top candidate:"])
-    if report.top_candidate is None:
-        lines.append("- none")
-    else:
-        lines.extend(_format_evolve_candidate(report.top_candidate))
-    lines.extend(["", f"Next action: {_evolve_next_action(report)}"])
-    return "\n".join(lines)
 
 
-def _format_evolve_schedule(state: EvolveState) -> str:
-    if not state.schedule_enabled or state.schedule_interval_seconds <= 0:
-        return "off"
-    next_run = state.schedule_next_run_at or "unknown"
-    last_run = f"; last {state.schedule_last_run_at}" if state.schedule_last_run_at else ""
-    if state.schedule_daily_time:
-        return f"daily {state.schedule_daily_time}; next {next_run}{last_run}"
-    if state.schedule_cron_expression:
-        return f"cron {state.schedule_cron_expression}; next {next_run}{last_run}"
-    return f"every {format_cron_interval(state.schedule_interval_seconds)}; next {next_run}{last_run}"
 
 
-def _format_evolve_theme(state: EvolveState) -> str:
-    return "\n".join(
-        [
-            "Evolve theme:",
-            state.theme or "not set",
-            "",
-            "Set with /evolve theme <text>.",
-        ]
-    )
 
 
-def _format_evolve_candidate(candidate: EvolveCandidate) -> list[str]:
-    return [
-        f"- {candidate.id} [{candidate.status} {candidate.source}] {_clip_activity_text(candidate.title, limit=100)}",
-        (
-            f"  Provenance: evidence {candidate.evidence_source or candidate.source}; "
-            f"signal by {candidate.signal_actor}; candidate by {candidate.candidate_actor}"
-        ),
-        f"  Score: {candidate.score}",
-        f"  Rationale: {_clip_activity_text(candidate.rationale, limit=180)}",
-        f"  Proposed change: {_clip_activity_text(candidate.proposed_change, limit=180)}",
-        f"  Test plan: {_clip_activity_text(candidate.test_plan, limit=180)}",
-    ]
 
 
-def _format_evolve_candidates(candidates: tuple[EvolveCandidate, ...], *, include_inactive: bool = False) -> str:
-    title = "Evolve candidates"
-    if include_inactive:
-        title += " (all)"
-    lines = [f"{title}:"]
-    if not candidates:
-        lines.append("- none")
-        return "\n".join(lines)
-    for candidate in candidates[:10]:
-        lines.extend(_format_evolve_candidate(candidate))
-    if len(candidates) > 10:
-        lines.append(f"- {len(candidates) - 10} more")
-    return "\n".join(lines)
 
 
-def _evolve_next_action(report: EvolveReport) -> str:
-    if report.state.mode == MODE_DISABLED:
-        return "disabled; Enoch will not collect or rank self-evolution candidates."
-    if report.top_candidate is None:
-        return "no candidate yet."
-    if report.top_candidate.status == "failed":
-        return "propose retrying this failed candidate and wait for explicit human approval."
-    if report.state.mode == MODE_AUTO_EVOLVE:
-        return "select this bounded candidate, then queue or run work only after guardrails pass."
-    return "propose this candidate and wait for human approval before changing code."
 
 
 def _evolve_task_request(candidate: EvolveCandidate, theme: str) -> str:
@@ -4310,112 +3650,6 @@ def _history_task(task_id: int, root: Path) -> TaskJob | None:
     return None
 
 
-def _task_result_text(job: TaskJob, result: str) -> str:
-    return job.result or result or "No result summary was recorded."
-
-
-def _final_task_status_update(final_status: str) -> str:
-    if final_status == "paused":
-        return "Paused. Use /resume after Codex access is restored."
-    if final_status == "failed":
-        return "Failed. Final summary sent below."
-    if final_status == "cancelled":
-        return "Cancelled. Final summary sent below."
-    return "Completed. Final summary sent below."
-
-
-def _format_task_final_message(job: TaskJob, final_status: str, result: str) -> str:
-    if final_status == "paused":
-        return "\n".join(
-            [
-                f"Task #{job.id} paused",
-                _clip_activity_block(_task_result_text(job, result), limit=1200),
-            ]
-        )
-    prs = job.pr_urls or ("none",)
-    lines = [
-        f"Task #{job.id} final update",
-        f"Final status: {final_status}",
-    ]
-    if final_status == "failed" and job.failure_code:
-        lines.extend(
-            [
-                f"Failure: {job.failure_code} ({job.failure_class or 'unknown'}, non-retryable)",
-                f"Attempts: {job.attempt}/{job.max_attempts}",
-            ]
-        )
-    lines.extend(
-        [
-            "PR URL:",
-            *[f"- {pr}" for pr in prs],
-            "Result summary:",
-            _clip_activity_block(_task_result_text(job, result), limit=1200),
-        ]
-    )
-    return "\n".join(lines)
-
-
-def _format_work_status_message(status: WorkStatusMessage) -> str:
-    elapsed = _format_elapsed(max(0, int(time.monotonic() - status.started_at)))
-    prs = status.prs or ["none"]
-    title = f"Task #{status.task_id}" if status.task_id is not None else "Work status"
-    lines = [
-        title,
-        f"Status: {status.status}",
-        f"Time: {elapsed}",
-        f"Latest update: {status.latest_update}",
-        "PRs created:",
-        *[f"- {pr}" for pr in prs],
-        "",
-        "Request:",
-        _clip_activity_text(status.request, limit=1200),
-    ]
-    if status.context:
-        lines.extend(
-            [
-                "",
-                "Conversation context snapshot:",
-                _clip_activity_text(status.context, limit=1200),
-            ]
-        )
-    return "\n".join(lines)
-
-
-def _task_cancel_id(argument: str) -> int | None:
-    parts = argument.split()
-    if len(parts) != 2 or parts[0].lower() != "cancel":
-        return None
-    try:
-        task_id = int(parts[1].lstrip("#"))
-    except ValueError:
-        return None
-    return task_id if task_id > 0 else None
-
-
-def _task_retry_id(argument: str) -> int | None:
-    parts = argument.split()
-    if len(parts) != 2 or parts[0].lower() != "retry":
-        return None
-    try:
-        task_id = int(parts[1].lstrip("#"))
-    except ValueError:
-        return None
-    return task_id if task_id > 0 else None
-
-
-def _task_resume_target(argument: str) -> int | str | None:
-    parts = argument.split()
-    if len(parts) != 2 or parts[0].lower() != "resume":
-        return None
-    if parts[1].lower() == "all":
-        return "all"
-    try:
-        task_id = int(parts[1].lstrip("#"))
-    except ValueError:
-        return None
-    return task_id if task_id > 0 else None
-
-
 def _task_by_id(task_id: int, root: Path) -> TaskJob | None:
     status = task_queue_status(root)
     jobs = [*status.pending, *status.paused, *status.history]
@@ -4432,138 +3666,6 @@ def _codex_pause_warning(task_id: int, reason: str) -> str:
             "When Codex access is available again, use /resume.",
         ]
     )
-
-
-def _backlog_usage() -> str:
-    return "\n".join(
-        [
-            "Use /backlog [p0|p1|p2] <request> to save deferred work.",
-            "Use /backlog remove <id> to remove a pending backlog item.",
-            "Use /backlog priority <id> p0|p1|p2 to reprioritize a pending backlog item.",
-            "Use /backlog promote <id> to move a pending backlog item into the active task queue.",
-        ]
-    )
-
-
-def _cron_usage() -> str:
-    return "\n".join(
-        [
-            "Use /cron every <interval> <request> to schedule recurring work.",
-            "Intervals can be like 10m, 2h, or 1d.",
-            "Use /cron cancel <id> to cancel a scheduled job.",
-            "Use /cron to show scheduled jobs.",
-        ]
-    )
-
-
-def _evolve_usage() -> str:
-    return "\n".join(
-        [
-            "Use /evolve to show Enoch's self-evolution status.",
-            "Use /evolve mode <mode> to set self-evolution behavior.",
-            "Modes: disabled, co-evolve, auto-evolve.",
-            "Use /evolve theme [text] to show or set the current evolution theme.",
-            "Use /evolve brainstorm to generate bounded candidates under the current theme.",
-            "Use /evolve list to show current candidates.",
-            "Use /evolve approve <id> to approve and queue a candidate as a task.",
-            "Use /evolve retry <id> to queue a new task for a failed candidate.",
-            "Use /evolve reconcile <id> [backfill] to verify promotion of a completed candidate.",
-            "Use /evolve remove <id> to remove a candidate from future proposals.",
-            "Use /evolve schedule <text> to let Enoch interpret common schedule text.",
-        ]
-    )
-
-
-def _unquote_schedule_text(text: str) -> str:
-    stripped = text.strip()
-    if len(stripped) >= 2 and stripped[0] == stripped[-1] and stripped[0] in {"'", '"'}:
-        return stripped[1:-1].strip()
-    return stripped
-
-
-def _backlog_priority_and_request(argument: str) -> tuple[str, str]:
-    first, _separator, rest = argument.partition(" ")
-    lowered = first.lower()
-    if lowered in {"p0", "p1", "p2"}:
-        return normalize_priority(lowered), rest.strip()
-    if lowered.startswith("p") and lowered[:2] not in {"p0", "p1", "p2"} and lowered[1:].isdigit():
-        raise ValueError("Backlog priority must be p0, p1, or p2.")
-    return "p1", argument.strip()
-
-
-def _backlog_item_id(argument: str) -> int | None:
-    value = argument.strip().split(maxsplit=1)[0] if argument.strip() else ""
-    try:
-        item_id = int(value.lstrip("#"))
-    except ValueError:
-        return None
-    return item_id if item_id > 0 else None
-
-
-def _cron_job_id(argument: str) -> int | None:
-    value = argument.strip().split(maxsplit=1)[0] if argument.strip() else ""
-    try:
-        job_id = int(value.lstrip("#"))
-    except ValueError:
-        return None
-    return job_id if job_id > 0 else None
-
-
-def _backlog_priority_update(argument: str) -> tuple[int | None, str | None]:
-    parts = argument.split()
-    if len(parts) != 2:
-        return None, None
-    item_id = _backlog_item_id(parts[0])
-    return item_id, parts[1].lower()
-
-
-def _forge_maintenance_request(text: str) -> ForgeMaintenanceRequest | None:
-    normalized = " ".join(text.strip().split())
-    if not normalized:
-        return None
-    lowered = normalized.lower()
-    numbers = _pr_numbers(normalized)
-    if not numbers:
-        return None
-
-    dedup_words = ("dedup", "duplicate", "duplicates", "重复", "重复的")
-    close_words = ("close", "关闭", "关掉")
-    if any(word in lowered for word in dedup_words):
-        keep_number = _keep_pr_number(normalized) or numbers[0]
-        close_numbers = tuple(number for number in numbers if number != keep_number)
-        return ForgeMaintenanceRequest(close_numbers=_unique_numbers(close_numbers), keep_number=keep_number)
-    if any(word in lowered for word in close_words):
-        keep_number = _keep_pr_number(normalized)
-        close_numbers = tuple(number for number in numbers if number != keep_number)
-        return ForgeMaintenanceRequest(close_numbers=_unique_numbers(close_numbers), keep_number=keep_number)
-    return None
-
-
-def _pr_numbers(text: str) -> tuple[int, ...]:
-    return _unique_numbers(int(match) for match in re.findall(r"#(\d+)", text))
-
-
-def _keep_pr_number(text: str) -> int | None:
-    patterns = [
-        r"(?:keep|retain)\s+(?:pr\s*)?#(\d+)",
-        r"(?:保留|留下)\s*#(\d+)",
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, text, flags=re.IGNORECASE)
-        if match:
-            return int(match.group(1))
-    return None
-
-
-def _unique_numbers(numbers) -> tuple[int, ...]:
-    seen: set[int] = set()
-    unique: list[int] = []
-    for number in numbers:
-        if number <= 0 or number in seen:
-            continue
-        seen.add(number)
-        unique.append(number)
-    return tuple(unique)
 
 
 def _duplicate_close_comment(keep_number: int | None) -> str:
@@ -4590,34 +3692,6 @@ def _format_pr_close_results(results: list[PullRequestCloseResult], keep_number:
     if failed:
         return "Enoch could not complete every pull request update.\n\n" + "\n".join(lines)
     return "\n".join(lines)
-
-
-def _existing_branch_publish_request(text: str) -> str | None:
-    normalized = " ".join(text.strip().split())
-    if not normalized:
-        return None
-    lowered = normalized.lower()
-    if "publish" not in lowered or "branch" not in lowered or "pr" not in lowered:
-        return None
-    patterns = [
-        r"existing local branch `([^`]+)`",
-        r"existing branch `([^`]+)`",
-        r"branch `([^`]+)`",
-        r"existing local branch ([^\s:]+)",
-        r"existing branch ([^\s:]+)",
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, normalized, flags=re.IGNORECASE)
-        if match:
-            branch = match.group(1).strip().strip("`")
-            return branch if _looks_like_branch_name(branch) else None
-    return None
-
-
-def _looks_like_branch_name(value: str) -> bool:
-    if not value or value.startswith("-") or ".." in value or value.endswith(".lock"):
-        return False
-    return bool(re.match(r"^[A-Za-z0-9._/-]+$", value))
 
 
 def _load_task_status_messages(root: Path) -> dict[int, MessageId]:
@@ -4653,31 +3727,6 @@ def _sync_session_activity(
         )
     except AgentRuntimeError:
         return
-
-
-def _clip_activity_text(text: str, limit: int = 700) -> str:
-    cleaned = " ".join(text.split())
-    if len(cleaned) <= limit:
-        return cleaned
-    return f"{cleaned[: limit - 15].rstrip()} [truncated]"
-
-
-def _clip_activity_block(text: str, limit: int = 700) -> str:
-    lines = []
-    previous_blank = False
-    for raw_line in text.strip().splitlines():
-        line = " ".join(raw_line.split())
-        if not line:
-            if lines and not previous_blank:
-                lines.append("")
-            previous_blank = True
-            continue
-        lines.append(line)
-        previous_blank = False
-    cleaned = "\n".join(lines).strip()
-    if len(cleaned) <= limit:
-        return cleaned
-    return f"{cleaned[: limit - 15].rstrip()} [truncated]"
 
 
 def _record_direct_action(message: str, result: str, root: Path) -> None:

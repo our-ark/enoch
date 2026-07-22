@@ -10,13 +10,13 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from enoch.backlog import add_backlog_item
-from enoch.evolve import (
+from enoch.evolution.core import (
     complete_evolve_candidate,
     get_evolve_candidate,
     run_evolve_candidate,
 )
-from enoch.evolve_events import load_evolve_events
-from enoch.evolve_lifecycle import (
+from enoch.evolution.events import load_evolve_events
+from enoch.evolution.lifecycle import (
     EvolveLifecycleError,
     finalize_promoted_evolve_adoptions,
     pending_adoption_path,
@@ -24,7 +24,7 @@ from enoch.evolve_lifecycle import (
     stage_promoted_evolve_adoptions,
 )
 from our_ark_github.workflow import PullRequestMergeStatus
-from enoch.task_queue import (
+from enoch.tasks.queue import (
     begin_next_task,
     complete_task,
     enqueue_task,
@@ -39,11 +39,11 @@ VERSION = "9999999aabbccddeeff001122334455667788990"
 
 class EnochEvolveLifecycleTests(unittest.TestCase):
     @patch(
-        "enoch.evolve_lifecycle.revision_merged_into_origin_main",
+        "enoch.evolution.lifecycle.revision_merged_into_origin_main",
         return_value=True,
     )
-    @patch("enoch.evolve_lifecycle.fetch_origin_main")
-    @patch("enoch.evolve_lifecycle.inspect_pull_request_merge")
+    @patch("enoch.evolution.lifecycle.fetch_origin_main")
+    @patch("enoch.evolution.lifecycle.inspect_pull_request_merge")
     def test_reconcile_records_verified_human_promotion_once(
         self,
         inspect_pull_request_merge,
@@ -76,11 +76,11 @@ class EnochEvolveLifecycleTests(unittest.TestCase):
         revision_on_main.assert_called_with(MERGE_COMMIT, root)
 
     @patch(
-        "enoch.evolve_lifecycle.revision_merged_into_origin_main",
+        "enoch.evolution.lifecycle.revision_merged_into_origin_main",
         return_value=False,
     )
-    @patch("enoch.evolve_lifecycle.fetch_origin_main")
-    @patch("enoch.evolve_lifecycle.inspect_pull_request_merge")
+    @patch("enoch.evolution.lifecycle.fetch_origin_main")
+    @patch("enoch.evolution.lifecycle.inspect_pull_request_merge")
     def test_reconcile_refuses_merge_commit_outside_trusted_main(
         self,
         inspect_pull_request_merge,
@@ -106,7 +106,7 @@ class EnochEvolveLifecycleTests(unittest.TestCase):
                 [],
             )
 
-    @patch("enoch.evolve_lifecycle.inspect_pull_request_merge")
+    @patch("enoch.evolution.lifecycle.inspect_pull_request_merge")
     def test_reconcile_refuses_open_pull_request(
         self,
         inspect_pull_request_merge,
@@ -127,11 +127,11 @@ class EnochEvolveLifecycleTests(unittest.TestCase):
                 reconcile_evolve_candidate(candidate_id, root)
 
     @patch(
-        "enoch.evolve_lifecycle.revision_merged_into_origin_main",
+        "enoch.evolution.lifecycle.revision_merged_into_origin_main",
         return_value=True,
     )
-    @patch("enoch.evolve_lifecycle.fetch_origin_main")
-    @patch("enoch.evolve_lifecycle.inspect_pull_request_merge")
+    @patch("enoch.evolution.lifecycle.fetch_origin_main")
+    @patch("enoch.evolution.lifecycle.inspect_pull_request_merge")
     def test_backfill_and_restart_adoption_preserve_recording_mode(
         self,
         inspect_pull_request_merge,
@@ -149,7 +149,7 @@ class EnochEvolveLifecycleTests(unittest.TestCase):
             )
 
             with patch(
-                "enoch.evolve_lifecycle._is_ancestor",
+                "enoch.evolution.lifecycle._is_ancestor",
                 return_value=True,
             ):
                 staged = stage_promoted_evolve_adoptions(

@@ -6,7 +6,7 @@ Use this skill when Enoch should talk with the human through Telegram.
 
 The reusable `our-ark-telegram` library owns Telegram transport. This skill is a
 thin Enoch integration manifest; channel-neutral commands, tasks, evolution,
-sessions, and authorization live in `enoch.application` and are shared by every
+sessions, and authorization live in `enoch.app` and are shared by every
 chat provider.
 
 For JPEG, PNG, and WebP image messages, use the inherited `telegram-vision`

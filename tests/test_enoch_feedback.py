@@ -7,7 +7,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from enoch.feedback import extract_feedback_signals
+from enoch.evolution.sources.feedback import extract_feedback_signals
 from enoch.logs import log_conversation_turn
 
 

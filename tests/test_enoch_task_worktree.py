@@ -8,7 +8,7 @@ from tempfile import TemporaryDirectory
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from enoch.task_worktree import (
+from enoch.tasks.worktree import (
     prepare_existing_branch_worktree,
     prepare_task_worktree,
     remove_task_worktree,

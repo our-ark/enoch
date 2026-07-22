@@ -22,8 +22,8 @@ from enoch.providers import (
     provider_name,
     register_provider,
 )
-from enoch.application import EnochApplication
-from enoch.task_queue import enqueue_task, record_task_status_message, task_queue_status
+from enoch.app.core import EnochApplication
+from enoch.tasks.queue import enqueue_task, record_task_status_message, task_queue_status
 
 
 class _Result:
@@ -234,9 +234,9 @@ class EnochProviderTests(unittest.TestCase):
             )
 
             with (
-                patch("enoch.application.log_conversation_turn"),
-                patch("enoch.application.ensure_long_term_memory"),
-                patch("enoch.application.save_channel_cursor"),
+                patch("enoch.app.core.log_conversation_turn"),
+                patch("enoch.app.core.ensure_long_term_memory"),
+                patch("enoch.app.core.save_channel_cursor"),
                 patch.object(bot, "_queue_session_sync"),
             ):
                 bot.handle_event(event)
@@ -262,8 +262,8 @@ class EnochProviderTests(unittest.TestCase):
             app = EnochApplication(load_identity(), root, chat, runtime=runtime)
 
             with (
-                patch("enoch.application.log_conversation_turn"),
-                patch("enoch.application.ensure_long_term_memory"),
+                patch("enoch.app.core.log_conversation_turn"),
+                patch("enoch.app.core.ensure_long_term_memory"),
             ):
                 app.run_once()
                 restarted = EnochApplication(load_identity(), root, chat, runtime=runtime)
@@ -300,8 +300,8 @@ class EnochProviderTests(unittest.TestCase):
             )
 
             with (
-                patch("enoch.application.log_conversation_turn"),
-                patch("enoch.application.ensure_long_term_memory"),
+                patch("enoch.app.core.log_conversation_turn"),
+                patch("enoch.app.core.ensure_long_term_memory"),
             ):
                 app.handle_event(event)
 

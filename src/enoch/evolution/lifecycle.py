@@ -4,8 +4,8 @@ from dataclasses import asdict, dataclass
 import json
 from pathlib import Path
 
-from enoch.evolve import get_evolve_candidate, load_evolve_state
-from enoch.evolve_events import (
+from enoch.evolution.core import get_evolve_candidate, load_evolve_state
+from enoch.evolution.events import (
     EvolveEvent,
     linked_proposal_id,
     load_evolve_events,
@@ -22,8 +22,8 @@ from enoch.providers.contracts import (
 from enoch.providers.registry import load_provider
 from enoch.providers.forge import inspect_pull_request_merge
 from enoch.runtime import DEFAULT_BRANCH
-from enoch.task_events import TaskEvent, load_task_events
-from enoch.update_tools import (
+from enoch.tasks.events import TaskEvent, load_task_events
+from enoch.operations.update_tools import (
     current_head,
     fetch_origin_main,
     revision_merged_into_origin_main,

@@ -18,8 +18,8 @@ dependencies = [
 
 [project.scripts]
 enoch = "enoch.cli:main"
-enoch-agent = "enoch.application:main"
-enoch-daemon = "enoch.daemon:main"
+enoch-agent = "enoch.app.core:main"
+enoch-daemon = "enoch.operations.daemon:main"
 
 [build-system]
 requires = ["setuptools>=77"]
@@ -30,3 +30,4 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 enoch = ["identity.yaml"]
+"enoch.skills" = ["**/*.md", "**/*.yaml"]

@@ -7,8 +7,8 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from enoch.evolve import EvolveCandidate
-from enoch.evolve_events import (
+from enoch.evolution.core import EvolveCandidate
+from enoch.evolution.events import (
     close_open_proposals,
     evolve_event_path,
     latest_open_proposal_id,

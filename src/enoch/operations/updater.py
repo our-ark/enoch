@@ -8,7 +8,7 @@ import subprocess
 import sys
 
 from enoch.channel import load_channel_lifecycle, provider_label
-from enoch.evolve_lifecycle import (
+from enoch.evolution.lifecycle import (
     promotions_pending_adoption,
     stage_promoted_evolve_adoptions,
 )
@@ -17,7 +17,7 @@ from enoch.git_tools import GitError, current_branch, ensure_clean_worktree
 from enoch.immune import DoctorCheckResult, DoctorDiagnosis, ImmuneResult
 from enoch.providers.registry import provider_name
 from enoch.runtime import DEFAULT_BRANCH, DEFAULT_REMOTE
-from enoch.update_tools import (
+from enoch.operations.update_tools import (
     current_head,
     fetch_origin_main,
     head_merged_into_origin_main,
@@ -161,7 +161,7 @@ def run_update_doctor(root: Path) -> ImmuneResult:
     python = environment.get("ENOCH_PYTHON") or sys.executable
     try:
         completed = subprocess.run(
-            [python, "-m", "enoch.update_doctor"],
+            [python, "-m", "enoch.operations.update_doctor"],
             cwd=root,
             env=environment,
             text=True,
@@ -224,7 +224,7 @@ def _doctor_runner_failure(detail: str) -> ImmuneResult:
     check = DoctorCheckResult(
         name="fresh doctor process",
         passed=False,
-        command=f"{sys.executable} -m enoch.update_doctor",
+        command=f"{sys.executable} -m enoch.operations.update_doctor",
         output=detail,
         category="operational readiness",
         summary="could not load updated health checks",

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from enoch.application import main
+from enoch.app.core import main
 
 
 if __name__ == "__main__":

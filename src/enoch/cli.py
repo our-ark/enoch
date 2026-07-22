@@ -22,8 +22,8 @@ from enoch.commands import (
     thinking_command,
 )
 from enoch.setup_tools import setup_command
-from enoch.update_tools import schedule_daemon_restart as _schedule_daemon_restart
-from enoch.updater import update_from_main
+from enoch.operations.update_tools import schedule_daemon_restart as _schedule_daemon_restart
+from enoch.operations.updater import update_from_main
 
 
 HELP = """Commands:

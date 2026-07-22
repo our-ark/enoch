@@ -15,12 +15,12 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from enoch.backlog import add_backlog_item
-from enoch.evolve import get_evolve_candidate
+from enoch.evolution.core import get_evolve_candidate
 from enoch.identity import load_identity
 from enoch.immune import DoctorDiagnosis, ImmuneResult
-from enoch.task_events import load_task_events
-from enoch.task_queue import begin_next_task, task_queue_status
-from enoch.application import EnochApplication
+from enoch.tasks.events import load_task_events
+from enoch.tasks.queue import begin_next_task, task_queue_status
+from enoch.app.core import EnochApplication
 from our_ark_telegram import TelegramConfig, telegram_event
 
 
@@ -62,7 +62,7 @@ class EnochEvolutionEndToEndTests(unittest.TestCase):
         self.addCleanup(environment.stop)
 
         bot_doctor = patch(
-            "enoch.application.run_immune_system",
+            "enoch.app.core.run_immune_system",
             side_effect=lambda _root=None: _passing_doctor(),
         )
         publish_doctor = patch(

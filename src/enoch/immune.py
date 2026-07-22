@@ -89,15 +89,15 @@ def _import_smoke_command() -> list[str]:
         "; ".join(
             [
                 "import enoch.cli",
-                "import enoch.application",
-                "import enoch.daemon",
+                "import enoch.app.core",
+                "import enoch.operations.daemon",
                 "import enoch.immune",
                 "import enoch.learn",
                 "import enoch.lineage",
                 "import enoch.memory",
                 "import enoch.skills",
                 "import enoch.providers",
-                "import enoch.update_doctor",
+                "import enoch.operations.update_doctor",
             ]
         ),
     ]

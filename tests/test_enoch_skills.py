@@ -127,7 +127,7 @@ class EnochSkillsTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "instances" / "enoch-gary"
-            with patch("enoch.skills._published_text", side_effect=published_text):
+            with patch("enoch.skills.catalog._published_text", side_effect=published_text):
                 output = skills_command("skills lucy", root, prefix="")
 
         self.assertIn("Lucy skills:", output)
@@ -154,7 +154,7 @@ class EnochSkillsTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "instances" / "enoch-gary"
-            with patch("enoch.skills._published_text", side_effect=published_text):
+            with patch("enoch.skills.catalog._published_text", side_effect=published_text):
                 output = skills_command("skills adam", root, prefix="")
 
         self.assertIn("Adam skills:", output)
@@ -163,7 +163,7 @@ class EnochSkillsTests(unittest.TestCase):
 
     def test_skills_command_reports_missing_published_agent(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            with patch("enoch.skills._published_text", side_effect=SkillsError("boom")):
+            with patch("enoch.skills.catalog._published_text", side_effect=SkillsError("boom")):
                 output = skills_command("skills missing", Path(directory), prefix="")
 
         self.assertIn("Enoch could not inspect skills", output)
@@ -208,14 +208,14 @@ class EnochSkillsTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            with patch("enoch.skills._published_text", side_effect=published_text):
+            with patch("enoch.skills.catalog._published_text", side_effect=published_text):
                 output = skills_command("skills adam", enoch, prefix="")
 
         self.assertIn("Adam skills:", output)
         self.assertIn("github-main", output)
         self.assertNotIn("local-dirty", output)
 
-    @patch("enoch.skills.load_provider")
+    @patch("enoch.skills.catalog.load_provider")
     def test_published_text_uses_configured_forge(self, load_provider) -> None:
         provider = load_provider.return_value
         provider.read_text.return_value = "name: Lucy\n"

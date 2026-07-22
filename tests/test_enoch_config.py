@@ -9,7 +9,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from enoch.config import read_section, write_section_value
 from enoch.memory.config import DEFAULT_MEMORY_SETTINGS, memory_settings
-from enoch.task_config import (
+from enoch.tasks.config import (
     DEFAULT_TASK_TIMEOUT_SECONDS,
     parse_task_timeout,
     save_task_timeout,

@@ -55,7 +55,7 @@ class EnochImmuneTests(unittest.TestCase):
         self.assertIn("import enoch.lineage", result.command)
         self.assertIn("import enoch.learn", result.command)
         self.assertIn("import enoch.skills", result.command)
-        self.assertIn("import enoch.application", result.command)
+        self.assertIn("import enoch.app.core", result.command)
         self.assertIn("OK", result.output)
         self.assertEqual(
             [check.name for check in result.checks],
