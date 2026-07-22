@@ -15,6 +15,16 @@ Enoch was created with Genesis and treats her code as body and history as
 lineage, while keeping chat, runtime, version control, forge, and service
 infrastructure replaceable through providers.
 
+## Lineage
+
+Enoch belongs to a living software lineage:
+
+![Lucy established the minimal agent genome, Adam became a functional agent, Seth added persistent work, and Enoch evolved a governed software body.](docs/images/enoch-lineage.svg)
+
+Each generation inherits a versioned code body and Git history, then develops a
+new specialization. This lineage describes software provenance, not model
+checkpoints or a fictional family tree.
+
 ## Why Enoch Is Different
 
 Memory changes what an agent remembers. Skills change how an agent works.

@@ -1,0 +1,82 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="650" viewBox="0 0 1440 650" role="img" aria-labelledby="title desc">
+  <title id="title">Enoch software lineage from Lucy through Adam and Seth</title>
+  <desc id="desc">A horizontal Git-like lineage showing Lucy as the minimal genome, Adam as the first functional agent, Seth as persistent work, and Enoch as governed evolution of the software body.</desc>
+
+  <rect width="1440" height="650" fill="#f5f6f2"/>
+
+  <text x="72" y="72" fill="#171a1f" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="34" font-weight="700">A living software lineage</text>
+  <text x="72" y="112" fill="#59616b" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="20">Each generation inherits a versioned code body, then adds a new specialization.</text>
+
+  <line x1="232" y1="266" x2="488" y2="266" stroke="#aeb6b3" stroke-width="3"/>
+  <path d="M476 256 L492 266 L476 276 Z" fill="#aeb6b3"/>
+  <line x1="592" y1="266" x2="848" y2="266" stroke="#aeb6b3" stroke-width="3"/>
+  <path d="M836 256 L852 266 L836 276 Z" fill="#aeb6b3"/>
+  <line x1="952" y1="266" x2="1208" y2="266" stroke="#aeb6b3" stroke-width="3"/>
+  <path d="M1196 256 L1212 266 L1196 276 Z" fill="#aeb6b3"/>
+
+  <circle cx="180" cy="266" r="52" fill="#374047"/>
+  <g fill="none" stroke="#fff" stroke-width="6" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M180 240 V292"/>
+    <path d="M180 254 L158 242"/>
+    <path d="M180 274 L202 286"/>
+  </g>
+  <g fill="#fff">
+    <circle cx="180" cy="240" r="7"/>
+    <circle cx="158" cy="242" r="7"/>
+    <circle cx="180" cy="266" r="7"/>
+    <circle cx="202" cy="286" r="7"/>
+    <circle cx="180" cy="292" r="7"/>
+  </g>
+
+  <circle cx="540" cy="266" r="52" fill="#197278"/>
+  <rect x="507" y="238" width="66" height="56" rx="7" fill="none" stroke="#fff" stroke-width="5"/>
+  <path d="M521 254 L532 266 L521 278" fill="none" stroke="#fff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+  <line x1="542" y1="278" x2="558" y2="278" stroke="#fff" stroke-width="5" stroke-linecap="round"/>
+
+  <circle cx="900" cy="266" r="52" fill="#b66a12"/>
+  <rect x="868" y="232" width="64" height="68" rx="7" fill="none" stroke="#fff" stroke-width="5"/>
+  <path d="M880 251 L885 256 L894 246" fill="none" stroke="#fff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+  <line x1="902" y1="252" x2="920" y2="252" stroke="#fff" stroke-width="4" stroke-linecap="round"/>
+  <path d="M880 272 L885 277 L894 267" fill="none" stroke="#fff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+  <line x1="902" y1="273" x2="920" y2="273" stroke="#fff" stroke-width="4" stroke-linecap="round"/>
+  <line x1="881" y1="289" x2="920" y2="289" stroke="#fff" stroke-width="4" stroke-linecap="round"/>
+
+  <g transform="translate(1208 214) scale(.867)">
+    <rect width="120" height="120" rx="24" fill="#bd3f5d"/>
+    <g fill="none" stroke="#fff" stroke-width="6.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M60 63 V57 L71 49 V41 L63 35 V32"/>
+      <path d="M60 57 L47 54"/>
+      <path d="M27 79 L60 63 L93 79 L60 95 Z"/>
+      <path d="M27 88 L60 104 L93 88"/>
+      <path d="M27 97 L60 113 L93 97"/>
+    </g>
+    <circle cx="47" cy="54" r="3.5" fill="#fff"/>
+    <circle cx="71" cy="49" r="3.5" fill="#fff"/>
+    <path d="M63 8 C64.5 15 68 18.5 75 20 C68 21.5 64.5 25 63 32 C61.5 25 58 21.5 51 20 C58 18.5 61.5 15 63 8 Z" fill="#fff"/>
+  </g>
+
+  <text x="180" y="360" text-anchor="middle" fill="#171a1f" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="32" font-weight="700">Lucy</text>
+  <text x="180" y="397" text-anchor="middle" fill="#374047" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="19" font-weight="700">MINIMAL GENOME</text>
+  <text x="180" y="434" text-anchor="middle" fill="#59616b" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="20">Minimal · inspectable</text>
+  <text x="180" y="462" text-anchor="middle" fill="#59616b" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="20">controlled</text>
+
+  <text x="540" y="360" text-anchor="middle" fill="#171a1f" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="32" font-weight="700">Adam</text>
+  <text x="540" y="397" text-anchor="middle" fill="#197278" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="19" font-weight="700">FUNCTIONAL AGENT</text>
+  <text x="540" y="434" text-anchor="middle" fill="#59616b" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="20">Conversation · tools</text>
+  <text x="540" y="462" text-anchor="middle" fill="#59616b" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="20">local operation</text>
+
+  <text x="900" y="360" text-anchor="middle" fill="#171a1f" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="32" font-weight="700">Seth</text>
+  <text x="900" y="397" text-anchor="middle" fill="#a85f0e" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="19" font-weight="700">PERSISTENT WORK</text>
+  <text x="900" y="434" text-anchor="middle" fill="#59616b" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="20">Tasks · backlog · schedules</text>
+  <text x="900" y="462" text-anchor="middle" fill="#59616b" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="20">agent instances</text>
+
+  <text x="1260" y="360" text-anchor="middle" fill="#171a1f" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="32" font-weight="700">Enoch</text>
+  <text x="1260" y="397" text-anchor="middle" fill="#a83250" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="19" font-weight="700">GOVERNED EVOLUTION</text>
+  <text x="1260" y="434" text-anchor="middle" fill="#59616b" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="20">Evidence · tested change</text>
+  <text x="1260" y="462" text-anchor="middle" fill="#59616b" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="20">human adoption</text>
+
+  <line x1="72" y1="508" x2="1368" y2="508" stroke="#c7cdc9" stroke-width="1"/>
+  <text x="72" y="552" fill="#171a1f" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="16" font-weight="700">VERSIONED CODE BODY + GIT HISTORY</text>
+  <text x="72" y="584" fill="#59616b" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="16">The body is inherited, provenance is preserved, and specialization accumulates.</text>
+  <text x="1368" y="584" text-anchor="end" fill="#59616b" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="15">Software lineage, not model checkpoints.</text>
+</svg>
