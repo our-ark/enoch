@@ -5,7 +5,7 @@ description = "Agent-neutral Telegram Bot API transport for Our Ark agents."
 license = "Apache-2.0"
 requires-python = ">=3.11"
 dependencies = [
-  "our-ark-provider-kit @ git+https://github.com/our-ark/enoch.git@8eb1f70fa9906da45b263a52d211874d803fac86#subdirectory=libraries/provider-kit",
+  "our-ark-provider-kit @ git+https://github.com/our-ark/enoch.git@b50a58b242faa770a43bd16f3ab9b622a60db860#subdirectory=libraries/provider-kit",
 ]
 
 [build-system]
