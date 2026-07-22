@@ -1,10 +1,31 @@
 # Enoch
 
-Enoch is a Genesis-created agent descended from Seth.
+Enoch is an extensible local agent that can converse, work on repositories,
+run persistent and scheduled tasks, learn from other agents, and propose
+bounded improvements to her own code.
 
-## Mission
+She keeps work visible through task history, tests, branches, and reviewable
+changes. Self-evolution remains governed: people choose the operating mode,
+approve consequential work, and control which changes are promoted and adopted.
+Enoch was created with Genesis and treats her code as body and history as
+lineage, while keeping chat, runtime, version control, forge, and service
+infrastructure replaceable through providers.
 
-Seth's self-evolving descendant: walk with her code body, inspect her own work, and grow through safe autonomous improvements while preserving human sovereignty.
+## Core Skills
+
+| Skill | What Enoch can do |
+| --- | --- |
+| [`code`](src/enoch/skills/code/SKILL.md) | Inspect, modify, test, and explain changes to her local code body. |
+| [`work`](src/enoch/skills/work/SKILL.md) | Run leased tasks in isolated worktrees through a queue, backlog, schedules, retries, and recovery. |
+| [`evolve`](src/enoch/skills/evolve/SKILL.md) | Collect and rank improvement candidates, propose bounded self-evolution, and track work through human review, promotion, and adoption. |
+| [`learn`](src/enoch/skills/learn/SKILL.md) | Adapt a published skill from another trusted Our-Ark agent instead of copying it blindly. |
+| [`inherit`](src/enoch/skills/inherit/SKILL.md) | Discover direct-ancestor skills and changes for selective inheritance. |
+| [`skill-library`](src/enoch/skills/skill-library/SKILL.md) | Package reusable, agent-neutral skill implementations as immutable libraries with thin adapters. |
+
+The reference stack also includes `telegram-talk`, `telegram-vision`, and
+`github` integration skills. They live outside the core agent body and can be
+replaced with other provider packages. Run `/skills` on an active instance to
+inspect its complete installed skill set.
 
 ## Requirements
 
