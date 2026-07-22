@@ -1,5 +1,6 @@
 from pathlib import Path
 import os
+import runpy
 import sys
 import tempfile
 import unittest
@@ -15,6 +16,15 @@ from enoch.operations.updater import run_update_doctor, update_from_authoritativ
 
 
 class EnochUpdaterTests(unittest.TestCase):
+    @patch("enoch.operations.update_doctor.main")
+    def test_legacy_update_doctor_module_delegates_after_package_move(
+        self,
+        updated_main: MagicMock,
+    ) -> None:
+        runpy.run_module("enoch.update_doctor", run_name="__main__")
+
+        updated_main.assert_called_once_with()
+
     def test_post_update_doctor_loads_code_from_updated_worktree(self) -> None:
         payload = {
             "passed": True,
