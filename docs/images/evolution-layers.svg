@@ -1,0 +1,96 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="720" viewBox="0 0 1440 720" role="img" aria-labelledby="title desc">
+  <title id="title">Three durable learning layers for persistent agents</title>
+  <desc id="desc">A comparison of OpenClaw as memory-first, Hermes Agent as skill-first, and Enoch as governed evolution of its versioned software body.</desc>
+
+  <defs>
+    <linearGradient id="openclaw-lobster-gradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#ff4d4d"/>
+      <stop offset="100%" stop-color="#991b1b"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1440" height="720" fill="#f5f6f2"/>
+
+  <text x="72" y="72" fill="#171a1f" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="30" font-weight="700">How agents turn experience into durable change</text>
+  <text x="72" y="110" fill="#59616b" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="18">A simplified view of each project's primary learning layer</text>
+
+  <rect x="72" y="166" width="384" height="404" rx="8" fill="#ffffff" stroke="#cbd5d1" stroke-width="1.5"/>
+  <rect x="72" y="166" width="384" height="8" rx="4" fill="#197278"/>
+  <text x="104" y="222" fill="#197278" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="15" font-weight="700">01  CONTEXT</text>
+  <!-- Static adaptation of the official OpenClaw favicon. See ATTRIBUTION.md. -->
+  <g transform="translate(104 236) scale(.4)">
+    <path d="M60 10 C30 10 15 35 15 55 C15 75 30 95 45 100 L45 110 L55 110 L55 100 C55 100 60 102 65 100 L65 110 L75 110 L75 100 C90 95 105 75 105 55 C105 35 90 10 60 10Z" fill="url(#openclaw-lobster-gradient)"/>
+    <path d="M20 45 C5 40 0 50 5 60 C10 70 20 65 25 55 C28 48 25 45 20 45Z" fill="url(#openclaw-lobster-gradient)"/>
+    <path d="M100 45 C115 40 120 50 115 60 C110 70 100 65 95 55 C92 48 95 45 100 45Z" fill="url(#openclaw-lobster-gradient)"/>
+    <path d="M45 15 Q35 5 30 8 M75 15 Q85 5 90 8" stroke="#ff4d4d" stroke-width="3" stroke-linecap="round"/>
+    <circle cx="45" cy="35" r="6" fill="#050810"/>
+    <circle cx="75" cy="35" r="6" fill="#050810"/>
+    <circle cx="46" cy="34" r="2.5" fill="#00e5cc"/>
+    <circle cx="76" cy="34" r="2.5" fill="#00e5cc"/>
+  </g>
+  <text x="168" y="270" fill="#171a1f" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="28" font-weight="700">OpenClaw</text>
+  <text x="104" y="315" fill="#6a737d" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="14" font-weight="600">PRIMARY DURABLE LAYER</text>
+  <text x="104" y="373" fill="#171a1f" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="45" font-weight="750">MEMORY</text>
+  <line x1="104" y1="402" x2="424" y2="402" stroke="#d9dfdc" stroke-width="1"/>
+  <text x="104" y="443" fill="#197278" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="16" font-weight="700">REMEMBERS</text>
+  <text x="104" y="479" fill="#3f4852" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="18">Context, preferences, and</text>
+  <text x="104" y="507" fill="#3f4852" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="18">decisions persist across sessions.</text>
+
+  <line x1="472" y1="368" x2="508" y2="368" stroke="#929aa3" stroke-width="2"/>
+  <path d="M508 360 L520 368 L508 376 Z" fill="#929aa3"/>
+
+  <rect x="528" y="166" width="384" height="404" rx="8" fill="#ffffff" stroke="#d7d0c2" stroke-width="1.5"/>
+  <rect x="528" y="166" width="384" height="8" rx="4" fill="#b66a12"/>
+  <text x="560" y="222" fill="#a85f0e" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="15" font-weight="700">02  BEHAVIOR</text>
+  <!-- Static adaptation of the official Hermes Agent favicon. See ATTRIBUTION.md. -->
+  <rect x="560" y="236" width="48" height="48" rx="10" fill="#f4eadc"/>
+  <text x="567" y="276" fill="#8e510c" font-family="Georgia, Times New Roman, serif" font-size="47">&#9877;</text>
+  <text x="624" y="270" fill="#171a1f" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="28" font-weight="700">Hermes Agent</text>
+  <text x="560" y="315" fill="#6a737d" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="14" font-weight="600">PRIMARY DURABLE LAYER</text>
+  <text x="560" y="373" fill="#171a1f" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="45" font-weight="750">SKILLS</text>
+  <line x1="560" y1="402" x2="880" y2="402" stroke="#e1dcd2" stroke-width="1"/>
+  <text x="560" y="443" fill="#a85f0e" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="16" font-weight="700">REFINES</text>
+  <text x="560" y="479" fill="#3f4852" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="18">Reusable instructions and</text>
+  <text x="560" y="507" fill="#3f4852" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="18">procedures improve through use.</text>
+
+  <line x1="928" y1="368" x2="964" y2="368" stroke="#929aa3" stroke-width="2"/>
+  <path d="M964 360 L976 368 L964 376 Z" fill="#929aa3"/>
+
+  <rect x="984" y="166" width="384" height="404" rx="8" fill="#ffffff" stroke="#a83250" stroke-width="2.5"/>
+  <rect x="984" y="166" width="384" height="8" rx="4" fill="#bd3f5d"/>
+  <text x="1016" y="222" fill="#a83250" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="15" font-weight="700">03  IMPLEMENTATION</text>
+  <!-- Enoch mark: evidence converges through a governed gate into software. -->
+  <g transform="translate(1016 236) scale(.4)">
+    <rect x="4" y="4" width="112" height="112" rx="24" fill="#bd3f5d"/>
+    <g fill="none" stroke="#fff" stroke-width="7" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M25 29 H39 C48 29 51 38 51 47 V60"/>
+      <path d="M25 60 H51"/>
+      <path d="M25 91 H39 C48 91 51 82 51 73 V60"/>
+      <path d="M51 60 H66"/>
+      <rect x="66" y="34" width="31" height="52" rx="7"/>
+    </g>
+    <g fill="#fff">
+      <circle cx="25" cy="29" r="7"/>
+      <circle cx="25" cy="60" r="7"/>
+      <circle cx="25" cy="91" r="7"/>
+      <circle cx="82" cy="50" r="4"/>
+      <rect x="76" y="63" width="12" height="6" rx="3"/>
+    </g>
+  </g>
+  <text x="1080" y="270" fill="#171a1f" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="28" font-weight="700">Enoch</text>
+  <text x="1016" y="315" fill="#6a737d" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="14" font-weight="600">PRIMARY DURABLE LAYER</text>
+  <text x="1016" y="362" fill="#171a1f" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="35" font-weight="750">SOFTWARE BODY</text>
+  <text x="1016" y="392" fill="#59616b" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="16">harness + code + tests + safeguards</text>
+  <line x1="1016" y1="414" x2="1336" y2="414" stroke="#ead5db" stroke-width="1"/>
+  <text x="1016" y="449" fill="#a83250" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="16" font-weight="700">EVOLVES</text>
+  <text x="1016" y="483" fill="#3f4852" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="18">Tested changes are reviewed,</text>
+  <text x="1016" y="511" fill="#3f4852" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="18">merged, and verified in operation.</text>
+  <rect x="1016" y="530" width="176" height="26" rx="6" fill="#f7e8ec"/>
+  <text x="1030" y="548" fill="#922b45" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="13" font-weight="700">HUMAN-GOVERNED</text>
+
+  <line x1="72" y1="620" x2="1368" y2="620" stroke="#c7cdc9" stroke-width="1"/>
+  <circle cx="264" cy="620" r="5" fill="#197278"/>
+  <circle cx="720" cy="620" r="5" fill="#b66a12"/>
+  <circle cx="1176" cy="620" r="5" fill="#bd3f5d"/>
+  <text x="72" y="662" fill="#59616b" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="15">Simplified positioning by primary durable learning layer. Each project may support capabilities in other layers.</text>
+</svg>

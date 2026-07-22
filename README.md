@@ -21,6 +21,8 @@ and workspace skills. [Hermes Agent](https://github.com/NousResearch/hermes-agen
 adds a learning loop that creates and improves reusable skills. Enoch extends
 durable learning into tested software changes.
 
+![OpenClaw emphasizes memory, Hermes Agent emphasizes skills, and Enoch evolves a human-governed software body.](docs/images/evolution-layers.svg)
+
 She can identify limitations in her own operation, propose a bounded change to
 the code that runs her, implement it in an isolated worktree, validate it, and
 publish it for human review.

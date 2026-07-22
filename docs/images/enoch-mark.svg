@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="120" height="120" viewBox="0 0 120 120" role="img" aria-labelledby="title desc">
+  <title id="title">Enoch mark</title>
+  <desc id="desc">Three evidence nodes converge through a governed gate into a versioned software body.</desc>
+  <rect x="4" y="4" width="112" height="112" rx="24" fill="#bd3f5d"/>
+  <g fill="none" stroke="#fff" stroke-width="7" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M25 29 H39 C48 29 51 38 51 47 V60"/>
+    <path d="M25 60 H51"/>
+    <path d="M25 91 H39 C48 91 51 82 51 73 V60"/>
+    <path d="M51 60 H66"/>
+    <rect x="66" y="34" width="31" height="52" rx="7"/>
+  </g>
+  <g fill="#fff">
+    <circle cx="25" cy="29" r="7"/>
+    <circle cx="25" cy="60" r="7"/>
+    <circle cx="25" cy="91" r="7"/>
+    <circle cx="82" cy="50" r="4"/>
+    <rect x="76" y="63" width="12" height="6" rx="3"/>
+  </g>
+</svg>
