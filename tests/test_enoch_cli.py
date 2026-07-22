@@ -23,7 +23,7 @@ class EnochCliTests(unittest.TestCase):
 
         self.assertIn("status      Show identity, model, and lineage.", output)
         self.assertIn("init        Create or claim a local Enoch instance worktree.", output)
-        self.assertIn("setup       Configure Telegram token, chat lock, and setup status.", output)
+        self.assertIn("setup       Configure the built-in Telegram provider and setup status.", output)
         self.assertIn("thinking    Show or set Enoch's Codex thinking level.", output)
         self.assertIn("mission     Show or update Enoch's mission.", output)
         self.assertNotIn("memory      Manage long-term memory", output)
@@ -170,7 +170,10 @@ class EnochCliTests(unittest.TestCase):
         output = _run_repl_commands("add test4 to README", "commit this", "exit")
 
         self.assertEqual(output.count("Enoch CLI is admin-only now."), 2)
-        self.assertIn("Use Telegram for conversation, repository edits, and self-evolution.", output)
+        self.assertIn(
+            "Use the configured chat provider for conversation, repository edits, and self-evolution.",
+            output,
+        )
         self.assertNotIn("Input tokens:", output)
 
     def test_setup_interactively_saves_token_without_printing_secret(self) -> None:

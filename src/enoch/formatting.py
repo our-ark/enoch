@@ -76,7 +76,7 @@ def doctor_output_excerpt(output: str, limit: int = SUMMARY_CLIP_CHARS) -> str:
     return f"{cleaned[:limit].rstrip()}\n\n[truncated]"
 
 
-def format_telegram_publish_result(result: LocalPublishResult) -> str:
+def format_publish_result(result: LocalPublishResult) -> str:
     files = "\n".join(f"- {path}" for path in result.changed_files)
     return "\n".join(
         [
@@ -92,7 +92,7 @@ def format_telegram_publish_result(result: LocalPublishResult) -> str:
     )
 
 
-def format_telegram_remote_publish_result(result: RemotePublishResult) -> str:
+def format_remote_publish_result(result: RemotePublishResult) -> str:
     return "\n".join(
         [
             "Enoch pushed this branch.",
@@ -103,6 +103,11 @@ def format_telegram_remote_publish_result(result: RemotePublishResult) -> str:
             "Publish step: branch pushed to GitHub.",
         ]
     )
+
+
+# Compatibility aliases for existing channel integrations.
+format_telegram_publish_result = format_publish_result
+format_telegram_remote_publish_result = format_remote_publish_result
 
 
 def format_pr_result(result: PullRequestResult) -> str:

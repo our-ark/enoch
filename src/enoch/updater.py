@@ -7,6 +7,7 @@ from pathlib import Path
 import subprocess
 import sys
 
+from enoch.channel import load_channel_lifecycle, provider_label
 from enoch.evolve_lifecycle import (
     promotions_pending_adoption,
     stage_promoted_evolve_adoptions,
@@ -14,7 +15,7 @@ from enoch.evolve_lifecycle import (
 from enoch.formatting import format_doctor_result
 from enoch.git_tools import GitError, current_branch, ensure_clean_worktree
 from enoch.immune import DoctorCheckResult, DoctorDiagnosis, ImmuneResult
-from enoch.paths import enoch_home
+from enoch.providers.registry import provider_name
 from enoch.runtime import DEFAULT_BRANCH, DEFAULT_REMOTE
 from enoch.update_tools import (
     current_head,
@@ -257,7 +258,8 @@ def _stage_adoptions(root: Path, version: str) -> str:
 
 
 def _running_commit_restart_note(root: Path, current: str) -> str:
-    lifecycle = _load_telegram_lifecycle_state(root)
+    selected_channel = provider_name("chat", root)
+    lifecycle = _load_channel_lifecycle_state(selected_channel, root)
     if str(lifecycle.get("status") or "") != "running":
         return ""
     if _int(lifecycle.get("pid")) != os.getpid():
@@ -267,7 +269,7 @@ def _running_commit_restart_note(root: Path, current: str) -> str:
         return ""
     return "\n".join(
         [
-            f"Local code is current at {current[:7]}, but this Telegram daemon started on {started_head[:7]}.",
+            f"Local code is current at {current[:7]}, but this {provider_label(selected_channel)} daemon started on {started_head[:7]}.",
             "Run /restart to load the current code.",
         ]
     )
@@ -281,11 +283,10 @@ def _int(value: object) -> int:
 
 
 def _load_telegram_lifecycle_state(root: Path) -> dict:
-    path = enoch_home(root) / "telegram_lifecycle.json"
-    if not path.exists():
-        return {}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return data if isinstance(data, dict) else {}
+    return load_channel_lifecycle("telegram", root)
+
+
+def _load_channel_lifecycle_state(name: str, root: Path) -> dict:
+    if name == "telegram":
+        return _load_telegram_lifecycle_state(root)
+    return load_channel_lifecycle(name, root)

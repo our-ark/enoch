@@ -1249,7 +1249,7 @@ def _cron_candidates(items: Iterable[CronJob]) -> list[EvolveCandidate]:
                 ),
                 expected_benefit="Keeps scheduled automation aligned with current needs instead of letting stale jobs drift.",
                 risk="Recurring jobs are user-facing automation; changes should not silently disable or broaden their behavior.",
-                test_plan="Run cron parsing/status tests and verify the scheduled request still renders clearly in Telegram.",
+                test_plan="Run cron parsing/status tests and verify the scheduled request still renders clearly in the configured chat provider.",
                 initiated_by="agent",
                 evidence_source="experience",
                 signal_actor="system",

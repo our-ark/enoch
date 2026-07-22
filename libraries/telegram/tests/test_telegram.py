@@ -10,7 +10,7 @@ PROVIDER_KIT = ROOT.parent / "provider-kit"
 sys.path.insert(0, str(PROVIDER_KIT / "src"))
 sys.path.insert(0, str(ROOT / "src"))
 
-from our_ark_provider_kit import ChatProvider
+from our_ark_provider_kit import Attachment, AttachmentProvider, ChatProvider
 from our_ark_telegram import (
     TelegramClient,
     TelegramConfig,
@@ -25,6 +25,7 @@ class TelegramLibraryTests(unittest.TestCase):
         client = TelegramClient(TelegramConfig(token="test", allowed_chat_id=42))
 
         self.assertIsInstance(client, ChatProvider)
+        self.assertIsInstance(client, AttachmentProvider)
         self.assertEqual(client.allowed_conversation_id, 42)
 
     def test_event_exposes_largest_photo_as_attachment(self) -> None:
@@ -103,6 +104,16 @@ class TelegramLibraryTests(unittest.TestCase):
         urlopen.return_value.__enter__.side_effect = [api_response, oversized]
         with self.assertRaisesRegex(TelegramError, "too large"):
             client.download_file("file", Path("/tmp/unused.jpg"), max_bytes=10)
+
+    def test_attachment_download_delegates_to_file_transport(self) -> None:
+        client = TelegramClient(TelegramConfig(token="test"))
+        attachment = Attachment(kind="image", file_id="file-1", mime_type="image/jpeg")
+        destination = Path("image.jpg")
+
+        with patch.object(client, "download_file") as download:
+            client.download_attachment(attachment, destination, max_bytes=1024)
+
+        download.assert_called_once_with("file-1", destination, max_bytes=1024)
 
 
 if __name__ == "__main__":

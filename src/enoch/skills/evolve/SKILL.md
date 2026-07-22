@@ -52,7 +52,7 @@ It can run on a fixed interval, once per day at a local HH:MM time, or a cron-st
 When the scheduler is due:
 
 - `disabled` mode advances the schedule and takes no action.
-- `co-evolve` mode runs the same proposal selection as `/propose` and sends that proposal to the locked Telegram chat.
+- `co-evolve` mode runs the same proposal selection as `/propose` and sends that proposal to the locked chat-provider conversation.
 - `auto-evolve` mode runs the same proposal selection as `/propose` and turns
   its top new candidate into a queued task for review-oriented implementation.
   Failed candidates are proposed for explicit human retry instead of being
@@ -87,7 +87,7 @@ closing the task or its linked evolve proposal. A regression is recorded after
 a task was completed; `reverted` and `forward-fixed` are separate resolution
 events so regression counts remain durable. Enoch owns this bookkeeping:
 the agent emits an internal structured signal when evidence identifies the
-original task, and the Telegram wrapper records it after validating task state.
+original task, and the Enoch application records it after validating task state.
 A human can report a problem naturally and does not maintain lifecycle status
 with `/task` commands. Task events retain the original source and initiator,
 and evolve-linked tasks add explicit provenance:

@@ -12,7 +12,7 @@ The work skill covers three core execution modes:
 
 It also covers:
 
-- single-message task status updates in Telegram;
+- single-message task status updates through the configured chat provider;
 - automatic skill-only learning artifacts after successful work.
 
 ## Boundary
@@ -31,8 +31,8 @@ Do not treat every successful job as inheritable. Enoch records an inheritable l
 When work is queued:
 
 1. Preserve the request and any conversation context snapshot.
-2. Keep task execution non-blocking for Telegram conversation.
-3. Update one Telegram status message with queued, running, paused, completed,
+2. Keep task execution non-blocking for the active chat conversation.
+3. Update one chat status message with queued, running, paused, completed,
    failed, elapsed time, latest update, and PR URLs.
 4. Run queued work through the same authorized repository workflow as foreground `/do` work.
 5. Promote backlog items only when the task queue is idle.

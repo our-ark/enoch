@@ -24,7 +24,7 @@ DEFAULT_IMPORTANT_FILE_PREFIXES = (
     "src/enoch/daemon.py",
     "src/enoch/github/workflow.py",
     "src/enoch/immune.py",
-    "src/enoch/telegram/bot.py",
+    "src/enoch/application.py",
 )
 
 

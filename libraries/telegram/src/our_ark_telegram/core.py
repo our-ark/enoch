@@ -98,6 +98,15 @@ class TelegramClient:
             raise TelegramError("Telegram file is too large.")
         destination.write_bytes(content)
 
+    def download_attachment(
+        self,
+        attachment: Attachment,
+        destination: Path,
+        *,
+        max_bytes: int,
+    ) -> None:
+        self.download_file(attachment.file_id, destination, max_bytes=max_bytes)
+
     def edit_message(
         self,
         conversation_id: ConversationId,

@@ -236,7 +236,7 @@ def format_published_skill(skill: PublishedSkill) -> str:
             f"Path: {skill.path}",
             f"skill.yaml: {len(skill.metadata)} chars",
             f"SKILL.md: {len(skill.instructions)} chars",
-            "In Telegram, /learn <skill> from <agent> asks Enoch whether to adapt it.",
+            "In chat, /learn <skill> from <agent> asks Enoch whether to adapt it.",
         ]
     )
 

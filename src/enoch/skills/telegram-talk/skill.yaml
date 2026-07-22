@@ -9,7 +9,7 @@ library_contract: telegram-channel/v1
 library_commit: b798949960e92254cac7785345df675feda46f08
 status: active
 mode: external-tool
-entrypoint: src/enoch/telegram/bot.py
+entrypoint: src/enoch/telegram/client.py
 permissions:
   files:
     read: true

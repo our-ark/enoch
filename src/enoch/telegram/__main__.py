@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from enoch.telegram.bot import telegram_main
+from enoch.application import telegram_main
 
 
 if __name__ == "__main__":

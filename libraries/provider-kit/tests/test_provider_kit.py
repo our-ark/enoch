@@ -8,6 +8,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from our_ark_provider_kit import (
     Attachment,
+    AttachmentProvider,
     ChatEvent,
     ChatProvider,
     normalize_conversation_id,
@@ -45,6 +46,7 @@ class ProviderKitTests(unittest.TestCase):
 
     def test_chat_provider_contract_is_runtime_checkable(self) -> None:
         self.assertIsInstance(FakeChatProvider(), ChatProvider)
+        self.assertIsInstance(FakeChatProvider(), AttachmentProvider)
 
 
 class FakeChatProvider:
@@ -62,6 +64,9 @@ class FakeChatProvider:
         return None
 
     def send_read_ack(self, conversation_id, message_id):
+        return None
+
+    def download_attachment(self, attachment, destination, *, max_bytes):
         return None
 
 

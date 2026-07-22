@@ -99,7 +99,7 @@ class SlackProvider:
     def receive(self, cursor=None):
         return [
             ChatEvent(
-                cursor=1,
+                cursor="next-page-token",
                 conversation_id="C012345",
                 message_id="1712345.0001",
                 text="hello",
@@ -117,8 +117,25 @@ class SlackProvider:
 ```
 
 Chat conversation and message identifiers are opaque integers or strings.
-Providers translate native events into `ChatEvent`; core command and task code
-does not parse provider-specific payloads.
+Polling cursors are also opaque integers or strings and are persisted separately
+under `.enoch/channels/<provider>/`. Providers translate native events into
+`ChatEvent`; core command and task code does not parse provider-specific
+payloads.
+
+Providers that support attachments implement the optional
+`AttachmentProvider` contract. They expose native files as provider-neutral
+`Attachment` values and materialize them only when Enoch asks:
+
+```python
+def download_attachment(self, attachment, destination, *, max_bytes):
+    ...
+```
+
+The channel-neutral application lives in `src/enoch/application.py`. Telegram's
+Bot API transport lives in the reusable `our-ark-telegram` library; the local
+`src/enoch/telegram/client.py` module only loads Enoch's Telegram configuration.
+The `telegram-talk` skill is therefore an integration manifest for that provider,
+not the owner of Enoch's command, task, or evolution behavior.
 
 Runtime providers expose `health()` so doctor checks the selected runtime
 instead of assuming a Codex binary. They should raise
@@ -132,7 +149,7 @@ pause, resume, failure, and audit behavior across implementations.
 The built-in adapters preserve the existing `telegram:` and `codex:` settings.
 `bin/enoch-telegram` remains available, while `bin/enoch-agent` starts whichever
 chat provider is selected. Provider packages do not need to modify Enoch core or
-fork the Telegram bot.
+fork the Enoch application.
 
 Lineage discovery and cross-agent skill lookup currently use GitHub-specific
 source conventions. The replaceable forge boundary covers task publication,

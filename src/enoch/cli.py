@@ -30,7 +30,7 @@ HELP = """Commands:
   help        Show this help.
   init        Create or claim a local Enoch instance worktree.
   status      Show identity, model, and lineage.
-  setup       Configure Telegram token, chat lock, and setup status.
+  setup       Configure the built-in Telegram provider and setup status.
   config      Show settings or select installed providers.
   thinking    Show or set Enoch's Codex thinking level.
   mission     Show or update Enoch's mission.
@@ -42,13 +42,13 @@ HELP = """Commands:
   update      Pull latest main, run doctor, and restart Enoch if safe.
   exit        Put Enoch back to sleep.
 
-Enoch CLI is admin-only. Use Telegram for conversation, repository edits, and self-evolution.
+Enoch CLI is admin-only. Use the configured chat provider for conversation, repository edits, and self-evolution.
 """
 
 ADMIN_ONLY_MESSAGE = "\n".join(
     [
         "Enoch CLI is admin-only now.",
-        "Use Telegram for conversation, repository edits, and self-evolution.",
+        "Use the configured chat provider for conversation, repository edits, and self-evolution.",
         "Type `help` to see available CLI commands.",
     ]
 )

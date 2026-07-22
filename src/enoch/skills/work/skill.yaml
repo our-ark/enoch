@@ -4,7 +4,7 @@ summary: Run leased persistent work in isolated task worktrees through queues, b
 owner: Enoch
 status: active
 mode: background-work
-entrypoint: src/enoch/telegram/bot.py
+entrypoint: src/enoch/application.py
 capabilities:
   task_queue: src/enoch/task_queue.py
   task_failure_classification: src/enoch/task_failures.py
@@ -20,7 +20,7 @@ permissions:
       - .enoch/backlog.json
       - .enoch/cron.json
       - .enoch/learning
-  telegram:
+  chat:
     send_status_updates: true
 validation:
   command: python3 -m unittest discover -s tests

@@ -223,7 +223,7 @@ class EnochTelegramTests(unittest.TestCase):
             respond.side_effect = inspect_image
             bot.handle_update(_photo_update(chat_id=42, caption="这是什么花？"))
 
-            image_dir = root / ".enoch" / "telegram" / "images"
+            image_dir = root / ".enoch" / "channels" / "telegram" / "images"
             self.assertEqual(list(image_dir.iterdir()), [])
 
         self.assertEqual(client.downloads, [("large-photo", MAX_TELEGRAM_IMAGE_BYTES)])
@@ -595,7 +595,7 @@ class EnochTelegramTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
 
-            with patch.dict(_begin_lifecycle_run.__globals__, {"current_head": current_head}):
+            with patch("enoch.channel.current_head", current_head):
                 _begin_lifecycle_run(root)
             state = _load_lifecycle_state(root)
 
@@ -745,7 +745,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("/update", client.sent[0][1])
         self.assertIn("/config - show or update local system settings", client.sent[0][1])
         self.assertIn("/resume - continue tasks paused while Codex access was unavailable", client.sent[0][1])
-        self.assertIn("/restart - restart Enoch's Telegram daemon from the locked chat", client.sent[0][1])
+        self.assertIn("/restart - restart Enoch's chat daemon from the locked conversation", client.sent[0][1])
         self.assertNotIn("/shutdown", client.sent[0][1])
         self.assertIn("say the request naturally", client.sent[0][1])
 
@@ -794,7 +794,7 @@ class EnochTelegramTests(unittest.TestCase):
 
         bot.handle_update(_message_update(chat_id=42, text="/pr merge 12"))
 
-        self.assertIn("locked Telegram chat", client.sent[0][1])
+        self.assertIn("locked Telegram conversation", client.sent[0][1])
         merge.assert_not_called()
 
     @patch("enoch.telegram.bot.merge_pull_request")
@@ -3734,7 +3734,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("Enoch status:", client.sent[0][1])
         self.assertIn("AI model: gpt-5-codex", client.sent[0][1])
         self.assertIn("Local state:", client.sent[0][1])
-        self.assertIn("Telegram chat lock: 42", client.sent[0][1])
+        self.assertIn("Telegram conversation lock: 42", client.sent[0][1])
         self.assertNotIn("action mode", client.sent[0][1])
         self.assertNotIn("I am Enoch.", client.sent[0][1])
         self.assertNotIn("Ancestor:", client.sent[0][1])
@@ -3766,7 +3766,7 @@ class EnochTelegramTests(unittest.TestCase):
 
         bot.handle_update(_message_update(chat_id=42, text="/status"))
 
-        self.assertIn("Telegram chat lock: not set", client.sent[0][1])
+        self.assertIn("Telegram conversation lock: not set", client.sent[0][1])
         self.assertIn("bin/enoch setup-chat 42", client.sent[0][1])
         self.assertIn("bin/enoch-daemon restart", client.sent[0][1])
 
@@ -4007,7 +4007,7 @@ class EnochTelegramTests(unittest.TestCase):
         bot.handle_update(_message_update(chat_id=42, text="/update"))
 
         update_from_main.assert_not_called()
-        self.assertIn("locked to one chat", client.sent[0][1])
+        self.assertIn("locked to one conversation", client.sent[0][1])
 
     @patch("enoch.telegram.bot._schedule_daemon_restart")
     def test_restart_schedules_daemon_restart_after_reply(self, schedule_restart: MagicMock) -> None:
@@ -4027,7 +4027,7 @@ class EnochTelegramTests(unittest.TestCase):
         bot.handle_update(_message_update(chat_id=42, text="/restart"))
 
         schedule_restart.assert_not_called()
-        self.assertIn("locked to one chat", client.sent[0][1])
+        self.assertIn("locked to one conversation", client.sent[0][1])
 
     @patch("enoch.telegram.bot.respond", return_value="Let's think through reminders first.")
     def test_natural_feature_request_uses_read_only_wrapper(self, respond: MagicMock) -> None:
@@ -4681,7 +4681,7 @@ class EnochTelegramTests(unittest.TestCase):
             bot.run_once()
 
         self.assertEqual(bot.offset, 11)
-        self.assertIn("Telegram chat id: 42", client.sent[0][1])
+        self.assertIn("Telegram conversation id: 42", client.sent[0][1])
 
     def test_run_once_persists_offset_for_restart(self) -> None:
         with TemporaryDirectory() as temp:
@@ -4730,10 +4730,11 @@ class EnochTelegramTests(unittest.TestCase):
         bot.handle_update(_message_update(update_id=10, chat_id=42, text="/status"))
 
         self.log_system_event.assert_any_call(
-            "telegram_read_ack_failed",
+            "chat_read_ack_failed",
             root=ROOT,
             status="failed",
             details={
+                "provider": "telegram",
                 "chat_id": 42,
                 "message_id": 1010,
                 "error": "reaction failed",

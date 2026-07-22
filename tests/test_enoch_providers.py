@@ -15,6 +15,7 @@ from enoch.git_tools import run_git
 from enoch.identity import load_identity
 from enoch.immune import _runtime_provider_check
 from enoch.providers import (
+    Attachment,
     ChatEvent,
     ProviderHealth,
     available_providers,
@@ -85,13 +86,18 @@ class _Chat:
     def __init__(self) -> None:
         self.sent = []
         self.acks = []
+        self.downloaded = []
+        self.events = []
+        self.cursors = []
 
     @property
     def allowed_conversation_id(self):
         return "room-1"
 
     def receive(self, cursor=None):
-        return []
+        self.cursors.append(cursor)
+        events, self.events = self.events, []
+        return events
 
     def send_message(self, conversation_id, text):
         self.sent.append((conversation_id, text))
@@ -102,6 +108,10 @@ class _Chat:
 
     def send_read_ack(self, conversation_id, message_id):
         self.acks.append((conversation_id, message_id))
+
+    def download_attachment(self, attachment, destination, *, max_bytes):
+        self.downloaded.append((attachment.file_id, max_bytes))
+        destination.write_bytes(b"\xff\xd8\xffplugin-image")
 
 
 class _EntryPoint:
@@ -235,6 +245,72 @@ class EnochProviderTests(unittest.TestCase):
         self.assertEqual(chat.sent, [("room-1", "Hello from a plugin runtime.")])
         self.assertEqual(runtime.reset_count, 1)
         self.assertEqual(runtime.messages[0][2]["session_key"], "test-chat:room-1")
+
+    def test_custom_chat_provider_persists_opaque_cursor(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            chat = _Chat()
+            runtime = _Runtime()
+            chat.events = [
+                ChatEvent(
+                    cursor="next-page-token",
+                    conversation_id="room-1",
+                    message_id="message-1",
+                    text="/status",
+                )
+            ]
+            app = EnochApplication(load_identity(), root, chat, runtime=runtime)
+
+            with (
+                patch("enoch.application.log_conversation_turn"),
+                patch("enoch.application.ensure_long_term_memory"),
+            ):
+                app.run_once()
+                restarted = EnochApplication(load_identity(), root, chat, runtime=runtime)
+                restarted.run_once()
+
+            state = (root / ".enoch" / "channels" / "test-chat" / "cursor.json").read_text(
+                encoding="utf-8"
+            )
+
+        self.assertEqual(chat.cursors, [None, "next-page-token"])
+        self.assertIn('"cursor": "next-page-token"', state)
+        self.assertIn("Test Chat conversation id: room-1", chat.sent[0][1])
+        self.assertNotIn("Telegram", chat.sent[0][1])
+
+    def test_custom_chat_provider_supplies_image_attachment(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            chat = _Chat()
+            runtime = _Runtime()
+            app = EnochApplication(load_identity(), root, chat, runtime=runtime)
+            event = ChatEvent(
+                cursor="image-2",
+                conversation_id="room-1",
+                message_id="message-1",
+                text="What is this?",
+                attachments=(
+                    Attachment(
+                        kind="image",
+                        file_id="plugin-file-1",
+                        mime_type="image/jpeg",
+                        size=128,
+                    ),
+                ),
+            )
+
+            with (
+                patch("enoch.application.log_conversation_turn"),
+                patch("enoch.application.ensure_long_term_memory"),
+            ):
+                app.handle_event(event)
+
+            image_path = runtime.messages[0][2]["image_paths"][0]
+
+        self.assertEqual(chat.downloaded[0][0], "plugin-file-1")
+        self.assertFalse(image_path.exists())
+        self.assertIn("Test Chat conversation", runtime.messages[0][1])
+        self.assertNotIn("Telegram image boundary", runtime.messages[0][1])
 
     def test_custom_chat_provider_selects_generic_daemon_launcher(self) -> None:
         register_provider("chat", "test-chat", lambda _root=None: _Chat(), replace=True)

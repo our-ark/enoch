@@ -8,6 +8,7 @@ from typing import Any, Callable, Protocol, Sequence, runtime_checkable
 
 ConversationId = int | str
 MessageId = int | str
+Cursor = int | str
 ProgressCallback = Callable[[int, str], None]
 
 
@@ -64,7 +65,7 @@ class Attachment:
 
 @dataclass(frozen=True)
 class ChatEvent:
-    cursor: int
+    cursor: Cursor
     conversation_id: ConversationId
     text: str
     message_id: MessageId | None = None
@@ -96,7 +97,7 @@ class ChatProvider(Protocol):
     @property
     def allowed_conversation_id(self) -> ConversationId | None: ...
 
-    def receive(self, cursor: int | None = None) -> list[ChatEvent]: ...
+    def receive(self, cursor: Cursor | None = None) -> list[ChatEvent]: ...
 
     def send_message(
         self,
@@ -115,6 +116,17 @@ class ChatProvider(Protocol):
         self,
         conversation_id: ConversationId,
         message_id: MessageId,
+    ) -> None: ...
+
+
+@runtime_checkable
+class AttachmentProvider(Protocol):
+    def download_attachment(
+        self,
+        attachment: Attachment,
+        destination: Path,
+        *,
+        max_bytes: int,
     ) -> None: ...
 
 

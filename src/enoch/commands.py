@@ -66,8 +66,10 @@ def status_message(
     *,
     allowed_chat_id: ConversationId | None,
     chat_id: ConversationId | None = None,
+    chat_provider: str = "telegram",
     model_summary_fn: ModelSummaryFn = model_summary,
 ) -> str:
+    provider_label = _provider_label(chat_provider)
     lines = [
         f"{identity.name} status:",
         "",
@@ -76,22 +78,28 @@ def status_message(
         "Local state:",
     ]
     if chat_id is not None:
-        lines.append(f"- Telegram chat id: {chat_id}")
+        lines.append(f"- {provider_label} conversation id: {chat_id}")
     lines.extend(
         [
-            f"- Telegram chat lock: {allowed_chat_id if allowed_chat_id is not None else 'not set'}",
+            f"- {provider_label} conversation lock: "
+            f"{allowed_chat_id if allowed_chat_id is not None else 'not set'}",
         ]
     )
     if allowed_chat_id is None and chat_id is not None:
-        lines.extend(
-            [
-                "",
-                "Lock Enoch to this Telegram chat with:",
-                f"bin/enoch setup-chat {chat_id}",
-                "Then restart Enoch:",
-                "bin/enoch-daemon restart",
-            ]
-        )
+        lines.append("")
+        if chat_provider.strip().lower() == "telegram":
+            lines.extend(
+                [
+                    "Lock Enoch to this Telegram conversation with:",
+                    f"bin/enoch setup-chat {chat_id}",
+                    "Then restart Enoch:",
+                    "bin/enoch-daemon restart",
+                ]
+            )
+        else:
+            lines.append(
+                f"Configure the {provider_label} provider to lock Enoch to this conversation, then restart Enoch."
+            )
     return "\n".join(lines)
 
 
@@ -204,8 +212,11 @@ def thinking_usage(prefix: str = "/") -> str:
     )
 
 
-def thinking_lock_message() -> str:
-    return "Enoch needs Telegram to be locked to one chat before changing her thinking level."
+def thinking_lock_message(chat_provider: str = "telegram") -> str:
+    return (
+        f"Enoch needs {_provider_label(chat_provider)} to be locked to one conversation "
+        "before changing her thinking level."
+    )
 
 
 def config_command(
@@ -590,7 +601,7 @@ def doctor_command(
     return format_doctor(run_doctor(root))
 
 
-def help_message(topic: str = "") -> str:
+def help_message(topic: str = "", *, chat_provider: str = "telegram") -> str:
     normalized_topic = _normalize_help_topic(topic)
     if normalized_topic:
         topic_message = _help_topic_message(normalized_topic)
@@ -599,7 +610,7 @@ def help_message(topic: str = "") -> str:
         return f"No help found for /{normalized_topic}.\nUse /help to see available commands."
     return "\n".join(
         [
-            "Enoch Telegram commands:",
+            "Enoch commands:",
             "/help - show this command list",
             "",
             "Common:",
@@ -638,7 +649,7 @@ def help_message(topic: str = "") -> str:
             "/doctor - run local health checks",
             "/pr - list and manage pull requests",
             "/update - pull latest main, run doctor, and restart if safe",
-            "/restart - restart Enoch's Telegram daemon from the locked chat",
+            "/restart - restart Enoch's chat daemon from the locked conversation",
             "",
             "For repository changes, say the request naturally. Enoch will open a PR automatically when Codex requests an edit.",
         ]
@@ -732,7 +743,7 @@ def _help_topic_message(topic: str) -> str:
         "doctor": "/doctor - run local health checks",
         "resume": "/resume - continue tasks paused while Codex access was unavailable",
         "update": "/update - pull latest main, run doctor, and restart if safe",
-        "restart": "/restart - restart Enoch's Telegram daemon from the locked chat",
+        "restart": "/restart - restart Enoch's chat daemon from the locked conversation",
         "thinking": thinking_usage("/"),
     }
     return topics.get(topic, "")
@@ -750,10 +761,21 @@ def pr_usage(prefix: str = "/") -> str:
     )
 
 
-def action_lock_message() -> str:
+def action_lock_message(chat_provider: str = "telegram") -> str:
+    label = _provider_label(chat_provider)
+    setup = (
+        "Run `bin/enoch setup-chat <chat_id>` and restart Enoch."
+        if chat_provider.strip().lower() == "telegram"
+        else f"Configure the {label} provider with a locked conversation and restart Enoch."
+    )
     return "\n".join(
         [
-            "Enoch will not change code or coordinate GitHub unless Telegram is locked to one chat.",
-            "Run `bin/enoch setup-chat <chat_id>` and restart Enoch.",
+            f"Enoch will not change code or coordinate GitHub unless {label} is locked to one conversation.",
+            setup,
         ]
     )
+
+
+def _provider_label(name: str) -> str:
+    cleaned = " ".join(part for part in re.split(r"[-_]", name.strip()) if part)
+    return cleaned.title() or "Chat"

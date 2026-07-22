@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from enoch.telegram.bot import (
+from enoch.application import (
     EnochApplication,
     EnochTelegramBot,
     ShutdownRequested,

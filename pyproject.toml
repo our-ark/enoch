@@ -15,7 +15,7 @@ dependencies = [
 
 [project.scripts]
 enoch = "enoch.cli:main"
-enoch-agent = "enoch.telegram:main"
+enoch-agent = "enoch.application:main"
 enoch-daemon = "enoch.daemon:main"
 enoch-telegram = "enoch.telegram:telegram_main"
 

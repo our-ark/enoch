@@ -17,7 +17,7 @@ capabilities:
     - src/enoch/lineage/core.py
     - src/enoch/learn.py
     - src/enoch/brainstorming.py
-  command_surface: src/enoch/telegram/bot.py
+  command_surface: src/enoch/application.py
 permissions:
   filesystem:
     read:

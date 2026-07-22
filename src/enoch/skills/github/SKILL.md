@@ -28,7 +28,7 @@ Use this skill when Enoch needs to coordinate work with GitHub: branches, pull r
 6. Create or update the PR with a clear summary and validation notes.
 7. Approve a PR only when the human explicitly asks for approval.
 8. Treat the PR as the human review boundary.
-9. Never merge without an explicit human `/pr merge <PR number or GitHub PR URL>` command from the locked Telegram chat.
+9. Never merge without an explicit human `/pr merge <PR number or GitHub PR URL>` command from the locked chat-provider conversation.
 
 ## Explicit Merge Approval
 
