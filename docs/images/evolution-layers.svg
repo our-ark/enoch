@@ -59,23 +59,19 @@
   <rect x="984" y="166" width="384" height="404" rx="8" fill="#ffffff" stroke="#a83250" stroke-width="2.5"/>
   <rect x="984" y="166" width="384" height="8" rx="4" fill="#bd3f5d"/>
   <text x="1016" y="222" fill="#a83250" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="15" font-weight="700">03  IMPLEMENTATION</text>
-  <!-- Enoch mark: evidence converges through a governed gate into software. -->
+  <!-- Enoch mark: versioned software layers grow through a governed lineage. -->
   <g transform="translate(1016 236) scale(.4)">
-    <rect x="4" y="4" width="112" height="112" rx="24" fill="#bd3f5d"/>
-    <g fill="none" stroke="#fff" stroke-width="7" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M25 29 H39 C48 29 51 38 51 47 V60"/>
-      <path d="M25 60 H51"/>
-      <path d="M25 91 H39 C48 91 51 82 51 73 V60"/>
-      <path d="M51 60 H66"/>
-      <rect x="66" y="34" width="31" height="52" rx="7"/>
+    <rect width="120" height="120" rx="24" fill="#bd3f5d"/>
+    <g fill="none" stroke="#fff" stroke-width="6.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M60 63 V57 L71 49 V41 L63 35 V32"/>
+      <path d="M60 57 L47 54"/>
+      <path d="M27 79 L60 63 L93 79 L60 95 Z"/>
+      <path d="M27 88 L60 104 L93 88"/>
+      <path d="M27 97 L60 113 L93 97"/>
     </g>
-    <g fill="#fff">
-      <circle cx="25" cy="29" r="7"/>
-      <circle cx="25" cy="60" r="7"/>
-      <circle cx="25" cy="91" r="7"/>
-      <circle cx="82" cy="50" r="4"/>
-      <rect x="76" y="63" width="12" height="6" rx="3"/>
-    </g>
+    <circle cx="47" cy="54" r="3.5" fill="#fff"/>
+    <circle cx="71" cy="49" r="3.5" fill="#fff"/>
+    <path d="M63 8 C64.5 15 68 18.5 75 20 C68 21.5 64.5 25 63 32 C61.5 25 58 21.5 51 20 C58 18.5 61.5 15 63 8 Z" fill="#fff"/>
   </g>
   <text x="1080" y="270" fill="#171a1f" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="28" font-weight="700">Enoch</text>
   <text x="1016" y="315" fill="#6a737d" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="14" font-weight="600">PRIMARY DURABLE LAYER</text>

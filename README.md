@@ -1,5 +1,9 @@
 # Enoch
 
+<p align="center">
+  <img src="docs/images/enoch-mark.svg" alt="Enoch mark" width="112">
+</p>
+
 Enoch is an extensible local agent that can converse, work on repositories,
 run persistent and scheduled tasks, learn from other agents, and propose
 bounded improvements to her own code.
