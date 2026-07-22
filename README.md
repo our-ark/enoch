@@ -9,11 +9,34 @@ Seth's self-evolving descendant: walk with her code body, inspect her own work, 
 ## Requirements
 
 - Python 3.11, 3.12, or 3.13
-- Git
-- A working Codex CLI login for reasoning and evolution tasks
-- GitHub CLI authentication when publishing branches or pull requests
-- Telegram credentials only when using the optional Telegram interface
-- macOS launchd or a Linux systemd user session for background operation
+- The tools and credentials required by the providers you select
+
+## Reference Environment
+
+Enoch's reference interactive deployment runs locally on a MacBook with
+macOS, Codex, Telegram, Git, GitHub, and launchd. This is the environment used
+to operate the original Enoch instance, not a fixed architectural requirement.
+The test suite also runs on Linux, and a systemd user-service provider is
+included.
+
+| Capability | Reference provider | Replaceable with |
+| --- | --- | --- |
+| Chat | Telegram | Slack, Discord, another chat system, or a custom interface |
+| Agent runtime | Codex CLI | Claude or another agent runtime |
+| Version control | Git | Another version-control implementation |
+| Code forge | GitHub | GitLab, Gitea, or another forge |
+| Background service | launchd on macOS; systemd on Linux | Another process or service manager |
+
+Enoch core depends on provider contracts rather than Telegram, GitHub,
+launchd, or systemd directly. Provider packages can be added through the
+`enoch.providers` Python entry-point group and selected in the private
+`.enoch/config.yaml` file, with `/config provider`, or with environment
+variables. A custom deployment implements whichever of the `chat`, `runtime`,
+`vcs`, `forge`, and `service` capabilities differ from the reference stack.
+
+The reference providers require a Codex CLI login, Git, GitHub CLI
+authentication for publishing, Telegram credentials for chat, and either
+launchd or a systemd user session for background operation.
 
 ## Quick Start
 
