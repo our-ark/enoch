@@ -2,6 +2,7 @@ from pathlib import Path
 import os
 import sys
 import tempfile
+import threading
 import unittest
 import unittest.mock
 
@@ -11,10 +12,14 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from our_ark_provider_kit import (
     AgentContextError,
+    AgentRuntimeCancelled,
+    AgentRuntimeTimedOut,
     Attachment,
     AttachmentProvider,
     ChatEvent,
     ChatProvider,
+    RuntimeExecutionControl,
+    RuntimeProgress,
     agent_context,
     normalize_conversation_id,
     normalize_message_id,
@@ -80,6 +85,36 @@ class ProviderKitTests(unittest.TestCase):
     def test_chat_provider_contract_is_runtime_checkable(self) -> None:
         self.assertIsInstance(FakeChatProvider(), ChatProvider)
         self.assertIsInstance(FakeChatProvider(), AttachmentProvider)
+
+    def test_runtime_progress_is_provider_neutral_and_normalized(self) -> None:
+        progress = RuntimeProgress(
+            elapsed_seconds=-4,
+            stage=" Working ",
+            message=" preparing ",
+            sandbox=" workspace-write ",
+        )
+
+        self.assertEqual(progress.elapsed_seconds, 0)
+        self.assertEqual(progress.stage, "working")
+        self.assertEqual(progress.message, "preparing")
+        self.assertEqual(progress.sandbox, "workspace-write")
+
+    def test_runtime_execution_distinguishes_timeout_from_cancellation(self) -> None:
+        cancellation = threading.Event()
+        timeout = threading.Event()
+        cancellation.set()
+        timeout.set()
+        execution = RuntimeExecutionControl(
+            cancellation_event=cancellation,
+            timeout_event=timeout,
+        )
+
+        with self.assertRaises(AgentRuntimeTimedOut):
+            execution.raise_if_stopped()
+
+        timeout.clear()
+        with self.assertRaises(AgentRuntimeCancelled):
+            execution.raise_if_stopped()
 
 
 class FakeChatProvider:

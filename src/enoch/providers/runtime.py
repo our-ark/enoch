@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import inspect
 from pathlib import Path
 import threading
 from typing import Any, Callable, Sequence
@@ -9,6 +10,9 @@ from enoch.identity import Identity
 from enoch.providers.contracts import (
     ProgressCallback,
     ProviderHealth,
+    RuntimeExecutionControl,
+    RuntimeProgress,
+    RuntimeProgressCallback,
     RuntimeResult,
     RuntimeResultLike,
     normalize_runtime_result,
@@ -43,17 +47,29 @@ class FunctionAgentRuntime:
         progress_callback: ProgressCallback | None = None,
         session_key: str = "",
         image_paths: Sequence[Path] = (),
+        execution: RuntimeExecutionControl | None = None,
     ) -> RuntimeResult:
-        return normalize_runtime_result(
-            self.respond_fn(
-                identity,
-                message,
-                cwd=cwd,
-                progress_callback=progress_callback,
-                session_key=session_key,
-                image_paths=image_paths,
-            )
+        control = _execution_control(
+            execution,
+            session_key=session_key,
+            progress_callback=progress_callback,
         )
+        control.raise_if_stopped()
+        kwargs = {
+            "cwd": cwd,
+            "progress_callback": _legacy_progress_callback(
+                control.progress_callback
+            ),
+            "session_key": control.session_key,
+            "image_paths": image_paths,
+        }
+        if _accepts_keyword(self.respond_fn, "execution"):
+            kwargs["execution"] = control
+        result = normalize_runtime_result(
+            self.respond_fn(identity, message, **kwargs)
+        )
+        control.raise_if_stopped()
+        return result
 
     def act_in_session(
         self,
@@ -65,19 +81,32 @@ class FunctionAgentRuntime:
         session_key: str = "",
         cancellation_event: threading.Event | None = None,
         state_root: Path | None = None,
+        execution: RuntimeExecutionControl | None = None,
     ) -> RuntimeResult:
-        return normalize_runtime_result(
-            self.act_in_session_fn(
-                identity,
-                message,
-                cwd=cwd,
-                progress_callback=progress_callback,
-                sandbox=sandbox,
-                session_key=session_key,
-                cancellation_event=cancellation_event,
-                state_root=state_root,
-            )
+        control = _execution_control(
+            execution,
+            session_key=session_key,
+            cancellation_event=cancellation_event,
+            progress_callback=progress_callback,
         )
+        control.raise_if_stopped()
+        kwargs = {
+            "cwd": cwd,
+            "progress_callback": _legacy_progress_callback(
+                control.progress_callback
+            ),
+            "sandbox": sandbox,
+            "session_key": control.session_key,
+            "cancellation_event": control.cancellation_event,
+            "state_root": state_root,
+        }
+        if _accepts_keyword(self.act_in_session_fn, "execution"):
+            kwargs["execution"] = control
+        result = normalize_runtime_result(
+            self.act_in_session_fn(identity, message, **kwargs)
+        )
+        control.raise_if_stopped()
+        return result
 
     def model_summary(self, root: Path | None = None) -> str:
         return self.model_summary_fn(root)
@@ -201,6 +230,146 @@ class CodexRuntime(FunctionAgentRuntime):
 
 def create_provider(root: Path | None = None) -> CodexRuntime:
     return CodexRuntime(root)
+
+
+def invoke_runtime_respond(
+    runtime: object,
+    identity: Identity,
+    message: str,
+    *,
+    cwd: Path | None = None,
+    execution: RuntimeExecutionControl | None = None,
+    image_paths: Sequence[Path] = (),
+) -> RuntimeResult:
+    control = execution or RuntimeExecutionControl()
+    control.raise_if_stopped()
+    respond_fn = getattr(runtime, "respond")
+    if _declares_keyword(respond_fn, "execution"):
+        value = respond_fn(
+            identity,
+            message,
+            cwd=cwd,
+            image_paths=image_paths,
+            execution=control,
+        )
+    else:
+        value = respond_fn(
+            identity,
+            message,
+            cwd=cwd,
+            progress_callback=_legacy_progress_callback(
+                control.progress_callback
+            ),
+            session_key=control.session_key,
+            image_paths=image_paths,
+        )
+    result = normalize_runtime_result(value)
+    control.raise_if_stopped()
+    return result
+
+
+def invoke_runtime_action(
+    runtime: object,
+    identity: Identity,
+    message: str,
+    *,
+    cwd: Path | None = None,
+    sandbox: str = "",
+    execution: RuntimeExecutionControl | None = None,
+    state_root: Path | None = None,
+) -> RuntimeResult:
+    control = execution or RuntimeExecutionControl()
+    control.raise_if_stopped()
+    act_fn = getattr(runtime, "act_in_session")
+    if _declares_keyword(act_fn, "execution"):
+        value = act_fn(
+            identity,
+            message,
+            cwd=cwd,
+            sandbox=sandbox,
+            state_root=state_root,
+            execution=control,
+        )
+    else:
+        value = act_fn(
+            identity,
+            message,
+            cwd=cwd,
+            progress_callback=_legacy_progress_callback(
+                control.progress_callback
+            ),
+            sandbox=sandbox,
+            session_key=control.session_key,
+            cancellation_event=control.cancellation_event,
+            state_root=state_root,
+        )
+    result = normalize_runtime_result(value)
+    control.raise_if_stopped()
+    return result
+
+
+def _execution_control(
+    execution: RuntimeExecutionControl | None,
+    *,
+    session_key: str,
+    cancellation_event: threading.Event | None = None,
+    progress_callback: ProgressCallback | None = None,
+) -> RuntimeExecutionControl:
+    if execution is not None:
+        return execution
+    return RuntimeExecutionControl(
+        session_key=session_key,
+        cancellation_event=cancellation_event,
+        progress_callback=_typed_progress_callback(progress_callback),
+    )
+
+
+def _typed_progress_callback(
+    callback: ProgressCallback | None,
+) -> RuntimeProgressCallback | None:
+    if callback is None:
+        return None
+    return lambda progress: callback(progress.elapsed_seconds, progress.sandbox)
+
+
+def _legacy_progress_callback(
+    callback: RuntimeProgressCallback | None,
+) -> ProgressCallback | None:
+    if callback is None:
+        return None
+    return lambda elapsed, sandbox: callback(
+        RuntimeProgress(elapsed_seconds=elapsed, sandbox=sandbox)
+    )
+
+
+def _accepts_keyword(function: Callable[..., object], keyword: str) -> bool:
+    try:
+        parameters = inspect.signature(function).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    return any(
+        parameter.kind == inspect.Parameter.VAR_KEYWORD
+        or (
+            parameter.name == keyword
+            and parameter.kind
+            in {
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                inspect.Parameter.KEYWORD_ONLY,
+            }
+        )
+        for parameter in parameters
+    )
+
+
+def _declares_keyword(function: Callable[..., object], keyword: str) -> bool:
+    try:
+        parameter = inspect.signature(function).parameters.get(keyword)
+    except (TypeError, ValueError):
+        return False
+    return parameter is not None and parameter.kind in {
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        inspect.Parameter.KEYWORD_ONLY,
+    }
 
 
 OUR_ARK_PROVIDERS = (

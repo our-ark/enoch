@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 import threading
+import time
 from typing import Any, Callable, Protocol, Sequence, runtime_checkable
 
 
@@ -11,6 +12,7 @@ MessageId = int | str
 Cursor = int | str
 ProgressCallback = Callable[[int, str], None]
 RUNTIME_CONTRACT_VERSION = 1
+RUNTIME_EXECUTION_CONTRACT_VERSION = 1
 
 
 def normalize_conversation_id(value: object) -> ConversationId | None:
@@ -34,6 +36,10 @@ class AgentRuntimeError(RuntimeError):
 
 class AgentRuntimeCancelled(AgentRuntimeError):
     """Raised when a running agent request is cancelled."""
+
+
+class AgentRuntimeTimedOut(AgentRuntimeError):
+    """Raised when a runtime invocation exceeds its execution deadline."""
 
 
 class AgentRuntimeAccessUnavailable(AgentRuntimeError):
@@ -86,6 +92,95 @@ class ProviderHealth:
     command: str
     output: str = ""
     summary: str = ""
+
+
+@dataclass(frozen=True)
+class RuntimeProgress:
+    elapsed_seconds: int
+    stage: str = "running"
+    message: str = ""
+    sandbox: str = ""
+    session_id: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
+    contract_version: int = RUNTIME_EXECUTION_CONTRACT_VERSION
+
+    def __post_init__(self) -> None:
+        if self.contract_version != RUNTIME_EXECUTION_CONTRACT_VERSION:
+            raise ValueError(
+                f"Runtime progress uses contract version {self.contract_version}; "
+                f"supported version is {RUNTIME_EXECUTION_CONTRACT_VERSION}."
+            )
+        object.__setattr__(self, "elapsed_seconds", max(0, int(self.elapsed_seconds)))
+        object.__setattr__(self, "stage", str(self.stage).strip().lower() or "running")
+        object.__setattr__(self, "message", str(self.message).strip())
+        object.__setattr__(self, "sandbox", str(self.sandbox).strip())
+        object.__setattr__(self, "session_id", str(self.session_id).strip())
+
+
+RuntimeProgressCallback = Callable[[RuntimeProgress], None]
+
+
+@dataclass(frozen=True)
+class RuntimeExecutionControl:
+    request_id: str = ""
+    session_key: str = ""
+    timeout_seconds: int | None = None
+    cancellation_event: threading.Event | None = None
+    timeout_event: threading.Event | None = None
+    progress_callback: RuntimeProgressCallback | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
+    started_at_monotonic: float = field(default_factory=time.monotonic)
+    contract_version: int = RUNTIME_EXECUTION_CONTRACT_VERSION
+
+    def __post_init__(self) -> None:
+        if self.contract_version != RUNTIME_EXECUTION_CONTRACT_VERSION:
+            raise ValueError(
+                f"Runtime execution uses contract version {self.contract_version}; "
+                f"supported version is {RUNTIME_EXECUTION_CONTRACT_VERSION}."
+            )
+        timeout = self.timeout_seconds
+        if timeout is not None:
+            timeout = int(timeout)
+            if timeout <= 0:
+                raise ValueError("Runtime execution timeout must be positive.")
+        object.__setattr__(self, "request_id", str(self.request_id).strip())
+        object.__setattr__(self, "session_key", str(self.session_key).strip())
+        object.__setattr__(self, "timeout_seconds", timeout)
+        object.__setattr__(
+            self,
+            "started_at_monotonic",
+            float(self.started_at_monotonic),
+        )
+
+    @property
+    def timed_out(self) -> bool:
+        if self.timeout_event is not None and self.timeout_event.is_set():
+            return True
+        return (
+            self.timeout_seconds is not None
+            and time.monotonic() - self.started_at_monotonic >= self.timeout_seconds
+        )
+
+    @property
+    def cancelled(self) -> bool:
+        return (
+            not self.timed_out
+            and self.cancellation_event is not None
+            and self.cancellation_event.is_set()
+        )
+
+    def raise_if_stopped(self) -> None:
+        if self.timed_out:
+            raise AgentRuntimeTimedOut("Agent runtime execution timed out.")
+        if self.cancelled:
+            raise AgentRuntimeCancelled("Agent runtime execution was cancelled.")
+
+    def emit_progress(self, progress: RuntimeProgress) -> None:
+        if self.progress_callback is not None:
+            self.progress_callback(progress)
 
 
 @dataclass(frozen=True)
@@ -332,6 +427,7 @@ class AgentRuntime(Protocol):
         progress_callback: ProgressCallback | None = None,
         session_key: str = "",
         image_paths: Sequence[Path] = (),
+        execution: RuntimeExecutionControl | None = None,
     ) -> RuntimeResultLike: ...
 
     def act_in_session(
@@ -344,6 +440,7 @@ class AgentRuntime(Protocol):
         session_key: str = "",
         cancellation_event: threading.Event | None = None,
         state_root: Path | None = None,
+        execution: RuntimeExecutionControl | None = None,
     ) -> RuntimeResultLike: ...
 
     def model_summary(self, root: Path | None = None) -> str: ...

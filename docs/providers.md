@@ -240,6 +240,59 @@ session, completion reason, token usage, event types, output references, and
 side-effect references. Full provider event payloads remain in the in-memory
 result and are not copied wholesale into private task logs.
 
+## Runtime execution semantics
+
+Runtime execution contract version 1 uses `RuntimeExecutionControl` for both
+`respond()` and `act_in_session()`. It gives every invocation the same logical
+session, timeout, cancellation, and progress surface:
+
+```python
+from enoch.providers import RuntimeExecutionControl
+
+
+control = RuntimeExecutionControl(
+    request_id="task:42:attempt:1",
+    session_key="chat:42:task:42",
+    timeout_seconds=600,
+    cancellation_event=cancel_event,
+    timeout_event=timeout_event,
+    progress_callback=lambda progress: print(
+        progress.stage,
+        progress.elapsed_seconds,
+    ),
+)
+```
+
+A non-empty `session_key` identifies persistent logical provider state. The
+first invocation starts that state; later invocations with the same key resume
+it when available. Providers return their native resumable identifier in
+`RuntimeResult.session_id` without exposing it as Enoch's routing key.
+
+Providers emit typed `RuntimeProgress` values. `elapsed_seconds`, `stage`,
+`message`, `sandbox`, `session_id`, and provider-neutral metadata are available
+without coupling Enoch to provider-native event payloads.
+
+Timeout and human cancellation are distinct terminal conditions:
+
+- Raise `AgentRuntimeTimedOut` when the execution deadline expires.
+- Raise `AgentRuntimeCancelled` when a caller requests cancellation.
+- Raise `AgentRuntimeAccessUnavailable` when authentication, quota, or rate
+  limits require the task to pause.
+- Raise `AgentRuntimeError` for other provider failures.
+- Return `RuntimeResult` only after a successful invocation has reached its
+  completion boundary.
+
+Enoch checks the control before invocation and again before accepting the
+result, so a result that arrives after cancellation or timeout is not treated
+as successful. Runtime providers should also poll `control.raise_if_stopped()`
+while waiting on long-running external work.
+
+For migration compatibility, Enoch adapts providers that do not explicitly
+declare the `execution` keyword. Legacy providers continue to receive
+`session_key`, `cancellation_event`, and `(elapsed_seconds, sandbox)` progress
+callbacks. New providers should explicitly declare `execution` and use the
+typed contract.
+
 Runtime-specific settings stay with the provider. A runtime may optionally
 implement `configure(args, root, prefix="/")` for
 `/config runtime <provider> ...` and `config_summary(root)` for its section in

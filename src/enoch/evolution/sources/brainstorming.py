@@ -145,12 +145,19 @@ def brainstorm_prompt(theme: str, mission: str, *, limit: int = 3) -> str:
 
 def _default_generator(root: Path | None) -> BrainstormGenerator:
     def generate(prompt: str) -> str:
-        from enoch.providers.contracts import normalize_runtime_result
+        from enoch.providers.contracts import RuntimeExecutionControl
         from enoch.providers.registry import load_provider
+        from enoch.providers.runtime import invoke_runtime_respond
 
         runtime = load_provider("runtime", root)
-        return normalize_runtime_result(
-            runtime.respond(load_identity(), prompt, cwd=root)
+        return invoke_runtime_respond(
+            runtime,
+            load_identity(),
+            prompt,
+            cwd=root,
+            execution=RuntimeExecutionControl(
+                request_id="evolve:brainstorm",
+            ),
         ).final_text
 
     return generate

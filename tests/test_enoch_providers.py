@@ -1,5 +1,6 @@
 from pathlib import Path
 import sys
+import threading
 import unittest
 from tempfile import TemporaryDirectory
 from unittest.mock import MagicMock, patch
@@ -17,6 +18,8 @@ from enoch.operations.update_tools import task_branch_base
 from enoch.operations.updater import update_from_authoritative
 from enoch.providers import (
     Attachment,
+    AgentRuntimeCancelled,
+    AgentRuntimeTimedOut,
     ChatEvent,
     LocalPublishResult,
     PullRequestResult,
@@ -24,7 +27,9 @@ from enoch.providers import (
     ProviderHealth,
     RemotePublishResult,
     RuntimeEvent,
+    RuntimeExecutionControl,
     RuntimeOutputReference,
+    RuntimeProgress,
     RuntimeResult,
     RuntimeSideEffect,
     RuntimeUsage,
@@ -35,7 +40,11 @@ from enoch.providers import (
     normalize_runtime_result,
 )
 from enoch.providers.forge import LocalForgeProvider
-from enoch.providers.runtime import FunctionAgentRuntime
+from enoch.providers.runtime import (
+    FunctionAgentRuntime,
+    invoke_runtime_action,
+    invoke_runtime_respond,
+)
 from enoch.providers import registry as provider_registry
 from enoch.app.core import EnochApplication
 from enoch.tasks.queue import enqueue_task, record_task_status_message, task_queue_status
@@ -307,6 +316,120 @@ class _EntryPoints(list):
 
 
 class EnochProviderTests(unittest.TestCase):
+    def test_runtime_execution_distinguishes_timeout_from_cancellation(self) -> None:
+        cancellation = threading.Event()
+        timeout = threading.Event()
+        cancellation.set()
+        timeout.set()
+        execution = RuntimeExecutionControl(
+            request_id="task:7",
+            session_key="task-session",
+            cancellation_event=cancellation,
+            timeout_event=timeout,
+        )
+
+        self.assertTrue(execution.timed_out)
+        self.assertFalse(execution.cancelled)
+        with self.assertRaises(AgentRuntimeTimedOut):
+            execution.raise_if_stopped()
+
+        timeout.clear()
+        self.assertFalse(execution.timed_out)
+        self.assertTrue(execution.cancelled)
+        with self.assertRaises(AgentRuntimeCancelled):
+            execution.raise_if_stopped()
+
+    def test_typed_runtime_receives_execution_and_emits_typed_progress(self) -> None:
+        received = []
+        progress = []
+
+        class TypedRuntime(_Runtime):
+            def respond(self, identity, message, *, execution, **kwargs):
+                received.append(execution)
+                execution.emit_progress(
+                    RuntimeProgress(
+                        elapsed_seconds=12,
+                        stage="working",
+                        sandbox="read-only",
+                    )
+                )
+                return RuntimeResult(final_text="typed response", session_id="provider-7")
+
+        execution = RuntimeExecutionControl(
+            request_id="conversation:room-1",
+            session_key="chat:room-1",
+            timeout_seconds=60,
+            progress_callback=progress.append,
+        )
+
+        result = invoke_runtime_respond(
+            TypedRuntime(),
+            load_identity(),
+            "hello",
+            execution=execution,
+        )
+
+        self.assertIs(received[0], execution)
+        self.assertEqual(received[0].session_key, "chat:room-1")
+        self.assertEqual(result.session_id, "provider-7")
+        self.assertEqual(progress[0].stage, "working")
+        self.assertEqual(progress[0].elapsed_seconds, 12)
+
+    def test_legacy_runtime_action_receives_legacy_execution_arguments(self) -> None:
+        calls = []
+        progress = []
+
+        class LegacyRuntime(_Runtime):
+            def act_in_session(
+                self,
+                identity,
+                message,
+                *,
+                progress_callback=None,
+                session_key="",
+                cancellation_event=None,
+                **kwargs,
+            ):
+                calls.append((session_key, cancellation_event))
+                progress_callback(9, "workspace-write")
+                return "legacy action"
+
+        cancellation = threading.Event()
+        execution = RuntimeExecutionControl(
+            session_key="task:9",
+            cancellation_event=cancellation,
+            progress_callback=progress.append,
+        )
+
+        result = invoke_runtime_action(
+            LegacyRuntime(),
+            load_identity(),
+            "work",
+            execution=execution,
+        )
+
+        self.assertEqual(result.final_text, "legacy action")
+        self.assertEqual(calls, [("task:9", cancellation)])
+        self.assertEqual(progress, [RuntimeProgress(9, sandbox="workspace-write")])
+
+    def test_runtime_rejects_result_completed_after_cancellation(self) -> None:
+        cancellation = threading.Event()
+
+        class LateRuntime(_Runtime):
+            def act_in_session(self, identity, message, **kwargs):
+                cancellation.set()
+                return "too late"
+
+        with self.assertRaises(AgentRuntimeCancelled):
+            invoke_runtime_action(
+                LateRuntime(),
+                load_identity(),
+                "work",
+                execution=RuntimeExecutionControl(
+                    cancellation_event=cancellation,
+                ),
+            )
+
     def test_runtime_result_normalizes_legacy_strings(self) -> None:
         result = normalize_runtime_result("legacy response")
 
@@ -673,6 +796,42 @@ class EnochProviderTests(unittest.TestCase):
         self.assertEqual(chat.sent, [("room-1", "Hello from a plugin runtime.")])
         self.assertEqual(runtime.reset_count, 1)
         self.assertEqual(runtime.messages[0][2]["session_key"], "test-chat:room-1")
+
+    def test_application_passes_typed_execution_to_new_runtime(self) -> None:
+        class TypedRuntime(_Runtime):
+            def __init__(self):
+                super().__init__()
+                self.execution = None
+
+            def respond(self, identity, message, *, execution, **kwargs):
+                self.execution = execution
+                return "Hello from a typed runtime."
+
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            chat = _Chat()
+            runtime = TypedRuntime()
+            app = EnochApplication(load_identity(), root, chat, runtime=runtime)
+
+            with (
+                patch("enoch.app.core.log_conversation_turn"),
+                patch("enoch.app.core.ensure_long_term_memory"),
+                patch("enoch.app.core.save_channel_cursor"),
+                patch.object(app, "_queue_session_sync"),
+            ):
+                app.handle_event(
+                    ChatEvent(
+                        cursor="typed-execution",
+                        conversation_id="room-1",
+                        message_id="message-1",
+                        text="hello",
+                    )
+                )
+
+        self.assertIsNotNone(runtime.execution)
+        self.assertEqual(runtime.execution.request_id, "conversation:room-1")
+        self.assertEqual(runtime.execution.session_key, "test-chat:room-1")
+        self.assertEqual(chat.sent[-1][1], "Hello from a typed runtime.")
 
     def test_custom_chat_provider_persists_opaque_cursor(self) -> None:
         with TemporaryDirectory() as temp:

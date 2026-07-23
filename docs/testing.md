@@ -69,5 +69,10 @@ preserving its profile trigger, context provenance, and unpushed task branch.
 The fake runtime also emits a session id and structured completion events; the
 test verifies that the installed core preserves them in task history.
 
+Runtime contract tests additionally cover typed execution delivery, typed and
+legacy progress bridging, persistent session keys, distinct timeout and human
+cancellation outcomes, and rejection of results that arrive after execution
+has stopped.
+
 This catches packaging metadata conflicts and source-checkout imports that unit
 tests can accidentally hide.

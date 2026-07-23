@@ -28,7 +28,10 @@ from enoch.providers.contracts import (
     AgentRuntimeAccessUnavailable,
     AgentRuntimeCancelled,
     AgentRuntimeError,
+    AgentRuntimeTimedOut,
     RuntimeEvent,
+    RuntimeExecutionControl,
+    RuntimeProgress,
     RuntimeResult,
     RuntimeUsage,
 )
@@ -83,6 +86,10 @@ class BrainError(AgentRuntimeError):
 
 class BrainCancelled(BrainError, AgentRuntimeCancelled):
     """Raised when Enoch's human cancels an active Codex run."""
+
+
+class BrainTimedOut(BrainError, AgentRuntimeTimedOut):
+    """Raised when an active Codex run exceeds its execution deadline."""
 
 
 class CodexAccessUnavailable(BrainError, AgentRuntimeAccessUnavailable):
@@ -272,6 +279,7 @@ def respond(
     progress_callback: ProgressCallback | None = None,
     session_key: str = "",
     image_paths: Sequence[Path] = (),
+    execution: RuntimeExecutionControl | None = None,
 ) -> str:
     return respond_result(
         identity,
@@ -280,6 +288,7 @@ def respond(
         progress_callback=progress_callback,
         session_key=session_key,
         image_paths=image_paths,
+        execution=execution,
     ).final_text
 
 
@@ -290,23 +299,29 @@ def respond_result(
     progress_callback: ProgressCallback | None = None,
     session_key: str = "",
     image_paths: Sequence[Path] = (),
+    execution: RuntimeExecutionControl | None = None,
 ) -> RuntimeResult:
-    if session_key:
+    control = _runtime_execution_control(
+        execution,
+        session_key=session_key,
+        progress_callback=progress_callback,
+    )
+    if control.session_key:
         return _respond_with_persistent_session_result(
             identity,
             message,
             cwd,
-            session_key=session_key,
-            progress_callback=progress_callback,
+            session_key=control.session_key,
             image_paths=image_paths,
+            execution=control,
         )
     return _run_codex_result(
         identity,
         _build_persistent_human_message(message),
         cwd,
         sandbox=ACTION_SANDBOX_READ_ONLY,
-        progress_callback=progress_callback,
         image_paths=image_paths,
+        execution=control,
     )
 
 
@@ -316,8 +331,8 @@ def _respond_with_persistent_session_result(
     cwd: Path | None,
     *,
     session_key: str,
-    progress_callback: ProgressCallback | None = None,
     image_paths: Sequence[Path] = (),
+    execution: RuntimeExecutionControl,
 ) -> RuntimeResult:
     state = load_codex_session(session_key, cwd)
     prompt = _build_persistent_prompt(message, cwd, state)
@@ -327,12 +342,12 @@ def _respond_with_persistent_session_result(
             prompt,
             cwd,
             sandbox=ACTION_SANDBOX_READ_ONLY,
-            progress_callback=progress_callback,
             persist_session=True,
             session_id=state.session_id if state else "",
             image_paths=image_paths,
+            execution=execution,
         )
-    except CodexAccessUnavailable:
+    except (BrainCancelled, BrainTimedOut, CodexAccessUnavailable):
         raise
     except BrainError:
         if state is None:
@@ -344,9 +359,9 @@ def _respond_with_persistent_session_result(
             recovery_prompt,
             cwd,
             sandbox=ACTION_SANDBOX_READ_ONLY,
-            progress_callback=progress_callback,
             persist_session=True,
             image_paths=image_paths,
+            execution=execution,
         )
         state = None
 
@@ -369,6 +384,7 @@ def act_in_session(
     session_key: str = "",
     cancellation_event: threading.Event | None = None,
     state_root: Path | None = None,
+    execution: RuntimeExecutionControl | None = None,
 ) -> str:
     return act_in_session_result(
         identity,
@@ -379,6 +395,7 @@ def act_in_session(
         session_key=session_key,
         cancellation_event=cancellation_event,
         state_root=state_root,
+        execution=execution,
     ).final_text
 
 
@@ -391,26 +408,31 @@ def act_in_session_result(
     session_key: str = "",
     cancellation_event: threading.Event | None = None,
     state_root: Path | None = None,
+    execution: RuntimeExecutionControl | None = None,
 ) -> RuntimeResult:
-    if not session_key:
+    control = _runtime_execution_control(
+        execution,
+        session_key=session_key,
+        cancellation_event=cancellation_event,
+        progress_callback=progress_callback,
+    )
+    if not control.session_key:
         return act_result(
             identity,
             message,
             cwd=cwd,
-            progress_callback=progress_callback,
             sandbox=sandbox,
-            cancellation_event=cancellation_event,
             state_root=state_root,
+            execution=control,
         )
     return _act_with_persistent_session_result(
         identity,
         message,
         cwd,
         sandbox=sandbox,
-        session_key=session_key,
-        progress_callback=progress_callback,
-        cancellation_event=cancellation_event,
+        session_key=control.session_key,
         state_root=state_root,
+        execution=control,
     )
 
 
@@ -421,9 +443,8 @@ def _act_with_persistent_session_result(
     *,
     sandbox: str,
     session_key: str,
-    progress_callback: ProgressCallback | None = None,
-    cancellation_event: threading.Event | None = None,
     state_root: Path | None = None,
+    execution: RuntimeExecutionControl,
 ) -> RuntimeResult:
     state_root = state_root or cwd
     state = load_codex_session(session_key, state_root)
@@ -434,15 +455,12 @@ def _act_with_persistent_session_result(
             prompt,
             cwd,
             sandbox=sandbox,
-            progress_callback=progress_callback,
             persist_session=True,
             session_id=state.session_id if state else "",
-            cancellation_event=cancellation_event,
             state_root=state_root,
+            execution=execution,
         )
-    except BrainCancelled:
-        raise
-    except CodexAccessUnavailable:
+    except (BrainCancelled, BrainTimedOut, CodexAccessUnavailable):
         raise
     except BrainError:
         if state is None:
@@ -454,10 +472,9 @@ def _act_with_persistent_session_result(
             recovery_prompt,
             cwd,
             sandbox=sandbox,
-            progress_callback=progress_callback,
             persist_session=True,
-            cancellation_event=cancellation_event,
             state_root=state_root,
+            execution=execution,
         )
         state = None
 
@@ -507,6 +524,7 @@ def act(
     sandbox: str = WORKSPACE_WRITE_SANDBOX,
     cancellation_event: threading.Event | None = None,
     state_root: Path | None = None,
+    execution: RuntimeExecutionControl | None = None,
 ) -> str:
     return act_result(
         identity,
@@ -516,6 +534,7 @@ def act(
         sandbox=sandbox,
         cancellation_event=cancellation_event,
         state_root=state_root,
+        execution=execution,
     ).final_text
 
 
@@ -527,15 +546,20 @@ def act_result(
     sandbox: str = WORKSPACE_WRITE_SANDBOX,
     cancellation_event: threading.Event | None = None,
     state_root: Path | None = None,
+    execution: RuntimeExecutionControl | None = None,
 ) -> RuntimeResult:
+    control = _runtime_execution_control(
+        execution,
+        cancellation_event=cancellation_event,
+        progress_callback=progress_callback,
+    )
     return _run_codex_result(
         identity,
         _build_persistent_human_message(message),
         cwd,
         sandbox=sandbox,
-        progress_callback=progress_callback,
-        cancellation_event=cancellation_event,
         state_root=state_root,
+        execution=control,
     )
 
 
@@ -574,7 +598,14 @@ def _run_codex_result(
     cancellation_event: threading.Event | None = None,
     state_root: Path | None = None,
     image_paths: Sequence[Path] = (),
+    execution: RuntimeExecutionControl | None = None,
 ) -> RuntimeResult:
+    control = _runtime_execution_control(
+        execution,
+        cancellation_event=cancellation_event,
+        progress_callback=progress_callback,
+    )
+    control.raise_if_stopped()
     state_root = state_root or cwd
     resolution = resolve_codex_executable(state_root)
     codex = resolution.path
@@ -615,15 +646,20 @@ def _run_codex_result(
             resumed=bool(session_id),
         )
 
-        timeout = int(os.environ.get("ENOCH_CODEX_TIMEOUT", task_timeout_seconds(state_root)))
-        if progress_callback is not None:
+        timeout = control.timeout_seconds or int(
+            os.environ.get("ENOCH_CODEX_TIMEOUT", task_timeout_seconds(state_root))
+        )
+        if (
+            control.progress_callback is not None
+            or control.cancellation_event is not None
+            or control.timeout_event is not None
+        ):
             result_stdout, result_stderr, returncode = _run_with_progress(
                 args=args,
                 prompt=prompt,
                 timeout=timeout,
                 sandbox=sandbox,
-                progress_callback=progress_callback,
-                cancellation_event=cancellation_event,
+                execution=control,
             )
             result = subprocess.CompletedProcess(args, returncode, result_stdout, result_stderr)
         else:
@@ -637,7 +673,7 @@ def _run_codex_result(
                     check=False,
                 )
             except subprocess.TimeoutExpired as exc:
-                raise BrainError("Enoch waited too long for Codex to answer.") from exc
+                raise BrainTimedOut("Enoch waited too long for Codex to answer.") from exc
 
         output.seek(0)
         answer = output.read().strip()
@@ -797,9 +833,15 @@ def _run_with_progress(
     prompt: str,
     timeout: int,
     sandbox: str,
-    progress_callback: ProgressCallback,
+    execution: RuntimeExecutionControl | None = None,
+    progress_callback: ProgressCallback | None = None,
     cancellation_event: threading.Event | None = None,
 ) -> tuple[str, str, int]:
+    control = _runtime_execution_control(
+        execution,
+        cancellation_event=cancellation_event,
+        progress_callback=progress_callback,
+    )
     interval = int(os.environ.get("ENOCH_PROGRESS_INTERVAL", DEFAULT_PROGRESS_INTERVAL_SECONDS))
     start = time.monotonic()
     next_update = start + interval
@@ -821,15 +863,20 @@ def _run_with_progress(
             try:
                 while process.poll() is None:
                     now = time.monotonic()
-                    if cancellation_event is not None and cancellation_event.is_set():
+                    if control.timed_out or now >= deadline:
+                        _stop_process(process)
+                        raise BrainTimedOut("Enoch waited too long for Codex to answer.")
+                    if control.cancelled:
                         _stop_process(process)
                         raise BrainCancelled("Enoch cancelled the active Codex run.")
-                    if now >= deadline:
-                        _stop_process(process)
-                        raise BrainError("Enoch waited too long for Codex to answer.")
 
                     if now >= next_update:
-                        progress_callback(int(now - start), sandbox)
+                        control.emit_progress(
+                            RuntimeProgress(
+                                elapsed_seconds=int(now - start),
+                                sandbox=sandbox,
+                            )
+                        )
                         next_update += interval
 
                     sleep_for = min(1.0, max(0.1, next_update - now), max(0.1, deadline - now))
@@ -841,6 +888,28 @@ def _run_with_progress(
             stdout_file.seek(0)
             stderr_file.seek(0)
             return stdout_file.read(), stderr_file.read(), process.returncode
+
+
+def _runtime_execution_control(
+    execution: RuntimeExecutionControl | None,
+    *,
+    session_key: str = "",
+    cancellation_event: threading.Event | None = None,
+    progress_callback: ProgressCallback | None = None,
+) -> RuntimeExecutionControl:
+    if execution is not None:
+        return execution
+    typed_progress = None
+    if progress_callback is not None:
+        typed_progress = lambda progress: progress_callback(
+            progress.elapsed_seconds,
+            progress.sandbox,
+        )
+    return RuntimeExecutionControl(
+        session_key=session_key,
+        cancellation_event=cancellation_event,
+        progress_callback=typed_progress,
+    )
 
 
 def _record_token_usage(stdout: str) -> TokenUsage:

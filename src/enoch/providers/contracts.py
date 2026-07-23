@@ -47,9 +47,14 @@ from our_ark_provider_kit import (  # noqa: E402
 
 try:
     from our_ark_provider_kit import (
+        AgentRuntimeTimedOut,
         RUNTIME_CONTRACT_VERSION,
+        RUNTIME_EXECUTION_CONTRACT_VERSION,
         RuntimeEvent,
+        RuntimeExecutionControl,
         RuntimeOutputReference,
+        RuntimeProgress,
+        RuntimeProgressCallback,
         RuntimeResult,
         RuntimeResultLike,
         RuntimeSideEffect,
@@ -58,9 +63,14 @@ try:
     )
 except ImportError:  # provider-kit 0.1 compatibility during contract rollout
     from enoch.providers._runtime_result_compat import (
+        AgentRuntimeTimedOut,
         RUNTIME_CONTRACT_VERSION,
+        RUNTIME_EXECUTION_CONTRACT_VERSION,
         RuntimeEvent,
+        RuntimeExecutionControl,
         RuntimeOutputReference,
+        RuntimeProgress,
+        RuntimeProgressCallback,
         RuntimeResult,
         RuntimeResultLike,
         RuntimeSideEffect,
@@ -74,6 +84,7 @@ __all__ = [
     "AgentRuntimeAccessUnavailable",
     "AgentRuntimeCancelled",
     "AgentRuntimeError",
+    "AgentRuntimeTimedOut",
     "Attachment",
     "AttachmentProvider",
     "ChatEvent",
@@ -95,9 +106,13 @@ __all__ = [
     "ProgressCallback",
     "ProviderHealth",
     "RUNTIME_CONTRACT_VERSION",
+    "RUNTIME_EXECUTION_CONTRACT_VERSION",
     "RemotePublishResult",
     "RuntimeEvent",
+    "RuntimeExecutionControl",
     "RuntimeOutputReference",
+    "RuntimeProgress",
+    "RuntimeProgressCallback",
     "RuntimeResult",
     "RuntimeResultLike",
     "RuntimeSideEffect",

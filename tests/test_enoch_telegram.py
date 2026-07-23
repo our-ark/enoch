@@ -60,6 +60,7 @@ from enoch.prompt_append import (
     TASK_REGRESSION_START,
 )
 from enoch.providers.runtime import FunctionAgentRuntime
+from enoch.providers import AgentRuntimeTimedOut
 from enoch.tasks.queue import (
     TaskJob,
     begin_next_task,
@@ -3421,6 +3422,29 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual(status.history[-1].status, "failed")
         self.assertIn("configured 10m timeout", status.history[-1].result)
         self.assertEqual(events[-1].event, "failed")
+        self.assertEqual(events[-1].event_actor, "system")
+        self.assertEqual(events[-1].trigger, "task-timeout")
+
+    def test_runtime_timeout_is_logged_as_system_failure(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            client = FakeTelegramClient(allowed_chat_id=42)
+            bot = EnochApplication(load_identity(), root, client)
+            _handle_update(bot, _message_update(chat_id=42, text="/task timed runtime"))
+            job = begin_next_task(root)
+            assert job is not None
+
+            with patch.object(
+                bot,
+                "_run_direct_work",
+                side_effect=AgentRuntimeTimedOut("Provider deadline expired."),
+            ):
+                bot._run_task_job(job)
+            status = task_queue_status(root)
+            events = load_task_events(root, task_id=job.id)
+
+        self.assertEqual(status.history[-1].status, "failed")
+        self.assertIn("configured 10m timeout", status.history[-1].result)
         self.assertEqual(events[-1].event_actor, "system")
         self.assertEqual(events[-1].trigger, "task-timeout")
 

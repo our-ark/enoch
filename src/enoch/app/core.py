@@ -175,6 +175,7 @@ from enoch.providers.contracts import (
     AgentRuntimeAccessUnavailable,
     AgentRuntimeCancelled,
     AgentRuntimeError,
+    AgentRuntimeTimedOut,
     Attachment,
     ChatEvent,
     ChatProvider,
@@ -185,12 +186,16 @@ from enoch.providers.contracts import (
     ForgeProviderError,
     MessageId,
     RuntimeResult,
-    normalize_runtime_result,
+    RuntimeExecutionControl,
     normalize_message_id,
 )
 from enoch.providers.forge import FunctionForgeProvider
 from enoch.providers.registry import ProviderError, load_provider
-from enoch.providers.runtime import FunctionAgentRuntime
+from enoch.providers.runtime import (
+    FunctionAgentRuntime,
+    invoke_runtime_action,
+    invoke_runtime_respond,
+)
 from enoch.profiles import (
     AgentProfile,
     CommandContext,
@@ -773,18 +778,21 @@ class EnochApplication:
         *,
         session_key: str | None = None,
     ) -> str:
+        resolved_session_key = session_key or self._session_key(chat_id)
         try:
-            return normalize_runtime_result(
-                self.runtime.respond(
-                    self.identity,
-                    self._profile_prompt(
-                        read_only_turn_prompt(text),
-                        purpose="conversation",
-                        chat_id=chat_id,
-                    ),
-                    cwd=self.root,
-                    session_key=session_key or self._session_key(chat_id),
-                )
+            return invoke_runtime_respond(
+                self.runtime,
+                self.identity,
+                self._profile_prompt(
+                    read_only_turn_prompt(text),
+                    purpose="conversation",
+                    chat_id=chat_id,
+                ),
+                cwd=self.root,
+                execution=RuntimeExecutionControl(
+                    request_id=f"conversation:{chat_id}",
+                    session_key=resolved_session_key,
+                ),
             ).final_text
         except (AgentRuntimeError, TypeError) as error:
             return str(error)
@@ -802,21 +810,25 @@ class EnochApplication:
                 self.root,
                 channel_name=self.channel_name,
             ) as image_path:
-                return normalize_runtime_result(
-                    self.runtime.respond(
-                        self.identity,
-                        self._profile_prompt(
-                            image_prompt(caption, self.channel_name),
-                            purpose="image",
-                            chat_id=chat_id,
-                        ),
-                        cwd=self.root,
+                return invoke_runtime_respond(
+                    self.runtime,
+                    self.identity,
+                    self._profile_prompt(
+                        image_prompt(caption, self.channel_name),
+                        purpose="image",
+                        chat_id=chat_id,
+                    ),
+                    cwd=self.root,
+                    image_paths=(image_path,),
+                    execution=RuntimeExecutionControl(
+                        request_id=f"image:{chat_id}",
                         session_key=self._session_key(chat_id),
-                        image_paths=(image_path,),
-                        progress_callback=lambda elapsed, sandbox: self._send_progress(
-                            chat_id, elapsed, sandbox
+                        progress_callback=lambda progress: self._send_progress(
+                            chat_id,
+                            progress.elapsed_seconds,
+                            progress.sandbox,
                         ),
-                    )
+                    ),
                 ).final_text
         except (
             AgentRuntimeError,
@@ -914,17 +926,19 @@ class EnochApplication:
         request: str,
     ) -> TaskContextSnapshot:
         try:
-            reply = normalize_runtime_result(
-                self.runtime.respond(
-                    self.identity,
-                    self._profile_prompt(
-                        _task_context_snapshot_prompt(request, provider=self.channel_name),
-                        purpose="task-context",
-                        chat_id=chat_id,
-                    ),
-                    cwd=self.root,
+            reply = invoke_runtime_respond(
+                self.runtime,
+                self.identity,
+                self._profile_prompt(
+                    _task_context_snapshot_prompt(request, provider=self.channel_name),
+                    purpose="task-context",
+                    chat_id=chat_id,
+                ),
+                cwd=self.root,
+                execution=RuntimeExecutionControl(
+                    request_id=f"task-context:{chat_id}",
                     session_key=self._session_key(chat_id),
-                )
+                ),
             ).final_text
         except AgentRuntimeAccessUnavailable as error:
             return TaskContextSnapshot(codex_unavailable_reason=str(error))
@@ -1020,12 +1034,29 @@ class EnochApplication:
         cancellation_event = threading.Event()
         self._task_cancellations[job.id] = cancellation_event
         deadline = _start_task_deadline(self.root, cancellation_event)
+        execution = RuntimeExecutionControl(
+            request_id=f"task:{job.id}:attempt:{job.attempt}",
+            session_key=session_key,
+            timeout_seconds=deadline.timeout_seconds,
+            cancellation_event=cancellation_event,
+            timeout_event=deadline.expired,
+            progress_callback=lambda progress: self._send_progress(
+                chat_id,
+                progress.elapsed_seconds,
+                progress.sandbox,
+            ),
+        )
         completed_status = "completed"
         finished_job: TaskJob | None = None
         failure: TaskFailure | None = None
         regression_signals: tuple[TaskRegressionSignal, ...] = ()
         try:
-            reply = self._run_direct_work(chat_id, request, session_key=session_key)
+            reply = self._run_direct_work(
+                chat_id,
+                request,
+                session_key=session_key,
+                execution=execution,
+            )
             reply = self._capture_task_regression_signals(reply)
             if deadline.expired.is_set():
                 reply = _task_timeout_message(deadline.timeout_seconds)
@@ -1037,6 +1068,11 @@ class EnochApplication:
         except AgentRuntimeAccessUnavailable as error:
             reply = _codex_pause_warning(job.id, str(error))
             completed_status = "paused"
+        except AgentRuntimeTimedOut:
+            deadline.expired.set()
+            reply = _task_timeout_message(deadline.timeout_seconds)
+            completed_status = "failed"
+            failure = classify_task_failure(reply)
         except AgentRuntimeCancelled as error:
             if deadline.expired.is_set():
                 reply = _task_timeout_message(deadline.timeout_seconds)
@@ -1201,6 +1237,7 @@ class EnochApplication:
         *,
         context: str = "",
         session_key: str,
+        execution: RuntimeExecutionControl | None = None,
     ) -> str:
         self._raise_if_current_task_cancelled()
         forge_maintenance = _forge_maintenance_request(request)
@@ -1226,28 +1263,33 @@ class EnochApplication:
             )
             before_action = _worktree_snapshot(work_root)
             self._send_step_update(chat_id, "Working.")
-            runtime_result = normalize_runtime_result(
-                self.runtime.act_in_session(
-                    self.identity,
-                    self._profile_prompt(
-                        work_request_prompt(
-                            _work_request_with_context(request, context),
-                            remote_review=bool(
-                                getattr(self.forge, "supports_remote_review", True)
-                            ),
+            runtime_result = invoke_runtime_action(
+                self.runtime,
+                self.identity,
+                self._profile_prompt(
+                    work_request_prompt(
+                        _work_request_with_context(request, context),
+                        remote_review=bool(
+                            getattr(self.forge, "supports_remote_review", True)
                         ),
-                        purpose="task",
-                        chat_id=chat_id,
                     ),
-                    cwd=work_root,
-                    sandbox=sandbox,
+                    purpose="task",
+                    chat_id=chat_id,
+                ),
+                cwd=work_root,
+                sandbox=sandbox,
+                execution=execution
+                or RuntimeExecutionControl(
+                    request_id=f"task:{_CURRENT_TASK_ID.get() or 'inline'}",
                     session_key=session_key,
-                    progress_callback=lambda elapsed, sandbox: self._send_progress(
-                        chat_id, elapsed, sandbox
-                    ),
                     cancellation_event=self._current_task_cancellation_event(),
-                    state_root=self.root,
-                )
+                    progress_callback=lambda progress: self._send_progress(
+                        chat_id,
+                        progress.elapsed_seconds,
+                        progress.sandbox,
+                    ),
+                ),
+                state_root=self.root,
             )
             _record_current_task_runtime_result(
                 runtime_result,
@@ -1264,6 +1306,8 @@ class EnochApplication:
             action_files = tuple(sorted(_changed_files_or_empty(work_root)))
             after_action = _worktree_snapshot(work_root)
         except AgentRuntimeCancelled:
+            raise
+        except AgentRuntimeTimedOut:
             raise
         except AgentRuntimeAccessUnavailable:
             raise
@@ -2902,6 +2946,18 @@ class EnochApplication:
         cancellation_event = threading.Event()
         self._task_cancellations[job.id] = cancellation_event
         deadline = _start_task_deadline(self.root, cancellation_event)
+        execution = RuntimeExecutionControl(
+            request_id=f"task:{job.id}:attempt:{job.attempt}",
+            session_key=session_key,
+            timeout_seconds=deadline.timeout_seconds,
+            cancellation_event=cancellation_event,
+            timeout_event=deadline.expired,
+            progress_callback=lambda progress: self._send_progress(
+                job.chat_id,
+                progress.elapsed_seconds,
+                progress.sandbox,
+            ),
+        )
         if not created_status_message:
             self._update_work_status(start_update, status="running")
         completed_status = "completed"
@@ -2920,6 +2976,7 @@ class EnochApplication:
                     job.text,
                     context=_task_worker_context(job),
                     session_key=session_key,
+                    execution=execution,
                 )
             reply = self._capture_task_regression_signals(reply)
             if deadline.expired.is_set():
@@ -2932,6 +2989,11 @@ class EnochApplication:
         except AgentRuntimeAccessUnavailable as error:
             reply = _codex_pause_warning(job.id, str(error))
             completed_status = "paused"
+        except AgentRuntimeTimedOut:
+            deadline.expired.set()
+            reply = _task_timeout_message(deadline.timeout_seconds)
+            completed_status = "failed"
+            failure = classify_task_failure(reply)
         except AgentRuntimeCancelled as error:
             if deadline.expired.is_set():
                 reply = _task_timeout_message(deadline.timeout_seconds)
@@ -3959,11 +4021,15 @@ def _sync_session_activity(
         reset_usage_fn=reset_token_usage,
     )
     try:
-        runtime.respond(
+        invoke_runtime_respond(
+            runtime,
             identity,
             note,
             cwd=root,
-            session_key=session_key or f"chat:{chat_id}",
+            execution=RuntimeExecutionControl(
+                request_id=f"session-sync:{chat_id}",
+                session_key=session_key or f"chat:{chat_id}",
+            ),
         )
     except (AgentRuntimeError, TypeError):
         return

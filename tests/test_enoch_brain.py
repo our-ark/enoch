@@ -12,6 +12,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from enoch.brain import (
     BrainCancelled,
+    BrainTimedOut,
     CodexAccessUnavailable,
     act,
     act_in_session,
@@ -24,6 +25,7 @@ from enoch.codex_sessions import CodexSessionState, codex_sessions_path, load_co
 from enoch.identity import load_identity
 from enoch.last_codex_input import last_codex_input_message
 from enoch.memory.store import remember_memory
+from enoch.providers import RuntimeExecutionControl
 
 
 class EnochBrainTests(unittest.TestCase):
@@ -370,6 +372,24 @@ class EnochBrainTests(unittest.TestCase):
 
         self.assertEqual(run.call_args.kwargs["timeout"], 1800)
 
+    @patch.dict("os.environ", {}, clear=True)
+    @patch("enoch.brain.shutil.which", return_value="/usr/local/bin/codex")
+    @patch("enoch.brain.subprocess.run")
+    def test_execution_timeout_overrides_instance_timeout(
+        self, run: MagicMock, _which: MagicMock
+    ) -> None:
+        run.return_value.returncode = 0
+        run.return_value.stdout = ""
+        run.return_value.stderr = ""
+
+        respond_result(
+            load_identity(),
+            "Hello",
+            execution=RuntimeExecutionControl(timeout_seconds=42),
+        )
+
+        self.assertEqual(run.call_args.kwargs["timeout"], 42)
+
     @patch("enoch.brain.shutil.which", return_value="/usr/local/bin/codex")
     @patch("enoch.brain.subprocess.run")
     def test_respond_records_last_completed_turn_token_usage(
@@ -699,6 +719,36 @@ class EnochBrainTests(unittest.TestCase):
 
         run_codex.assert_called_once()
 
+    @patch(
+        "enoch.brain._run_codex_result",
+        side_effect=BrainTimedOut("Enoch waited too long for Codex to answer."),
+    )
+    def test_respond_does_not_retry_or_forget_timed_out_session(
+        self, run_codex: MagicMock
+    ) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            original = CodexSessionState(
+                key="telegram:42",
+                session_id="session-123",
+                turn_count=1,
+                created_at="2026-06-18T00:00:00+00:00",
+                updated_at="2026-06-18T00:00:00+00:00",
+            )
+            save_codex_session(original, root)
+
+            with self.assertRaises(BrainTimedOut):
+                respond(
+                    load_identity(),
+                    "Continue the conversation.",
+                    cwd=root,
+                    session_key="telegram:42",
+                )
+
+            self.assertEqual(load_codex_session("telegram:42", root), original)
+
+        run_codex.assert_called_once()
+
     @patch("enoch.brain.shutil.which", return_value="/usr/local/bin/codex")
     @patch("enoch.brain.subprocess.run")
     def test_act_uses_workspace_write_sandbox(
@@ -882,6 +932,44 @@ class EnochBrainTests(unittest.TestCase):
                 sandbox="workspace-write",
                 progress_callback=lambda _elapsed, _sandbox: None,
                 cancellation_event=cancellation_event,
+            )
+
+        process.terminate.assert_called_once()
+        process.wait.assert_called_once_with(timeout=5)
+
+    @patch("enoch.brain.time.sleep")
+    @patch("enoch.brain.time.monotonic", side_effect=[0, 1])
+    @patch("enoch.brain.tempfile.TemporaryFile")
+    @patch("enoch.brain.subprocess.Popen")
+    def test_progress_run_reports_timeout_separately_from_cancellation(
+        self,
+        popen: MagicMock,
+        temporary_file: MagicMock,
+        _monotonic: MagicMock,
+        _sleep: MagicMock,
+    ) -> None:
+        stdout_file = MagicMock()
+        stderr_file = MagicMock()
+        temporary_file.return_value.__enter__.side_effect = [stdout_file, stderr_file]
+        process = popen.return_value
+        process.poll.return_value = None
+        process.stdin.write.return_value = None
+        process.stdin.close.return_value = None
+        cancellation_event = threading.Event()
+        timeout_event = threading.Event()
+        cancellation_event.set()
+        timeout_event.set()
+
+        with self.assertRaises(BrainTimedOut):
+            brain._run_with_progress(
+                args=["codex", "exec"],
+                prompt="do work",
+                timeout=60,
+                sandbox="workspace-write",
+                execution=RuntimeExecutionControl(
+                    cancellation_event=cancellation_event,
+                    timeout_event=timeout_event,
+                ),
             )
 
         process.terminate.assert_called_once()
