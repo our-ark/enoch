@@ -80,6 +80,7 @@ class LocalForgeProvider:
         *,
         root: Path | None = None,
         allowed_files: list[str] | tuple[str, ...] | None = None,
+        validation_result: object | None = None,
         **_kwargs: Any,
     ) -> LocalPublishResult:
         commit_message = commit_message.strip()
@@ -96,7 +97,7 @@ class LocalForgeProvider:
             files = [path for path in files if path in allowed]
         if not files:
             raise ForgeProviderError("No local changes to publish.")
-        doctor = run_immune_system(root)
+        doctor = validation_result or run_immune_system(root)
         if not doctor.passed:
             raise ForgeProviderError(f"Doctor failed: {doctor.diagnosis.summary}")
         diff = diff_summary(root)

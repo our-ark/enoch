@@ -13,7 +13,7 @@ from enoch.providers.contracts import AgentRuntimeError, VersionControlProviderE
 from enoch.providers.registry import ProviderError, load_provider, provider_name
 
 
-DEFAULT_TEST_ARGS = ["-m", "unittest", "discover", "-s", "tests"]
+DEFAULT_TEST_ARGS = ["-m", "unittest", "discover", "-s", "tests", "-t", "."]
 DEFAULT_TIMEOUT_SECONDS = 120
 MAX_OUTPUT_CHARS = 12000
 MIN_PYTHON_VERSION = (3, 11)

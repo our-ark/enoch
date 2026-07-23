@@ -13,6 +13,8 @@ and validation boundary.
 | Package | Responsibility |
 | --- | --- |
 | `enoch.app` | Provider-neutral event loop, command orchestration, parsing, and presentation |
+| `enoch.app.inbox` | Durable chat receipts, redelivery suppression, and poison-event attempts |
+| `enoch.state` | Corruption-safe JSON loading, atomic writes, and interprocess transactions |
 | `enoch.tasks` | Task queue state, audit events, failure policy, configuration, and isolated worktrees |
 | `enoch.evolution` | Evolution state, candidate collection and ranking, event history, and governed lifecycle |
 | `enoch.evolution.sources` | Feedback, experience, and brainstorming evidence adapters |
@@ -34,6 +36,10 @@ provider contracts. Infrastructure libraries implement those contracts and do
 not become imports in domain code. Provider-specific configuration and setup
 remain owned by each implementation. `enoch.app.core` composes the domains;
 domain packages must not import the application orchestrator.
+
+Workflow decisions cross the application boundary as typed outcomes. Human
+presentation text is rendered from those outcomes and is not parsed to decide
+whether a task succeeded, should retry, or completed publication.
 
 Portable task flows use semantic provider operations rather than parsing Git,
 GitHub, Telegram, or service-manager commands. Compatibility escape hatches may

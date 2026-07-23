@@ -201,19 +201,31 @@ def remove_task_worktree(
     delete_local_branch: bool = True,
     force_delete_branch: bool = False,
 ) -> str:
-    remove_workspace(worktree.path, control_root)
-    messages = [f"Removed task #{worktree.task_id} worktree."]
+    registered = set(workspace_paths(control_root))
+    if worktree.path.resolve() in registered:
+        remove_workspace(worktree.path, control_root)
+        messages = [f"Removed task #{worktree.task_id} worktree."]
+    elif worktree.path.exists():
+        raise VcsError(
+            f"Task #{worktree.task_id} worktree is no longer registered but "
+            f"its path still exists: {worktree.path}"
+        )
+    else:
+        messages = [f"Task #{worktree.task_id} worktree was already removed."]
     if delete_local_branch:
-        try:
-            delete_branch(
-                worktree.branch,
-                control_root,
-                force=force_delete_branch,
-            )
-        except VcsError as error:
-            messages.append(f"Kept local branch {worktree.branch}: {error}")
+        if branch_exists(worktree.branch, control_root):
+            try:
+                delete_branch(
+                    worktree.branch,
+                    control_root,
+                    force=force_delete_branch,
+                )
+            except VcsError as error:
+                messages.append(f"Kept local branch {worktree.branch}: {error}")
+            else:
+                messages.append(f"Deleted local branch {worktree.branch}.")
         else:
-            messages.append(f"Deleted local branch {worktree.branch}.")
+            messages.append(f"Local branch {worktree.branch} was already deleted.")
     return "\n".join(messages)
 
 

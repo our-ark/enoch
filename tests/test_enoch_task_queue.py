@@ -25,6 +25,7 @@ from enoch.tasks.queue import (
     recover_interrupted_task,
     record_task_result,
     record_task_runtime_result,
+    record_task_publish_state,
     record_task_status_message,
     record_task_worktree,
     regress_task,
@@ -159,6 +160,15 @@ class EnochTaskQueueTests(unittest.TestCase):
                 "enoch/task-1",
                 root,
             )
+            record_task_publish_state(
+                running.id,
+                "worker-one",
+                root,
+                stage="pushed",
+                commit_sha="abc123",
+                remote_branch="enoch/task-1",
+                published_remotely=True,
+            )
             fail_task(
                 running.id,
                 root,
@@ -184,6 +194,10 @@ class EnochTaskQueueTests(unittest.TestCase):
             retried.pr_urls,
             ("https://github.com/our-ark/enoch/pull/13",),
         )
+        self.assertEqual(retried.publish_stage, "pushed")
+        self.assertEqual(retried.commit_sha, "abc123")
+        self.assertEqual(retried.remote_branch, "enoch/task-1")
+        self.assertTrue(retried.published_remotely)
         self.assertIn("Existing work is available", retried.result)
 
     def test_retry_requires_latest_failed_task_in_retry_chain(self) -> None:

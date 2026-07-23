@@ -6,6 +6,7 @@ from pathlib import Path
 
 from enoch.memory.paths import atomic_write, now as current_time
 from enoch.paths import enoch_home
+from enoch.state import StateCorruptionError, file_transaction, load_json_object
 
 
 SCHEMA_VERSION = 1
@@ -27,7 +28,8 @@ def codex_sessions_path(root: Path | None = None) -> Path:
 
 
 def load_codex_session(key: str, root: Path | None = None) -> CodexSessionState | None:
-    data = _load_sessions(root)
+    with file_transaction(codex_sessions_path(root)):
+        data = _load_sessions(root)
     raw = data.get("sessions", {}).get(key)
     if not isinstance(raw, dict):
         return None
@@ -47,25 +49,27 @@ def load_codex_session(key: str, root: Path | None = None) -> CodexSessionState 
 
 
 def save_codex_session(state: CodexSessionState, root: Path | None = None) -> CodexSessionState:
-    data = _load_sessions(root)
-    sessions = data.setdefault("sessions", {})
-    sessions[state.key] = {
-        "session_id": state.session_id,
-        "turn_count": state.turn_count,
-        "created_at": state.created_at,
-        "updated_at": state.updated_at,
-        "prompt_version": PROMPT_VERSION,
-    }
-    _write_sessions(data, root)
+    with file_transaction(codex_sessions_path(root)):
+        data = _load_sessions(root)
+        sessions = data.setdefault("sessions", {})
+        sessions[state.key] = {
+            "session_id": state.session_id,
+            "turn_count": state.turn_count,
+            "created_at": state.created_at,
+            "updated_at": state.updated_at,
+            "prompt_version": PROMPT_VERSION,
+        }
+        _write_sessions(data, root)
     return state
 
 
 def forget_codex_session(key: str, root: Path | None = None) -> None:
-    data = _load_sessions(root)
-    sessions = data.setdefault("sessions", {})
-    if key in sessions:
-        del sessions[key]
-        _write_sessions(data, root)
+    with file_transaction(codex_sessions_path(root)):
+        data = _load_sessions(root)
+        sessions = data.setdefault("sessions", {})
+        if key in sessions:
+            del sessions[key]
+            _write_sessions(data, root)
 
 
 def record_codex_session_turn(
@@ -90,15 +94,13 @@ def record_codex_session_turn(
 
 def _load_sessions(root: Path | None = None) -> dict:
     path = codex_sessions_path(root)
-    if not path.exists():
-        return {"schema_version": SCHEMA_VERSION, "sessions": {}}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {"schema_version": SCHEMA_VERSION, "sessions": {}}
+    data = load_json_object(
+        path,
+        default_factory=lambda: {"schema_version": SCHEMA_VERSION, "sessions": {}},
+    )
     sessions = data.get("sessions")
     if not isinstance(sessions, dict):
-        sessions = {}
+        raise StateCorruptionError(path, "expected sessions to be an object")
     return {"schema_version": SCHEMA_VERSION, "sessions": sessions}
 
 

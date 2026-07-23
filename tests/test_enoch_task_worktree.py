@@ -123,6 +123,11 @@ class TaskWorktreeTests(unittest.TestCase):
             self.assertFalse(task.path.exists())
             self.assertEqual(_git(source, "branch", "--list", task.branch), "")
 
+            repeated_cleanup = remove_task_worktree(resident, reused)
+            self.assertIn("worktree was already removed", repeated_cleanup)
+            self.assertIn("branch", repeated_cleanup)
+            self.assertIn("already deleted", repeated_cleanup)
+
     def test_existing_branch_publish_worktree_does_not_switch_resident(self) -> None:
         with TemporaryDirectory() as temp:
             source, resident = _create_agent_worktree(Path(temp))

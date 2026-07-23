@@ -61,6 +61,7 @@ from enoch.evolution.core import (
     MODE_DISABLED,
     EvolveCandidate,
     EvolveProposal,
+    acknowledge_evolve_schedule,
     cancel_evolve_candidate_for_task,
     claim_due_evolve_schedule,
     collect_experience_candidates,
@@ -214,6 +215,7 @@ from enoch.runtime import (
 )
 from enoch.tasks.queue import (
     TaskJob,
+    TaskAlreadyExists,
     TaskRetryError,
     begin_direct_task,
     begin_next_task,
@@ -228,6 +230,7 @@ from enoch.tasks.queue import (
     regress_task,
     recover_interrupted_task,
     record_task_result,
+    record_task_publish_state,
     record_task_runtime_result,
     record_task_status_message,
     record_task_worktree,
@@ -285,6 +288,15 @@ from enoch.app.models import (
     TaskContextSnapshot,
     TaskDeadline,
     WorkStatusMessage,
+    WorkOutcome,
+)
+from enoch.app.inbox import (
+    InboxReceipt,
+    acknowledge_event,
+    begin_event,
+    complete_event,
+    fail_event,
+    mark_reply_sent,
 )
 from enoch.app.parsing import (
     backlog_item_id as _backlog_item_id,
@@ -336,6 +348,7 @@ NO_EXTRA_TASK_CONTEXT = "No extra context needed."
 _CURRENT_WORK_STATUS: ContextVar[WorkStatusMessage | None] = ContextVar("enoch_work_status", default=None)
 _CURRENT_TASK_ID: ContextVar[int | None] = ContextVar("enoch_task_id", default=None)
 _CURRENT_TASK_WORKER_ID: ContextVar[str] = ContextVar("enoch_task_worker_id", default="")
+_CURRENT_EVENT_KEY: ContextVar[str] = ContextVar("enoch_event_key", default="")
 _CURRENT_REGRESSION_SIGNALS: ContextVar[tuple[TaskRegressionSignal, ...]] = ContextVar(
     "enoch_regression_signals",
     default=(),
@@ -442,7 +455,9 @@ class EnochApplication:
         while True:
             try:
                 self.run_once()
-            except (OSError, ChatProviderError) as error:
+            except ShutdownRequested:
+                raise
+            except Exception as error:
                 print(f"Enoch {provider_label(self.channel_name)} polling error: {error}")
                 time.sleep(5)
 
@@ -498,12 +513,51 @@ class EnochApplication:
     def handle_event(self, event: ChatEvent) -> None:
         chat_id = event.conversation_id
         message_id = event.message_id
-        text = event.text.strip()
         if not self._chat_allowed(chat_id):
             self._remember_update_offset(event.cursor)
             return
 
-        self._safe_send_read_ack(chat_id, message_id)
+        receipt = begin_event(self.channel_name, event, self.root)
+        if receipt.completed:
+            self._finish_chat_event(event, receipt)
+            return
+
+        event_token = _CURRENT_EVENT_KEY.set(receipt.key)
+        try:
+            reply, logged_input = self._dispatch_chat_event(event)
+            receipt = complete_event(
+                self.channel_name,
+                receipt.key,
+                self.root,
+                reply=reply,
+                logged_input=logged_input,
+            )
+        except Exception as error:
+            failed = fail_event(self.channel_name, receipt.key, str(error), self.root)
+            print(
+                f"Enoch could not process {self.channel_name} update "
+                f"{receipt.key[:12]} (attempt {failed.attempts}/3): {error}"
+            )
+            if not failed.exhausted:
+                return
+            receipt = complete_event(
+                self.channel_name,
+                receipt.key,
+                self.root,
+                reply=(
+                    "Enoch skipped this update after three failed processing attempts. "
+                    f"The failure was recorded for debugging: {type(error).__name__}."
+                ),
+                logged_input=event.text.strip(),
+            )
+        finally:
+            _CURRENT_EVENT_KEY.reset(event_token)
+        self._finish_chat_event(event, receipt)
+
+    def _dispatch_chat_event(self, event: ChatEvent) -> tuple[str, str]:
+        chat_id = event.conversation_id
+        text = event.text.strip()
+        self._safe_send_read_ack(chat_id, event.message_id)
         self.runtime.reset_usage()
         image = select_image_attachment(event.attachments)
         logged_input = text
@@ -512,37 +566,59 @@ class EnochApplication:
             logged_input = f"[{provider_label(self.channel_name)} image]" + (
                 f" {text}" if text else ""
             )
-        else:
-            command, argument = _parse_chat_command(text)
-            work_text = _with_replied_text_context(
-                text,
-                event.replied_text,
-                provider_name=_chat_provider_name(self.client),
-            )
-            profile_command = self.profile.command(command) if command else None
-            registered_command = core_command(command) if command else None
-            if profile_command is not None:
-                reply = self._run_profile_command(profile_command, event, command, argument)
-            elif registered_command is not None:
-                reply = self._run_core_command(
-                    registered_command,
-                    event,
-                    text=text,
-                    argument=argument,
-                    work_text=work_text,
-                )
-            else:
-                reply = self._natural(chat_id, text)
+            return reply, logged_input
 
-        send_error = self._safe_send_message(chat_id, reply) if reply else ""
-        logged_reply = reply
-        if send_error:
-            logged_reply = "\n\n".join(
-                [reply, f"{provider_label(self.channel_name)} send failed: {send_error}"]
+        command, argument = _parse_chat_command(text)
+        work_text = _with_replied_text_context(
+            text,
+            event.replied_text,
+            provider_name=_chat_provider_name(self.client),
+        )
+        profile_command = self.profile.command(command) if command else None
+        registered_command = core_command(command) if command else None
+        if profile_command is not None:
+            reply = self._run_profile_command(profile_command, event, command, argument)
+        elif registered_command is not None:
+            reply = self._run_core_command(
+                registered_command,
+                event,
+                text=text,
+                argument=argument,
+                work_text=work_text,
             )
-        self._record_turn(chat_id, logged_input, logged_reply)
-        self._flush_session_syncs()
+        else:
+            reply = self._natural(chat_id, text)
+        return reply, logged_input
+
+    def _finish_chat_event(self, event: ChatEvent, receipt: InboxReceipt) -> None:
+        if not receipt.reply_sent:
+            send_error = (
+                self._safe_send_message(event.conversation_id, receipt.reply)
+                if receipt.reply
+                else ""
+            )
+            if send_error:
+                _record_system_event(
+                    "chat_reply_failed",
+                    self.root,
+                    status="failed",
+                    details={
+                        "provider": self.channel_name,
+                        "chat_id": event.conversation_id,
+                        "message_id": event.message_id,
+                        "error": send_error,
+                    },
+                )
+                return
+            self._record_turn(
+                event.conversation_id,
+                receipt.logged_input,
+                receipt.reply,
+            )
+            self._flush_session_syncs()
+            mark_reply_sent(self.channel_name, receipt.key, self.root)
         self._remember_update_offset(event.cursor)
+        acknowledge_event(self.channel_name, receipt.key, self.root)
         if self._restart_after_reply:
             self._restart_after_reply = False
             _schedule_daemon_restart(self.root)
@@ -560,10 +636,9 @@ class EnochApplication:
     def _validate_profile_commands(self) -> None:
         conflicts = sorted(
             {
-                name
+                spec.name
                 for spec in self.profile.commands
-                for name in (spec.name, *spec.aliases)
-                if name in core_command_names()
+                if spec.name in core_command_names()
             }
         )
         if conflicts:
@@ -680,7 +755,11 @@ class EnochApplication:
         command: str,
         argument: str,
     ) -> str:
+        enqueue_index = 0
+
         def queue(request: str, context: str) -> TaskJob:
+            nonlocal enqueue_index
+            enqueue_index += 1
             return enqueue_task(
                 event.conversation_id,
                 request,
@@ -691,6 +770,9 @@ class EnochApplication:
                 initiated_by="human",
                 event_actor="human",
                 trigger=command,
+                idempotency_key=_event_idempotency_key(
+                    f"profile:{self.profile.name}:{command}:{enqueue_index}"
+                ),
                 **self._profile_task_options(),
             )
 
@@ -1005,7 +1087,13 @@ class EnochApplication:
                 self.root,
                 context=context,
                 context_source=context_source,
+                idempotency_key=_event_idempotency_key("direct"),
                 **self._profile_task_options(),
+            )
+        except TaskAlreadyExists as duplicate:
+            return (
+                f"Task #{duplicate.job.id} was already accepted for this chat update "
+                f"and is {duplicate.job.status}."
             )
         except RuntimeError:
             running = task_queue_status(self.root).running
@@ -1063,7 +1151,13 @@ class EnochApplication:
                 initiated_by=initiated_by,
                 event_actor=initiated_by,
                 trigger=trigger,
+                idempotency_key=_event_idempotency_key(f"inline:{trigger}"),
                 **self._profile_task_options(),
+            )
+        except TaskAlreadyExists as duplicate:
+            return (
+                f"Task #{duplicate.job.id} was already accepted for this chat update "
+                f"and is {duplicate.job.status}."
             )
         except RuntimeError:
             return "Enoch cannot start that work while another task is running."
@@ -1101,20 +1195,27 @@ class EnochApplication:
         failure: TaskFailure | None = None
         regression_signals: tuple[TaskRegressionSignal, ...] = ()
         try:
-            reply = self._run_direct_work(
-                chat_id,
-                request,
-                session_key=session_key,
-                execution=execution,
+            outcome = _coerce_work_outcome(
+                self._run_direct_work(
+                    chat_id,
+                    request,
+                    session_key=session_key,
+                    execution=execution,
+                )
             )
+            reply = outcome.message
             reply = self._capture_task_regression_signals(reply)
             if deadline.expired.is_set():
                 reply = _task_timeout_message(deadline.timeout_seconds)
                 completed_status = "failed"
                 failure = classify_task_failure(reply)
-            elif _work_reply_failed(reply):
+            elif outcome.failed:
                 completed_status = "failed"
-                failure = classify_task_failure(reply)
+                failure = TaskFailure(
+                    code=outcome.code or "unknown_failure",
+                    failure_class=outcome.failure_class or "permanent",
+                    retryable=outcome.retryable,
+                )
         except AgentRuntimeAccessUnavailable as error:
             reply = _codex_pause_warning(job.id, str(error))
             completed_status = "paused"
@@ -1219,6 +1320,7 @@ class EnochApplication:
                 self.root,
                 context=context,
                 context_source=context_source,
+                idempotency_key=_event_idempotency_key("direct-next"),
                 **self._profile_task_options(),
             )
         except (OSError, ValueError):
@@ -1289,19 +1391,27 @@ class EnochApplication:
         context: str = "",
         session_key: str,
         execution: RuntimeExecutionControl | None = None,
-    ) -> str:
+    ) -> WorkOutcome:
         self._raise_if_current_task_cancelled()
         forge_maintenance = _forge_maintenance_request(request)
         if forge_maintenance is not None:
             reply = self._run_forge_maintenance(forge_maintenance)
             self._raise_if_current_task_cancelled()
-            return reply
+            return WorkOutcome.completed(reply)
 
         publish_branch = _existing_branch_publish_request(request)
         if publish_branch is not None:
             reply = self._publish_existing_branch(chat_id, publish_branch)
             self._raise_if_current_task_cancelled()
-            return reply
+            if reply.strip().lower().startswith("enoch could not"):
+                failure = classify_task_failure(reply)
+                return WorkOutcome.failure(
+                    reply,
+                    code=failure.code,
+                    failure_class=failure.failure_class,
+                    retryable=failure.retryable,
+                )
+            return WorkOutcome.completed(reply)
 
         try:
             sandbox = _action_sandbox(self.root)
@@ -1312,7 +1422,6 @@ class EnochApplication:
                 f"Enoch prepared isolated worktree {work_root} on branch "
                 f"{task_worktree.branch} from the latest task base."
             )
-            before_action = _worktree_snapshot(work_root)
             self._send_step_update(chat_id, "Working.")
             runtime_result = invoke_runtime_action(
                 self.runtime,
@@ -1355,7 +1464,6 @@ class EnochApplication:
             memory_note = self._save_memory_requests(memory_result.requests)
             _record_direct_action(request, result, self.root)
             action_files = tuple(sorted(_changed_files_or_empty(work_root)))
-            after_action = _worktree_snapshot(work_root)
         except AgentRuntimeCancelled:
             raise
         except AgentRuntimeTimedOut:
@@ -1363,7 +1471,14 @@ class EnochApplication:
         except AgentRuntimeAccessUnavailable:
             raise
         except (AgentRuntimeError, TypeError, VcsError, OSError) as error:
-            return f"Enoch could not complete the requested work yet: {error}"
+            message = f"Enoch could not complete the requested work yet: {error}"
+            failure = classify_task_failure(message)
+            return WorkOutcome.failure(
+                message,
+                code=failure.code,
+                failure_class=failure.failure_class,
+                retryable=failure.retryable,
+            )
 
         parts = [branch_note, result or "Enoch completed the requested work.", memory_note]
         if not action_files:
@@ -1377,7 +1492,10 @@ class EnochApplication:
                 parts.append(cleanup)
             except VcsError as error:
                 parts.append(f"Enoch could not clean up the task worktree: {error}")
-            return "\n\n".join(part for part in parts if part)
+            return WorkOutcome.completed(
+                "\n\n".join(part for part in parts if part),
+                completed_stages=("edited",),
+            )
 
         self._send_step_update(chat_id, "Running doctor.")
         self._raise_if_current_task_cancelled()
@@ -1390,20 +1508,36 @@ class EnochApplication:
                 f"I did not open a PR because doctor failed. Task worktree {work_root} "
                 "was preserved for inspection."
             )
-            return "\n\n".join(part for part in parts if part)
+            return WorkOutcome.failure(
+                "\n\n".join(part for part in parts if part),
+                code="validation_failed",
+                failure_class="permanent",
+                retryable=False,
+                completed_stages=("edited",),
+            )
 
         self._raise_if_current_task_cancelled()
-        parts.append(
+        self._record_current_publish_stage("validated")
+        publish_outcome = _coerce_work_outcome(
             self._publish_feature_pr(
                 chat_id,
                 request,
                 action_files,
                 work_root=work_root,
                 task_worktree=task_worktree,
+                validation_result=doctor,
             )
         )
         self._raise_if_current_task_cancelled()
-        return "\n\n".join(part for part in parts if part)
+        return replace(
+            publish_outcome,
+            message="\n\n".join(
+                part for part in [*parts, publish_outcome.message] if part
+            ),
+            completed_stages=tuple(
+                dict.fromkeys(("edited", "validated", *publish_outcome.completed_stages))
+            ),
+        )
 
     def _prepare_task_worktree(self, request: str) -> TaskWorktree:
         task_id = _CURRENT_TASK_ID.get()
@@ -1587,46 +1721,129 @@ class EnochApplication:
         *,
         work_root: Path | None = None,
         task_worktree: TaskWorktree | None = None,
-    ) -> str:
+        validation_result: ImmuneResult | None = None,
+        resume_job: TaskJob | None = None,
+    ) -> WorkOutcome:
         publish_root = work_root or self.root
         outputs: list[str] = []
         summaries: list[str] = []
+        stage = resume_job.publish_stage if resume_job is not None else ""
+        commit_sha = resume_job.commit_sha if resume_job is not None else ""
+        remote_branch = resume_job.remote_branch if resume_job is not None else ""
+        pr_url = resume_job.pr_url if resume_job is not None else ""
+        pushed_remotely = (
+            resume_job.published_remotely if resume_job is not None else False
+        )
+        completed_stages = [
+            candidate
+            for candidate in ("committed", "pushed", "pr_opened")
+            if candidate == stage
+            or (
+                stage == "pushed"
+                and candidate == "committed"
+            )
+            or (
+                stage == "pr_opened"
+                and candidate in {"committed", "pushed"}
+            )
+        ]
         try:
-            self._send_step_update(chat_id, "Committing the change.")
-            commit = prepare_local_publish(
-                feature_title(request),
-                root=publish_root,
-                allowed_files=allowed_files,
-            )
-            outputs.append(_format_publish_result(commit))
-            summaries.append(_publish_summary(commit))
-            self._send_step_update(chat_id, f"Committed {commit.commit_sha}.")
+            if stage not in {"committed", "pushed", "pr_opened"}:
+                self._send_step_update(chat_id, "Committing the change.")
+                commit = prepare_local_publish(
+                    feature_title(request),
+                    root=publish_root,
+                    allowed_files=allowed_files,
+                    validation_result=validation_result,
+                )
+                commit_sha = commit.commit_sha
+                remote_branch = commit.branch
+                outputs.append(_format_publish_result(commit))
+                summaries.append(_publish_summary(commit))
+                completed_stages.append("committed")
+                self._record_current_publish_stage(
+                    "committed",
+                    commit_sha=commit_sha,
+                    remote_branch=remote_branch,
+                )
+                self._send_step_update(chat_id, f"Committed {commit.commit_sha}.")
+                stage = "committed"
+            else:
+                outputs.append(
+                    f"Resuming publish workflow after commit {commit_sha or 'unknown'}."
+                )
 
-            self._send_step_update(chat_id, "Handing off the branch to the configured forge.")
-            pushed = push_current_branch(root=publish_root)
-            outputs.append(_format_remote_publish_result(pushed))
-            summaries.append(_remote_publish_summary(pushed))
-            self._send_step_update(
-                chat_id,
-                (
-                    f"Pushed branch {pushed.branch}."
-                    if pushed.pushed
-                    else f"Kept branch {pushed.branch} locally."
-                ),
-            )
+            if stage not in {"pushed", "pr_opened"}:
+                self._send_step_update(
+                    chat_id,
+                    "Handing off the branch to the configured forge.",
+                )
+                pushed = push_current_branch(root=publish_root)
+                remote_branch = pushed.branch
+                pushed_remotely = pushed.pushed
+                outputs.append(_format_remote_publish_result(pushed))
+                summaries.append(_remote_publish_summary(pushed))
+                completed_stages.append("pushed")
+                self._record_current_publish_stage(
+                    "pushed",
+                    commit_sha=commit_sha,
+                    remote_branch=remote_branch,
+                    published_remotely=pushed_remotely,
+                )
+                self._send_step_update(
+                    chat_id,
+                    (
+                        f"Pushed branch {pushed.branch}."
+                        if pushed.pushed
+                        else f"Kept branch {pushed.branch} locally."
+                    ),
+                )
+                stage = "pushed"
 
-            self._send_step_update(chat_id, "Preparing the review handoff.")
-            pr = _create_pull_request_for_current_task(
-                publish_root,
-                self.root,
-                forge=self.forge,
-            )
-            outputs.append(_format_pr_result(pr))
-            summaries.append(_pr_summary(pr))
-            if pr.url:
-                self._update_work_status(_pr_step_update(pr), pr_url=pr.url)
-                _record_current_task_result("\n\n".join(outputs), self.root)
-            self._send_step_update(chat_id, _pr_step_update(pr))
+            if stage != "pr_opened":
+                self._send_step_update(chat_id, "Preparing the review handoff.")
+                pr = _create_pull_request_for_current_task(
+                    publish_root,
+                    self.root,
+                    forge=self.forge,
+                )
+                outputs.append(_format_pr_result(pr))
+                summaries.append(_pr_summary(pr))
+                self._send_step_update(chat_id, _pr_step_update(pr))
+                if bool(getattr(self.forge, "supports_remote_review", True)) and (
+                    not pr.created or not pr.url
+                ):
+                    detail = pr.note or pr.fallback_url or "the forge did not return a PR URL"
+                    failure = (
+                        "Enoch pushed the task branch but could not open its pull request. "
+                        f"The worktree and branch were preserved for retry. {detail}"
+                    )
+                    self._send_step_update(chat_id, failure)
+                    return WorkOutcome.failure(
+                        "\n\n".join([*outputs, failure]),
+                        status="publish_incomplete",
+                        code="pr_creation_failed",
+                        failure_class="transient",
+                        retryable=True,
+                        completed_stages=tuple(dict.fromkeys(completed_stages)),
+                        commit_sha=commit_sha,
+                        remote_branch=remote_branch,
+                    )
+                pr_url = pr.url or ""
+                if pr_url:
+                    completed_stages.append("pr_opened")
+                    self._record_current_publish_stage(
+                        "pr_opened",
+                        commit_sha=commit_sha,
+                        remote_branch=remote_branch,
+                        pr_url=pr_url,
+                        published_remotely=pushed_remotely,
+                    )
+                    self._update_work_status(_pr_step_update(pr), pr_url=pr_url)
+                    _record_current_task_result("\n\n".join(outputs), self.root)
+                    stage = "pr_opened"
+            elif pr_url:
+                outputs.append(f"Pull request already opened: {pr_url}")
 
             resident_branch = self._resident_branch_name()
             if task_worktree is not None:
@@ -1634,23 +1851,23 @@ class EnochApplication:
                 handoff = remove_task_worktree(
                     self.root,
                     task_worktree,
-                    delete_local_branch=pushed.pushed,
-                    force_delete_branch=pushed.pushed,
+                    delete_local_branch=pushed_remotely,
+                    force_delete_branch=pushed_remotely,
                 )
             else:
                 self._send_step_update(chat_id, f"Returning local checkout to {resident_branch}.")
                 handoff = self._return_to_resident_after_handoff(
-                    published_remotely=pushed.pushed,
+                    published_remotely=pushed_remotely,
                 )
             outputs.append(handoff)
             summaries.append(handoff)
             self._send_step_update(chat_id, f"Resident checkout remains on {resident_branch}.")
-            if pr.url:
+            if pr_url:
                 self._queue_session_sync(
                     chat_id,
                     repository_handoff_note(
-                        pr.branch,
-                        pr.url,
+                        remote_branch,
+                        pr_url,
                         resident_branch,
                         self._authoritative_branch_name(),
                     ),
@@ -1658,11 +1875,28 @@ class EnochApplication:
         except (VcsError, ForgeProviderError) as error:
             failure = f"Enoch could not publish this edit as a pull request: {error}"
             self._send_step_update(chat_id, failure)
-            return "\n\n".join([*outputs, failure]) if outputs else failure
+            classified = classify_task_failure(failure)
+            publish_started = bool(completed_stages)
+            return WorkOutcome.failure(
+                "\n\n".join([*outputs, failure]) if outputs else failure,
+                status="publish_incomplete" if publish_started else "failed",
+                code=(
+                    classified.code
+                    if classified.code != "unknown_failure"
+                    else "publish_failed"
+                ),
+                failure_class=(
+                    "transient" if publish_started else classified.failure_class
+                ),
+                retryable=publish_started or classified.retryable,
+                completed_stages=tuple(dict.fromkeys(completed_stages)),
+                commit_sha=commit_sha,
+                remote_branch=remote_branch,
+            )
 
         action = (
             f"published edit as pull request: {request}"
-            if pr.created
+            if pr_url
             else f"committed edit to local branch: {request}"
         )
         _record_direct_action(action, "\n\n".join(summaries), self.root)
@@ -1675,7 +1909,62 @@ class EnochApplication:
                 f"Result: {_clip_activity_text(reply)}",
             ),
         )
-        return reply
+        return WorkOutcome.completed(
+            reply,
+            completed_stages=tuple(dict.fromkeys(completed_stages)),
+            commit_sha=commit_sha,
+            remote_branch=remote_branch,
+            pr_url=pr_url,
+        )
+
+    def _record_current_publish_stage(
+        self,
+        stage: str,
+        *,
+        commit_sha: str = "",
+        remote_branch: str = "",
+        pr_url: str = "",
+        published_remotely: bool | None = None,
+    ) -> None:
+        task_id = _CURRENT_TASK_ID.get()
+        worker_id = _CURRENT_TASK_WORKER_ID.get()
+        if task_id is None or not worker_id:
+            return
+        recorded = record_task_publish_state(
+            task_id,
+            worker_id,
+            self.root,
+            stage=stage,
+            commit_sha=commit_sha,
+            remote_branch=remote_branch,
+            pr_url=pr_url,
+            published_remotely=published_remotely,
+        )
+        if recorded is None:
+            raise VcsError(
+                f"Task #{task_id} lost its execution lease while recording publish stage {stage}."
+            )
+
+    def _resume_task_publish(self, job: TaskJob) -> WorkOutcome:
+        if not job.worktree_path or not job.branch_name:
+            return WorkOutcome.failure(
+                f"Task #{job.id} cannot resume publishing because its worktree metadata is missing.",
+                code="worktree_precondition",
+            )
+        worktree = TaskWorktree(
+            task_id=job.id,
+            path=Path(job.worktree_path),
+            branch=job.branch_name,
+            created=False,
+        )
+        return self._publish_feature_pr(
+            job.chat_id,
+            job.text,
+            (),
+            work_root=worktree.path,
+            task_worktree=worktree,
+            resume_job=job,
+        )
 
     def _return_to_resident_after_handoff(self, *, published_remotely: bool = True) -> str:
         branch = current_branch(self.root)
@@ -1927,6 +2216,7 @@ class EnochApplication:
                 self.root,
                 context=snapshot.context,
                 context_source=snapshot.source,
+                idempotency_key=_event_idempotency_key("task"),
                 **self._profile_task_options(),
             )
         except (OSError, ValueError):
@@ -2060,6 +2350,7 @@ class EnochApplication:
                 initiated_by="human",
                 event_actor="human",
                 trigger=trigger,
+                idempotency_key=_event_idempotency_key(f"paused:{trigger}"),
                 **self._profile_task_options(),
             )
             paused = pause_task(
@@ -2309,6 +2600,7 @@ class EnochApplication:
                 priority=priority,
                 context=snapshot.context,
                 context_source=snapshot.source,
+                idempotency_key=_event_idempotency_key("backlog-add"),
             )
         except (OSError, ValueError):
             return "Enoch could not add that backlog item."
@@ -2549,6 +2841,9 @@ class EnochApplication:
                 approval_actor="human",
                 parent_candidate_id=candidate.parent_candidate_id,
                 source_task_id=candidate.source_task_id,
+                idempotency_key=_event_idempotency_key(
+                    f"evolve-approve:{candidate.id}"
+                ),
                 **self._profile_task_options(),
             )
         except (OSError, ValueError):
@@ -2617,6 +2912,9 @@ class EnochApplication:
                 approval_actor="human",
                 parent_candidate_id=candidate.parent_candidate_id,
                 source_task_id=candidate.source_task_id,
+                idempotency_key=_event_idempotency_key(
+                    f"evolve-retry:{candidate.id}"
+                ),
                 **self._profile_task_options(),
             )
         except (OSError, ValueError):
@@ -2769,6 +3067,7 @@ class EnochApplication:
                 self.root,
                 context=snapshot.context,
                 context_source=snapshot.source,
+                idempotency_key=_event_idempotency_key("cron-add"),
             )
         except (OSError, ValueError):
             return "Enoch could not schedule that cron job."
@@ -2835,6 +3134,7 @@ class EnochApplication:
             initiated_by="human",
             event_actor=event_actor,
             trigger=trigger,
+            idempotency_key=f"backlog:{item.id}",
             **self._profile_task_options(),
         )
         promoted = promote_backlog_item(item.id, self.root, promoted_task_id=job.id)
@@ -2872,11 +3172,17 @@ class EnochApplication:
                     initiated_by="human",
                     event_actor="system",
                     trigger=f"cron:{cron.id}",
+                    idempotency_key=f"cron:{cron.id}:{cron.claim_id}",
                     **self._profile_task_options(),
                 )
             except (OSError, ValueError):
                 continue
-            record_cron_task(cron.id, job.id, self.root)
+            record_cron_task(
+                cron.id,
+                job.id,
+                self.root,
+                claim_id=cron.claim_id,
+            )
             jobs.append(job)
             message = self._format_work_status(
                 WorkStatusMessage(
@@ -2914,6 +3220,10 @@ class EnochApplication:
                 trigger="evolve-scheduler",
                 reason="chat-not-locked",
             )
+            acknowledge_evolve_schedule(
+                claimed.schedule_claim_id,
+                self.root,
+            )
             return None
         if claimed.mode == MODE_DISABLED:
             self._record_evolve_event(
@@ -2927,6 +3237,10 @@ class EnochApplication:
                 event_actor="system",
                 trigger="evolve-scheduler",
                 reason="mode-disabled",
+            )
+            acknowledge_evolve_schedule(
+                claimed.schedule_claim_id,
+                self.root,
             )
             return None
         proposal = self._propose_evolve(chat_id, trigger="evolve-scheduler")
@@ -2945,6 +3259,10 @@ class EnochApplication:
                 reason=wait_reason,
             )
         self._safe_send_message(chat_id, "Scheduled evolve check\n\n" + _format_evolve_proposal(proposal))
+        acknowledge_evolve_schedule(
+            claimed.schedule_claim_id,
+            self.root,
+        )
         return None
 
     def _run_task_job(self, job: TaskJob) -> None:
@@ -3033,27 +3351,41 @@ class EnochApplication:
         failure: TaskFailure | None = None
         regression_signals: tuple[TaskRegressionSignal, ...] = ()
         try:
-            if task_result_has_pull_request(job.result):
+            if job.publish_stage in {"committed", "pushed", "pr_opened"}:
+                outcome = self._resume_task_publish(job)
+            elif task_result_has_pull_request(job.result):
                 reply = job.result
+                outcome = WorkOutcome.completed(reply)
             elif not self._action_allowed():
                 reply = self._action_lock_message()
-                completed_status = "failed"
-            else:
-                reply = self._run_direct_work(
-                    job.chat_id,
-                    job.text,
-                    context=_task_worker_context(job),
-                    session_key=session_key,
-                    execution=execution,
+                outcome = WorkOutcome.failure(
+                    reply,
+                    code="action_locked",
+                    failure_class="permanent",
                 )
+            else:
+                outcome = _coerce_work_outcome(
+                    self._run_direct_work(
+                        job.chat_id,
+                        job.text,
+                        context=_task_worker_context(job),
+                        session_key=session_key,
+                        execution=execution,
+                    )
+                )
+            reply = outcome.message
             reply = self._capture_task_regression_signals(reply)
             if deadline.expired.is_set():
                 reply = _task_timeout_message(deadline.timeout_seconds)
                 completed_status = "failed"
                 failure = classify_task_failure(reply)
-            elif _work_reply_failed(reply):
+            elif outcome.failed:
                 completed_status = "failed"
-                failure = classify_task_failure(reply)
+                failure = TaskFailure(
+                    code=outcome.code or "unknown_failure",
+                    failure_class=outcome.failure_class or "permanent",
+                    retryable=outcome.retryable,
+                )
         except AgentRuntimeAccessUnavailable as error:
             reply = _codex_pause_warning(job.id, str(error))
             completed_status = "paused"
@@ -3583,6 +3915,14 @@ def _chat_provider_name(client: object) -> str:
     return name or "chat"
 
 
+def _event_idempotency_key(purpose: str) -> str:
+    event_key = _CURRENT_EVENT_KEY.get().strip()
+    normalized_purpose = " ".join(purpose.split())
+    if not event_key or not normalized_purpose:
+        return ""
+    return f"chat:{event_key}:{normalized_purpose}"
+
+
 def _action_sandbox(_root: Path) -> str:
     return ACTION_SANDBOX_FULL_ACCESS
 
@@ -3593,13 +3933,6 @@ def _sandbox_description(sandbox: str) -> str:
     if sandbox == ACTION_SANDBOX_FULL_ACCESS:
         return "working with full filesystem access"
     return "thinking in read-only mode"
-
-
-def _worktree_snapshot(root: Path) -> str:
-    try:
-        return diff_summary(root)
-    except VcsError:
-        return ""
 
 
 def _changed_files_or_empty(root: Path) -> tuple[str, ...]:
@@ -3648,6 +3981,21 @@ def _work_reply_failed(reply: str) -> bool:
         or "i did not open a pr because doctor failed" in normalized
         or "doctor failed:" in normalized
     )
+
+
+def _coerce_work_outcome(value: WorkOutcome | str) -> WorkOutcome:
+    if isinstance(value, WorkOutcome):
+        return value
+    message = str(value)
+    if _work_reply_failed(message):
+        failure = classify_task_failure(message)
+        return WorkOutcome.failure(
+            message,
+            code=failure.code,
+            failure_class=failure.failure_class,
+            retryable=failure.retryable,
+        )
+    return WorkOutcome.completed(message)
 
 
 def _start_task_deadline(

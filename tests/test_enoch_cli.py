@@ -11,13 +11,25 @@ from unittest.mock import MagicMock, patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from enoch.cli import _repl, main
+from enoch.cli import ADMIN_COMMANDS, _repl, admin_help, main
 from enoch.config import read_section
 from enoch.immune import DoctorCheckResult, DoctorDiagnosis
 from enoch.identity import load_identity
 
 
 class EnochCliTests(unittest.TestCase):
+    def test_admin_registry_drives_help_and_detailed_usage(self) -> None:
+        overview = admin_help()
+
+        self.assertEqual(
+            len({command.name for command in ADMIN_COMMANDS}),
+            len(ADMIN_COMMANDS),
+        )
+        for command in ADMIN_COMMANDS:
+            self.assertIn(command.summary_line(), overview)
+            self.assertIn(f"Usage: {command.usage}", admin_help(command.name))
+        self.assertIn("Use help <command> for detailed usage.", overview)
+
     def test_help_shows_admin_command_surface(self) -> None:
         output = _run_repl_commands("help", "exit")
 
@@ -195,13 +207,13 @@ class EnochCliTests(unittest.TestCase):
             self.assertEqual(output.count("Next:"), 1)
             self.assertNotIn("123456:secret-token", output)
 
-    def test_setup_token_shortcut_shows_next_step(self) -> None:
+    def test_setup_token_command_shows_next_step(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             output = StringIO()
 
             with patch("enoch.cli.Path.cwd", return_value=root), redirect_stdout(output):
-                main(["setup-token", "123456:secret-token"])
+                main(["setup", "token", "123456:secret-token"])
 
             self.assertEqual(read_section("telegram", root)["bot_token"], "123456:secret-token")
             self.assertIn("Telegram bot token saved", output.getvalue())
@@ -209,17 +221,30 @@ class EnochCliTests(unittest.TestCase):
             self.assertIn("bin/enoch-daemon start", output.getvalue())
             self.assertNotIn("123456:secret-token", output.getvalue())
 
-    def test_setup_chat_shortcut_saves_chat_lock_from_direct_cli(self) -> None:
+    def test_setup_chat_command_saves_chat_lock_from_direct_cli(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             output = StringIO()
 
             with patch("enoch.cli.Path.cwd", return_value=root), redirect_stdout(output):
-                main(["setup-chat", "42"])
+                main(["setup", "chat", "42"])
 
             self.assertEqual(read_section("telegram", root)["allowed_chat_id"], "42")
             self.assertIn("Telegram chat lock saved", output.getvalue())
             self.assertIn("bin/enoch-daemon restart", output.getvalue())
+
+    def test_setup_aliases_are_not_registered(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = _run_repl_commands(
+                "setup-token 123456:secret-token",
+                "setup-chat 42",
+                "exit",
+                root=root,
+            )
+
+        self.assertEqual(output.count("Enoch CLI is admin-only now."), 2)
+        self.assertFalse((root / ".enoch" / "config.yaml").exists())
 
     def test_setup_ancestor_writes_repo_side_lineage_parent(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -63,7 +63,7 @@ class EnochGithubWorkflowTests(unittest.TestCase):
     @patch("our_ark_github.workflow.diff_summary", return_value="README.md | 1 +")
     @patch("our_ark_github.workflow.changed_files", return_value=["README.md"])
     @patch("our_ark_github.workflow.current_branch", return_value="feature/enoch")
-    def test_stages_and_commits_after_doctor_passes(
+    def test_stages_and_commits_with_existing_validation_attestation(
         self,
         _current_branch: MagicMock,
         _changed_files: MagicMock,
@@ -73,7 +73,6 @@ class EnochGithubWorkflowTests(unittest.TestCase):
         read_section: MagicMock,
     ) -> None:
         doctor = _doctor_result(passed=True, summary="All configured health checks passed.")
-        run_immune_system.return_value = doctor
         read_section.return_value = {
             "author_name": "Gary Zhao",
             "author_email": "3261777+peking2@users.noreply.github.com",
@@ -84,12 +83,17 @@ class EnochGithubWorkflowTests(unittest.TestCase):
             _git_result(returncode=0, stdout="abc123"),
         ]
 
-        result = prepare_local_publish("Test commit", root=ROOT)
+        result = prepare_local_publish(
+            "Test commit",
+            root=ROOT,
+            validation_result=doctor,
+        )
 
         self.assertEqual(result.branch, "feature/enoch")
         self.assertEqual(result.changed_files, ["README.md"])
         self.assertEqual(result.doctor, doctor)
         self.assertEqual(result.commit_sha, "abc123")
+        run_immune_system.assert_not_called()
         run_git.assert_any_call(["add", "--", "README.md"], ROOT)
         run_git.assert_any_call(
             [
@@ -328,6 +332,52 @@ class EnochGithubWorkflowTests(unittest.TestCase):
         self.assertIn("feature/enoch", args)
         self.assertNotIn("--draft", args)
         self.assertFalse(result.draft)
+
+    @patch("our_ark_github.workflow.subprocess.run")
+    @patch("our_ark_github.workflow.shutil.which", return_value="/usr/local/bin/gh")
+    @patch("our_ark_github.workflow.ensure_clean_worktree")
+    @patch("our_ark_github.workflow.run_git")
+    @patch("our_ark_github.workflow.current_branch", return_value="feature/enoch")
+    def test_pr_reuses_existing_open_pr_after_ambiguous_create_failure(
+        self,
+        _current_branch: MagicMock,
+        run_git: MagicMock,
+        _ensure_clean_worktree: MagicMock,
+        _which: MagicMock,
+        run: MagicMock,
+    ) -> None:
+        run_git.side_effect = [
+            _git_result(returncode=0, stdout="abc123"),
+            _git_result(returncode=0, stdout="Add Enoch feature"),
+            _git_result(returncode=0, stdout="Add Enoch feature"),
+            _git_result(returncode=0, stdout="https://github.com/our-ark/enoch.git"),
+        ]
+        create = MagicMock(
+            returncode=1,
+            stdout="",
+            stderr="a pull request for branch feature/enoch already exists",
+        )
+        view = MagicMock(
+            returncode=0,
+            stdout=json.dumps(
+                {
+                    "url": "https://github.com/our-ark/enoch/pull/12",
+                    "title": "Add Enoch feature",
+                    "body": "Existing body",
+                    "isDraft": False,
+                    "state": "OPEN",
+                }
+            ),
+            stderr="",
+        )
+        run.side_effect = [create, view]
+
+        result = create_pull_request(root=ROOT)
+
+        self.assertTrue(result.created)
+        self.assertEqual(result.url, "https://github.com/our-ark/enoch/pull/12")
+        self.assertIn("Reused", result.note)
+        self.assertEqual(run.call_args_list[1].args[0][:3], ["/usr/local/bin/gh", "pr", "view"])
 
     @patch("our_ark_github.workflow.subprocess.run")
     @patch("our_ark_github.workflow.shutil.which", return_value="/usr/local/bin/gh")

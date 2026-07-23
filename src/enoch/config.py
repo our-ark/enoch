@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from enoch.paths import enoch_home
+from enoch.state import atomic_write, file_transaction
 
 
 def config_path(root: Path | None = None) -> Path:
@@ -27,39 +29,36 @@ def write_section_value(
     root: Path | None = None,
 ) -> None:
     path = config_path(root)
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        lines = []
+    with file_transaction(path):
+        lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
 
-    section_index = _find_section(lines, section)
-    formatted = f"  {key}: {_quote_yaml(value)}" if value is not None else ""
-    if section_index is None:
-        if value is None:
-            return
-        if lines and lines[-1].strip():
-            lines.append("")
-        lines.extend([f"{section}:", formatted])
-    else:
-        insert_at = _section_end(lines, section_index)
-        key_index = _find_key(lines, section_index, insert_at, key)
-        if key_index is None:
-            if value is not None:
-                lines.insert(insert_at, formatted)
-        elif value is None:
-            del lines[key_index]
+        section_index = _find_section(lines, section)
+        formatted = f"  {key}: {_quote_yaml(value)}" if value is not None else ""
+        if section_index is None:
+            if value is None:
+                return
+            if lines and lines[-1].strip():
+                lines.append("")
+            lines.extend([f"{section}:", formatted])
         else:
-            lines[key_index] = formatted
+            insert_at = _section_end(lines, section_index)
+            key_index = _find_key(lines, section_index, insert_at, key)
+            if key_index is None:
+                if value is not None:
+                    lines.insert(insert_at, formatted)
+            elif value is None:
+                del lines[key_index]
+            else:
+                lines[key_index] = formatted
 
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+        atomic_write(path, "\n".join(lines).rstrip() + "\n")
 
 
 def _parse_simple_yaml(text: str) -> dict[str, dict[str, str]]:
     data: dict[str, dict[str, str]] = {}
     current: str | None = None
     for raw_line in text.splitlines():
-        line = raw_line.split("#", 1)[0].rstrip()
+        line = _strip_yaml_comment(raw_line).rstrip()
         if not line.strip():
             continue
         if not line.startswith((" ", "\t")) and line.endswith(":"):
@@ -75,7 +74,7 @@ def _parse_simple_yaml(text: str) -> dict[str, dict[str, str]]:
 
 def _find_section(lines: list[str], section: str) -> int | None:
     for index, raw_line in enumerate(lines):
-        line = raw_line.split("#", 1)[0].rstrip()
+        line = _strip_yaml_comment(raw_line).rstrip()
         if not line.startswith((" ", "\t")) and line.endswith(":") and line[:-1].strip() == section:
             return index
     return None
@@ -91,7 +90,7 @@ def _section_end(lines: list[str], section_index: int) -> int:
 
 def _find_key(lines: list[str], start: int, end: int, key: str) -> int | None:
     for index in range(start + 1, end):
-        line = lines[index].split("#", 1)[0].rstrip()
+        line = _strip_yaml_comment(lines[index]).rstrip()
         if not line.startswith((" ", "\t")) or ":" not in line:
             continue
         found, _separator, _value = line.partition(":")
@@ -109,6 +108,37 @@ def _quote_yaml(value: str | None) -> str:
 
 def _clean_value(value: str) -> str:
     value = value.strip()
-    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
-        return value[1:-1]
+    if len(value) >= 2 and value[0] == value[-1] == '"':
+        try:
+            decoded = json.loads(value)
+        except json.JSONDecodeError as error:
+            raise ValueError(f"Invalid quoted configuration value: {error.msg}.") from error
+        if not isinstance(decoded, str):
+            raise ValueError("Quoted configuration values must be strings.")
+        return decoded
+    if len(value) >= 2 and value[0] == value[-1] == "'":
+        return value[1:-1].replace("''", "'")
     return value
+
+
+def _strip_yaml_comment(line: str) -> str:
+    quote = ""
+    escaped = False
+    for index, character in enumerate(line):
+        if escaped:
+            escaped = False
+            continue
+        if quote == '"' and character == "\\":
+            escaped = True
+            continue
+        if character in {"'", '"'}:
+            if not quote:
+                quote = character
+            elif quote == character:
+                if quote == "'" and index + 1 < len(line) and line[index + 1] == "'":
+                    continue
+                quote = ""
+            continue
+        if character == "#" and not quote:
+            return line[:index]
+    return line

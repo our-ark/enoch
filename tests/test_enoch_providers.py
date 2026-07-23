@@ -40,6 +40,8 @@ from enoch.providers import (
     normalize_runtime_result,
 )
 from enoch.providers.forge import LocalForgeProvider
+from enoch.providers.vcs import GitVersionControlProvider
+from enoch.providers.contracts import VersionControlProviderError
 from enoch.providers.runtime import (
     FunctionAgentRuntime,
     invoke_runtime_action,
@@ -316,6 +318,47 @@ class _EntryPoints(list):
 
 
 class EnochProviderTests(unittest.TestCase):
+    def test_git_task_base_refuses_stale_fallback_when_fetch_fails(self) -> None:
+        provider = GitVersionControlProvider()
+        with patch.object(
+            provider,
+            "refresh_authoritative",
+            side_effect=VersionControlProviderError("network unavailable"),
+        ), patch.object(provider, "resolve_revision", return_value="stale-local-sha"):
+            with self.assertRaisesRegex(
+                VersionControlProviderError,
+                "network unavailable",
+            ):
+                provider.task_base(ROOT)
+
+    def test_provider_loader_surfaces_missing_internal_dependency(self) -> None:
+        error = ModuleNotFoundError(
+            "No module named 'internal_dependency'",
+            name="internal_dependency",
+        )
+        with patch.object(
+            provider_registry,
+            "CORE_PROVIDER_MODULES",
+            ("example.provider",),
+        ), patch.object(
+            provider_registry,
+            "_LOADED_PLUGIN_MODULES",
+            set(),
+        ), patch.object(
+            provider_registry,
+            "load_runtime_dependencies",
+            return_value=(),
+        ), patch.object(
+            provider_registry,
+            "import_module",
+            side_effect=error,
+        ):
+            with self.assertRaisesRegex(
+                ProviderError,
+                "could not load dependency internal_dependency",
+            ):
+                provider_registry._load_provider_plugins(None)
+
     def test_runtime_execution_distinguishes_timeout_from_cancellation(self) -> None:
         cancellation = threading.Event()
         timeout = threading.Event()
@@ -649,6 +692,7 @@ class EnochProviderTests(unittest.TestCase):
             root = Path(temp)
             app = EnochApplication(load_identity(), root, _Chat(), runtime=_Runtime())
             app.forge = MagicMock()
+            app.forge.supports_remote_review = False
             app.forge.create_pull_request.return_value = review
             workspace = TaskWorktree(1, root / "task-1", "change/portable", True)
             with patch("enoch.app.core.feature_title", return_value="Portable change"), patch(
@@ -675,7 +719,62 @@ class EnochProviderTests(unittest.TestCase):
             delete_local_branch=False,
             force_delete_branch=False,
         )
-        self.assertIn("kept this branch locally", result)
+        self.assertIn("kept this branch locally", result.message)
+
+    def test_remote_pr_creation_failure_is_retryable_and_preserves_worktree(self) -> None:
+        doctor = MagicMock(passed=True)
+        committed = LocalPublishResult(
+            branch="change/retry-pr",
+            commit_message="Retry PR",
+            changed_files=["README.md"],
+            diff="README.md | 1 +",
+            doctor=doctor,
+            commit_sha="revision-2",
+        )
+        remote = RemotePublishResult(
+            branch="change/retry-pr",
+            remote="origin",
+            pushed=True,
+            ahead_count=1,
+            compare_url="https://github.com/our-ark/enoch/compare/change/retry-pr",
+        )
+        review = PullRequestResult(
+            branch="change/retry-pr",
+            title="Retry PR",
+            body="",
+            created=False,
+            url=None,
+            fallback_url=remote.compare_url,
+            note="temporary API failure",
+        )
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            app = EnochApplication(load_identity(), root, _Chat(), runtime=_Runtime())
+            app.forge = MagicMock(supports_remote_review=True)
+            app.forge.create_pull_request.return_value = review
+            workspace = TaskWorktree(2, root / "task-2", remote.branch, True)
+            with patch(
+                "enoch.app.core.prepare_local_publish",
+                return_value=committed,
+            ), patch(
+                "enoch.app.core.push_current_branch",
+                return_value=remote,
+            ), patch("enoch.app.core.remove_task_worktree") as remove:
+                result = app._publish_feature_pr(
+                    "room-1",
+                    "Retry PR",
+                    ("README.md",),
+                    work_root=workspace.path,
+                    task_worktree=workspace,
+                    validation_result=doctor,
+                )
+
+        self.assertEqual(result.status, "publish_incomplete")
+        self.assertEqual(result.code, "pr_creation_failed")
+        self.assertTrue(result.retryable)
+        self.assertEqual(result.commit_sha, "revision-2")
+        self.assertEqual(result.remote_branch, "change/retry-pr")
+        remove.assert_not_called()
 
     def test_config_lists_and_selects_installed_providers(self) -> None:
         register_provider("runtime", "test-runtime", lambda _root=None: _Runtime(), replace=True)

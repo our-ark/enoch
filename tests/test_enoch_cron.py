@@ -49,7 +49,7 @@ class EnochCronTests(unittest.TestCase):
         self.assertEqual(status.active[0].context, "Use saved context.")
         self.assertEqual(status.active[0].context_source, "chat-snapshot")
 
-    def test_claim_due_jobs_advances_next_run_once(self) -> None:
+    def test_due_job_remains_claimed_until_task_is_recorded(self) -> None:
         start = datetime(2026, 6, 30, 12, 0, tzinfo=timezone.utc)
         due = datetime(2026, 6, 30, 12, 10, tzinfo=timezone.utc)
         with TemporaryDirectory() as temp:
@@ -58,10 +58,24 @@ class EnochCronTests(unittest.TestCase):
 
             claimed = claim_due_cron_jobs(root, now=due)
             claimed_again = claim_due_cron_jobs(root, now=due)
+            metadata_only = record_cron_task(job.id, 6, root, now=due)
+            still_claimed = claim_due_cron_jobs(root, now=due)
+            recorded = record_cron_task(
+                job.id,
+                7,
+                root,
+                claim_id=claimed[0].claim_id,
+                now=due,
+            )
+            after_ack = claim_due_cron_jobs(root, now=due)
             status = cron_status(root)
 
         self.assertEqual([item.id for item in claimed], [job.id])
-        self.assertEqual(claimed_again, ())
+        self.assertEqual(claimed_again[0].claim_id, claimed[0].claim_id)
+        self.assertEqual(metadata_only.last_task_id, 6)
+        self.assertEqual(still_claimed[0].claim_id, claimed[0].claim_id)
+        self.assertIsNotNone(recorded)
+        self.assertEqual(after_ack, ())
         self.assertEqual(status.active[0].last_run_at, "2026-06-30T12:10:00+00:00")
         self.assertEqual(status.active[0].next_run_at, "2026-06-30T12:20:00+00:00")
 

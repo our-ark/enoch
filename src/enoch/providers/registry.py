@@ -175,8 +175,20 @@ def _load_provider_plugins(root: Path | None) -> None:
             continue
         try:
             module = import_module(module_name)
-        except ImportError:
-            continue
+        except ModuleNotFoundError as error:
+            missing = str(error.name or "")
+            if missing and (
+                module_name == missing or module_name.startswith(f"{missing}.")
+            ):
+                continue
+            raise ProviderError(
+                f"Provider module {module_name} could not load dependency "
+                f"{missing or 'unknown'}: {error}"
+            ) from error
+        except ImportError as error:
+            raise ProviderError(
+                f"Provider module {module_name} failed during import: {error}"
+            ) from error
         _register_module_plugins(module_name, getattr(module, PLUGIN_ATTRIBUTE, ()))
         _LOADED_PLUGIN_MODULES.add(module_name)
 

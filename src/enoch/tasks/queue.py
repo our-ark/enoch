@@ -1,18 +1,11 @@
 from __future__ import annotations
 
-from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
 import re
-import threading
-
-try:
-    import fcntl
-except ImportError:  # pragma: no cover - fcntl is unavailable on Windows.
-    fcntl = None
 
 from enoch.memory.paths import atomic_write, now as current_time
 from enoch.paths import enoch_home
@@ -24,12 +17,12 @@ from enoch.providers.contracts import (
     normalize_message_id,
 )
 from enoch.tasks.events import normalize_task_initiator, normalize_task_source, record_task_event
+from enoch.state import StateCorruptionError, file_transaction, load_json_object
 
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 9
 DEFAULT_MAX_ATTEMPTS = 3
 PULL_REQUEST_URL_PATTERN = re.compile(r"https://[^\s]+/(?:pull|pulls|merge_requests)/\d+")
-_QUEUE_THREAD_LOCK = threading.RLock()
 
 
 @dataclass(frozen=True)
@@ -75,6 +68,12 @@ class TaskJob:
     runtime_event_types: tuple[str, ...] = ()
     runtime_output_refs: tuple[str, ...] = ()
     runtime_side_effects: tuple[str, ...] = ()
+    idempotency_key: str = ""
+    publish_stage: str = ""
+    commit_sha: str = ""
+    remote_branch: str = ""
+    pr_url: str = ""
+    published_remotely: bool = False
 
 
 @dataclass(frozen=True)
@@ -89,6 +88,12 @@ class TaskQueueStatus:
 
 class TaskRetryError(ValueError):
     pass
+
+
+class TaskAlreadyExists(RuntimeError):
+    def __init__(self, job: TaskJob) -> None:
+        super().__init__(f"Task #{job.id} already exists for this chat update.")
+        self.job = job
 
 
 def task_queue_path(root: Path | None = None) -> Path:
@@ -116,6 +121,7 @@ def enqueue_task(
     source_task_id: int | None = None,
     max_attempts: int = DEFAULT_MAX_ATTEMPTS,
     timeout_seconds: int | None = None,
+    idempotency_key: str = "",
 ) -> TaskJob:
     cleaned = " ".join(text.split())
     if not cleaned:
@@ -126,6 +132,8 @@ def enqueue_task(
     timeout_seconds = _optional_positive_int(timeout_seconds, "Task timeout")
     with _queue_transaction(root):
         data = _load_queue(root)
+        if existing := _find_task_by_idempotency_key(data, idempotency_key):
+            return existing
         job = TaskJob(
             id=_next_id(data),
             chat_id=chat_id,
@@ -146,6 +154,7 @@ def enqueue_task(
             source_task_id=_positive_int(source_task_id),
             max_attempts=max_attempts,
             timeout_seconds=timeout_seconds,
+            idempotency_key=idempotency_key.strip(),
         )
         pending = data.setdefault("pending", [])
         pending.append(_job_to_dict(job))
@@ -227,6 +236,11 @@ def retry_failed_task(
             pr_urls=_pull_request_urls(artifact_result),
             worktree_path=original.worktree_path,
             branch_name=original.branch_name,
+            publish_stage=original.publish_stage,
+            commit_sha=original.commit_sha,
+            remote_branch=original.remote_branch,
+            pr_url=original.pr_url,
+            published_remotely=original.published_remotely,
             max_attempts=original.max_attempts,
             timeout_seconds=original.timeout_seconds,
         )
@@ -272,6 +286,7 @@ def enqueue_task_front(
     source_task_id: int | None = None,
     max_attempts: int = DEFAULT_MAX_ATTEMPTS,
     timeout_seconds: int | None = None,
+    idempotency_key: str = "",
 ) -> TaskJob:
     cleaned = " ".join(text.split())
     if not cleaned:
@@ -282,6 +297,8 @@ def enqueue_task_front(
     timeout_seconds = _optional_positive_int(timeout_seconds, "Task timeout")
     with _queue_transaction(root):
         data = _load_queue(root)
+        if existing := _find_task_by_idempotency_key(data, idempotency_key):
+            return existing
         job = TaskJob(
             id=_next_id(data),
             chat_id=chat_id,
@@ -302,6 +319,7 @@ def enqueue_task_front(
             source_task_id=_positive_int(source_task_id),
             max_attempts=max_attempts,
             timeout_seconds=timeout_seconds,
+            idempotency_key=idempotency_key.strip(),
         )
         pending = data.setdefault("pending", [])
         pending.insert(0, _job_to_dict(job))
@@ -333,6 +351,7 @@ def begin_direct_task(
     source_task_id: int | None = None,
     max_attempts: int = DEFAULT_MAX_ATTEMPTS,
     timeout_seconds: int | None = None,
+    idempotency_key: str = "",
 ) -> TaskJob:
     cleaned = " ".join(text.split())
     if not cleaned:
@@ -343,6 +362,8 @@ def begin_direct_task(
     timeout_seconds = _optional_positive_int(timeout_seconds, "Task timeout")
     with _queue_transaction(root):
         data = _load_queue(root)
+        if existing := _find_task_by_idempotency_key(data, idempotency_key):
+            raise TaskAlreadyExists(existing)
         if _parse_job(data.get("running")) is not None:
             raise RuntimeError("A task is already running.")
         job = TaskJob(
@@ -368,6 +389,7 @@ def begin_direct_task(
             attempt=1,
             max_attempts=max_attempts,
             timeout_seconds=timeout_seconds,
+            idempotency_key=idempotency_key.strip(),
         )
         data["running"] = _job_to_dict(job)
         data["next_id"] = job.id + 1
@@ -756,7 +778,7 @@ def regress_task(
                 updated.append(job)
         if regressed is None:
             return None
-        data["history"] = [_job_to_dict(job) for job in updated[-20:]]
+        data["history"] = [_job_to_dict(job) for job in updated]
         _write_queue(data, root)
         _record_task_event_safely(
             regressed,
@@ -811,7 +833,7 @@ def resolve_regressed_task(
                 updated.append(job)
         if resolved is None:
             return None
-        data["history"] = [_job_to_dict(job) for job in updated[-20:]]
+        data["history"] = [_job_to_dict(job) for job in updated]
         _write_queue(data, root)
         _record_task_event_safely(
             resolved,
@@ -885,6 +907,51 @@ def record_task_result(task_id: int, result: str, root: Path | None = None) -> N
         data["pending"] = pending
         data["running"] = _job_to_dict(running) if running is not None else None
         _write_queue(data, root)
+
+
+def record_task_publish_state(
+    task_id: int,
+    worker_id: str,
+    root: Path | None = None,
+    *,
+    stage: str,
+    commit_sha: str = "",
+    remote_branch: str = "",
+    pr_url: str = "",
+    published_remotely: bool | None = None,
+) -> TaskJob | None:
+    allowed_stages = {"validated", "committed", "pushed", "pr_opened"}
+    if stage not in allowed_stages:
+        raise ValueError(f"Unknown publish stage {stage!r}.")
+    with _queue_transaction(root):
+        data = _load_queue(root)
+        running = _parse_job(data.get("running"))
+        if (
+            running is None
+            or running.id != task_id
+            or not worker_id
+            or running.worker_id != worker_id
+        ):
+            return None
+        updated = _replace_job(
+            running,
+            publish_stage=stage,
+            commit_sha=commit_sha.strip() or running.commit_sha,
+            remote_branch=remote_branch.strip() or running.remote_branch,
+            pr_url=pr_url.strip() or running.pr_url,
+            published_remotely=(
+                running.published_remotely
+                if published_remotely is None
+                else published_remotely
+            ),
+            pr_urls=_merge_pr_urls(
+                running.pr_urls,
+                (pr_url.strip(),) if pr_url.strip() else (),
+            ),
+        )
+        data["running"] = _job_to_dict(updated)
+        _write_queue(data, root)
+        return updated
 
 
 def record_task_runtime_result(
@@ -976,7 +1043,7 @@ def _finish_running_task(
         )
         history.append(finished)
         data["running"] = None
-        data["history"] = [_job_to_dict(job) for job in history[-20:]]
+        data["history"] = [_job_to_dict(job) for job in history]
         _write_queue(data, root)
         _record_task_event_safely(
             finished,
@@ -1018,7 +1085,7 @@ def cancel_task(
         history.append(cancelled)
         data["pending"] = [_job_to_dict(job) for job in kept]
         data["paused"] = [_job_to_dict(job) for job in paused_kept]
-        data["history"] = [_job_to_dict(job) for job in history[-20:]]
+        data["history"] = [_job_to_dict(job) for job in history]
         _write_queue(data, root)
         _record_task_event_safely(
             cancelled,
@@ -1060,7 +1127,7 @@ def cancel_running_task(
         history = _history_jobs(data)
         history.append(cancelled)
         data["running"] = None
-        data["history"] = [_job_to_dict(job) for job in history[-20:]]
+        data["history"] = [_job_to_dict(job) for job in history]
         _write_queue(data, root)
         _record_task_event_safely(
             cancelled,
@@ -1092,7 +1159,7 @@ def recover_interrupted_task(root: Path | None = None) -> TaskJob | None:
             history = _history_jobs(data)
             history.append(completed)
             data["running"] = None
-            data["history"] = [_job_to_dict(job) for job in history[-20:]]
+            data["history"] = [_job_to_dict(job) for job in history]
             _write_queue(data, root)
             _record_task_event_safely(
                 completed,
@@ -1122,7 +1189,7 @@ def recover_interrupted_task(root: Path | None = None) -> TaskJob | None:
             history = _history_jobs(data)
             history.append(failed)
             data["running"] = None
-            data["history"] = [_job_to_dict(job) for job in history[-20:]]
+            data["history"] = [_job_to_dict(job) for job in history]
             _write_queue(data, root)
             _record_task_event_safely(
                 failed,
@@ -1191,14 +1258,16 @@ def _job_has_pull_request(job: TaskJob) -> bool:
 
 def _load_queue(root: Path | None = None) -> dict:
     path = task_queue_path(root)
-    if not path.exists():
-        return _empty_queue()
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return _empty_queue()
-    if not isinstance(raw, dict):
-        return _empty_queue()
+    raw = load_json_object(path, default_factory=_empty_queue)
+    for key in ("pending", "paused", "history"):
+        if key in raw and not isinstance(raw[key], list):
+            raise StateCorruptionError(path, f"expected {key} to be a list")
+        if any(_parse_job(item) is None for item in raw.get(key, [])):
+            raise StateCorruptionError(path, f"found an invalid task in {key}")
+    if raw.get("running") is not None and not isinstance(raw.get("running"), dict):
+        raise StateCorruptionError(path, "expected running to be an object or null")
+    if isinstance(raw.get("running"), dict) and _parse_job(raw["running"]) is None:
+        raise StateCorruptionError(path, "found an invalid running task")
     pending = [_job_to_dict(job) for job in _pending_jobs(raw)]
     paused_jobs = _paused_jobs(raw)
     paused = [_job_to_dict(job) for job in paused_jobs]
@@ -1219,7 +1288,7 @@ def _load_queue(root: Path | None = None) -> dict:
         "pending": pending,
         "paused": paused,
         "running": _job_to_dict(running) if running is not None else None,
-        "history": history[-20:],
+        "history": history,
     }
 
 
@@ -1230,25 +1299,13 @@ def _write_queue(data: dict, root: Path | None = None) -> None:
         "pending": [_job_to_dict(job) for job in _pending_jobs(data)],
         "paused": [_job_to_dict(job) for job in _paused_jobs(data)],
         "running": _job_to_dict(_parse_job(data.get("running"))) if _parse_job(data.get("running")) else None,
-        "history": [_job_to_dict(job) for job in _history_jobs(data)][-20:],
+        "history": [_job_to_dict(job) for job in _history_jobs(data)],
     }
     atomic_write(task_queue_path(root), json.dumps(payload, indent=2, sort_keys=True) + "\n")
 
 
-@contextmanager
 def _queue_transaction(root: Path | None = None):
-    path = task_queue_path(root)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    lock_path = path.with_suffix(path.suffix + ".lock")
-    with _QUEUE_THREAD_LOCK:
-        with lock_path.open("a", encoding="utf-8") as lock_file:
-            if fcntl is not None:
-                fcntl.flock(lock_file, fcntl.LOCK_EX)
-            try:
-                yield
-            finally:
-                if fcntl is not None:
-                    fcntl.flock(lock_file, fcntl.LOCK_UN)
+    return file_transaction(task_queue_path(root))
 
 
 def _pending_jobs(data: dict) -> list[TaskJob]:
@@ -1288,6 +1345,26 @@ def _find_task(data: dict, task_id: int | None) -> TaskJob | None:
         if job.id == task_id:
             return job
     return None
+
+
+def _find_task_by_idempotency_key(data: dict, key: str) -> TaskJob | None:
+    normalized = key.strip()
+    if not normalized:
+        return None
+    running = _parse_job(data.get("running"))
+    return next(
+        (
+            job
+            for job in [
+                *_pending_jobs(data),
+                *_paused_jobs(data),
+                *([running] if running is not None else []),
+                *_history_jobs(data),
+            ]
+            if job.idempotency_key == normalized
+        ),
+        None,
+    )
 
 
 def _find_task_in_status(task_id: int, root: Path | None = None) -> TaskJob | None:
@@ -1347,6 +1424,12 @@ def _parse_job(raw: object) -> TaskJob | None:
     runtime_event_types = _parse_string_tuple(raw.get("runtime_event_types"))
     runtime_output_refs = _parse_string_tuple(raw.get("runtime_output_refs"))
     runtime_side_effects = _parse_string_tuple(raw.get("runtime_side_effects"))
+    idempotency_key = str(raw.get("idempotency_key") or "").strip()
+    publish_stage = str(raw.get("publish_stage") or "").strip()
+    commit_sha = str(raw.get("commit_sha") or "").strip()
+    remote_branch = str(raw.get("remote_branch") or "").strip()
+    pr_url = str(raw.get("pr_url") or "").strip()
+    published_remotely = bool(raw.get("published_remotely", False))
     if candidate_id:
         evidence_source = evidence_source or source
         signal_actor = signal_actor or _legacy_signal_actor(evidence_source)
@@ -1396,6 +1479,12 @@ def _parse_job(raw: object) -> TaskJob | None:
         runtime_event_types=runtime_event_types,
         runtime_output_refs=runtime_output_refs,
         runtime_side_effects=runtime_side_effects,
+        idempotency_key=idempotency_key,
+        publish_stage=publish_stage,
+        commit_sha=commit_sha,
+        remote_branch=remote_branch,
+        pr_url=pr_url,
+        published_remotely=published_remotely,
     )
 
 
@@ -1444,6 +1533,12 @@ def _job_to_dict(job: TaskJob | None) -> dict:
         "runtime_event_types": list(job.runtime_event_types),
         "runtime_output_refs": list(job.runtime_output_refs),
         "runtime_side_effects": list(job.runtime_side_effects),
+        "idempotency_key": job.idempotency_key,
+        "publish_stage": job.publish_stage,
+        "commit_sha": job.commit_sha,
+        "remote_branch": job.remote_branch,
+        "pr_url": job.pr_url,
+        "published_remotely": job.published_remotely,
     }
 
 
@@ -1490,6 +1585,12 @@ def _replace_job(job: TaskJob, **changes: object) -> TaskJob:
         "runtime_event_types": job.runtime_event_types,
         "runtime_output_refs": job.runtime_output_refs,
         "runtime_side_effects": job.runtime_side_effects,
+        "idempotency_key": job.idempotency_key,
+        "publish_stage": job.publish_stage,
+        "commit_sha": job.commit_sha,
+        "remote_branch": job.remote_branch,
+        "pr_url": job.pr_url,
+        "published_remotely": job.published_remotely,
     }
     values.update(changes)
     return TaskJob(**values)

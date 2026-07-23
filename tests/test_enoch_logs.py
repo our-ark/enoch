@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from enoch.logs import conversation_log_path, log_conversation_turn, log_system_event, system_log_path
+from enoch.paths import enoch_home
 
 
 class EnochLogsTests(unittest.TestCase):
@@ -43,11 +44,11 @@ class EnochLogsTests(unittest.TestCase):
 
         self.assertEqual(
             conversation_log_path(ROOT, when=when),
-            ROOT / ".enoch" / "logs" / "conversations" / "2026-06-19.jsonl",
+            enoch_home(ROOT) / "logs" / "conversations" / "2026-06-19.jsonl",
         )
         self.assertEqual(
             system_log_path(ROOT, when=when),
-            ROOT / ".enoch" / "logs" / "system" / "2026-06-19.jsonl",
+            enoch_home(ROOT) / "logs" / "system" / "2026-06-19.jsonl",
         )
 
 

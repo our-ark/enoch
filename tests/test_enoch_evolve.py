@@ -18,6 +18,7 @@ from enoch.evolution.core import (
     MODE_DISABLED,
     cancel_evolve_candidate_for_task,
     claim_due_evolve_schedule,
+    acknowledge_evolve_schedule,
     collect_evolve_candidates,
     collect_experience_candidates,
     disable_evolve_schedule,
@@ -561,6 +562,12 @@ class EnochEvolveTests(unittest.TestCase):
             before_due = claim_due_evolve_schedule(root, now=datetime(2020, 1, 1, 23, tzinfo=timezone.utc))
             claimed = claim_due_evolve_schedule(root, now=due)
             claimed_again = claim_due_evolve_schedule(root, now=due)
+            assert claimed is not None
+            acknowledged = acknowledge_evolve_schedule(
+                claimed.schedule_claim_id,
+                root,
+                now=due,
+            )
             disabled = disable_evolve_schedule(root)
 
         self.assertTrue(scheduled.schedule_enabled)
@@ -568,9 +575,12 @@ class EnochEvolveTests(unittest.TestCase):
         self.assertEqual(scheduled.schedule_next_run_at, "2020-01-02T00:00:00+00:00")
         self.assertIsNone(before_due)
         self.assertIsNotNone(claimed)
-        assert claimed is not None
         self.assertEqual(claimed.schedule_next_run_at, "2020-01-02T00:00:00+00:00")
-        self.assertIsNone(claimed_again)
+        self.assertEqual(claimed_again.schedule_claim_id, claimed.schedule_claim_id)
+        self.assertEqual(
+            acknowledged.schedule_next_run_at,
+            "2020-01-03T00:00:00+00:00",
+        )
         self.assertFalse(disabled.schedule_enabled)
 
     def test_daily_schedule_uses_next_local_time(self) -> None:
@@ -581,7 +591,12 @@ class EnochEvolveTests(unittest.TestCase):
 
             scheduled = set_evolve_daily_schedule("9:00", root, now=start)
             claimed = claim_due_evolve_schedule(root, now=due)
-            state_after_claim = load_evolve_state(root)
+            assert claimed is not None
+            state_after_claim = acknowledge_evolve_schedule(
+                claimed.schedule_claim_id,
+                root,
+                now=due,
+            )
 
         self.assertEqual(scheduled.schedule_daily_time, "09:00")
         self.assertEqual(scheduled.schedule_interval_seconds, 86400)
@@ -602,7 +617,12 @@ class EnochEvolveTests(unittest.TestCase):
 
             scheduled = set_evolve_cron_schedule("30 9 * * *", root, now=start)
             claimed = claim_due_evolve_schedule(root, now=due)
-            state_after_claim = load_evolve_state(root)
+            assert claimed is not None
+            state_after_claim = acknowledge_evolve_schedule(
+                claimed.schedule_claim_id,
+                root,
+                now=due,
+            )
 
         self.assertEqual(scheduled.schedule_cron_expression, "30 9 * * *")
         self.assertEqual(scheduled.schedule_next_run_at, "2020-01-01T09:30:00+00:00")
