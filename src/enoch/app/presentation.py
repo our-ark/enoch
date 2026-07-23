@@ -201,7 +201,7 @@ def evolve_usage() -> str:
             "Use /evolve approve <id> to approve and queue a candidate as a task.",
             "Use /evolve retry <id> to queue a new task for a failed candidate.",
             "Use /evolve reconcile <id> [backfill] to verify promotion of a completed candidate.",
-            "Use /evolve remove <id> to remove a candidate from future proposals.",
+            "Use /evolve remove <id> [reason] to remove a candidate from future proposals.",
             "Use /evolve schedule <text> to let Enoch interpret common schedule text.",
         ]
     )

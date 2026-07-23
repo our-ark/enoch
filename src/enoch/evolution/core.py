@@ -9,8 +9,22 @@ from typing import Callable, Iterable
 
 from enoch.backlog import BacklogItem, backlog_status
 from enoch.automatic_learning import LearningArtifact, learning_index_path
-from enoch.evolution.sources.brainstorming import BrainstormIdea, load_brainstorm_ideas
+from enoch.evolution.sources.brainstorming import (
+    BrainstormIdea,
+    brainstorm_idea,
+    load_brainstorm_ideas,
+    save_brainstorm_ideas,
+)
 from enoch.cron import CronJob, cron_status, format_cron_interval
+from enoch.evolution.curation import (
+    DEFAULT_CURATION_LIMIT,
+    CurationGenerator,
+    SemanticCuration,
+    curate_candidates,
+    deterministic_fallback,
+    record_curation,
+    with_new_candidate_ids,
+)
 from enoch.evolution.sources.experience import ExperienceRecord, load_experience_records
 from enoch.evolution.events import (
     latest_open_proposal_id,
@@ -101,6 +115,8 @@ class EvolveProposal:
     brainstorm_added: int = 0
     brainstorm_skip_reason: str = ""
     brainstorm_error: str = ""
+    curation: SemanticCuration | None = None
+    new_candidates: tuple[EvolveCandidate, ...] = ()
 
 
 def evolve_state_path(root: Path | None = None) -> Path:
@@ -348,6 +364,9 @@ def propose_evolve(
     root: Path | None = None,
     *,
     brainstormer: BrainstormFallback | None = None,
+    curator: CurationGenerator | None = None,
+    mission: str = "",
+    curation_limit: int = DEFAULT_CURATION_LIMIT,
     now: datetime | None = None,
 ) -> EvolveProposal:
     report = evolve_report(root)
@@ -381,15 +400,114 @@ def propose_evolve(
                 for candidate in report.candidates
                 if candidate.status in ACTIONABLE_CANDIDATE_STATUSES
             )
+    curation = None
+    new_candidates: tuple[EvolveCandidate, ...] = ()
+    top_candidate = candidates[0] if candidates else None
+    if report.state.mode != MODE_DISABLED:
+        bounded = _select_curation_candidates(candidates, limit=curation_limit)
+        snapshots = tuple(_candidate_curation_snapshot(candidate) for candidate in bounded)
+        if curator is None:
+            curation = deterministic_fallback(snapshots, reason="curator-unavailable")
+        else:
+            try:
+                curation = curate_candidates(
+                    mission=mission,
+                    theme=report.state.theme,
+                    candidates=snapshots,
+                    generator=curator,
+                )
+            except (OSError, RuntimeError, TimeoutError, ValueError) as curation_error:
+                reason = clean_text(str(curation_error)) or curation_error.__class__.__name__
+                curation = deterministic_fallback(snapshots, reason=reason)
+        if curation.status == "llm" and curation.new_candidates:
+            ideas = tuple(
+                brainstorm_idea(
+                    theme=report.state.theme or "mission-aligned",
+                    mission=mission,
+                    **suggestion.__dict__,
+                )
+                for suggestion in curation.new_candidates
+            )
+            save_brainstorm_ideas(ideas, root)
+            report = evolve_report(root)
+            candidates = tuple(
+                candidate
+                for candidate in report.candidates
+                if candidate.status in ACTIONABLE_CANDIDATE_STATUSES
+            )
+            new_ids = tuple(idea.id for idea in ideas)
+            new_candidates = tuple(candidate for candidate in candidates if candidate.id in new_ids)
+            curation = with_new_candidate_ids(curation, new_ids)
+        if curation.recommendation is None:
+            top_candidate = None
+        else:
+            top_candidate = next(
+                (
+                    candidate
+                    for candidate in candidates
+                    if candidate.id == curation.recommendation.candidate_id
+                ),
+                None,
+            )
+        record_curation(curation, root)
     return EvolveProposal(
         report=report,
         candidates=candidates,
-        top_candidate=candidates[0] if candidates else None,
+        top_candidate=top_candidate,
         brainstorm_attempted=attempted,
         brainstorm_added=added,
         brainstorm_skip_reason=skip_reason,
         brainstorm_error=error,
+        curation=curation,
+        new_candidates=new_candidates,
     )
+
+
+def _candidate_curation_snapshot(candidate: EvolveCandidate) -> dict[str, object]:
+    return {
+        "id": candidate.id,
+        "source": candidate.source,
+        "title": _bounded_curation_text(candidate.title),
+        "rationale": _bounded_curation_text(candidate.rationale),
+        "proposed_change": _bounded_curation_text(candidate.proposed_change),
+        "expected_benefit": _bounded_curation_text(candidate.expected_benefit),
+        "risk": _bounded_curation_text(candidate.risk),
+        "test_plan": _bounded_curation_text(candidate.test_plan),
+        "status": candidate.status,
+        "deterministic_score": candidate.score,
+        "provenance": {
+            "evidence_source": candidate.evidence_source or candidate.source,
+            "signal_actor": candidate.signal_actor,
+            "candidate_actor": candidate.candidate_actor,
+            "parent_candidate_id": candidate.parent_candidate_id,
+            "source_task_id": candidate.source_task_id,
+        },
+    }
+
+
+def _select_curation_candidates(
+    candidates: tuple[EvolveCandidate, ...],
+    *,
+    limit: int,
+) -> tuple[EvolveCandidate, ...]:
+    """Keep deterministic order while retaining source diversity in bounded context."""
+    bounded_limit = max(1, limit)
+    if len(candidates) <= bounded_limit:
+        return candidates
+    first_source_indexes: dict[str, int] = {}
+    for index, candidate in enumerate(candidates):
+        first_source_indexes.setdefault(candidate.source, index)
+    selected = set(tuple(first_source_indexes.values())[:bounded_limit])
+    for index in range(len(candidates)):
+        if len(selected) >= bounded_limit:
+            break
+        selected.add(index)
+    return tuple(candidates[index] for index in sorted(selected))
+
+
+def _bounded_curation_text(value: str, *, limit: int = 1200) -> str:
+    cleaned = clean_text(value)
+    return cleaned if len(cleaned) <= limit else cleaned[: limit - 3].rstrip() + "..."
 
 
 def _claim_auto_brainstorm(
@@ -509,6 +627,7 @@ def remove_evolve_candidate(
     theme: str = "",
     event_actor: str = "human",
     trigger: str = "/evolve remove",
+    reason: str = "human-requested-removal",
 ) -> EvolveCandidate:
     candidate = get_evolve_candidate(candidate_id, root, theme=theme)
     if candidate.status not in ACTIONABLE_CANDIDATE_STATUSES:
@@ -522,6 +641,7 @@ def remove_evolve_candidate(
         trigger=trigger,
         theme=theme,
         proposal_id=latest_open_proposal_id(removed.id, root),
+        reason=reason,
     )
     return removed
 

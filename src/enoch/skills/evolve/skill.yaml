@@ -1,6 +1,6 @@
 name: evolve
-version: 0.5.0
-summary: Collect, rank, and propose bounded self-evolution candidates under human-visible guardrails.
+version: 0.6.0
+summary: Semantically curate and propose bounded self-evolution candidates under human approval.
 owner: Enoch
 status: active
 mode: co-evolution
@@ -9,6 +9,7 @@ capabilities:
   state: src/enoch/evolution/core.py
   scheduler: src/enoch/evolution/core.py
   event_journal: src/enoch/evolution/events.py
+  semantic_curation: src/enoch/evolution/curation.py
   candidate_collection:
     - src/enoch/backlog.py
     - src/enoch/evolution/sources/feedback.py
@@ -28,12 +29,14 @@ permissions:
       - .enoch/learning/artifacts.jsonl
       - .enoch/learning/peers.jsonl
       - .enoch/evolve_events.jsonl
+      - .enoch/evolve_curations.jsonl
       - .agent/lineage_inbox.json
     write:
       - .enoch/evolve.json
       - .enoch/evolve_candidates.json
       - .enoch/evolve_brainstorms.jsonl
       - .enoch/evolve_events.jsonl
+      - .enoch/evolve_curations.jsonl
   git:
     merge: false
 validation:

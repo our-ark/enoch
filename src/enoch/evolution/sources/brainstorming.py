@@ -59,6 +59,42 @@ def generate_brainstorm_ideas(
     return ideas
 
 
+def save_brainstorm_ideas(
+    ideas: tuple[BrainstormIdea, ...],
+    root: Path | None = None,
+) -> tuple[BrainstormIdea, ...]:
+    """Persist already validated agent-origin ideas without changing provenance."""
+    if ideas:
+        _append_ideas(ideas, root)
+    return ideas
+
+
+def brainstorm_idea(
+    *,
+    theme: str,
+    mission: str,
+    title: str,
+    rationale: str,
+    proposed_change: str,
+    expected_benefit: str,
+    risk: str,
+    test_plan: str,
+    created_at: str = "",
+) -> BrainstormIdea:
+    return BrainstormIdea(
+        id=_idea_id(clean_text(theme), clean_text(title)),
+        theme=clean_text(theme),
+        mission=clean_text(mission),
+        title=clean_text(title),
+        rationale=clean_text(rationale),
+        proposed_change=clean_text(proposed_change),
+        expected_benefit=clean_text(expected_benefit),
+        risk=clean_text(risk),
+        test_plan=clean_text(test_plan),
+        created_at=created_at or current_time(),
+    )
+
+
 def load_brainstorm_ideas(
     root: Path | None = None,
     *,

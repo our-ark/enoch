@@ -100,6 +100,8 @@ class EvolveEvent:
     mode: str
     theme: str
     proposal_id: str = ""
+    curation_id: str = ""
+    recommendation_kind: str = ""
     candidate_id: str = ""
     task_id: int | None = None
     source: str = ""
@@ -148,6 +150,8 @@ def record_evolve_event(
     retry_of_task_id: int | None = None,
     reason: str = "",
     proposal_id: str = "",
+    curation_id: str = "",
+    recommendation_kind: str = "",
     pr_url: str = "",
     merge_commit: str = "",
     authoritative_branch: str = "",
@@ -268,6 +272,8 @@ def record_evolve_event(
         mode=clean_text(mode).lower(),
         theme=clean_text(theme),
         proposal_id=normalized_proposal_id,
+        curation_id=clean_text(curation_id),
+        recommendation_kind=clean_text(recommendation_kind).lower(),
         candidate_id=candidate_id,
         task_id=normalized_task_id,
         source=source,
@@ -437,6 +443,8 @@ def close_open_proposals(
                 ),
                 reason=reason,
                 proposal_id=proposal.proposal_id,
+                curation_id=proposal.curation_id,
+                recommendation_kind=proposal.recommendation_kind,
             )
         )
     return tuple(closed)
@@ -522,6 +530,8 @@ def _event_from_line(line: str) -> EvolveEvent | None:
         mode=clean_text(str(raw.get("mode") or "")).lower(),
         theme=clean_text(str(raw.get("theme") or "")),
         proposal_id=proposal_id,
+        curation_id=clean_text(str(raw.get("curation_id") or "")),
+        recommendation_kind=clean_text(str(raw.get("recommendation_kind") or "")).lower(),
         candidate_id=candidate_id,
         task_id=task_id,
         source=source,

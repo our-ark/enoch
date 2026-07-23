@@ -4,13 +4,13 @@
 
 Use this skill when Enoch should reason about her next small self-evolution step.
 
-The evolve skill is a selection loop, not a generic task runner. It collects possible improvements, ranks them against the current evolution theme, and proposes the best bounded next step.
+The evolve skill is a selection loop, not a generic task runner. It collects possible improvements, deterministically pre-ranks them, and asks the reasoning engine to semantically curate a bounded candidate pool against the current mission and evolution theme.
 
 ## Modes
 
 - `disabled`: do not collect, rank, or propose self-evolution candidates.
 - `co-evolve`: collect and rank candidates, then wait for human approval before changing code.
-- `auto-evolve`: select bounded candidates under guardrails; do not merge self-evolution changes.
+- `auto-evolve`: schedule semantic proposal checks under guardrails; still require human approval before queueing or removing candidates, and never merge self-evolution changes.
 
 The default mode is `co-evolve`.
 
@@ -25,19 +25,30 @@ Enoch collects exactly six semantic candidate sources:
 - **learning** from skills explicitly inspected with `/learn`, recorded in `.enoch/learning/peers.jsonl`; and
 - **brainstorming** from bounded, structured LLM ideas generated under the current mission and evolution theme.
 
-The theme is ranking pressure, not a seventh source. `/evolve brainstorm` requires a non-empty theme, asks the reasoning engine for a small JSON list, validates the result, and persists only structured candidates in `.enoch/evolve_brainstorms.jsonl`.
+The theme is semantic curation context and deterministic pre-ranking pressure, not a seventh source. `/evolve brainstorm` requires a non-empty theme, asks the reasoning engine for a small JSON list, validates the result, and persists only structured candidates in `.enoch/evolve_brainstorms.jsonl`.
 
-`/propose` first refreshes and ranks all six sources. If no actionable candidate
-exists and a theme is set, it runs one bounded fallback brainstorm and ranks
-again. Automatic fallback attempts have a per-theme 24-hour cooldown persisted
-in `.enoch/evolve_brainstorm_fallback.json`; explicit `/evolve brainstorm`
-remains available during the cooldown.
+`/propose` refreshes all six sources, applies deterministic pre-ranking, and
+passes a bounded set of structured candidate fields and provenance to semantic
+curation. The curator may recommend one existing ID with narrower scope, risk,
+and test guidance; suggest duplicate, superseded, obsolete, already-resolved,
+context-only, or not-actionable candidates for removal; and suggest up to three
+new bounded candidates. New suggestions are persisted with
+`brainstorming`/`agent` provenance and never masquerade as human feedback.
+
+Semantic curation is stored separately in `.enoch/evolve_curations.jsonl`. It
+references raw candidate IDs and immutable provenance instead of rewriting raw
+evidence. Deterministic ranking remains only for bounded context ordering and an
+explicitly labelled fallback when the reasoning engine is unavailable, times
+out, returns malformed JSON, or produces no valid result. The legacy empty-pool
+brainstorm fallback remains available to direct callers, while the application
+proposal flow uses semantic curation for both existing and newly suggested work.
 
 Candidates are persisted in `.enoch/evolve_candidates.json` so Enoch can remember whether a candidate is available, running, done, failed, cancelled, or removed. Normal candidate views retain failed candidates as retryable and hide done, cancelled, and removed candidates.
 
 Evolution decisions are appended to `.enoch/evolve_events.jsonl`. The funnel
 records checks, proposals, selections, queueing, terminal outcomes, skips, and
-removals. Candidate provenance separates `evidence_source`, `signal_actor`, and
+human removals. Proposal events link `curation_id` and `recommendation_kind` to
+the separate curation journal. Candidate provenance separates `evidence_source`, `signal_actor`, and
 `candidate_actor`; execution records `approval_actor`, while `event_actor` and
 `trigger` identify who caused each lifecycle decision. `parent_candidate_id`
 and `source_task_id` preserve causal links for candidates learned from prior
@@ -53,10 +64,9 @@ When the scheduler is due:
 
 - `disabled` mode advances the schedule and takes no action.
 - `co-evolve` mode runs the same proposal selection as `/propose` and sends that proposal to the locked chat-provider conversation.
-- `auto-evolve` mode runs the same proposal selection as `/propose` and turns
-  its top new candidate into a queued task for review-oriented implementation.
-  Failed candidates are proposed for explicit human retry instead of being
-  retried automatically.
+- `auto-evolve` mode runs the same proposal selection as `/propose`, sends it to
+  the locked conversation, and waits for explicit human approval. It does not
+  queue new candidates, retry failures, or apply remove suggestions automatically.
 
 Proposal selection considers candidates whose status is `candidate` or `failed`. Running candidates are not proposed again.
 Scheduled co-evolve and auto-evolve checks use the same empty-candidate fallback
@@ -111,7 +121,17 @@ workflows, recurring jobs, and skill-work artifacts become evolve candidates.
 
 Evolve candidates should be small, testable, reversible, and aligned with Enoch's mission and current theme.
 
-Enoch must require human direction before changing identity, mission, secrets, permission boundaries, forge settings, daemon configuration, merge behavior, destructive operations, or large architecture.
+All curator output must pass strict JSON schema, known-ID, bounded-field,
+test-plan, protected-scope, and dangerous-action validation. Unknown IDs and
+suggestions that change identity, mission, secrets, credentials, permissions,
+access control, merge authority, deployment, forge settings, daemon
+configuration, destructive behavior, or large architecture are rejected.
+
+The reasoning engine only recommends. It cannot approve, queue, run, retry,
+remove, merge, change the mission, or alter permissions. `/evolve approve`,
+`/evolve retry`, and `/evolve remove` are explicit human state-change entries.
+Removal records status, human actor, reason, and event while preserving the raw
+candidate and provenance in the candidate store and append-only journals.
 
 ## Commands
 
@@ -127,7 +147,7 @@ Enoch must require human direction before changing identity, mission, secrets, p
 - `/evolve approve <id>`
 - `/evolve retry <id>`
 - `/evolve reconcile <id> [backfill]`
-- `/evolve remove <id>`
+- `/evolve remove <id> [reason]`
 - `/evolve schedule <text>`
 - `/evolve schedule once a day`
 - `/evolve schedule every <interval>`
