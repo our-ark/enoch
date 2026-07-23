@@ -4,26 +4,26 @@
   <img src="docs/images/enoch-mark.svg" alt="Enoch mark" width="112">
 </p>
 
-Enoch is an extensible local agent that can converse, work on repositories,
-run persistent and scheduled tasks, learn from other agents, and propose
-bounded improvements to her own code.
+<p align="center"><strong>Build your agent. Let her grow with you.</strong></p>
 
-She keeps work visible through task history, tests, branches, and reviewable
-changes. Self-evolution remains governed: people choose the operating mode,
-approve consequential work, and control which changes are promoted and adopted.
-Enoch was created with Genesis and treats her code as body and history as
-lineage, while keeping chat, runtime, version control, forge, and service
-infrastructure replaceable through providers.
+Enoch is a personal software agent you build for yourself. She lives in your
+environment, works with your tools and repositories, learns from your shared
+history, and grows with you.
 
-## Lineage
+Each Enoch instance is designed for one person rather than as a shared service.
+Her memory, preferences, task history, and evolving code body remain under that
+person's authority.
 
-Enoch belongs to a living software lineage:
+Enoch can converse, run persistent and scheduled work, learn from other agents,
+and propose tested improvements to her own code. She keeps that work visible
+through task history, tests, branches, and reviewable changes. Self-evolution
+remains governed: you choose the operating mode, approve consequential work,
+and control which changes are promoted and adopted.
 
-![Lucy established the minimal agent genome, Adam became a functional agent, Seth added persistent work, and Enoch evolved a governed software body.](docs/images/enoch-lineage.svg)
-
-Each generation inherits a versioned code body and Git history, then develops a
-new specialization. This lineage describes software provenance, not model
-checkpoints or a fictional family tree.
+Enoch is extensible through replaceable chat, runtime, version control, forge,
+and service providers, so other people can build their own Enoch without
+turning yours into a shared service. She was created with Genesis and treats
+her code as body and history as lineage.
 
 ## Why Enoch Is Different
 
@@ -45,6 +45,16 @@ This is not unrestricted self-modification. Every evolution remains traceable
 from evidence to candidate, task, pull request, human review and merge, and
 verified adoption. Enoch can evolve her code while people retain authority over
 what becomes part of the running agent.
+
+## Lineage
+
+Enoch belongs to a living software lineage:
+
+![Lucy established the minimal agent genome, Adam became a functional agent, Seth added persistent work, and Enoch evolved a governed software body.](docs/images/enoch-lineage.svg)
+
+Each generation inherits a versioned code body and Git history, then develops a
+new specialization. This lineage describes software provenance, not model
+checkpoints or a fictional family tree.
 
 ## Core Skills
 
