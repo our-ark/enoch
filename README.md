@@ -194,6 +194,12 @@ Provider contracts, packaging examples, provider-specific settings, normalized
 chat events, and migration compatibility are documented in
 [`docs/providers.md`](docs/providers.md).
 
+Downstream agent bodies can also add commands, prompt context, and lifecycle
+hooks through the versioned `AgentProfile` API without changing the core
+application or owning a second task queue. Profiles can be injected directly or
+installed through the `our_ark.profiles` entry-point group; see
+[`docs/profiles.md`](docs/profiles.md).
+
 Core package boundaries and dependency direction are documented in
 [`docs/architecture.md`](docs/architecture.md).
 

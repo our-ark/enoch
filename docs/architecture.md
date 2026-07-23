@@ -18,6 +18,7 @@ and validation boundary.
 | `enoch.evolution.sources` | Feedback, experience, and brainstorming evidence adapters |
 | `enoch.operations` | Background-service facade and software update lifecycle |
 | `enoch.providers` | Shared provider contracts, selection, and core adapters |
+| `enoch.profiles` | Versioned downstream-agent commands, prompt context, lifecycle hooks, and discovery |
 | `enoch.memory` | Durable memory paths, prompts, and storage |
 | `enoch.lineage` | Ancestor configuration, discovery, and adoption context |
 | `enoch.skills` | Skill catalog code and packaged skill assets |
@@ -42,3 +43,9 @@ contract.
 The stable executable surfaces remain `bin/enoch`, `bin/enoch-agent`, and
 `bin/enoch-daemon`. Internal Python module paths may evolve with the package
 boundaries, while these launchers and chat commands remain stable.
+
+Agent profiles sit above domain and provider contracts. They may contribute
+commands and context or enqueue governed work, but they do not poll chat,
+execute tasks, recover queue state, or persist a parallel control plane. This
+keeps downstream product behavior composable while `enoch.app` remains the
+single application and workflow owner.

@@ -189,6 +189,17 @@ from enoch.providers.contracts import (
 from enoch.providers.forge import FunctionForgeProvider
 from enoch.providers.registry import ProviderError, load_provider
 from enoch.providers.runtime import FunctionAgentRuntime
+from enoch.profiles import (
+    AgentProfile,
+    CommandContext,
+    CommandSpec,
+    LifecycleContext,
+    ProfileError,
+    PromptContext,
+    PromptPurpose,
+    load_profile,
+)
+from enoch.profiles.contracts import extend_prompt
 from enoch.runtime import (
     ACTION_SANDBOX_FULL_ACCESS,
     DEFAULT_BRANCH,
@@ -313,6 +324,35 @@ _CURRENT_REGRESSION_SIGNALS: ContextVar[tuple[TaskRegressionSignal, ...]] = Cont
     "enoch_regression_signals",
     default=(),
 )
+_CORE_COMMANDS = {
+    "start",
+    "help",
+    "ancestors",
+    "inherit",
+    "mission",
+    "skills",
+    "learn",
+    "do",
+    "task",
+    "queue",
+    "tasks",
+    "stop",
+    "backlog",
+    "backlogs",
+    "cron",
+    "crons",
+    "feedback",
+    "experience",
+    "propose",
+    "evolve",
+    "config",
+    "self",
+    "status",
+    "doctor",
+    "pr",
+    "update",
+    "restart",
+}
 
 
 def _load_provider_cursor(name: str, root: Path | None = None) -> Cursor | None:
@@ -373,6 +413,7 @@ class EnochApplication:
         *,
         runtime: AgentRuntime | None = None,
         forge: ForgeProvider | None = None,
+        profile: AgentProfile | None = None,
     ) -> None:
         self.identity = identity
         self.root = root
@@ -394,6 +435,8 @@ class EnochApplication:
             list_fn=lambda *args, **kwargs: list_open_pull_requests(*args, **kwargs),
             merge_fn=lambda *args, **kwargs: merge_pull_request(*args, **kwargs),
         )
+        self.profile = profile or AgentProfile(name="enoch")
+        self._validate_profile_commands()
         self.previous_shutdown_warning = previous_shutdown_warning
         self.offset: Cursor | None = _load_provider_cursor(self.channel_name, root)
         self._restart_after_reply = False
@@ -408,6 +451,7 @@ class EnochApplication:
             recovered = recover_interrupted_task(root)
         _cleanup_completed_task_worktree(recovered, root)
         self._work_status_messages: dict[int, MessageId] = _load_task_status_messages(root)
+        self._run_profile_hook("on_initialize")
 
     def run_forever(self) -> None:
         while True:
@@ -438,8 +482,10 @@ class EnochApplication:
             runtime=self.runtime,
             session_key=self._session_key(chat_id),
         )
+        self._run_profile_hook("on_startup")
 
     def notify_shutdown(self, reason: str) -> None:
+        self._run_profile_hook("on_shutdown")
         _record_system_event("shutdown", self.root, details={"reason": reason})
         chat_id = _allowed_conversation_id(self.client)
         if chat_id is None:
@@ -450,15 +496,19 @@ class EnochApplication:
         )
 
     def run_once(self) -> None:
-        recovered = _recover_running_task_from_direct_action_log(self.root)
-        if recovered is None:
-            recovered = recover_interrupted_task(self.root)
-        _cleanup_completed_task_worktree(recovered, self.root)
-        for event in self.client.receive(self.offset):
-            self.handle_event(event)
-        self._enqueue_due_cron_jobs()
-        self._run_due_evolve_schedule()
-        self._maybe_start_task_worker()
+        self._run_profile_hook("before_run")
+        try:
+            recovered = _recover_running_task_from_direct_action_log(self.root)
+            if recovered is None:
+                recovered = recover_interrupted_task(self.root)
+            _cleanup_completed_task_worktree(recovered, self.root)
+            for event in self.client.receive(self.offset):
+                self.handle_event(event)
+            self._enqueue_due_cron_jobs()
+            self._run_due_evolve_schedule()
+            self._maybe_start_task_worker()
+        finally:
+            self._run_profile_hook("after_run")
 
     def handle_event(self, event: ChatEvent) -> None:
         chat_id = event.conversation_id
@@ -484,10 +534,13 @@ class EnochApplication:
                 event.replied_text,
                 provider_name=_chat_provider_name(self.client),
             )
-            if command == "/start":
+            profile_command = self.profile.command(command) if command else None
+            if profile_command is not None:
+                reply = self._run_profile_command(profile_command, event, command, argument)
+            elif command == "/start":
                 reply = "Use /help to see available commands."
             elif command == "/help":
-                reply = _help_message(argument, chat_provider=self.channel_name)
+                reply = self._help(argument)
             elif command == "/ancestors":
                 reply = self._ancestors(chat_id, text)
             elif command == "/inherit":
@@ -567,6 +620,140 @@ class EnochApplication:
         allowed = _allowed_conversation_id(self.client)
         return allowed is None or allowed == chat_id
 
+    def _validate_profile_commands(self) -> None:
+        conflicts = sorted(
+            {
+                name
+                for spec in self.profile.commands
+                for name in (spec.name, *spec.aliases)
+                if name in _CORE_COMMANDS
+            }
+        )
+        if conflicts:
+            commands = ", ".join(f"/{name}" for name in conflicts)
+            raise ProfileError(
+                f"Profile {self.profile.name} conflicts with core commands: {commands}."
+            )
+
+    def _help(self, topic: str) -> str:
+        profile_command = self.profile.command(topic) if topic.strip() else None
+        if profile_command is not None:
+            return profile_command.usage or (
+                f"{profile_command.command} - {profile_command.summary}"
+            )
+        core_help = _help_message(topic, chat_provider=self.channel_name)
+        if topic.strip() or not self.profile.commands:
+            return core_help
+        profile_help = [
+            f"Profile ({self.profile.name}):",
+            *(
+                f"{spec.command} - {spec.summary}"
+                for spec in self.profile.commands
+            ),
+        ]
+        return "\n\n".join([core_help, "\n".join(profile_help)])
+
+    def _run_profile_command(
+        self,
+        spec: CommandSpec,
+        event: ChatEvent,
+        command: str,
+        argument: str,
+    ) -> str:
+        def queue(request: str, context: str) -> TaskJob:
+            return enqueue_task(
+                event.conversation_id,
+                request,
+                self.root,
+                context=context,
+                context_source=f"profile:{self.profile.name}" if context else "",
+                source="task",
+                initiated_by="human",
+                event_actor="human",
+                trigger=command,
+            )
+
+        context = CommandContext(
+            identity=self.identity,
+            root=self.root,
+            conversation_id=event.conversation_id,
+            event=event,
+            command=command,
+            argument=argument,
+            runtime=self.runtime,
+            forge=self.forge,
+            _enqueue=queue,
+        )
+        try:
+            return str(spec.handler(context))
+        except Exception as error:
+            _record_system_event(
+                "profile_command_failed",
+                self.root,
+                details={
+                    "profile": self.profile.name,
+                    "command": command,
+                    "error": str(error),
+                },
+            )
+            return f"Profile command {command} failed: {error}"
+
+    def _profile_prompt(
+        self,
+        prompt: str,
+        *,
+        purpose: PromptPurpose,
+        chat_id: ConversationId,
+    ) -> str:
+        try:
+            return extend_prompt(
+                prompt,
+                self.profile,
+                PromptContext(
+                    identity=self.identity,
+                    root=self.root,
+                    purpose=purpose,
+                    conversation_id=chat_id,
+                    prompt=prompt,
+                ),
+            )
+        except ProfileError as error:
+            _record_system_event(
+                "profile_prompt_failed",
+                self.root,
+                details={
+                    "profile": self.profile.name,
+                    "purpose": purpose,
+                    "error": str(error),
+                },
+            )
+            return prompt
+
+    def _run_profile_hook(self, name: str) -> None:
+        hook = getattr(self.profile.lifecycle, name)
+        if hook is None:
+            return
+        try:
+            hook(
+                LifecycleContext(
+                    identity=self.identity,
+                    root=self.root,
+                    chat=self.client,
+                    runtime=self.runtime,
+                    forge=self.forge,
+                )
+            )
+        except Exception as error:
+            _record_system_event(
+                "profile_lifecycle_failed",
+                self.root,
+                details={
+                    "profile": self.profile.name,
+                    "hook": name,
+                    "error": str(error),
+                },
+            )
+
     def _session_key(self, chat_id: ConversationId) -> str:
         provider = _chat_provider_name(self.client)
         return f"{provider}:{chat_id}"
@@ -581,7 +768,11 @@ class EnochApplication:
         try:
             return self.runtime.respond(
                 self.identity,
-                read_only_turn_prompt(text),
+                self._profile_prompt(
+                    read_only_turn_prompt(text),
+                    purpose="conversation",
+                    chat_id=chat_id,
+                ),
                 cwd=self.root,
                 session_key=session_key or self._session_key(chat_id),
             )
@@ -603,7 +794,11 @@ class EnochApplication:
             ) as image_path:
                 return self.runtime.respond(
                     self.identity,
-                    image_prompt(caption, self.channel_name),
+                    self._profile_prompt(
+                        image_prompt(caption, self.channel_name),
+                        purpose="image",
+                        chat_id=chat_id,
+                    ),
                     cwd=self.root,
                     session_key=self._session_key(chat_id),
                     image_paths=(image_path,),
@@ -703,7 +898,11 @@ class EnochApplication:
         try:
             reply = self.runtime.respond(
                 self.identity,
-                _task_context_snapshot_prompt(request, provider=self.channel_name),
+                self._profile_prompt(
+                    _task_context_snapshot_prompt(request, provider=self.channel_name),
+                    purpose="task-context",
+                    chat_id=chat_id,
+                ),
                 cwd=self.root,
                 session_key=self._session_key(chat_id),
             )
@@ -1009,11 +1208,15 @@ class EnochApplication:
             self._send_step_update(chat_id, "Working.")
             result = self.runtime.act_in_session(
                 self.identity,
-                work_request_prompt(
-                    _work_request_with_context(request, context),
-                    remote_review=bool(
-                        getattr(self.forge, "supports_remote_review", True)
+                self._profile_prompt(
+                    work_request_prompt(
+                        _work_request_with_context(request, context),
+                        remote_review=bool(
+                            getattr(self.forge, "supports_remote_review", True)
+                        ),
                     ),
+                    purpose="task",
+                    chat_id=chat_id,
                 ),
                 cwd=work_root,
                 sandbox=sandbox,
@@ -3128,7 +3331,8 @@ def main(chat_provider_name: str = "") -> None:
         chat_provider = load_provider("chat", root, name=chat_provider_name)
         runtime_provider = load_provider("runtime", root)
         forge_provider = load_provider("forge", root)
-    except (ProviderError, ChatProviderError) as error:
+        profile = load_profile(root)
+    except (ProviderError, ChatProviderError, ProfileError) as error:
         print(str(error))
         raise SystemExit(1) from error
     selected_channel = _chat_provider_name(chat_provider)
@@ -3153,6 +3357,7 @@ def main(chat_provider_name: str = "") -> None:
         previous_shutdown_warning=previous_shutdown_warning,
         runtime=runtime_provider,
         forge=forge_provider,
+        profile=profile,
     )
     _install_shutdown_handlers()
     provider_label = str(getattr(chat_provider, "name", "chat")).strip() or "chat"
