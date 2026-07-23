@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 import re
 import shlex
@@ -56,6 +57,30 @@ DoctorFn = Callable[[Path], ImmuneResult]
 ResolveLineageFn = Callable[[Path], LineageResolution]
 RefreshLineageFn = Callable[..., LineageInboxReport]
 FormatDoctorFn = Callable[[ImmuneResult], str]
+CommandUsageFn = Callable[[str], str]
+
+
+@dataclass(frozen=True)
+class CoreCommand:
+    name: str
+    handler: str
+    section: str
+    synopsis: str
+    summary: str
+    usage: CommandUsageFn | None = None
+
+    @property
+    def command(self) -> str:
+        return f"/{self.name}"
+
+    def summary_line(self, prefix: str = "/") -> str:
+        synopsis = f" {self.synopsis}" if self.synopsis else ""
+        return f"{prefix}{self.name}{synopsis} - {self.summary}"
+
+    def usage_message(self, prefix: str = "/") -> str:
+        if self.usage is not None:
+            return self.usage(prefix)
+        return self.summary_line(prefix)
 
 
 def status_message(
@@ -651,55 +676,50 @@ def doctor_command(
 
 
 def help_message(topic: str = "", *, chat_provider: str = "chat") -> str:
+    del chat_provider
     normalized_topic = _normalize_help_topic(topic)
     if normalized_topic:
-        topic_message = _help_topic_message(normalized_topic)
-        if topic_message:
-            return topic_message
-        return f"No help found for /{normalized_topic}.\nUse /help to see available commands."
-    return "\n".join(
+        command = core_command(normalized_topic)
+        if command is not None:
+            return command.usage_message("/")
+        return "\n".join(
+            [
+                f"No help found for /{normalized_topic}.",
+                "Use /help to see every command.",
+                "Use /help <command> for detailed usage and subcommands.",
+            ]
+        )
+
+    lines = [
+        "Enoch commands:",
+        "",
+        "Use /help <command> for detailed usage and subcommands.",
+        "Example: /help worktree",
+    ]
+    standalone = [command for command in CORE_COMMANDS if not command.section]
+    if standalone:
+        lines.extend(["", *(command.summary_line("/") for command in standalone)])
+    sections = tuple(dict.fromkeys(command.section for command in CORE_COMMANDS if command.section))
+    for section in sections:
+        lines.extend(
+            [
+                "",
+                f"{section}:",
+                *(
+                    command.summary_line("/")
+                    for command in CORE_COMMANDS
+                    if command.section == section
+                ),
+            ]
+        )
+    lines.extend(
         [
-            "Enoch commands:",
-            "/help - show this command list",
             "",
-            "Common:",
-            "/self - show Enoch's identity, role, ancestor, and mission",
-            "/mission [text] - show or update Enoch's mission",
-            "/status - show identity, model, local state, and chat setup",
-            "",
-            "Work:",
-            "/do <request> - run work now instead of queueing it",
-            "/task <request> - queue background work for Enoch",
-            "/queue - show running, queued, and recent task history",
-            "/stop - stop the currently running task",
-            "/backlog [p0|p1|p2] <request> - save deferred work for idle time",
-            "/cron - show scheduled jobs",
-            "",
-            "Inherit:",
-            "/ancestors - show ancestor chain and ancestor skills",
-            "/inherit - show inheritable direct-parent changes",
-            "",
-            "Learn:",
-            "/skills [agent-or-path] - show declared skills",
-            "/learn <skill> from <agent> - adapt a published skill from another agent",
-            "",
-            "Evolve:",
-            "/feedback - show feedback signals available to self-evolution",
-            "/experience - show task provenance statistics and evolution candidates",
-            "/propose - rank all evolve sources and propose the strongest candidate",
-            "/evolve - show self-evolution mode, theme, and top candidate",
-            "",
-            "System:",
-            "/config - show or update local system settings",
-            "/doctor - run local health checks",
-            "/worktree - inspect and manage isolated task worktrees",
-            "/pr - list and manage pull requests",
-            "/update - update from the authoritative repository, run doctor, and restart if safe",
-            "/restart - restart Enoch's chat daemon from the locked conversation",
-            "",
-            "For repository changes, say the request naturally. Enoch will publish completed edits for review automatically.",
+            "For repository changes, say the request naturally. "
+            "Enoch will publish completed edits for review automatically.",
         ]
     )
+    return "\n".join(lines)
 
 
 def _normalize_help_topic(topic: str) -> str:
@@ -708,93 +728,6 @@ def _normalize_help_topic(topic: str) -> str:
         return ""
     first = stripped.split(maxsplit=1)[0]
     return first.lstrip("/")
-
-
-def _help_topic_message(topic: str) -> str:
-    if topic == "help":
-        return "\n".join(
-            [
-                "Help commands:",
-                "/help - show all commands",
-                "/help <command> - show usage for one command",
-            ]
-        )
-    if topic == "ancestors":
-        return lineage_usage("/", command_name="ancestors")
-    if topic == "inherit":
-        return lineage_usage("/", command_name="inherit")
-    if topic in {"backlog", "backlogs"}:
-        return "\n".join(
-            [
-                "Backlog commands:",
-                "/backlog [p0|p1|p2] <request> - save deferred work",
-                "/backlog remove <id> - remove a pending backlog item",
-                "/backlog priority <id> p0|p1|p2 - reprioritize a pending backlog item",
-                "/backlog promote <id> - move a pending backlog item into the active task queue",
-            ]
-        )
-    if topic in {"cron", "crons"}:
-        return "\n".join(
-            [
-                "Cron commands:",
-                "/cron every <interval> <request> - schedule recurring work",
-                "Intervals can be like 10m, 2h, or 1d.",
-                "/cron cancel <id> - cancel a scheduled job",
-                "/cron - show scheduled jobs",
-            ]
-        )
-    if topic == "evolve":
-        return "\n".join(
-            [
-                "Evolve commands:",
-                "/evolve - show self-evolution mode, theme, and top candidate",
-                "/evolve mode <mode> - set self-evolution behavior",
-                "Modes: disabled, co-evolve, auto-evolve.",
-                "/evolve theme [text] - show or set the current self-evolution theme",
-                "/evolve brainstorm - generate bounded candidates under the current theme",
-                "/evolve list - show current self-evolution candidates",
-                "/evolve approve <id> - approve and queue a self-evolution candidate",
-                "/evolve retry <id> - retry a failed self-evolution candidate as a new task",
-                "/evolve reconcile <id> [backfill] - verify promotion of a completed candidate",
-                "/evolve remove <id> [reason] - remove a self-evolution candidate with an audit reason",
-                "/evolve schedule <text> - let Enoch interpret common schedule text",
-            ]
-        )
-    if topic == "config":
-        return config_usage("/")
-    if topic == "pr":
-        return pr_usage("/")
-    if topic in {"worktree", "worktrees"}:
-        return worktree_usage("/")
-    topics = {
-        "start": "/start - start Enoch and point to /help",
-        "self": "/self - show Enoch's identity, role, ancestor, and mission",
-        "status": "/status - show identity, model, local state, and chat setup",
-        "mission": "/mission [text] - show Enoch's mission or update it with new text",
-        "do": "/do <request> - run work now instead of queueing it",
-        "task": "\n".join(
-            [
-                "Task commands:",
-                "/task <request> - queue background work for Enoch",
-                "/task cancel <id> - cancel a queued background task",
-                "/task resume <id|all> - continue paused tasks with the same ids",
-                "/task retry <id> - retry a failed task as a new linked task",
-            ]
-        ),
-        "queue": "/queue - show running, queued, and recent task history",
-        "tasks": "/queue - show running, queued, and recent task history",
-        "stop": "/stop - stop the currently running /do or /task job",
-        "feedback": "/feedback - show feedback signals available to self-evolution",
-        "experience": "/experience - show task provenance statistics and evolution candidates",
-        "propose": "/propose - rank all evolve sources and propose the strongest candidate",
-        "skills": "/skills [agent-or-path] - show declared skills",
-        "learn": "/learn <skill> from <agent> - adapt a published skill from another Our-Ark agent",
-        "doctor": "/doctor - run local health checks",
-        "update": "/update - update from the authoritative repository, run doctor, and restart if safe",
-        "restart": "/restart - restart Enoch's chat daemon from the locked conversation",
-        "thinking": thinking_usage("/"),
-    }
-    return topics.get(topic, "")
 
 
 def pr_usage(prefix: str = "/") -> str:
@@ -815,7 +748,10 @@ def worktree_usage(prefix: str = "/") -> str:
             "Worktree commands:",
             f"{prefix}worktree - list isolated task worktrees and their branches",
             f"{prefix}worktree show <task-id> - inspect one task worktree",
-            f"{prefix}worktree cleanup <task-id> - remove a clean inactive task worktree",
+            (
+                f"{prefix}worktree cleanup <task-id> - remove only a clean inactive "
+                "worktree; keep an unmerged local branch"
+            ),
             (
                 f"{prefix}worktree discard <task-id> force - permanently delete an inactive "
                 "task worktree, its uncommitted changes, and its local branch"
@@ -838,3 +774,253 @@ def action_lock_message(chat_provider: str = "chat") -> str:
 def _provider_label(name: str) -> str:
     cleaned = " ".join(part for part in re.split(r"[-_]", name.strip()) if part)
     return cleaned.title() or "Chat"
+
+
+def _help_usage(prefix: str) -> str:
+    return "\n".join(
+        [
+            "Help commands:",
+            f"{prefix}help - show every command",
+            f"{prefix}help <command> - show detailed usage and subcommands",
+            f"Example: {prefix}help worktree",
+        ]
+    )
+
+
+def _start_usage(prefix: str) -> str:
+    return "\n".join(
+        [
+            f"{prefix}start - show getting-started guidance",
+            "This is a Telegram onboarding command. It does not start or restart the Enoch daemon.",
+        ]
+    )
+
+
+def _task_usage(prefix: str) -> str:
+    command = f"{prefix}task"
+    return "\n".join(
+        [
+            "Task commands:",
+            f"{command} <request> - queue background work for Enoch",
+            f"{command} cancel <id> - cancel a queued background task",
+            f"{command} resume <id|all> - continue paused tasks with the same ids",
+            f"{command} retry <id> - retry a failed task as a new linked task",
+        ]
+    )
+
+
+def _backlog_help_usage(prefix: str) -> str:
+    command = f"{prefix}backlog"
+    return "\n".join(
+        [
+            "Backlog commands:",
+            f"{command} [p0|p1|p2] <request> - save deferred work",
+            f"{command} remove <id> - remove a pending backlog item",
+            f"{command} priority <id> p0|p1|p2 - reprioritize a pending backlog item",
+            f"{command} promote <id> - move a pending backlog item into the active task queue",
+        ]
+    )
+
+
+def _cron_help_usage(prefix: str) -> str:
+    command = f"{prefix}cron"
+    return "\n".join(
+        [
+            "Cron commands:",
+            f"{command} every <interval> <request> - schedule recurring work",
+            "Intervals can be like 10m, 2h, or 1d.",
+            f"{command} cancel <id> - cancel a scheduled job",
+            f"{command} - show scheduled jobs",
+        ]
+    )
+
+
+def _evolve_help_usage(prefix: str) -> str:
+    command = f"{prefix}evolve"
+    return "\n".join(
+        [
+            "Evolve commands:",
+            f"{command} - show self-evolution mode, theme, and top candidate",
+            f"{command} mode <mode> - set self-evolution behavior",
+            "Modes: disabled, co-evolve, auto-evolve.",
+            f"{command} theme [text] - show or set the current self-evolution theme",
+            f"{command} brainstorm - generate bounded candidates under the current theme",
+            f"{command} list - show current self-evolution candidates",
+            f"{command} approve <id> - approve and queue a self-evolution candidate",
+            f"{command} retry <id> - retry a failed self-evolution candidate as a new task",
+            f"{command} reconcile <id> [backfill] - verify promotion of a completed candidate",
+            f"{command} remove <id> [reason] - remove a self-evolution candidate with an audit reason",
+            f"{command} schedule <text> - let Enoch interpret common schedule text",
+        ]
+    )
+
+
+CORE_COMMANDS = (
+    CoreCommand("help", "help", "", "", "show this command list", _help_usage),
+    CoreCommand(
+        "start",
+        "start",
+        "Common",
+        "",
+        "show getting-started guidance",
+        _start_usage,
+    ),
+    CoreCommand(
+        "self",
+        "self",
+        "Common",
+        "",
+        "show Enoch's identity, role, ancestor, and mission",
+    ),
+    CoreCommand(
+        "mission",
+        "mission",
+        "Common",
+        "[text]",
+        "show or update Enoch's mission",
+    ),
+    CoreCommand(
+        "status",
+        "status",
+        "Common",
+        "",
+        "show identity, model, local state, and chat setup",
+    ),
+    CoreCommand("do", "do", "Work", "<request>", "run work now instead of queueing it"),
+    CoreCommand(
+        "task",
+        "task",
+        "Work",
+        "<request>",
+        "queue background work for Enoch",
+        _task_usage,
+    ),
+    CoreCommand(
+        "queue",
+        "queue",
+        "Work",
+        "",
+        "show running, queued, and recent task history",
+    ),
+    CoreCommand("stop", "stop", "Work", "", "stop the currently running task"),
+    CoreCommand(
+        "backlog",
+        "backlog",
+        "Work",
+        "[p0|p1|p2] <request>",
+        "save deferred work for idle time",
+        _backlog_help_usage,
+    ),
+    CoreCommand("cron", "cron", "Work", "", "show scheduled jobs", _cron_help_usage),
+    CoreCommand(
+        "ancestors",
+        "ancestors",
+        "Inherit",
+        "",
+        "show ancestor chain and ancestor skills",
+        lambda prefix: lineage_usage(prefix, command_name="ancestors"),
+    ),
+    CoreCommand(
+        "inherit",
+        "inherit",
+        "Inherit",
+        "",
+        "show inheritable direct-parent changes",
+        lambda prefix: lineage_usage(prefix, command_name="inherit"),
+    ),
+    CoreCommand(
+        "skills",
+        "skills",
+        "Learn",
+        "[agent-or-path]",
+        "show declared skills",
+    ),
+    CoreCommand(
+        "learn",
+        "learn",
+        "Learn",
+        "<skill> from <agent>",
+        "adapt a published skill from another agent",
+    ),
+    CoreCommand(
+        "feedback",
+        "feedback",
+        "Evolve",
+        "",
+        "show feedback signals available to self-evolution",
+    ),
+    CoreCommand(
+        "experience",
+        "experience",
+        "Evolve",
+        "",
+        "show task provenance statistics and evolution candidates",
+    ),
+    CoreCommand(
+        "propose",
+        "propose",
+        "Evolve",
+        "",
+        "rank all evolve sources and propose the strongest candidate",
+    ),
+    CoreCommand(
+        "evolve",
+        "evolve",
+        "Evolve",
+        "",
+        "show self-evolution mode, theme, and top candidate",
+        _evolve_help_usage,
+    ),
+    CoreCommand(
+        "config",
+        "config",
+        "System",
+        "",
+        "show or update local system settings",
+        config_usage,
+    ),
+    CoreCommand("doctor", "doctor", "System", "", "run local health checks"),
+    CoreCommand(
+        "worktree",
+        "worktree",
+        "System",
+        "",
+        "inspect and manage isolated task worktrees",
+        worktree_usage,
+    ),
+    CoreCommand(
+        "pr",
+        "pr",
+        "System",
+        "",
+        "list and manage pull requests",
+        pr_usage,
+    ),
+    CoreCommand(
+        "update",
+        "update",
+        "System",
+        "",
+        "update from the authoritative repository, run doctor, and restart if safe",
+    ),
+    CoreCommand(
+        "restart",
+        "restart",
+        "System",
+        "",
+        "restart Enoch's chat daemon from the locked conversation",
+    ),
+)
+
+_CORE_COMMAND_INDEX = {command.name: command for command in CORE_COMMANDS}
+if len(_CORE_COMMAND_INDEX) != len(CORE_COMMANDS):
+    raise RuntimeError("Core command registry contains duplicate command names.")
+
+
+def core_command(name: str) -> CoreCommand | None:
+    normalized = name.strip().lower().lstrip("/")
+    return _CORE_COMMAND_INDEX.get(normalized)
+
+
+def core_command_names() -> frozenset[str]:
+    return frozenset(_CORE_COMMAND_INDEX)

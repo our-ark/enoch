@@ -142,12 +142,19 @@ bin/enoch-daemon start
 
 Then open the bot in Telegram and send `/status`.
 
+Use `/help` to see every Telegram command. Use `/help <command>` for detailed
+usage and subcommands, for example `/help task` or `/help worktree`. `/start`
+only shows this getting-started guidance inside Telegram; it does not start or
+restart the local daemon. Core commands use the canonical singular forms shown
+by `/help`; plural aliases such as `/tasks` and `/worktrees` are not registered.
+
 Use `/worktree` to inspect task worktrees that Enoch preserved for debugging.
 `/worktree show <task-id>` reports the branch, path, linked task records, and
-changed files. A clean inactive task worktree can be removed with `/worktree
-cleanup <task-id>`. Permanently deleting a dirty inactive worktree requires the
-explicit `/worktree discard <task-id> force` command; Enoch refuses to remove a
-worktree still used by a queued, running, or paused task.
+changed files. `/worktree cleanup <task-id>` removes only a clean inactive
+worktree and will keep a local branch that Git considers unmerged. `/worktree
+discard <task-id> force` permanently removes an inactive worktree, all of its
+uncommitted changes, and its local branch. Enoch refuses both operations while
+the worktree is still used by a queued, running, paused, or retrying task.
 
 ## Codex configuration
 

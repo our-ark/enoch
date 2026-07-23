@@ -9,7 +9,7 @@ import re
 import signal
 import threading
 import time
-from typing import Any
+from typing import Any, Callable
 from uuid import uuid4
 
 from enoch.backlog import (
@@ -241,8 +241,11 @@ from enoch.tasks.queue import (
 )
 from enoch.tasks.events import TASK_SOURCES
 from enoch.commands import (
+    CoreCommand,
     action_lock_message as _format_action_lock_message,
     config_command,
+    core_command,
+    core_command_names,
     doctor_command,
     help_message as _help_message,
     identity_summary,
@@ -337,39 +340,6 @@ _CURRENT_REGRESSION_SIGNALS: ContextVar[tuple[TaskRegressionSignal, ...]] = Cont
     "enoch_regression_signals",
     default=(),
 )
-_CORE_COMMANDS = {
-    "start",
-    "help",
-    "ancestors",
-    "inherit",
-    "mission",
-    "skills",
-    "learn",
-    "do",
-    "task",
-    "queue",
-    "tasks",
-    "stop",
-    "backlog",
-    "backlogs",
-    "cron",
-    "crons",
-    "feedback",
-    "experience",
-    "propose",
-    "evolve",
-    "config",
-    "self",
-    "status",
-    "doctor",
-    "worktree",
-    "worktrees",
-    "pr",
-    "update",
-    "restart",
-}
-
-
 def _load_provider_cursor(name: str, root: Path | None = None) -> Cursor | None:
     return load_channel_cursor(name, root)
 
@@ -550,72 +520,17 @@ class EnochApplication:
                 provider_name=_chat_provider_name(self.client),
             )
             profile_command = self.profile.command(command) if command else None
+            registered_command = core_command(command) if command else None
             if profile_command is not None:
                 reply = self._run_profile_command(profile_command, event, command, argument)
-            elif command == "/start":
-                reply = "Use /help to see available commands."
-            elif command == "/help":
-                reply = self._help(argument)
-            elif command == "/ancestors":
-                reply = self._ancestors(chat_id, text)
-            elif command == "/inherit":
-                reply = self._inherit(chat_id, text)
-            elif command == "/mission":
-                reply = self._mission(text)
-            elif command == "/skills":
-                reply = self._skills(text)
-            elif command == "/learn":
-                reply = self._learn(chat_id, text)
-            elif command == "/do":
-                reply = self._do(chat_id, work_text)
-            elif command == "/task":
-                reply = self._task(chat_id, work_text)
-            elif command in {"/queue", "/tasks"}:
-                reply = _format_tasks_report(self.root)
-            elif command == "/stop":
-                reply = self._stop_running_job()
-            elif command in {"/backlog", "/backlogs"}:
-                reply = self._backlog(chat_id, work_text)
-            elif command in {"/cron", "/crons"}:
-                reply = self._cron(chat_id, work_text)
-            elif command == "/feedback":
-                reply = _format_feedback_report(self.root)
-            elif command == "/experience":
-                reply = _format_experience_report(self.root)
-            elif command == "/propose":
-                reply = _format_evolve_proposal(
-                    self._propose_evolve(chat_id, trigger="propose-fallback")
+            elif registered_command is not None:
+                reply = self._run_core_command(
+                    registered_command,
+                    event,
+                    text=text,
+                    argument=argument,
+                    work_text=work_text,
                 )
-            elif command == "/evolve":
-                reply = self._evolve(chat_id, argument)
-            elif command == "/config":
-                reply = config_command(
-                    text,
-                    self.root,
-                    runtime=self.runtime,
-                    active_profile_name=self.profile.name,
-                )
-            elif command == "/self":
-                reply = identity_summary(self.identity, self.root)
-            elif command == "/status":
-                reply = self._status(chat_id)
-            elif command == "/doctor":
-                reply = self._doctor()
-            elif command in {"/worktree", "/worktrees"}:
-                reply = self._worktree(chat_id, argument)
-            elif command == "/pr":
-                reply = self._pr(chat_id, argument)
-            elif command == "/update":
-                reply = self._update()
-                self._queue_session_sync(
-                    chat_id,
-                    _activity_sync_note(
-                        "User ran /update.",
-                        f"Result: {_clip_activity_text(reply)}",
-                    ),
-                )
-            elif command == "/restart":
-                reply = self._restart_from_chat()
             else:
                 reply = self._natural(chat_id, text)
 
@@ -648,7 +563,7 @@ class EnochApplication:
                 name
                 for spec in self.profile.commands
                 for name in (spec.name, *spec.aliases)
-                if name in _CORE_COMMANDS
+                if name in core_command_names()
             }
         )
         if conflicts:
@@ -674,6 +589,89 @@ class EnochApplication:
             ),
         ]
         return "\n\n".join([core_help, "\n".join(profile_help)])
+
+    def _run_core_command(
+        self,
+        spec: CoreCommand,
+        event: ChatEvent,
+        *,
+        text: str,
+        argument: str,
+        work_text: str,
+    ) -> str:
+        handlers = self._core_command_handlers(
+            event,
+            text=text,
+            argument=argument,
+            work_text=work_text,
+        )
+        handler = handlers.get(spec.handler)
+        if handler is None:
+            raise RuntimeError(
+                f"Core command /{spec.name} has unknown handler {spec.handler!r}."
+            )
+        return handler()
+
+    def _core_command_handlers(
+        self,
+        event: ChatEvent,
+        *,
+        text: str,
+        argument: str,
+        work_text: str,
+    ) -> dict[str, Callable[[], str]]:
+        chat_id = event.conversation_id
+        return {
+            "start": lambda: "\n".join(
+                [
+                    "Enoch is ready.",
+                    "Use /help to see every command.",
+                    "Use /help <command> for detailed usage and subcommands.",
+                ]
+            ),
+            "help": lambda: self._help(argument),
+            "ancestors": lambda: self._ancestors(chat_id, text),
+            "inherit": lambda: self._inherit(chat_id, text),
+            "mission": lambda: self._mission(text),
+            "skills": lambda: self._skills(text),
+            "learn": lambda: self._learn(chat_id, text),
+            "do": lambda: self._do(chat_id, work_text),
+            "task": lambda: self._task(chat_id, work_text),
+            "queue": lambda: _format_tasks_report(self.root),
+            "stop": self._stop_running_job,
+            "backlog": lambda: self._backlog(chat_id, work_text),
+            "cron": lambda: self._cron(chat_id, work_text),
+            "feedback": lambda: _format_feedback_report(self.root),
+            "experience": lambda: _format_experience_report(self.root),
+            "propose": lambda: _format_evolve_proposal(
+                self._propose_evolve(chat_id, trigger="propose-fallback")
+            ),
+            "evolve": lambda: self._evolve(chat_id, argument),
+            "config": lambda: config_command(
+                text,
+                self.root,
+                runtime=self.runtime,
+                active_profile_name=self.profile.name,
+            ),
+            "self": lambda: identity_summary(self.identity, self.root),
+            "status": lambda: self._status(chat_id),
+            "doctor": self._doctor,
+            "worktree": lambda: self._worktree(chat_id, argument),
+            "pr": lambda: self._pr(chat_id, argument),
+            "update": lambda: self._update_from_chat(chat_id),
+            "restart": self._restart_from_chat,
+        }
+
+    def _update_from_chat(self, chat_id: ConversationId) -> str:
+        reply = self._update()
+        self._queue_session_sync(
+            chat_id,
+            _activity_sync_note(
+                "User ran /update.",
+                f"Result: {_clip_activity_text(reply)}",
+            ),
+        )
+        return reply
 
     def _run_profile_command(
         self,
@@ -2252,8 +2250,6 @@ class EnochApplication:
 
     def _backlog(self, chat_id: int, text: str) -> str:
         command, argument = _parse_chat_command(text)
-        if command == "/backlogs":
-            return _format_backlog_report(self.root)
         if command != "/backlog":
             return _backlog_usage()
         if not argument:
@@ -2735,8 +2731,6 @@ class EnochApplication:
 
     def _cron(self, chat_id: int, text: str) -> str:
         command, argument = _parse_chat_command(text)
-        if command == "/crons":
-            return _format_cron_report(self.root)
         if command != "/cron":
             return _cron_usage()
         if not argument:
