@@ -20,6 +20,7 @@ from enoch.automatic_learning import learning_index_path
 from enoch.backlog import add_backlog_item, backlog_status
 from enoch.config import read_section
 from enoch.command_surface import checktree as _checktree
+from enoch.commands import CORE_COMMANDS
 from enoch.cron import add_cron_job, cron_status
 from enoch.evolution.core import (
     MODE_AUTO_EVOLVE,
@@ -683,7 +684,16 @@ class EnochTelegramTests(unittest.TestCase):
 
         _handle_update(bot, _message_update(chat_id=42, text="/start"))
 
-        self.assertEqual(client.sent[0][1], "Use /help to see available commands.")
+        self.assertEqual(
+            client.sent[0][1],
+            "\n".join(
+                [
+                    "Enoch is ready.",
+                    "Use /help to see every command.",
+                    "Use /help <command> for detailed usage and subcommands.",
+                ]
+            ),
+        )
 
     def test_help_lists_safe_commands(self) -> None:
         client = FakeTelegramClient(allowed_chat_id=42)
@@ -693,6 +703,9 @@ class EnochTelegramTests(unittest.TestCase):
 
         reply = client.sent[0][1]
         self.assertLess(reply.index("/help - show this command list"), reply.index("Common:"))
+        self.assertIn("Use /help <command> for detailed usage and subcommands.", reply)
+        self.assertIn("Example: /help worktree", reply)
+        self.assertIn("/start - show getting-started guidance", reply)
         self.assertLess(reply.index("Common:"), reply.index("Work:"))
         self.assertLess(reply.index("Work:"), reply.index("/do <request>"))
         self.assertLess(reply.index("Work:"), reply.index("Inherit:"))
@@ -763,6 +776,24 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("/restart - restart Enoch's chat daemon from the locked conversation", client.sent[0][1])
         self.assertNotIn("/shutdown", client.sent[0][1])
         self.assertIn("say the request naturally", client.sent[0][1])
+
+    def test_every_registered_core_command_has_a_dispatch_handler(self) -> None:
+        client = FakeTelegramClient(allowed_chat_id=42)
+        bot = EnochApplication(load_identity(), ROOT, client)
+        event = telegram_event(_message_update(chat_id=42, text="/help"))
+        assert event is not None
+
+        handlers = bot._core_command_handlers(
+            event,
+            text="/help",
+            argument="",
+            work_text="/help",
+        )
+
+        self.assertEqual(
+            set(handlers),
+            {command.handler for command in CORE_COMMANDS},
+        )
 
     def test_help_config_shows_only_config_commands(self) -> None:
         client = FakeTelegramClient(allowed_chat_id=42)
@@ -857,10 +888,8 @@ class EnochTelegramTests(unittest.TestCase):
 
         _handle_update(bot, _message_update(chat_id=42, text="/help resume"))
 
-        self.assertEqual(
-            client.sent[0][1],
-            "No help found for /resume.\nUse /help to see available commands.",
-        )
+        self.assertIn("No help found for /resume.", client.sent[0][1])
+        self.assertIn("/help <command>", client.sent[0][1])
 
     def test_help_lists_pr_and_explains_its_subcommands(self) -> None:
         client = FakeTelegramClient(allowed_chat_id=42)
@@ -909,7 +938,7 @@ class EnochTelegramTests(unittest.TestCase):
         client = FakeTelegramClient(allowed_chat_id=42)
         bot = EnochApplication(load_identity(), ROOT, client)
 
-        _handle_update(bot, _message_update(chat_id=42, text="/worktrees"))
+        _handle_update(bot, _message_update(chat_id=42, text="/worktree"))
 
         reply = client.sent[0][1]
         self.assertIn("Task worktrees (1):", reply)
@@ -1245,16 +1274,15 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertNotIn("/task resolve", reply)
         self.assertNotIn("Enoch Telegram commands:", reply)
 
-    def test_help_topic_supports_work_command_aliases(self) -> None:
+    def test_help_topic_rejects_removed_work_command_aliases(self) -> None:
         client = FakeTelegramClient(allowed_chat_id=42)
         bot = EnochApplication(load_identity(), ROOT, client)
 
         _handle_update(bot, _message_update(chat_id=42, text="/help /crons"))
 
         reply = client.sent[0][1]
-        self.assertIn("Cron commands:", reply)
-        self.assertIn("/cron every <interval> <request>", reply)
-        self.assertIn("/cron cancel <id>", reply)
+        self.assertIn("No help found for /crons.", reply)
+        self.assertIn("/help <command>", reply)
 
     def test_help_queue_shows_canonical_queue_command(self) -> None:
         client = FakeTelegramClient(allowed_chat_id=42)
@@ -1336,7 +1364,8 @@ class EnochTelegramTests(unittest.TestCase):
 
         _handle_update(bot, _message_update(chat_id=42, text="/help /debug"))
 
-        self.assertEqual(client.sent[0][1], "No help found for /debug.\nUse /help to see available commands.")
+        self.assertIn("No help found for /debug.", client.sent[0][1])
+        self.assertIn("/help <command>", client.sent[0][1])
 
     def test_help_shutdown_reports_removed_command(self) -> None:
         client = FakeTelegramClient(allowed_chat_id=42)
@@ -1344,7 +1373,8 @@ class EnochTelegramTests(unittest.TestCase):
 
         _handle_update(bot, _message_update(chat_id=42, text="/help shutdown"))
 
-        self.assertEqual(client.sent[0][1], "No help found for /shutdown.\nUse /help to see available commands.")
+        self.assertIn("No help found for /shutdown.", client.sent[0][1])
+        self.assertIn("/help <command>", client.sent[0][1])
 
     def test_help_topic_reports_unknown_command(self) -> None:
         client = FakeTelegramClient(allowed_chat_id=42)
@@ -1352,7 +1382,8 @@ class EnochTelegramTests(unittest.TestCase):
 
         _handle_update(bot, _message_update(chat_id=42, text="/help nope"))
 
-        self.assertEqual(client.sent[0][1], "No help found for /nope.\nUse /help to see available commands.")
+        self.assertIn("No help found for /nope.", client.sent[0][1])
+        self.assertIn("/help <command>", client.sent[0][1])
 
     @patch("enoch.app.core.ensure_long_term_memory")
     @patch("enoch.app.core.log_conversation_turn")
@@ -1858,8 +1889,10 @@ class EnochTelegramTests(unittest.TestCase):
 
     @patch("enoch.app.core.ensure_long_term_memory")
     @patch("enoch.app.core.log_conversation_turn")
-    def test_tasks_command_remains_a_hidden_queue_alias(
+    @patch("enoch.app.core.respond", return_value="That is not a registered command.")
+    def test_removed_plural_aliases_report_unknown_command(
         self,
+        respond: MagicMock,
         _log_conversation_turn: MagicMock,
         _update_memory: MagicMock,
     ) -> None:
@@ -1868,9 +1901,23 @@ class EnochTelegramTests(unittest.TestCase):
             client = FakeTelegramClient(allowed_chat_id=42)
             bot = EnochApplication(load_identity(), root, client)
 
-            _handle_update(bot, _message_update(chat_id=42, text="/tasks"))
+            for update_id, command in enumerate(
+                ("/tasks", "/backlogs", "/crons", "/worktrees"),
+                start=1,
+            ):
+                _handle_update(
+                    bot,
+                    _message_update(
+                        update_id=update_id,
+                        chat_id=42,
+                        text=command,
+                    ),
+                )
 
-        self.assertIn("Running: none", client.sent[0][1])
+        self.assertEqual(respond.call_count, 4)
+        self.assertTrue(
+            all("That is not a registered command." in sent[1] for sent in client.sent)
+        )
 
     @patch("enoch.app.core.ensure_long_term_memory")
     @patch("enoch.app.core.log_conversation_turn")
@@ -4053,6 +4100,19 @@ class EnochTelegramTests(unittest.TestCase):
         respond.assert_called_once()
         self.assertNotIn("reasoning_effort", read_section("codex", root))
         self.assertIn("Thinking config is managed locally.", client.sent[0][1])
+
+    def test_help_thinking_reports_removed_command(self) -> None:
+        client = FakeTelegramClient(allowed_chat_id=42)
+        bot = EnochApplication(load_identity(), ROOT, client)
+
+        _handle_update(bot, _message_update(chat_id=42, text="/help thinking"))
+        _handle_update(
+            bot,
+            _message_update(update_id=2, chat_id=42, text="/help config"),
+        )
+
+        self.assertIn("No help found for /thinking.", client.sent[0][1])
+        self.assertIn("/config reasoning-effort", client.sent[1][1])
 
     def test_ancestors_reports_missing_parent(self) -> None:
         with TemporaryDirectory() as temp:
