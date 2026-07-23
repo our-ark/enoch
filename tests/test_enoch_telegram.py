@@ -4408,6 +4408,63 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual(status.history[-1].context, "Use the earlier README scope decision.")
         self.assertIn("https://github.com/our-ark/enoch/pull/2", status.history[-1].result)
 
+    @patch("enoch.app.core.run_immune_system")
+    @patch("enoch.app.core.changed_files", return_value=["README.md"])
+    @patch(
+        "enoch.app.core._worktree_snapshot",
+        side_effect=["preserved README diff", "preserved README diff"],
+    )
+    @patch(
+        "enoch.app.core.act_in_session",
+        return_value="The preserved README edit already satisfies the request.",
+    )
+    def test_retry_validates_and_publishes_preserved_worktree_diff(
+        self,
+        _act_in_session: MagicMock,
+        _snapshot: MagicMock,
+        _changed_files: MagicMock,
+        run_immune_system: MagicMock,
+    ) -> None:
+        run_immune_system.return_value = _doctor_result()
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            client = FakeTelegramClient(allowed_chat_id=42)
+            bot = EnochApplication(load_identity(), root, client)
+            task_worktree = TaskWorktree(
+                1,
+                root,
+                "enoch/main-task-1-preserved-readme",
+                False,
+            )
+
+            with patch.object(
+                bot,
+                "_prepare_task_worktree",
+                return_value=task_worktree,
+            ):
+                with patch.object(
+                    bot,
+                    "_publish_feature_pr",
+                    return_value="Opened pull request.",
+                ) as publish_feature_pr:
+                    with patch("enoch.app.core.remove_task_worktree") as remove_task_worktree:
+                        result = bot._run_direct_work(
+                            42,
+                            "add test to the README",
+                            session_key="telegram:42:task:2",
+                        )
+
+        run_immune_system.assert_called_once_with(root)
+        publish_feature_pr.assert_called_once_with(
+            42,
+            "add test to the README",
+            ("README.md",),
+            work_root=root,
+            task_worktree=task_worktree,
+        )
+        remove_task_worktree.assert_not_called()
+        self.assertIn("Opened pull request.", result)
+
     @patch("enoch.app.core.ensure_long_term_memory")
     @patch("enoch.app.core.log_conversation_turn")
     def test_do_starts_worker_and_keeps_telegram_responsive(
