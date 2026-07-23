@@ -7,29 +7,14 @@
 <p align="center"><strong>Build your agent. Let her grow with you.</strong></p>
 
 Enoch is a personal software agent you build for yourself. She lives in your
-environment, works with your tools and repositories, learns from your shared
-history, and grows with you.
-
-Each Enoch instance is designed for one person rather than as a shared service.
-Her memory, preferences, task history, and evolving code body remain under that
-person's authority.
+environment, works with your tools and repositories, and grows through your
+shared history.
 
 This repository is the reference implementation of the Our-Ark agent
-architecture. It is currently aimed at researchers, agent builders, and power
-users who want to inspect, run, and fork a governed agent body rather than at a
-turnkey personal-assistant experience.
-
-Enoch can converse, run persistent and scheduled work, learn from other agents,
-and propose tested improvements to her own code. She keeps that work visible
-through task history, tests, branches, and reviewable changes. Self-evolution
-remains governed: you choose the operating mode, approve consequential work,
-and control which changes are promoted and adopted.
-
-Enoch is extensible through replaceable chat, runtime, version control, forge,
-and service providers, so other people can build their own Enoch without
-turning yours into a shared service. She was created with Genesis, the Our-Ark
-tool for creating new agent bodies from an existing lineage, and is designed to
-become an ancestor of future personal agents.
+architecture. It demonstrates governed code evolution: Enoch can turn feedback
+and operational experience into tested, reviewable changes while you control
+what is adopted. It is built for researchers, agent builders, and power users
+who want to run or fork an agent body.
 
 ## Why Enoch Is Different
 
