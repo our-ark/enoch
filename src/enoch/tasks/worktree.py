@@ -8,6 +8,7 @@ import re
 from enoch.vcs_tools import (
     VcsError,
     branch_exists,
+    changed_files,
     create_workspace,
     current_branch,
     delete_branch,
@@ -24,10 +25,27 @@ class TaskWorktree:
     created: bool
 
 
+@dataclass(frozen=True)
+class TaskWorktreeState:
+    task_id: int
+    path: Path
+    branch: str
+    changed_files: tuple[str, ...] = ()
+    inspection_error: str = ""
+
+    @property
+    def clean(self) -> bool:
+        return not self.changed_files and not self.inspection_error
+
+
 def task_worktree_path(control_root: Path, task_id: int) -> Path:
     resolved = control_root.resolve()
     instance_key = sha256(str(resolved).encode("utf-8")).hexdigest()[:10]
     return resolved.parent / ".enoch-task-worktrees" / f"{resolved.name}-{instance_key}" / f"task-{task_id}"
+
+
+def task_worktree_root(control_root: Path) -> Path:
+    return task_worktree_path(control_root, 0).parent
 
 
 def task_branch_name(
@@ -41,6 +59,73 @@ def task_branch_name(
     request_slug = _slug(request)[:32] or "work"
     identity = sha256(f"{resident_branch}\0{created_at}\0{task_id}".encode("utf-8")).hexdigest()[:8]
     return f"enoch/{owner}-task-{task_id}-{identity}-{request_slug}"
+
+
+def list_task_worktrees(control_root: Path) -> tuple[TaskWorktreeState, ...]:
+    namespace = task_worktree_root(control_root)
+    states: list[TaskWorktreeState] = []
+    for path in workspace_paths(control_root):
+        task_id = _task_id_from_path(path, namespace)
+        if task_id is None:
+            continue
+        try:
+            branch = current_branch(path)
+            files = tuple(sorted(changed_files(path)))
+            error = ""
+        except (VcsError, OSError) as exc:
+            branch = ""
+            files = ()
+            error = str(exc)
+        states.append(
+            TaskWorktreeState(
+                task_id=task_id,
+                path=path,
+                branch=branch,
+                changed_files=files,
+                inspection_error=error,
+            )
+        )
+    return tuple(sorted(states, key=lambda state: state.task_id))
+
+
+def task_worktree_state(control_root: Path, task_id: int) -> TaskWorktreeState | None:
+    return next(
+        (state for state in list_task_worktrees(control_root) if state.task_id == task_id),
+        None,
+    )
+
+
+def remove_managed_task_worktree(
+    control_root: Path,
+    task_id: int,
+    *,
+    discard: bool = False,
+) -> str:
+    state = task_worktree_state(control_root, task_id)
+    if state is None:
+        raise VcsError(f"Task #{task_id} has no registered task worktree.")
+    if not discard and not state.clean:
+        detail = (
+            f"changed files: {', '.join(state.changed_files)}"
+            if state.changed_files
+            else f"inspection failed: {state.inspection_error}"
+        )
+        raise VcsError(
+            f"Task #{task_id} worktree is not clean ({detail}). "
+            f"Inspect it with /worktree show {task_id}. "
+            f"To permanently discard it, use /worktree discard {task_id} force."
+        )
+
+    remove_workspace(state.path, control_root, force=discard)
+    messages = [f"Removed task #{task_id} worktree {state.path}."]
+    if state.branch:
+        try:
+            delete_branch(state.branch, control_root, force=discard)
+        except VcsError as error:
+            messages.append(f"Kept local branch {state.branch}: {error}")
+        else:
+            messages.append(f"Deleted local branch {state.branch}.")
+    return "\n".join(messages)
 
 
 def prepare_task_worktree(
@@ -134,3 +219,17 @@ def remove_task_worktree(
 
 def _slug(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
+
+
+def _task_id_from_path(path: Path, namespace: Path) -> int | None:
+    try:
+        relative = path.resolve().relative_to(namespace.resolve())
+    except ValueError:
+        return None
+    if len(relative.parts) != 1:
+        return None
+    match = re.fullmatch(r"task-(\d+)", relative.name)
+    if match is None:
+        return None
+    task_id = int(match.group(1))
+    return task_id if task_id > 0 else None

@@ -692,6 +692,7 @@ def help_message(topic: str = "", *, chat_provider: str = "chat") -> str:
             "System:",
             "/config - show or update local system settings",
             "/doctor - run local health checks",
+            "/worktree - inspect and manage isolated task worktrees",
             "/pr - list and manage pull requests",
             "/update - update from the authoritative repository, run doctor, and restart if safe",
             "/restart - restart Enoch's chat daemon from the locked conversation",
@@ -763,6 +764,8 @@ def _help_topic_message(topic: str) -> str:
         return config_usage("/")
     if topic == "pr":
         return pr_usage("/")
+    if topic in {"worktree", "worktrees"}:
+        return worktree_usage("/")
     topics = {
         "start": "/start - start Enoch and point to /help",
         "self": "/self - show Enoch's identity, role, ancestor, and mission",
@@ -802,6 +805,21 @@ def pr_usage(prefix: str = "/") -> str:
             f"{prefix}pr show <PR number or PR URL> - inspect one pull request",
             f"{prefix}pr merge <PR number or PR URL> - inspect and merge exactly that PR",
             "A merge target is required; Enoch will not infer one from the current branch or conversation.",
+        ]
+    )
+
+
+def worktree_usage(prefix: str = "/") -> str:
+    return "\n".join(
+        [
+            "Worktree commands:",
+            f"{prefix}worktree - list isolated task worktrees and their branches",
+            f"{prefix}worktree show <task-id> - inspect one task worktree",
+            f"{prefix}worktree cleanup <task-id> - remove a clean inactive task worktree",
+            (
+                f"{prefix}worktree discard <task-id> force - permanently delete an inactive "
+                "task worktree, its uncommitted changes, and its local branch"
+            ),
         ]
     )
 

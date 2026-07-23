@@ -204,12 +204,30 @@ def create_workspace(
         raise VcsError(result.stderr or result.stdout or f"Could not create workspace for {branch}.")
 
 
-def remove_workspace(path: Path, root: Path | None = None) -> None:
+def remove_workspace(
+    path: Path,
+    root: Path | None = None,
+    *,
+    force: bool = False,
+) -> None:
     provider = load_provider("vcs", root)
     if hasattr(provider, "remove_workspace"):
-        provider.remove_workspace(path, root)
+        if force:
+            try:
+                provider.remove_workspace(path, root, force=True)
+            except TypeError as error:
+                raise VcsError(
+                    f"VCS provider {getattr(provider, 'name', 'unknown')} does not "
+                    "support forced worktree removal."
+                ) from error
+        else:
+            provider.remove_workspace(path, root)
         return
-    result = run_git(["worktree", "remove", str(path)], root)
+    args = ["worktree", "remove"]
+    if force:
+        args.append("--force")
+    args.append(str(path))
+    result = run_git(args, root)
     if result.returncode != 0:
         raise VcsError(result.stderr or result.stdout or f"Could not remove workspace {path}.")
 

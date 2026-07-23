@@ -222,9 +222,19 @@ class GitVersionControlProvider:
         args.extend([str(path), start_point or branch])
         self._output(args, root, f"Could not create workspace for {branch}.")
 
-    def remove_workspace(self, path: Path, root: Path | None = None) -> None:
+    def remove_workspace(
+        self,
+        path: Path,
+        root: Path | None = None,
+        *,
+        force: bool = False,
+    ) -> None:
+        args = ["worktree", "remove"]
+        if force:
+            args.append("--force")
+        args.append(str(path))
         self._output(
-            ["worktree", "remove", str(path)],
+            args,
             root,
             f"Could not remove workspace {path}.",
         )

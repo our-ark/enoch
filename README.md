@@ -142,6 +142,13 @@ bin/enoch-daemon start
 
 Then open the bot in Telegram and send `/status`.
 
+Use `/worktree` to inspect task worktrees that Enoch preserved for debugging.
+`/worktree show <task-id>` reports the branch, path, linked task records, and
+changed files. A clean inactive task worktree can be removed with `/worktree
+cleanup <task-id>`. Permanently deleting a dirty inactive worktree requires the
+explicit `/worktree discard <task-id> force` command; Enoch refuses to remove a
+worktree still used by a queued, running, or paused task.
+
 ## Codex configuration
 
 Enoch has her own local runtime configuration in `.enoch/config.yaml`. For the
