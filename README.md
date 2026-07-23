@@ -14,6 +14,11 @@ Each Enoch instance is designed for one person rather than as a shared service.
 Her memory, preferences, task history, and evolving code body remain under that
 person's authority.
 
+This repository is the reference implementation of the Our-Ark agent
+architecture. It is currently aimed at researchers, agent builders, and power
+users who want to inspect, run, and fork a governed agent body rather than at a
+turnkey personal-assistant experience.
+
 Enoch can converse, run persistent and scheduled work, learn from other agents,
 and propose tested improvements to her own code. She keeps that work visible
 through task history, tests, branches, and reviewable changes. Self-evolution
@@ -22,8 +27,9 @@ and control which changes are promoted and adopted.
 
 Enoch is extensible through replaceable chat, runtime, version control, forge,
 and service providers, so other people can build their own Enoch without
-turning yours into a shared service. She was created with Genesis and treats
-her code as body and history as lineage.
+turning yours into a shared service. She was created with Genesis, the Our-Ark
+tool for creating new agent bodies from an existing lineage, and is designed to
+become an ancestor of future personal agents.
 
 ## Why Enoch Is Different
 
@@ -228,6 +234,16 @@ The E2E design and covered workflows are documented in
 
 ## Descending from Enoch
 
+Genesis is the primary tool for creating a descendant from Enoch. It carries
+forward the versioned code body and Git lineage, assigns the descendant a new
+identity and mission, and validates it against inherited contracts.
+
+> **Genesis availability:** Genesis is not yet open source. The command below
+> documents the intended Our-Ark workflow rather than a currently available
+> public installation path. You can still clone or fork Enoch manually to
+> inspect and adapt the reference implementation, but that does not perform the
+> Genesis birth and validation lifecycle.
+
 Enoch is a public Genesis-compatible reference body. Its `genesis.toml`
 declares the Git-tracked body boundary, inherited validation, launchers, source,
 packaging metadata, and regression contracts. Runtime credentials, memories,
@@ -254,7 +270,7 @@ use this model: descendants inherit provider contracts, configuration, and core
 behavior, while `genesis.toml` keeps immutable dependencies on selected provider
 commits instead of copying concrete integrations into every descendant body.
 
-## Lineage
+## Provenance
 
 - created by: Genesis
 - ancestor: Seth
