@@ -770,6 +770,8 @@ class EnochTelegramTests(unittest.TestCase):
 
         reply = client.sent[0][1]
         self.assertIn("Config commands:", reply)
+        self.assertIn("/config profiles", reply)
+        self.assertIn("/config profile <name|default>", reply)
         self.assertIn("/config model <name>", reply)
         self.assertIn("/config model default", reply)
         self.assertIn("/config reasoning-effort low|medium|high", reply)

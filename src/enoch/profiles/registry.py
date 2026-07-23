@@ -28,7 +28,7 @@ def register_profile(
 
 
 def available_profiles() -> tuple[str, ...]:
-    names = set(_REGISTERED)
+    names = {"enoch", *_REGISTERED}
     names.update(entry.name.strip().lower() for entry in _entry_points())
     return tuple(sorted(name for name in names if name))
 
@@ -40,6 +40,8 @@ def load_profile(root: Path | None = None, *, name: str = "") -> AgentProfile:
     if not selected:
         return AgentProfile(name="enoch")
     selected = _profile_name(selected)
+    if selected == "enoch":
+        return AgentProfile(name="enoch")
     factory = _REGISTERED.get(selected) or _entry_point_factory(selected)
     if factory is None:
         choices = ", ".join(available_profiles()) or "none"

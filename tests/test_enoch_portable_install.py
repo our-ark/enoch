@@ -67,19 +67,21 @@ class EnochPortableInstallTests(unittest.TestCase):
             )
             self.assertEqual(provider_contract, core_contract, package)
 
-    def test_wheel_install_completes_task_with_independent_chat_and_vcs_packages(self) -> None:
+    def test_wheel_install_completes_profile_task_with_independent_packages(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
             target = base / "site-packages"
             wheels = base / "wheels"
             chat_provider = base / "portable-chat"
             vcs_provider = base / "portable-vcs"
+            profile_package = base / "portable-researcher-profile"
             body = base / "body"
             codex = base / "codex"
             target.mkdir()
             wheels.mkdir()
             _write_chat_provider_package(chat_provider)
             _write_vcs_provider_package(vcs_provider)
+            _write_profile_package(profile_package)
             _write_fake_codex(codex)
 
             for project in (
@@ -88,6 +90,7 @@ class EnochPortableInstallTests(unittest.TestCase):
                 ROOT,
                 chat_provider,
                 vcs_provider,
+                profile_package,
             ):
                 built = subprocess.run(
                     [
@@ -163,6 +166,11 @@ class EnochPortableInstallTests(unittest.TestCase):
         self.assertEqual(result["enoch_version"], "0.2.0")
         self.assertEqual(result["chat_provider_version"], "0.0.1")
         self.assertEqual(result["vcs_provider_version"], "0.0.1")
+        self.assertEqual(result["profile"], "researcher")
+        self.assertEqual(result["profile_version"], "0.0.1")
+        self.assertEqual(result["profile_trigger"], "/research")
+        self.assertEqual(result["profile_context_source"], "profile:researcher")
+        self.assertIn("Queued portable research task #1", result["profile_command_reply"])
         self.assertGreater(result["startup_messages"], 0)
         self.assertEqual(result["status"], "completed")
         self.assertTrue(result["branch_preserved"])
@@ -407,6 +415,9 @@ def _write_fake_codex(path: Path) -> None:
             import sys
 
             args = sys.argv[1:]
+            prompt = sys.stdin.read()
+            if "Operate as a careful researcher." not in prompt:
+                raise SystemExit("Installed profile context did not reach the task prompt.")
             cwd = Path(args[args.index("--cd") + 1])
             (cwd / "PORTABLE_RESULT.md").write_text(
                 "Completed by installed Enoch.\\n",
@@ -423,6 +434,68 @@ def _write_fake_codex(path: Path) -> None:
     path.chmod(0o755)
 
 
+def _write_profile_package(root: Path) -> None:
+    root.mkdir()
+    (root / "pyproject.toml").write_text(
+        textwrap.dedent(
+            """
+            [project]
+            name = "enoch-portable-researcher-profile"
+            version = "0.0.1"
+            requires-python = ">=3.11"
+
+            [project.entry-points."our_ark.profiles"]
+            researcher = "portable_researcher:create_profile"
+
+            [build-system]
+            requires = ["setuptools"]
+            build-backend = "setuptools.build_meta"
+
+            [tool.setuptools]
+            py-modules = ["portable_researcher"]
+            """
+        ).strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    (root / "portable_researcher.py").write_text(
+        textwrap.dedent(
+            """
+            from enoch.profiles import AgentProfile, CommandSpec
+
+
+            def research(command):
+                if not command.argument:
+                    return "Use /research <topic>."
+                job = command.enqueue_task(
+                    "Create PORTABLE_RESULT.md after researching " + command.argument,
+                    context="Use primary sources and preserve provenance.",
+                )
+                return f"Queued portable research task #{job.id}."
+
+
+            def research_context(context):
+                return "Operate as a careful researcher." if context.purpose == "task" else ""
+
+
+            def create_profile(root=None):
+                return AgentProfile(
+                    name="researcher",
+                    commands=(
+                        CommandSpec(
+                            name="research",
+                            summary="queue portable research",
+                            handler=research,
+                        ),
+                    ),
+                    prompt_contributors=(research_context,),
+                )
+            """
+        ).lstrip(),
+        encoding="utf-8",
+    )
+
+
 _INSTALLED_TASK_SCRIPT = textwrap.dedent(
     """
     import json
@@ -433,8 +506,9 @@ _INSTALLED_TASK_SCRIPT = textwrap.dedent(
 
     from enoch.app.core import EnochApplication
     from enoch.identity import load_identity
-    from enoch.providers import load_provider
-    from enoch.tasks.queue import begin_next_task, enqueue_task, task_queue_status
+    from enoch.profiles import load_profile
+    from enoch.providers import ChatEvent, load_provider
+    from enoch.tasks.queue import begin_next_task, task_queue_status
 
 
     root = Path(sys.argv[1])
@@ -458,7 +532,8 @@ _INSTALLED_TASK_SCRIPT = textwrap.dedent(
     config = root / ".enoch" / "config.yaml"
     config.parent.mkdir()
     config.write_text(
-        "providers:\\n  chat: portable\\n  vcs: portable\\n  forge: local\\n",
+        "providers:\\n  chat: portable\\n  vcs: portable\\n  forge: local\\n"
+        "agent:\\n  profile: researcher\\n",
         encoding="utf-8",
     )
 
@@ -466,15 +541,26 @@ _INSTALLED_TASK_SCRIPT = textwrap.dedent(
     runtime = load_provider("runtime", root)
     vcs = load_provider("vcs", root)
     forge = load_provider("forge", root)
+    profile = load_profile(root)
     app = EnochApplication(
         identity=load_identity(),
         root=root,
         client=chat,
         runtime=runtime,
         forge=forge,
+        profile=profile,
     )
     app.notify_startup()
-    queued = enqueue_task("portable-room", "Create PORTABLE_RESULT.md", root)
+    app.handle_event(
+        ChatEvent(
+            cursor="profile-command",
+            conversation_id="portable-room",
+            message_id="profile-command",
+            text="/research stable extension APIs",
+        )
+    )
+    queued = task_queue_status(root).pending[-1]
+    profile_command_reply = chat.sent[-1][1]
     running = begin_next_task(root)
     assert running is not None and running.id == queued.id
     app._run_task_job(running)
@@ -499,6 +585,11 @@ _INSTALLED_TASK_SCRIPT = textwrap.dedent(
         "enoch_version": version("enoch"),
         "chat_provider_version": version("enoch-portable-chat-provider"),
         "vcs_provider_version": version("enoch-portable-vcs-provider"),
+        "profile": profile.name,
+        "profile_version": version("enoch-portable-researcher-profile"),
+        "profile_trigger": completed.trigger,
+        "profile_context_source": completed.context_source,
+        "profile_command_reply": profile_command_reply,
         "startup_messages": len(chat.sent),
         "status": completed.status,
         "branch_preserved": branch_preserved,

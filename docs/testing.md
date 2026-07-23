@@ -55,15 +55,17 @@ not belong in pull request CI.
 
 `tests/test_enoch_portable_install.py` independently builds wheels for Enoch,
 the shared contracts, the skill catalog, a third-party chat provider, and a
-third-party VCS provider. It installs only those wheel artifacts into an empty
-target without network access. The two provider distributions expose separate
-entry points; the VCS provider implements semantic repository operations
-without subclassing Enoch's Git provider or exposing raw command compatibility.
+third-party VCS provider, plus a separate researcher profile package. It
+installs only those wheel artifacts into an empty target without network
+access. The provider and profile distributions expose independent entry
+points; the VCS provider implements semantic repository operations without
+subclassing Enoch's Git provider or exposing raw command compatibility.
 
 The installed Enoch starts with those providers, sends a startup notification,
-then uses its built-in Codex runtime adapter and local forge to complete,
-validate, commit, and clean up a real task while preserving the unpushed task
-branch.
+loads the researcher profile, and handles its custom `/research` command. The
+command submits work to Enoch's single queue, then the built-in Codex runtime
+adapter and local forge complete, validate, commit, and clean up the task while
+preserving its profile trigger, context provenance, and unpushed task branch.
 
 This catches packaging metadata conflicts and source-checkout imports that unit
 tests can accidentally hide.

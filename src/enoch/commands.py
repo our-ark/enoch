@@ -38,6 +38,7 @@ from enoch.providers.registry import (
     load_provider,
     provider_name,
 )
+from enoch.profiles import ProfileError, available_profiles, load_profile
 from enoch.skills import skills_command
 from enoch.tasks.config import (
     format_task_timeout,
@@ -64,6 +65,7 @@ def status_message(
     allowed_chat_id: ConversationId | None,
     chat_id: ConversationId | None = None,
     chat_provider: str = "chat",
+    profile_name: str = "enoch",
     model_summary_fn: ModelSummaryFn = model_summary,
 ) -> str:
     provider_label = _provider_label(chat_provider)
@@ -78,6 +80,7 @@ def status_message(
         lines.append(f"- {provider_label} conversation id: {chat_id}")
     lines.extend(
         [
+            f"- Agent profile: {profile_name}",
             f"- {provider_label} conversation lock: "
             f"{allowed_chat_id if allowed_chat_id is not None else 'not set'}",
         ]
@@ -212,6 +215,7 @@ def config_command(
     *,
     prefix: str = "/",
     runtime: AgentRuntime | None = None,
+    active_profile_name: str = "",
 ) -> str:
     runtime = runtime or _default_runtime(root)
     try:
@@ -219,8 +223,43 @@ def config_command(
     except ValueError:
         return config_usage(prefix=prefix)
     if len(parts) == 1:
-        return config_status(root, prefix=prefix, runtime=runtime)
+        return config_status(
+            root,
+            prefix=prefix,
+            runtime=runtime,
+            active_profile_name=active_profile_name,
+        )
     setting = parts[1].lower().replace("_", "-")
+    if setting in {"profile", "profiles"}:
+        if len(parts) == 2:
+            return profile_config_status(
+                root,
+                prefix=prefix,
+                active_profile_name=active_profile_name,
+            )
+        if len(parts) != 3 or setting != "profile":
+            return config_usage(prefix=prefix)
+        value = parts[2].strip().lower()
+        if value in {"default", "reset", "enoch"}:
+            write_section_value("agent", "profile", None, root)
+            message = "Enoch profile selection reset to the built-in enoch profile."
+        else:
+            try:
+                load_profile(root, name=value)
+            except ProfileError as error:
+                return str(error)
+            write_section_value("agent", "profile", value, root)
+            message = f"Enoch profile set to {value}."
+        return "\n\n".join(
+            [
+                message + " Restart Enoch to activate it.",
+                profile_config_status(
+                    root,
+                    prefix=prefix,
+                    active_profile_name=active_profile_name,
+                ),
+            ]
+        )
     if setting in {"provider", "providers"}:
         if len(parts) == 2:
             return provider_config_status(root, prefix=prefix)
@@ -264,7 +303,12 @@ def config_command(
         return str(configure(tuple(parts[3:]), root, prefix=prefix))
     if setting == "task-timeout":
         if len(parts) == 2:
-            return config_status(root, prefix=prefix, runtime=runtime)
+            return config_status(
+                root,
+                prefix=prefix,
+                runtime=runtime,
+                active_profile_name=active_profile_name,
+            )
         if len(parts) != 3:
             return config_usage(prefix=prefix)
         value = parts[2].lower()
@@ -281,7 +325,12 @@ def config_command(
                 f"Task timeout set to {format_task_timeout(settings.timeout_seconds)}"
                 + (" (default)." if settings.uses_default_timeout else "."),
                 "",
-                config_status(root, prefix=prefix, runtime=runtime),
+                config_status(
+                    root,
+                    prefix=prefix,
+                    runtime=runtime,
+                    active_profile_name=active_profile_name,
+                ),
             ]
         )
     if setting == "model":
@@ -305,7 +354,12 @@ def config_command(
         )
     if setting == "reasoning-effort":
         if len(parts) == 2:
-            return config_status(root, prefix=prefix, runtime=runtime)
+            return config_status(
+                root,
+                prefix=prefix,
+                runtime=runtime,
+                active_profile_name=active_profile_name,
+            )
         if len(parts) != 3:
             return config_usage(prefix=prefix)
         value = parts[2].strip().lower()
@@ -320,7 +374,15 @@ def config_command(
             write_section_value(section, "reasoning_effort", value, root)
             message = f"Enoch {runtime_label} reasoning effort set to {value}."
         return "\n\n".join(
-            [message, config_status(root, prefix=prefix, runtime=runtime)]
+            [
+                message,
+                config_status(
+                    root,
+                    prefix=prefix,
+                    runtime=runtime,
+                    active_profile_name=active_profile_name,
+                ),
+            ]
         )
     return config_usage(prefix=prefix)
 
@@ -330,6 +392,7 @@ def config_status(
     *,
     prefix: str = "/",
     runtime: AgentRuntime | None = None,
+    active_profile_name: str = "",
 ) -> str:
     runtime = runtime or _default_runtime(root)
     settings = task_settings(root)
@@ -338,6 +401,7 @@ def config_status(
     lines = [
         "Enoch config:",
         f"- Task timeout: {format_task_timeout(settings.timeout_seconds)}{default}",
+        f"- Profile: {active_profile_name or _selected_profile_name(root)}",
         f"- Providers: {_provider_summary(root)}",
         "",
         f"{runtime.name.title()}:",
@@ -434,6 +498,29 @@ def provider_config_status(root: Path, *, prefix: str = "/") -> str:
     return "\n".join(lines)
 
 
+def profile_config_status(
+    root: Path,
+    *,
+    prefix: str = "/",
+    active_profile_name: str = "",
+) -> str:
+    command = f"{prefix}config"
+    selected = _selected_profile_name(root)
+    running = active_profile_name.strip() or selected
+    choices = ", ".join(available_profiles()) or "enoch"
+    lines = [
+        "Enoch profiles:",
+        f"- Running: {running}",
+        f"- Selected for restart: {selected}",
+        f"- Available: {choices}",
+        "",
+        f"Set with {command} profile <name>.",
+        f"Reset with {command} profile default.",
+        "Restart Enoch after changing the profile.",
+    ]
+    return "\n".join(lines)
+
+
 def _provider_summary(root: Path) -> str:
     providers = []
     for kind in PROVIDER_KINDS:
@@ -443,6 +530,13 @@ def _provider_summary(root: Path) -> str:
             selected = "not configured"
         providers.append(f"{kind}={selected}")
     return ", ".join(providers)
+
+
+def _selected_profile_name(root: Path) -> str:
+    try:
+        return load_profile(root).name
+    except ProfileError as error:
+        return f"invalid ({error})"
 
 
 def _default_runtime(root: Path | None = None) -> AgentRuntime:
@@ -463,6 +557,8 @@ def config_usage(prefix: str = "/") -> str:
         [
             "Config commands:",
             f"{command} - show local system settings",
+            f"{command} profiles - show the running, selected, and available profiles",
+            f"{command} profile <name|default> - select an agent profile for restart",
             f"{command} providers - show active and available providers",
             f"{command} provider <kind> <name|default> - select a provider",
             f"{command} runtime <provider> - show provider-specific runtime settings",

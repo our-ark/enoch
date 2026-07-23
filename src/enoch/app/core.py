@@ -574,7 +574,12 @@ class EnochApplication:
             elif command == "/evolve":
                 reply = self._evolve(chat_id, argument)
             elif command == "/config":
-                reply = config_command(text, self.root, runtime=self.runtime)
+                reply = config_command(
+                    text,
+                    self.root,
+                    runtime=self.runtime,
+                    active_profile_name=self.profile.name,
+                )
             elif command == "/self":
                 reply = identity_summary(self.identity, self.root)
             elif command == "/status":
@@ -1677,6 +1682,7 @@ class EnochApplication:
             allowed_chat_id=_allowed_conversation_id(self.client),
             chat_id=chat_id,
             chat_provider=self.channel_name,
+            profile_name=self.profile.name,
             model_summary_fn=self.runtime.model_summary,
         )
         return "\n\n".join([status, _task_status_message(self.root)])

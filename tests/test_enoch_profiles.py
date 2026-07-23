@@ -11,17 +11,21 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from enoch.app.core import EnochApplication
+from enoch.commands import config_command
+from enoch.config import read_section
 from enoch.identity import load_identity
 from enoch.profiles import (
     AgentProfile,
     CommandSpec,
     LifecycleHooks,
+    PROFILE_API_VERSION,
     ProfileError,
     load_profile,
     register_profile,
 )
 from enoch.profiles import registry as profile_registry
 from enoch.providers import ChatEvent, ProviderHealth
+from enoch.tasks.events import load_task_events
 from enoch.tasks.queue import task_queue_status
 
 
@@ -131,7 +135,15 @@ class EnochProfileTests(unittest.TestCase):
             self.assertEqual(queued[0].context_source, "profile:researcher")
             self.assertEqual(queued[0].source, "task")
             self.assertEqual(queued[0].trigger, "/research")
+            events = load_task_events(root, task_id=queued[0].id)
+            self.assertEqual(events[0].source, "task")
+            self.assertEqual(events[0].event_actor, "human")
+            self.assertEqual(events[0].trigger, "/research")
             self.assertEqual(chat.sent[-1][1], "Queued research task #1.")
+
+            app.handle_event(_event("/help", message_id="message-help"))
+            self.assertIn("Profile (researcher):", chat.sent[-1][1])
+            self.assertIn("/research - queue a research task", chat.sent[-1][1])
 
             app.handle_event(_event("/help research", message_id="message-2"))
             self.assertEqual(
@@ -218,6 +230,119 @@ class EnochProfileTests(unittest.TestCase):
                 config.parent.mkdir()
                 config.write_text("agent:\n  profile: local\n", encoding="utf-8")
                 self.assertEqual(load_profile(root).name, "local")
+
+    def test_config_selects_profile_for_restart_and_reports_running_profile(self) -> None:
+        with patch.dict(profile_registry._REGISTERED, {}, clear=True), patch.object(
+            profile_registry,
+            "_entry_points",
+            return_value=(),
+        ), TemporaryDirectory() as temp:
+            root = Path(temp)
+            register_profile(
+                "researcher",
+                lambda _root=None: AgentProfile(name="researcher"),
+            )
+
+            initial = config_command(
+                "/config profiles",
+                root,
+                runtime=_Runtime(),
+                active_profile_name="enoch",
+            )
+            changed = config_command(
+                "/config profile researcher",
+                root,
+                runtime=_Runtime(),
+                active_profile_name="enoch",
+            )
+            reset = config_command(
+                "/config profile default",
+                root,
+                runtime=_Runtime(),
+                active_profile_name="enoch",
+            )
+            reset_section = read_section("agent", root)
+
+        self.assertIn("Running: enoch", initial)
+        self.assertIn("Available: enoch, researcher", initial)
+        self.assertIn("Restart Enoch to activate it", changed)
+        self.assertIn("Selected for restart: researcher", changed)
+        self.assertEqual(reset_section, {})
+        self.assertIn("Selected for restart: enoch", reset)
+
+    def test_status_reports_active_profile(self) -> None:
+        profile = AgentProfile(name="researcher")
+        with TemporaryDirectory() as temp:
+            chat = _Chat()
+            app = EnochApplication(
+                load_identity(),
+                Path(temp),
+                chat,
+                runtime=_Runtime(),
+                profile=profile,
+            )
+            app.handle_event(_event("/status"))
+
+        self.assertIn("Agent profile: researcher", chat.sent[-1][1])
+
+    def test_profile_rejects_unsupported_api_version(self) -> None:
+        with self.assertRaisesRegex(ProfileError, "uses API version 2"):
+            AgentProfile(name="future", api_version=PROFILE_API_VERSION + 1)
+
+    def test_profile_registry_rejects_invalid_factory_results(self) -> None:
+        with patch.dict(profile_registry._REGISTERED, {}, clear=True), patch.object(
+            profile_registry,
+            "_entry_points",
+            return_value=(),
+        ):
+            register_profile("broken", lambda _root=None: object())  # type: ignore[arg-type]
+            with self.assertRaisesRegex(ProfileError, "did not return AgentProfile"):
+                load_profile(name="broken")
+
+            register_profile(
+                "mismatch",
+                lambda _root=None: AgentProfile(name="different"),
+            )
+            with self.assertRaisesRegex(ProfileError, "returned profile name"):
+                load_profile(name="mismatch")
+
+    def test_profile_failures_are_isolated_and_audited(self) -> None:
+        def fail_command(_context):
+            raise RuntimeError("command exploded")
+
+        def fail_prompt(_context):
+            raise RuntimeError("prompt exploded")
+
+        def fail_hook(_context):
+            raise RuntimeError("hook exploded")
+
+        profile = AgentProfile(
+            name="faulty",
+            commands=(CommandSpec("fault", "exercise failure isolation", fail_command),),
+            prompt_contributors=(fail_prompt,),
+            lifecycle=LifecycleHooks(on_initialize=fail_hook),
+        )
+        runtime = _Runtime()
+        with TemporaryDirectory() as temp, patch(
+            "enoch.app.core._record_system_event"
+        ) as record_event:
+            chat = _Chat()
+            app = EnochApplication(
+                load_identity(),
+                Path(temp),
+                chat,
+                runtime=runtime,
+                profile=profile,
+            )
+            app.handle_event(_event("hello"))
+            app.handle_event(_event("/fault", message_id="message-fault"))
+
+        self.assertEqual(runtime.messages[-1].count("Profile context:"), 0)
+        self.assertEqual(chat.sent[-1][1], "Profile command /fault failed: command exploded")
+        events = [call.args[0] for call in record_event.call_args_list]
+        self.assertIn("profile_lifecycle_failed", events)
+        self.assertIn("profile_prompt_failed", events)
+        self.assertIn("profile_command_failed", events)
 
 
 def _event(text: str, *, message_id: str = "message-1") -> ChatEvent:

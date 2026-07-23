@@ -74,6 +74,18 @@ agent:
   profile: researcher
 ```
 
+The same selection is available through chat or the admin CLI:
+
+```text
+/config profiles
+/config profile researcher
+/config profile default
+```
+
+`/config profiles` distinguishes the profile in the running process from the
+one selected for the next restart. `/status` reports the active profile. A
+profile change is activated only after restarting Enoch.
+
 `ENOCH_PROFILE=researcher` overrides the instance setting. Applications that
 embed Enoch can instead pass `profile=` directly to `EnochApplication` or use
 `register_profile()` for static registration.
@@ -92,3 +104,7 @@ profile command as its trigger, and uses the existing queue lifecycle.
 Prompt contributors receive an immutable context and return additional text.
 Enoch appends non-empty contributions under a `Profile context` section; the
 core safety and work prompts remain intact.
+
+The hermetic portable-install test builds a disposable profile distribution,
+discovers it through its installed entry point, executes its command, and
+verifies that the resulting task uses Enoch's queue and provenance records.

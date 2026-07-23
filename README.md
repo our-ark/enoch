@@ -198,7 +198,9 @@ Downstream agent bodies can also add commands, prompt context, and lifecycle
 hooks through the versioned `AgentProfile` API without changing the core
 application or owning a second task queue. Profiles can be injected directly or
 installed through the `our_ark.profiles` entry-point group; see
-[`docs/profiles.md`](docs/profiles.md).
+[`docs/profiles.md`](docs/profiles.md). Use `/config profiles` to inspect them,
+`/config profile <name>` to select one for restart, and `/status` to confirm the
+profile currently running.
 
 Core package boundaries and dependency direction are documented in
 [`docs/architecture.md`](docs/architecture.md).
