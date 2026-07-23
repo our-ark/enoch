@@ -111,11 +111,82 @@ class LifecycleHooks:
 
 
 @dataclass(frozen=True)
+class WorkflowPolicy:
+    """Profile-owned defaults for work submitted to the shared task queue."""
+
+    timeout_seconds: int | None = None
+    max_attempts: int | None = None
+    allow_direct_work: bool = True
+
+    def __post_init__(self) -> None:
+        if self.timeout_seconds is not None and (
+            isinstance(self.timeout_seconds, bool)
+            or not isinstance(self.timeout_seconds, int)
+            or self.timeout_seconds <= 0
+        ):
+            raise ProfileError("Profile workflow timeout must be a positive integer.")
+        if self.max_attempts is not None and (
+            isinstance(self.max_attempts, bool)
+            or not isinstance(self.max_attempts, int)
+            or not 1 <= self.max_attempts <= 100
+        ):
+            raise ProfileError(
+                "Profile workflow max attempts must be between 1 and 100."
+            )
+        if not isinstance(self.allow_direct_work, bool):
+            raise ProfileError("Profile workflow allow direct work must be boolean.")
+
+    def task_options(self) -> dict[str, int]:
+        options: dict[str, int] = {}
+        if self.timeout_seconds is not None:
+            options["timeout_seconds"] = self.timeout_seconds
+        if self.max_attempts is not None:
+            options["max_attempts"] = self.max_attempts
+        return options
+
+
+@dataclass(frozen=True)
+class ProfilePresentation:
+    """Bounded human-facing labels owned by a downstream profile."""
+
+    display_name: str = ""
+    help_heading: str = ""
+    task_label: str = "Task"
+
+    def __post_init__(self) -> None:
+        for field_name in ("display_name", "help_heading", "task_label"):
+            value = str(getattr(self, field_name)).strip()
+            if "\n" in value:
+                raise ProfileError(
+                    f"Profile presentation {field_name.replace('_', ' ')} "
+                    "must be a single line."
+                )
+            if len(value) > 80:
+                raise ProfileError(
+                    f"Profile presentation {field_name.replace('_', ' ')} "
+                    "must be 80 characters or fewer."
+                )
+            object.__setattr__(self, field_name, value)
+        if not self.task_label:
+            raise ProfileError("Profile presentation task label is required.")
+
+    def resolved_display_name(self, profile_name: str) -> str:
+        return self.display_name or profile_name
+
+    def resolved_help_heading(self, profile_name: str) -> str:
+        return self.help_heading or (
+            f"Profile ({self.resolved_display_name(profile_name)})"
+        )
+
+
+@dataclass(frozen=True)
 class AgentProfile:
     name: str
     api_version: int = PROFILE_API_VERSION
     commands: tuple[CommandSpec, ...] = ()
     prompt_contributors: tuple[PromptContributor, ...] = ()
+    workflow: WorkflowPolicy = field(default_factory=WorkflowPolicy)
+    presentation: ProfilePresentation = field(default_factory=ProfilePresentation)
     lifecycle: LifecycleHooks = field(default_factory=LifecycleHooks)
 
     def __post_init__(self) -> None:
@@ -134,6 +205,14 @@ class AgentProfile:
                     raise ProfileError(f"Duplicate profile command /{command_name}.")
                 seen.add(command_name)
         object.__setattr__(self, "name", name)
+
+    @property
+    def display_name(self) -> str:
+        return self.presentation.resolved_display_name(self.name)
+
+    @property
+    def help_heading(self) -> str:
+        return self.presentation.resolved_help_heading(self.name)
 
     def command(self, name: str) -> CommandSpec | None:
         candidate = name.strip().split(maxsplit=1)[0] if name.strip() else ""

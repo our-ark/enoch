@@ -19,10 +19,14 @@ from enoch.profiles import (
     CommandSpec,
     LifecycleHooks,
     PROFILE_API_VERSION,
+    ProfilePresentation,
     ProfileError,
+    WorkflowPolicy,
     load_profile,
     register_profile,
 )
+from enoch.app.models import WorkStatusMessage
+from enoch.tasks.queue import TaskJob
 from enoch.profiles import registry as profile_registry
 from enoch.providers import ChatEvent, ProviderHealth
 from enoch.tasks.events import load_task_events
@@ -106,6 +110,10 @@ class EnochProfileTests(unittest.TestCase):
 
         profile = AgentProfile(
             name="researcher",
+            workflow=WorkflowPolicy(
+                timeout_seconds=180,
+                max_attempts=1,
+            ),
             commands=(
                 CommandSpec(
                     "research",
@@ -135,6 +143,8 @@ class EnochProfileTests(unittest.TestCase):
             self.assertEqual(queued[0].context_source, "profile:researcher")
             self.assertEqual(queued[0].source, "task")
             self.assertEqual(queued[0].trigger, "/research")
+            self.assertEqual(queued[0].timeout_seconds, 180)
+            self.assertEqual(queued[0].max_attempts, 1)
             events = load_task_events(root, task_id=queued[0].id)
             self.assertEqual(events[0].source, "task")
             self.assertEqual(events[0].event_actor, "human")
@@ -150,6 +160,78 @@ class EnochProfileTests(unittest.TestCase):
                 chat.sent[-1][1],
                 "/research <topic> - queue a research task",
             )
+
+    def test_profile_presentation_controls_bounded_labels(self) -> None:
+        profile = AgentProfile(
+            name="researcher",
+            commands=(
+                CommandSpec("research", "queue research", lambda _context: "ready"),
+            ),
+            presentation=ProfilePresentation(
+                display_name="Researcher",
+                help_heading="Research tools",
+                task_label="Research task",
+            ),
+        )
+        with TemporaryDirectory() as temp:
+            chat = _Chat()
+            app = EnochApplication(
+                load_identity(),
+                Path(temp),
+                chat,
+                runtime=_Runtime(),
+                profile=profile,
+            )
+
+            app.handle_event(_event("/help"))
+            help_message = chat.sent[-1][1]
+            app.handle_event(_event("/status", message_id="status"))
+            status_message = chat.sent[-1][1]
+            work_message = app._format_work_status(
+                WorkStatusMessage(
+                    chat_id="room-1",
+                    message_id="work",
+                    request="Investigate the evidence.",
+                    started_at=0,
+                    task_id=7,
+                )
+            )
+            final_message = app._format_task_final(
+                TaskJob(
+                    id=7,
+                    chat_id="room-1",
+                    text="Investigate the evidence.",
+                    created_at="2026-07-22T00:00:00+00:00",
+                ),
+                "completed",
+                "Done.",
+            )
+
+        self.assertIn("Research tools:", help_message)
+        self.assertIn("Agent profile: Researcher (researcher)", status_message)
+        self.assertTrue(work_message.startswith("Research task #7\n"))
+        self.assertTrue(final_message.startswith("Research task #7 final update\n"))
+
+    def test_profile_can_require_queued_work(self) -> None:
+        profile = AgentProfile(
+            name="researcher",
+            workflow=WorkflowPolicy(allow_direct_work=False),
+        )
+        with TemporaryDirectory() as temp:
+            chat = _Chat()
+            app = EnochApplication(
+                load_identity(),
+                Path(temp),
+                chat,
+                runtime=_Runtime(),
+                profile=profile,
+            )
+
+            app.handle_event(_event("/do investigate now"))
+            queue_status = task_queue_status(Path(temp))
+
+        self.assertIn("does not permit immediate /do work", chat.sent[-1][1])
+        self.assertEqual(queue_status.pending_count, 0)
 
     def test_prompt_contributors_receive_purpose_and_extend_runtime_input(self) -> None:
         purposes: list[str] = []
@@ -288,6 +370,14 @@ class EnochProfileTests(unittest.TestCase):
     def test_profile_rejects_unsupported_api_version(self) -> None:
         with self.assertRaisesRegex(ProfileError, "uses API version 2"):
             AgentProfile(name="future", api_version=PROFILE_API_VERSION + 1)
+
+    def test_profile_rejects_invalid_workflow_and_presentation_values(self) -> None:
+        with self.assertRaisesRegex(ProfileError, "timeout must be a positive integer"):
+            WorkflowPolicy(timeout_seconds=0)
+        with self.assertRaisesRegex(ProfileError, "max attempts must be between"):
+            WorkflowPolicy(max_attempts=0)
+        with self.assertRaisesRegex(ProfileError, "must be a single line"):
+            ProfilePresentation(help_heading="Research\nTools")
 
     def test_profile_registry_rejects_invalid_factory_results(self) -> None:
         with patch.dict(profile_registry._REGISTERED, {}, clear=True), patch.object(

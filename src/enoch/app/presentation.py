@@ -109,18 +109,24 @@ def final_task_status_update(final_status: str) -> str:
     return "Completed. Final summary sent below."
 
 
-def format_task_final_message(job: TaskJob, final_status: str, result: str) -> str:
+def format_task_final_message(
+    job: TaskJob,
+    final_status: str,
+    result: str,
+    *,
+    task_label: str = "Task",
+) -> str:
     summary = job.result or result or "No result summary was recorded."
     if final_status == "paused":
         return "\n".join(
             [
-                f"Task #{job.id} paused",
+                f"{task_label} #{job.id} paused",
                 clip_activity_block(summary, limit=1200),
             ]
         )
     prs = job.pr_urls or ("none",)
     lines = [
-        f"Task #{job.id} final update",
+        f"{task_label} #{job.id} final update",
         f"Final status: {final_status}",
     ]
     if final_status == "failed" and job.failure_code:
@@ -141,10 +147,18 @@ def format_task_final_message(job: TaskJob, final_status: str, result: str) -> s
     return "\n".join(lines)
 
 
-def format_work_status_message(status: WorkStatusMessage) -> str:
+def format_work_status_message(
+    status: WorkStatusMessage,
+    *,
+    task_label: str = "Task",
+) -> str:
     elapsed = format_elapsed(max(0, int(time.monotonic() - status.started_at)))
     prs = status.prs or ["none"]
-    title = f"Task #{status.task_id}" if status.task_id is not None else "Work status"
+    title = (
+        f"{task_label} #{status.task_id}"
+        if status.task_id is not None
+        else ("Work status" if task_label == "Task" else f"{task_label} status")
+    )
     lines = [
         title,
         f"Status: {status.status}",

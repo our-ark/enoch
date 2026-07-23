@@ -658,7 +658,7 @@ class EnochApplication:
         if topic.strip() or not self.profile.commands:
             return core_help
         profile_help = [
-            f"Profile ({self.profile.name}):",
+            f"{self.profile.help_heading}:",
             *(
                 f"{spec.command} - {spec.summary}"
                 for spec in self.profile.commands
@@ -684,6 +684,7 @@ class EnochApplication:
                 initiated_by="human",
                 event_actor="human",
                 trigger=command,
+                **self._profile_task_options(),
             )
 
         context = CommandContext(
@@ -710,6 +711,34 @@ class EnochApplication:
                 },
             )
             return f"Profile command {command} failed: {error}"
+
+    def _profile_task_options(self) -> dict[str, int]:
+        return self.profile.workflow.task_options()
+
+    def _profile_status_name(self) -> str:
+        display_name = self.profile.display_name
+        if display_name == self.profile.name:
+            return self.profile.name
+        return f"{display_name} ({self.profile.name})"
+
+    def _format_work_status(self, status: WorkStatusMessage) -> str:
+        return _format_work_status_message(
+            status,
+            task_label=self.profile.presentation.task_label,
+        )
+
+    def _format_task_final(
+        self,
+        job: TaskJob,
+        final_status: str,
+        result: str,
+    ) -> str:
+        return _format_task_final_message(
+            job,
+            final_status,
+            result,
+            task_label=self.profile.presentation.task_label,
+        )
 
     def _profile_prompt(
         self,
@@ -883,6 +912,11 @@ class EnochApplication:
         command, argument = _parse_chat_command(text)
         if command != "/do" or not argument:
             return "Use /do <request> to run work now."
+        if not self.profile.workflow.allow_direct_work:
+            return (
+                f"Profile {self.profile.display_name} does not permit immediate "
+                "/do work. Use /task <request> to queue it."
+            )
         if not self._action_allowed():
             return self._action_lock_message()
         queue_status = task_queue_status(self.root)
@@ -964,6 +998,7 @@ class EnochApplication:
                 self.root,
                 context=context,
                 context_source=context_source,
+                **self._profile_task_options(),
             )
         except RuntimeError:
             running = task_queue_status(self.root).running
@@ -985,7 +1020,10 @@ class EnochApplication:
             latest_update="Starting work.",
             context=context,
         )
-        message_id = self._safe_send_message_id(chat_id, _format_work_status_message(status_message))
+        message_id = self._safe_send_message_id(
+            chat_id,
+            self._format_work_status(status_message),
+        )
         if message_id is not None:
             self._work_status_messages[direct_task.id] = message_id
             record_task_status_message(direct_task.id, message_id, self.root)
@@ -1018,6 +1056,7 @@ class EnochApplication:
                 initiated_by=initiated_by,
                 event_actor=initiated_by,
                 trigger=trigger,
+                **self._profile_task_options(),
             )
         except RuntimeError:
             return "Enoch cannot start that work while another task is running."
@@ -1033,7 +1072,11 @@ class EnochApplication:
         regression_token = _CURRENT_REGRESSION_SIGNALS.set(())
         cancellation_event = threading.Event()
         self._task_cancellations[job.id] = cancellation_event
-        deadline = _start_task_deadline(self.root, cancellation_event)
+        deadline = _start_task_deadline(
+            self.root,
+            cancellation_event,
+            timeout_seconds=job.timeout_seconds,
+        )
         execution = RuntimeExecutionControl(
             request_id=f"task:{job.id}:attempt:{job.attempt}",
             session_key=session_key,
@@ -1169,10 +1212,11 @@ class EnochApplication:
                 self.root,
                 context=context,
                 context_source=context_source,
+                **self._profile_task_options(),
             )
         except (OSError, ValueError):
             return "Enoch could not queue that /do request."
-        message = _format_work_status_message(
+        message = self._format_work_status(
             WorkStatusMessage(
                 chat_id=chat_id,
                 message_id=0,
@@ -1408,7 +1452,10 @@ class EnochApplication:
                 status="running",
                 latest_update=f"Publishing branch {branch}.",
             )
-            message_id = self._safe_send_message_id(chat_id, _format_work_status_message(status_message))
+            message_id = self._safe_send_message_id(
+                chat_id,
+                self._format_work_status(status_message),
+            )
             if message_id is not None:
                 status_message.message_id = message_id
                 token = _CURRENT_WORK_STATUS.set(status_message)
@@ -1722,7 +1769,7 @@ class EnochApplication:
         self._safe_edit_message(
             task_status.chat_id,
             task_status.message_id,
-            _format_work_status_message(task_status),
+            self._format_work_status(task_status),
         )
         return True
 
@@ -1751,7 +1798,7 @@ class EnochApplication:
             allowed_chat_id=_allowed_conversation_id(self.client),
             chat_id=chat_id,
             chat_provider=self.channel_name,
-            profile_name=self.profile.name,
+            profile_name=self._profile_status_name(),
             model_summary_fn=self.runtime.model_summary,
         )
         return "\n\n".join([status, _task_status_message(self.root)])
@@ -1840,7 +1887,11 @@ class EnochApplication:
                     latest_update="Cancelled before running.",
                     context=cancelled.context,
                 )
-                self._safe_edit_message(cancelled.chat_id, message_id, _format_work_status_message(cancelled_status))
+                self._safe_edit_message(
+                    cancelled.chat_id,
+                    message_id,
+                    self._format_work_status(cancelled_status),
+                )
             return f"Cancelled task #{cancelled.id}."
         if retry_id is not None:
             return self._retry_task(retry_id)
@@ -1869,12 +1920,13 @@ class EnochApplication:
                 self.root,
                 context=snapshot.context,
                 context_source=snapshot.source,
+                **self._profile_task_options(),
             )
         except (OSError, ValueError):
             return "Enoch could not queue that task."
         status = task_queue_status(self.root)
         position = status.pending_count
-        message = _format_work_status_message(
+        message = self._format_work_status(
             WorkStatusMessage(
                 chat_id=chat_id,
                 message_id=0,
@@ -1956,7 +2008,7 @@ class EnochApplication:
                 proposal_id=proposal_id,
             )
         position = task_queue_status(self.root).pending_count
-        message = _format_work_status_message(
+        message = self._format_work_status(
             WorkStatusMessage(
                 chat_id=job.chat_id,
                 message_id=0,
@@ -2001,6 +2053,7 @@ class EnochApplication:
                 initiated_by="human",
                 event_actor="human",
                 trigger=trigger,
+                **self._profile_task_options(),
             )
             paused = pause_task(
                 job.id,
@@ -2019,7 +2072,7 @@ class EnochApplication:
         warning = _codex_pause_warning(job.id, reason)
         message_id = self._safe_send_message_id(
             job.chat_id,
-            _format_work_status_message(
+            self._format_work_status(
                 WorkStatusMessage(
                     chat_id=job.chat_id,
                     message_id=0,
@@ -2072,7 +2125,7 @@ class EnochApplication:
                 self._safe_edit_message(
                     job.chat_id,
                     message_id,
-                    _format_work_status_message(
+                    self._format_work_status(
                         WorkStatusMessage(
                             chat_id=job.chat_id,
                             message_id=message_id,
@@ -2181,7 +2234,11 @@ class EnochApplication:
                 latest_update=result,
                 context=cancelled.context,
             )
-            self._safe_edit_message(cancelled.chat_id, message_id, _format_work_status_message(stopped_status))
+            self._safe_edit_message(
+                cancelled.chat_id,
+                message_id,
+                self._format_work_status(stopped_status),
+            )
         return f"Stopped task #{cancelled.id}."
 
     def _backlog(self, chat_id: int, text: str) -> str:
@@ -2487,6 +2544,7 @@ class EnochApplication:
                 approval_actor="human",
                 parent_candidate_id=candidate.parent_candidate_id,
                 source_task_id=candidate.source_task_id,
+                **self._profile_task_options(),
             )
         except (OSError, ValueError):
             self._record_evolve_event(
@@ -2554,6 +2612,7 @@ class EnochApplication:
                 approval_actor="human",
                 parent_candidate_id=candidate.parent_candidate_id,
                 source_task_id=candidate.source_task_id,
+                **self._profile_task_options(),
             )
         except (OSError, ValueError):
             self._record_evolve_event(
@@ -2773,11 +2832,12 @@ class EnochApplication:
             initiated_by="human",
             event_actor=event_actor,
             trigger=trigger,
+            **self._profile_task_options(),
         )
         promoted = promote_backlog_item(item.id, self.root, promoted_task_id=job.id)
         if promoted is None:
             return job
-        message = _format_work_status_message(
+        message = self._format_work_status(
             WorkStatusMessage(
                 chat_id=item.chat_id,
                 message_id=0,
@@ -2809,12 +2869,13 @@ class EnochApplication:
                     initiated_by="human",
                     event_actor="system",
                     trigger=f"cron:{cron.id}",
+                    **self._profile_task_options(),
                 )
             except (OSError, ValueError):
                 continue
             record_cron_task(cron.id, job.id, self.root)
             jobs.append(job)
-            message = _format_work_status_message(
+            message = self._format_work_status(
                 WorkStatusMessage(
                     chat_id=cron.chat_id,
                     message_id=0,
@@ -2922,7 +2983,7 @@ class EnochApplication:
             )
             message_id = self._safe_send_message_id(
                 job.chat_id,
-                _format_work_status_message(status_message),
+                self._format_work_status(status_message),
             )
             if message_id is not None:
                 created_status_message = True
@@ -2945,7 +3006,11 @@ class EnochApplication:
         regression_token = _CURRENT_REGRESSION_SIGNALS.set(())
         cancellation_event = threading.Event()
         self._task_cancellations[job.id] = cancellation_event
-        deadline = _start_task_deadline(self.root, cancellation_event)
+        deadline = _start_task_deadline(
+            self.root,
+            cancellation_event,
+            timeout_seconds=job.timeout_seconds,
+        )
         execution = RuntimeExecutionControl(
             request_id=f"task:{job.id}:attempt:{job.attempt}",
             session_key=session_key,
@@ -3144,7 +3209,7 @@ class EnochApplication:
                 self._work_status_messages.pop(job.id, None)
         self._safe_send_message(
             job.chat_id,
-            _format_task_final_message(summary_job, completed_status, reply),
+            self._format_task_final(summary_job, completed_status, reply),
         )
         self._record_turn(job.chat_id, f"{command} {job.text}", reply)
         if command == "/do":
@@ -3519,9 +3584,14 @@ def _work_reply_failed(reply: str) -> bool:
     )
 
 
-def _start_task_deadline(root: Path, cancellation_event: threading.Event) -> TaskDeadline:
+def _start_task_deadline(
+    root: Path,
+    cancellation_event: threading.Event,
+    *,
+    timeout_seconds: int | None = None,
+) -> TaskDeadline:
     deadline = TaskDeadline(
-        timeout_seconds=task_timeout_seconds(root),
+        timeout_seconds=timeout_seconds or task_timeout_seconds(root),
         cancellation_event=cancellation_event,
     )
     deadline.start()

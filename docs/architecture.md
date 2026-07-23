@@ -45,7 +45,8 @@ The stable executable surfaces remain `bin/enoch`, `bin/enoch-agent`, and
 boundaries, while these launchers and chat commands remain stable.
 
 Agent profiles sit above domain and provider contracts. They may contribute
-commands and context or enqueue governed work, but they do not poll chat,
+commands, context, persisted workflow defaults, bounded presentation labels,
+and lifecycle hooks or enqueue governed work, but they do not poll chat,
 execute tasks, recover queue state, or persist a parallel control plane. This
 keeps downstream product behavior composable while `enoch.app` remains the
 single application and workflow owner.

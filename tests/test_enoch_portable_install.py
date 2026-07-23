@@ -171,6 +171,10 @@ class EnochPortableInstallTests(unittest.TestCase):
         self.assertEqual(result["profile_trigger"], "/research")
         self.assertEqual(result["profile_context_source"], "profile:researcher")
         self.assertIn("Queued portable research task #1", result["profile_command_reply"])
+        self.assertIn("Portable research:", result["profile_help"])
+        self.assertEqual(result["profile_timeout_seconds"], 180)
+        self.assertEqual(result["profile_max_attempts"], 1)
+        self.assertTrue(result["profile_task_label_applied"])
         self.assertEqual(result["runtime_provider"], "codex")
         self.assertEqual(result["runtime_session_id"], "portable-session")
         self.assertEqual(result["runtime_completion_reason"], "completed")
@@ -468,7 +472,12 @@ def _write_profile_package(root: Path) -> None:
     (root / "portable_researcher.py").write_text(
         textwrap.dedent(
             """
-            from enoch.profiles import AgentProfile, CommandSpec
+            from enoch.profiles import (
+                AgentProfile,
+                CommandSpec,
+                ProfilePresentation,
+                WorkflowPolicy,
+            )
 
 
             def research(command):
@@ -488,6 +497,16 @@ def _write_profile_package(root: Path) -> None:
             def create_profile(root=None):
                 return AgentProfile(
                     name="researcher",
+                    workflow=WorkflowPolicy(
+                        timeout_seconds=180,
+                        max_attempts=1,
+                        allow_direct_work=False,
+                    ),
+                    presentation=ProfilePresentation(
+                        display_name="Portable Researcher",
+                        help_heading="Portable research",
+                        task_label="Research task",
+                    ),
                     commands=(
                         CommandSpec(
                             name="research",
@@ -560,6 +579,15 @@ _INSTALLED_TASK_SCRIPT = textwrap.dedent(
     app.notify_startup()
     app.handle_event(
         ChatEvent(
+            cursor="profile-help",
+            conversation_id="portable-room",
+            message_id="profile-help",
+            text="/help",
+        )
+    )
+    profile_help = chat.sent[-1][1]
+    app.handle_event(
+        ChatEvent(
             cursor="profile-command",
             conversation_id="portable-room",
             message_id="profile-command",
@@ -597,6 +625,13 @@ _INSTALLED_TASK_SCRIPT = textwrap.dedent(
         "profile_trigger": completed.trigger,
         "profile_context_source": completed.context_source,
         "profile_command_reply": profile_command_reply,
+        "profile_help": profile_help,
+        "profile_timeout_seconds": completed.timeout_seconds,
+        "profile_max_attempts": completed.max_attempts,
+        "profile_task_label_applied": any(
+            text.startswith(f"Research task #{completed.id}")
+            for _conversation_id, text in chat.sent
+        ),
         "runtime_provider": completed.runtime_provider,
         "runtime_session_id": completed.runtime_session_id,
         "runtime_completion_reason": completed.runtime_completion_reason,

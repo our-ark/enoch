@@ -114,6 +114,8 @@ class EnochTaskQueueTests(unittest.TestCase):
                 approval_actor="human",
                 parent_candidate_id="feedback-parent",
                 source_task_id=7,
+                max_attempts=1,
+                timeout_seconds=180,
             )
             begin_next_task(root)
             fail_task(original.id, root, result="transient failure")
@@ -137,6 +139,8 @@ class EnochTaskQueueTests(unittest.TestCase):
         self.assertEqual(retried.approval_actor, "human")
         self.assertEqual(retried.parent_candidate_id, "feedback-parent")
         self.assertEqual(retried.source_task_id, 7)
+        self.assertEqual(retried.max_attempts, 1)
+        self.assertEqual(retried.timeout_seconds, 180)
         self.assertEqual(status.history[0].status, "failed")
         self.assertEqual(status.pending, (retried,))
         self.assertEqual([event.event for event in events], ["created", "queued"])

@@ -26,7 +26,7 @@ from enoch.providers.contracts import (
 from enoch.tasks.events import normalize_task_initiator, normalize_task_source, record_task_event
 
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 DEFAULT_MAX_ATTEMPTS = 3
 PULL_REQUEST_URL_PATTERN = re.compile(r"https://[^\s]+/(?:pull|pulls|merge_requests)/\d+")
 _QUEUE_THREAD_LOCK = threading.RLock()
@@ -63,6 +63,7 @@ class TaskJob:
     branch_name: str = ""
     attempt: int = 0
     max_attempts: int = DEFAULT_MAX_ATTEMPTS
+    timeout_seconds: int | None = None
     next_attempt_at: str = ""
     failure_code: str = ""
     failure_class: str = ""
@@ -113,12 +114,16 @@ def enqueue_task(
     approval_actor: str = "",
     parent_candidate_id: str = "",
     source_task_id: int | None = None,
+    max_attempts: int = DEFAULT_MAX_ATTEMPTS,
+    timeout_seconds: int | None = None,
 ) -> TaskJob:
     cleaned = " ".join(text.split())
     if not cleaned:
         raise ValueError("Task text is required.")
     source = normalize_task_source(source)
     initiated_by = normalize_task_initiator(initiated_by)
+    max_attempts = _required_positive_int(max_attempts, "Task max attempts")
+    timeout_seconds = _optional_positive_int(timeout_seconds, "Task timeout")
     with _queue_transaction(root):
         data = _load_queue(root)
         job = TaskJob(
@@ -139,6 +144,8 @@ def enqueue_task(
             approval_actor=_normalize_provenance_actor(approval_actor),
             parent_candidate_id=parent_candidate_id.strip(),
             source_task_id=_positive_int(source_task_id),
+            max_attempts=max_attempts,
+            timeout_seconds=timeout_seconds,
         )
         pending = data.setdefault("pending", [])
         pending.append(_job_to_dict(job))
@@ -220,6 +227,8 @@ def retry_failed_task(
             pr_urls=_pull_request_urls(artifact_result),
             worktree_path=original.worktree_path,
             branch_name=original.branch_name,
+            max_attempts=original.max_attempts,
+            timeout_seconds=original.timeout_seconds,
         )
         pending = data.setdefault("pending", [])
         pending.append(_job_to_dict(job))
@@ -261,12 +270,16 @@ def enqueue_task_front(
     approval_actor: str = "",
     parent_candidate_id: str = "",
     source_task_id: int | None = None,
+    max_attempts: int = DEFAULT_MAX_ATTEMPTS,
+    timeout_seconds: int | None = None,
 ) -> TaskJob:
     cleaned = " ".join(text.split())
     if not cleaned:
         raise ValueError("Task text is required.")
     source = normalize_task_source(source)
     initiated_by = normalize_task_initiator(initiated_by)
+    max_attempts = _required_positive_int(max_attempts, "Task max attempts")
+    timeout_seconds = _optional_positive_int(timeout_seconds, "Task timeout")
     with _queue_transaction(root):
         data = _load_queue(root)
         job = TaskJob(
@@ -287,6 +300,8 @@ def enqueue_task_front(
             approval_actor=_normalize_provenance_actor(approval_actor),
             parent_candidate_id=parent_candidate_id.strip(),
             source_task_id=_positive_int(source_task_id),
+            max_attempts=max_attempts,
+            timeout_seconds=timeout_seconds,
         )
         pending = data.setdefault("pending", [])
         pending.insert(0, _job_to_dict(job))
@@ -316,12 +331,16 @@ def begin_direct_task(
     approval_actor: str = "",
     parent_candidate_id: str = "",
     source_task_id: int | None = None,
+    max_attempts: int = DEFAULT_MAX_ATTEMPTS,
+    timeout_seconds: int | None = None,
 ) -> TaskJob:
     cleaned = " ".join(text.split())
     if not cleaned:
         raise ValueError("Task text is required.")
     source = normalize_task_source(source)
     initiated_by = normalize_task_initiator(initiated_by)
+    max_attempts = _required_positive_int(max_attempts, "Task max attempts")
+    timeout_seconds = _optional_positive_int(timeout_seconds, "Task timeout")
     with _queue_transaction(root):
         data = _load_queue(root)
         if _parse_job(data.get("running")) is not None:
@@ -347,6 +366,8 @@ def begin_direct_task(
             parent_candidate_id=parent_candidate_id.strip(),
             source_task_id=_positive_int(source_task_id),
             attempt=1,
+            max_attempts=max_attempts,
+            timeout_seconds=timeout_seconds,
         )
         data["running"] = _job_to_dict(job)
         data["next_id"] = job.id + 1
@@ -1312,6 +1333,7 @@ def _parse_job(raw: object) -> TaskJob | None:
     attempt_default = 1 if status in {"running", "paused"} else 0
     attempt = max(0, _int(raw.get("attempt"), default=attempt_default))
     max_attempts = max(1, _int(raw.get("max_attempts"), default=DEFAULT_MAX_ATTEMPTS))
+    timeout_seconds = _positive_int(raw.get("timeout_seconds"))
     next_attempt_at = str(raw.get("next_attempt_at") or "").strip()
     failure_code = str(raw.get("failure_code") or "").strip()
     failure_class = str(raw.get("failure_class") or "").strip()
@@ -1362,6 +1384,7 @@ def _parse_job(raw: object) -> TaskJob | None:
         branch_name=branch_name,
         attempt=attempt,
         max_attempts=max_attempts,
+        timeout_seconds=timeout_seconds,
         next_attempt_at=next_attempt_at,
         failure_code=failure_code,
         failure_class=failure_class,
@@ -1409,6 +1432,7 @@ def _job_to_dict(job: TaskJob | None) -> dict:
         "branch_name": job.branch_name,
         "attempt": job.attempt,
         "max_attempts": job.max_attempts,
+        "timeout_seconds": job.timeout_seconds,
         "next_attempt_at": job.next_attempt_at,
         "failure_code": job.failure_code,
         "failure_class": job.failure_class,
@@ -1454,6 +1478,7 @@ def _replace_job(job: TaskJob, **changes: object) -> TaskJob:
         "branch_name": job.branch_name,
         "attempt": job.attempt,
         "max_attempts": job.max_attempts,
+        "timeout_seconds": job.timeout_seconds,
         "next_attempt_at": job.next_attempt_at,
         "failure_code": job.failure_code,
         "failure_class": job.failure_class,
@@ -1485,6 +1510,24 @@ def _int(value: object, *, default: int = 0) -> int:
 def _optional_int(value: object) -> int | None:
     parsed = _int(value)
     return parsed if parsed > 0 else None
+
+
+def _required_positive_int(value: object, label: str) -> int:
+    if isinstance(value, bool):
+        raise ValueError(f"{label} must be a positive integer.")
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"{label} must be a positive integer.") from error
+    if parsed <= 0:
+        raise ValueError(f"{label} must be a positive integer.")
+    return parsed
+
+
+def _optional_positive_int(value: object, label: str) -> int | None:
+    if value is None:
+        return None
+    return _required_positive_int(value, label)
 
 
 def _parse_runtime_usage(value: object) -> dict[str, int]:

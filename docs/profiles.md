@@ -1,15 +1,21 @@
 # Agent profiles
 
 Agent profiles extend Enoch's behavior without forking `enoch.app.core` or
-creating a second task queue. The version 1 profile API composes four bounded
+creating a second task queue. The version 1 profile API composes five bounded
 surfaces:
 
 - `CommandSpec` adds chat commands without replacing core commands.
 - `PromptContext` contributors add profile-specific context to conversation,
   image, task-context, and task prompts.
+- `WorkflowPolicy` sets persisted task timeout and retry defaults and may
+  require immediate `/do` requests to use the governed queue instead.
+- `ProfilePresentation` supplies bounded display, help-section, and task-status
+  labels without replacing core command semantics.
 - `LifecycleHooks` observe application initialization, startup, polling runs,
   and shutdown.
-- `CommandContext.enqueue_task()` submits work to Enoch's governed task queue.
+
+`CommandContext.enqueue_task()` submits work to Enoch's governed task queue
+using the active profile's workflow policy.
 
 Profiles do not own polling, task execution, recovery, provider selection, or
 state persistence. Those remain under the core application's control.
@@ -17,7 +23,13 @@ state persistence. Those remain under the core application's control.
 ## Define a profile
 
 ```python
-from enoch.profiles import AgentProfile, CommandSpec, LifecycleHooks
+from enoch.profiles import (
+    AgentProfile,
+    CommandSpec,
+    LifecycleHooks,
+    ProfilePresentation,
+    WorkflowPolicy,
+)
 
 
 def research(command):
@@ -39,6 +51,16 @@ def research_context(context):
 def create_profile(root=None):
     return AgentProfile(
         name="researcher",
+        workflow=WorkflowPolicy(
+            timeout_seconds=20 * 60,
+            max_attempts=2,
+            allow_direct_work=False,
+        ),
+        presentation=ProfilePresentation(
+            display_name="Researcher",
+            help_heading="Research",
+            task_label="Research task",
+        ),
         commands=(
             CommandSpec(
                 name="research",
@@ -105,6 +127,25 @@ Prompt contributors receive an immutable context and return additional text.
 Enoch appends non-empty contributions under a `Profile context` section; the
 core safety and work prompts remain intact.
 
+## Workflow and presentation boundaries
+
+`WorkflowPolicy.timeout_seconds` and `max_attempts` are copied into every task
+created by the active application profile, including profile commands, `/task`,
+`/do`, promoted backlog work, cron work, and evolve work. The values live on
+the task record, so pause, restart, recovery, and manual retry preserve the
+decision that was made when the task was queued. Unset values retain Enoch's
+configured timeout and default retry limit.
+
+When `allow_direct_work` is false, `/do` directs the human to `/task`; queued
+and system work remain available. This is a workflow constraint, not an
+authorization system.
+
+`ProfilePresentation` changes only bounded human-facing labels. `display_name`
+appears in status, `help_heading` names the profile section in `/help`, and
+`task_label` names live and final task updates. Stable profile IDs, core command
+names, task states, event fields, and queue behavior remain unchanged.
+
 The hermetic portable-install test builds a disposable profile distribution,
 discovers it through its installed entry point, executes its command, and
-verifies that the resulting task uses Enoch's queue and provenance records.
+verifies its context, workflow policy, presentation, queue behavior, and
+provenance records.

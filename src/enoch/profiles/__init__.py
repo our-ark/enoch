@@ -6,10 +6,12 @@ from enoch.profiles.contracts import (
     LifecycleContext,
     LifecycleHook,
     LifecycleHooks,
+    ProfilePresentation,
     ProfileError,
     PromptContributor,
     PromptContext,
     PromptPurpose,
+    WorkflowPolicy,
 )
 from enoch.profiles.registry import available_profiles, load_profile, register_profile
 
@@ -21,10 +23,12 @@ __all__ = [
     "LifecycleContext",
     "LifecycleHook",
     "LifecycleHooks",
+    "ProfilePresentation",
     "ProfileError",
     "PromptContributor",
     "PromptContext",
     "PromptPurpose",
+    "WorkflowPolicy",
     "available_profiles",
     "load_profile",
     "register_profile",
