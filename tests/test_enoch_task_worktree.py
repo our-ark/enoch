@@ -9,13 +9,81 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from enoch.tasks.worktree import (
+    list_task_worktrees,
     prepare_existing_branch_worktree,
     prepare_task_worktree,
+    remove_managed_task_worktree,
     remove_task_worktree,
+    task_worktree_state,
 )
+from enoch.vcs_tools import VcsError
 
 
 class TaskWorktreeTests(unittest.TestCase):
+    def test_lists_task_worktrees_with_branch_and_changed_files(self) -> None:
+        with TemporaryDirectory() as temp:
+            _source, resident = _create_agent_worktree(Path(temp))
+            task = prepare_task_worktree(
+                resident,
+                7,
+                "update task behavior",
+                start_point="main",
+                resident_branch="agent/enoch-gary",
+            )
+            (task.path / "README.md").write_text("task draft\n", encoding="utf-8")
+
+            states = list_task_worktrees(resident)
+
+            self.assertEqual(len(states), 1)
+            self.assertEqual(states[0].task_id, 7)
+            self.assertEqual(states[0].path, task.path)
+            self.assertEqual(states[0].branch, task.branch)
+            self.assertEqual(states[0].changed_files, ("README.md",))
+            self.assertFalse(states[0].clean)
+
+            remove_managed_task_worktree(resident, 7, discard=True)
+
+    def test_cleanup_refuses_dirty_worktree_without_explicit_discard(self) -> None:
+        with TemporaryDirectory() as temp:
+            source, resident = _create_agent_worktree(Path(temp))
+            task = prepare_task_worktree(
+                resident,
+                8,
+                "update task behavior",
+                start_point="main",
+            )
+            (task.path / "README.md").write_text("task draft\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(VcsError, r"/worktree discard 8 force"):
+                remove_managed_task_worktree(resident, 8)
+
+            self.assertTrue(task.path.exists())
+            result = remove_managed_task_worktree(resident, 8, discard=True)
+            self.assertIn("Removed task #8 worktree", result)
+            self.assertFalse(task.path.exists())
+            self.assertEqual(_git(source, "branch", "--list", task.branch), "")
+
+    def test_cleanup_removes_clean_worktree_without_forcing_unmerged_branch(self) -> None:
+        with TemporaryDirectory() as temp:
+            source, resident = _create_agent_worktree(Path(temp))
+            task = prepare_task_worktree(
+                resident,
+                9,
+                "update task behavior",
+                start_point="main",
+            )
+
+            state = task_worktree_state(resident, 9)
+            self.assertIsNotNone(state)
+            assert state is not None
+            self.assertTrue(state.clean)
+
+            result = remove_managed_task_worktree(resident, 9)
+
+            self.assertIn("Removed task #9 worktree", result)
+            self.assertFalse(task.path.exists())
+            self.assertEqual(_git(source, "branch", "--list", task.branch), "")
+
     def test_task_worktree_isolated_from_dirty_resident_checkout(self) -> None:
         with TemporaryDirectory() as temp:
             source, resident = _create_agent_worktree(Path(temp))

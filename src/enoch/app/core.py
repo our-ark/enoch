@@ -252,6 +252,7 @@ from enoch.commands import (
     pr_usage,
     skills_command,
     status_message,
+    worktree_usage,
 )
 from enoch.tasks.config import format_task_timeout, task_timeout_seconds
 from enoch.tasks.failures import (
@@ -261,9 +262,13 @@ from enoch.tasks.failures import (
 )
 from enoch.tasks.worktree import (
     TaskWorktree,
+    TaskWorktreeState,
+    list_task_worktrees,
     prepare_existing_branch_worktree,
     prepare_task_worktree,
+    remove_managed_task_worktree,
     remove_task_worktree,
+    task_worktree_state,
 )
 from enoch.operations.update_tools import (
     authoritative_branch_name as _authoritative_branch_name,
@@ -357,6 +362,8 @@ _CORE_COMMANDS = {
     "self",
     "status",
     "doctor",
+    "worktree",
+    "worktrees",
     "pr",
     "update",
     "restart",
@@ -594,6 +601,8 @@ class EnochApplication:
                 reply = self._status(chat_id)
             elif command == "/doctor":
                 reply = self._doctor()
+            elif command in {"/worktree", "/worktrees"}:
+                reply = self._worktree(chat_id, argument)
             elif command == "/pr":
                 reply = self._pr(chat_id, argument)
             elif command == "/update":
@@ -3325,6 +3334,69 @@ class EnochApplication:
             format_doctor=_format_doctor_result,
         )
 
+    def _worktree(self, chat_id: ConversationId, argument: str) -> str:
+        parts = argument.split()
+        if not parts or (len(parts) == 1 and parts[0].lower() == "list"):
+            try:
+                states = list_task_worktrees(self.root)
+            except VcsError as error:
+                return f"Enoch could not list task worktrees: {error}"
+            return _format_task_worktrees(states, self.root)
+
+        action = parts[0].lower()
+        if action == "show" and len(parts) == 2:
+            task_id = _positive_task_id(parts[1])
+            if task_id is None:
+                return worktree_usage()
+            try:
+                state = task_worktree_state(self.root, task_id)
+            except VcsError as error:
+                return f"Enoch could not inspect task #{task_id} worktree: {error}"
+            if state is None:
+                return f"Task #{task_id} has no registered task worktree."
+            return _format_task_worktree(state, self.root)
+
+        cleanup = action == "cleanup" and len(parts) == 2
+        discard = action == "discard" and len(parts) == 3 and parts[2].lower() == "force"
+        if not cleanup and not discard:
+            return worktree_usage()
+        task_id = _positive_task_id(parts[1])
+        if task_id is None:
+            return worktree_usage()
+        if not self._action_allowed():
+            return self._action_lock_message()
+        try:
+            state = task_worktree_state(self.root, task_id)
+        except VcsError as error:
+            return f"Enoch could not inspect task #{task_id} worktree: {error}"
+        if state is None:
+            return f"Task #{task_id} has no registered task worktree."
+        active = _active_tasks_for_worktree(state, self.root)
+        if active:
+            labels = ", ".join(f"#{job.id} [{job.status}]" for job in active)
+            return (
+                f"Enoch will not remove task #{task_id} worktree because it is still "
+                f"used by {labels}."
+            )
+        try:
+            result = remove_managed_task_worktree(
+                self.root,
+                task_id,
+                discard=discard,
+            )
+        except VcsError as error:
+            return f"Enoch could not remove task #{task_id} worktree: {error}"
+        _record_system_event(
+            "task_worktree_discarded" if discard else "task_worktree_cleaned",
+            self.root,
+            details={
+                "task_id": task_id,
+                "path": str(state.path),
+                "branch": state.branch,
+            },
+        )
+        return result
+
     def _pr(self, chat_id: int, argument: str) -> str:
         parts = argument.split()
         if not parts or (len(parts) == 1 and parts[0].lower() == "list"):
@@ -4028,6 +4100,78 @@ def _task_by_id(task_id: int, root: Path) -> TaskJob | None:
     if status.running is not None:
         jobs.append(status.running)
     return next((job for job in jobs if job.id == task_id), None)
+
+
+def _format_task_worktrees(states: tuple[TaskWorktreeState, ...], root: Path) -> str:
+    if not states:
+        return "Task worktrees: none"
+    lines = [f"Task worktrees ({len(states)}):"]
+    for state in states:
+        condition = "unknown" if state.inspection_error else ("clean" if state.clean else "dirty")
+        branch = state.branch or "(unknown branch)"
+        linked = _tasks_for_worktree(state, root)
+        tasks = ", ".join(f"#{job.id} [{job.status}]" for job in linked) or "no recent task record"
+        lines.extend(
+            [
+                f"- task path #{state.task_id} [{condition}] {branch}",
+                f"  Tasks: {tasks}",
+                f"  Path: {state.path}",
+            ]
+        )
+    return "\n".join(lines)
+
+
+def _format_task_worktree(state: TaskWorktreeState, root: Path) -> str:
+    condition = "unknown" if state.inspection_error else ("clean" if state.clean else "dirty")
+    linked = _tasks_for_worktree(state, root)
+    tasks = ", ".join(f"#{job.id} [{job.status}]" for job in linked) or "none in recent queue history"
+    lines = [
+        f"Task worktree #{state.task_id}",
+        f"Status: {condition}",
+        f"Branch: {state.branch or '(unknown)'}",
+        f"Path: {state.path}",
+        f"Linked tasks: {tasks}",
+    ]
+    if state.changed_files:
+        lines.extend(["Changed files:", *(f"- {path}" for path in state.changed_files)])
+    if state.inspection_error:
+        lines.append(f"Inspection error: {state.inspection_error}")
+    return "\n".join(lines)
+
+
+def _tasks_for_worktree(state: TaskWorktreeState, root: Path) -> tuple[TaskJob, ...]:
+    status = task_queue_status(root)
+    jobs = [*status.pending, *status.paused, *status.history]
+    if status.running is not None:
+        jobs.append(status.running)
+    state_path = state.path.resolve()
+    linked = []
+    for job in jobs:
+        same_path = False
+        if job.worktree_path:
+            try:
+                same_path = Path(job.worktree_path).expanduser().resolve() == state_path
+            except OSError:
+                same_path = False
+        if same_path or (state.branch and job.branch_name == state.branch):
+            linked.append(job)
+    return tuple(sorted(linked, key=lambda job: job.id))
+
+
+def _active_tasks_for_worktree(state: TaskWorktreeState, root: Path) -> tuple[TaskJob, ...]:
+    return tuple(
+        job
+        for job in _tasks_for_worktree(state, root)
+        if job.status in {"pending", "running", "paused", "retrying"}
+    )
+
+
+def _positive_task_id(value: str) -> int | None:
+    try:
+        task_id = int(value.lstrip("#"))
+    except ValueError:
+        return None
+    return task_id if task_id > 0 else None
 
 
 def _codex_pause_warning(task_id: int, reason: str) -> str:

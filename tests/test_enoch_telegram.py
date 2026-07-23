@@ -73,7 +73,7 @@ from enoch.tasks.queue import (
     task_queue_status,
 )
 from enoch.tasks.events import load_task_events
-from enoch.tasks.worktree import TaskWorktree
+from enoch.tasks.worktree import TaskWorktree, TaskWorktreeState
 from enoch.app.core import (
     EnochApplication,
     ShutdownRequested,
@@ -758,6 +758,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertNotIn("/evolve schedule cron '30 9 * * *' - run evolve with a cron-style daily schedule", client.sent[0][1])
         self.assertIn("/update", client.sent[0][1])
         self.assertIn("/config - show or update local system settings", client.sent[0][1])
+        self.assertIn("/worktree - inspect and manage isolated task worktrees", client.sent[0][1])
         self.assertNotIn("/resume", client.sent[0][1])
         self.assertIn("/restart - restart Enoch's chat daemon from the locked conversation", client.sent[0][1])
         self.assertNotIn("/shutdown", client.sent[0][1])
@@ -877,6 +878,153 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("/pr show <PR number or PR URL>", client.sent[1][1])
         self.assertIn("/pr merge <PR number or PR URL>", client.sent[1][1])
         self.assertIn("will not infer one", client.sent[1][1])
+
+    def test_help_lists_worktree_commands(self) -> None:
+        client = FakeTelegramClient(allowed_chat_id=42)
+        bot = EnochApplication(load_identity(), ROOT, client)
+
+        _handle_update(bot, _message_update(chat_id=42, text="/help worktree"))
+
+        reply = client.sent[0][1]
+        self.assertIn("Worktree commands:", reply)
+        self.assertIn("/worktree - list isolated task worktrees", reply)
+        self.assertIn("/worktree show <task-id>", reply)
+        self.assertIn("/worktree cleanup <task-id>", reply)
+        self.assertIn("/worktree discard <task-id> force", reply)
+
+    @patch("enoch.app.core.list_task_worktrees")
+    def test_worktree_lists_branch_path_and_linked_task(
+        self,
+        list_task_worktrees: MagicMock,
+    ) -> None:
+        path = ROOT.parent / ".enoch-task-worktrees" / "enoch-test" / "task-7"
+        list_task_worktrees.return_value = (
+            TaskWorktreeState(
+                task_id=7,
+                path=path,
+                branch="enoch/main-task-7-example",
+                changed_files=("README.md",),
+            ),
+        )
+        client = FakeTelegramClient(allowed_chat_id=42)
+        bot = EnochApplication(load_identity(), ROOT, client)
+
+        _handle_update(bot, _message_update(chat_id=42, text="/worktrees"))
+
+        reply = client.sent[0][1]
+        self.assertIn("Task worktrees (1):", reply)
+        self.assertIn("task path #7 [dirty] enoch/main-task-7-example", reply)
+        self.assertIn(str(path), reply)
+
+    @patch("enoch.app.core.task_worktree_state")
+    def test_worktree_show_includes_changed_files(
+        self,
+        task_worktree_state: MagicMock,
+    ) -> None:
+        task_worktree_state.return_value = TaskWorktreeState(
+            task_id=7,
+            path=ROOT.parent / "task-7",
+            branch="enoch/main-task-7-example",
+            changed_files=("README.md", "src/enoch/app/core.py"),
+        )
+        client = FakeTelegramClient(allowed_chat_id=42)
+        bot = EnochApplication(load_identity(), ROOT, client)
+
+        _handle_update(bot, _message_update(chat_id=42, text="/worktree show 7"))
+
+        reply = client.sent[0][1]
+        self.assertIn("Task worktree #7", reply)
+        self.assertIn("Status: dirty", reply)
+        self.assertIn("- README.md", reply)
+        self.assertIn("- src/enoch/app/core.py", reply)
+
+    @patch("enoch.app.core.remove_managed_task_worktree")
+    @patch("enoch.app.core.task_worktree_state")
+    def test_worktree_cleanup_requires_locked_chat(
+        self,
+        task_worktree_state: MagicMock,
+        remove_managed_task_worktree: MagicMock,
+    ) -> None:
+        task_worktree_state.return_value = TaskWorktreeState(
+            task_id=7,
+            path=ROOT.parent / "task-7",
+            branch="enoch/main-task-7-example",
+        )
+        client = FakeTelegramClient()
+        bot = EnochApplication(load_identity(), ROOT, client)
+
+        _handle_update(bot, _message_update(chat_id=42, text="/worktree cleanup 7"))
+
+        self.assertIn("Telegram is locked to one conversation", client.sent[0][1])
+        task_worktree_state.assert_not_called()
+        remove_managed_task_worktree.assert_not_called()
+
+    @patch("enoch.app.core._active_tasks_for_worktree")
+    @patch("enoch.app.core.remove_managed_task_worktree")
+    @patch("enoch.app.core.task_worktree_state")
+    def test_worktree_cleanup_refuses_worktree_used_by_active_retry(
+        self,
+        task_worktree_state: MagicMock,
+        remove_managed_task_worktree: MagicMock,
+        active_tasks_for_worktree: MagicMock,
+    ) -> None:
+        state = TaskWorktreeState(
+            task_id=7,
+            path=ROOT.parent / "task-7",
+            branch="enoch/main-task-7-example",
+        )
+        task_worktree_state.return_value = state
+        active_tasks_for_worktree.return_value = (
+            TaskJob(
+                id=8,
+                chat_id=42,
+                text="retry task",
+                created_at="2026-07-23T00:00:00+00:00",
+                status="pending",
+                parent_task_id=7,
+                worktree_path=str(state.path),
+                branch_name=state.branch,
+            ),
+        )
+        client = FakeTelegramClient(allowed_chat_id=42)
+        bot = EnochApplication(load_identity(), ROOT, client)
+
+        _handle_update(bot, _message_update(chat_id=42, text="/worktree cleanup 7"))
+
+        self.assertIn("still used by #8 [pending]", client.sent[0][1])
+        remove_managed_task_worktree.assert_not_called()
+
+    @patch("enoch.app.core._record_system_event")
+    @patch("enoch.app.core._active_tasks_for_worktree", return_value=())
+    @patch("enoch.app.core.remove_managed_task_worktree")
+    @patch("enoch.app.core.task_worktree_state")
+    def test_worktree_discard_requires_explicit_force_and_removes_inactive_worktree(
+        self,
+        task_worktree_state: MagicMock,
+        remove_managed_task_worktree: MagicMock,
+        _active_tasks_for_worktree: MagicMock,
+        _record_system_event: MagicMock,
+    ) -> None:
+        state = TaskWorktreeState(
+            task_id=7,
+            path=ROOT.parent / "task-7",
+            branch="enoch/main-task-7-example",
+            changed_files=("README.md",),
+        )
+        task_worktree_state.return_value = state
+        remove_managed_task_worktree.return_value = "Removed task #7 worktree."
+        client = FakeTelegramClient(allowed_chat_id=42)
+        bot = EnochApplication(load_identity(), ROOT, client)
+
+        _handle_update(bot, _message_update(chat_id=42, text="/worktree discard 7"))
+        _handle_update(
+            bot,
+            _message_update(update_id=2, chat_id=42, text="/worktree discard 7 force"),
+        )
+
+        self.assertIn("/worktree discard <task-id> force", client.sent[0][1])
+        remove_managed_task_worktree.assert_called_once_with(ROOT, 7, discard=True)
+        self.assertEqual(client.sent[1][1], "Removed task #7 worktree.")
 
     @patch("enoch.app.core.list_open_pull_requests")
     def test_pr_lists_open_pull_requests(
