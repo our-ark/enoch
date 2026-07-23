@@ -1,25 +1,18 @@
 from __future__ import annotations
 
-from contextlib import contextmanager
 from dataclasses import dataclass
 import json
 from pathlib import Path
-import threading
-
-try:
-    import fcntl
-except ImportError:  # pragma: no cover - fcntl is unavailable on Windows.
-    fcntl = None
 
 from enoch.memory.paths import atomic_write, now as current_time
 from enoch.paths import enoch_home
 from enoch.providers.contracts import ConversationId, normalize_conversation_id
+from enoch.state import StateCorruptionError, file_transaction, load_json_object
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 PRIORITIES = ("p0", "p1", "p2")
 DEFAULT_PRIORITY = "p1"
-_BACKLOG_THREAD_LOCK = threading.RLock()
 
 
 @dataclass(frozen=True)
@@ -35,6 +28,7 @@ class BacklogItem:
     promoted_task_id: int | None = None
     context: str = ""
     context_source: str = ""
+    idempotency_key: str = ""
 
 
 @dataclass(frozen=True)
@@ -56,6 +50,7 @@ def add_backlog_item(
     priority: str = DEFAULT_PRIORITY,
     context: str = "",
     context_source: str = "",
+    idempotency_key: str = "",
 ) -> BacklogItem:
     cleaned = " ".join(text.split())
     if not cleaned:
@@ -63,6 +58,18 @@ def add_backlog_item(
     priority = normalize_priority(priority)
     with _backlog_transaction(root):
         data = _load_backlog(root)
+        normalized_key = idempotency_key.strip()
+        if normalized_key:
+            existing = next(
+                (
+                    item
+                    for item in [*_pending_items(data), *_history_items(data)]
+                    if item.idempotency_key == normalized_key
+                ),
+                None,
+            )
+            if existing is not None:
+                return existing
         item = BacklogItem(
             id=_next_id(data),
             chat_id=chat_id,
@@ -71,6 +78,7 @@ def add_backlog_item(
             created_at=current_time(),
             context=context.strip(),
             context_source=context_source.strip(),
+            idempotency_key=normalized_key,
         )
         pending = data.setdefault("pending", [])
         pending.append(_item_to_dict(item))
@@ -94,7 +102,7 @@ def remove_backlog_item(item_id: int, root: Path | None = None) -> BacklogItem |
         history = _history_items(data)
         history.append(removed)
         data["pending"] = [_item_to_dict(item) for item in kept]
-        data["history"] = [_item_to_dict(item) for item in history[-20:]]
+        data["history"] = [_item_to_dict(item) for item in history]
         _write_backlog(data, root)
         return removed
 
@@ -134,7 +142,7 @@ def promote_next_backlog_item(root: Path | None = None, *, promoted_task_id: int
         history = _history_items(data)
         history.append(promoted)
         data["pending"] = [_item_to_dict(item) for item in pending]
-        data["history"] = [_item_to_dict(item) for item in history[-20:]]
+        data["history"] = [_item_to_dict(item) for item in history]
         _write_backlog(data, root)
         return promoted
 
@@ -164,7 +172,7 @@ def promote_backlog_item(
         history = _history_items(data)
         history.append(promoted)
         data["pending"] = [_item_to_dict(item) for item in kept]
-        data["history"] = [_item_to_dict(item) for item in history[-20:]]
+        data["history"] = [_item_to_dict(item) for item in history]
         _write_backlog(data, root)
         return promoted
 
@@ -214,14 +222,12 @@ def _next_item_index(items: list[BacklogItem]) -> int | None:
 
 def _load_backlog(root: Path | None = None) -> dict:
     path = backlog_path(root)
-    if not path.exists():
-        return _empty_backlog()
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return _empty_backlog()
-    if not isinstance(raw, dict):
-        return _empty_backlog()
+    raw = load_json_object(path, default_factory=_empty_backlog)
+    for key in ("pending", "history"):
+        if key in raw and not isinstance(raw[key], list):
+            raise StateCorruptionError(path, f"expected {key} to be a list")
+        if any(_parse_item(item) is None for item in raw.get(key, [])):
+            raise StateCorruptionError(path, f"found an invalid backlog item in {key}")
     pending = [_item_to_dict(item) for item in _pending_items(raw)]
     next_id = _int(raw.get("next_id"), default=1)
     max_id = max([item["id"] for item in pending], default=0)
@@ -233,7 +239,7 @@ def _load_backlog(root: Path | None = None) -> dict:
         "schema_version": SCHEMA_VERSION,
         "next_id": max(next_id, max_id + 1),
         "pending": pending,
-        "history": history[-20:],
+        "history": history,
     }
 
 
@@ -242,25 +248,13 @@ def _write_backlog(data: dict, root: Path | None = None) -> None:
         "schema_version": SCHEMA_VERSION,
         "next_id": _next_id(data),
         "pending": [_item_to_dict(item) for item in _pending_items(data)],
-        "history": [_item_to_dict(item) for item in _history_items(data)][-20:],
+        "history": [_item_to_dict(item) for item in _history_items(data)],
     }
     atomic_write(backlog_path(root), json.dumps(payload, indent=2, sort_keys=True) + "\n")
 
 
-@contextmanager
 def _backlog_transaction(root: Path | None = None):
-    path = backlog_path(root)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    lock_path = path.with_suffix(path.suffix + ".lock")
-    with _BACKLOG_THREAD_LOCK:
-        with lock_path.open("a", encoding="utf-8") as lock_file:
-            if fcntl is not None:
-                fcntl.flock(lock_file, fcntl.LOCK_EX)
-            try:
-                yield
-            finally:
-                if fcntl is not None:
-                    fcntl.flock(lock_file, fcntl.LOCK_UN)
+    return file_transaction(backlog_path(root))
 
 
 def _pending_items(data: dict) -> list[BacklogItem]:
@@ -296,6 +290,7 @@ def _parse_item(raw: object) -> BacklogItem | None:
     promoted_task_id = _optional_int(raw.get("promoted_task_id"))
     context = str(raw.get("context") or "").strip()
     context_source = str(raw.get("context_source") or "").strip()
+    idempotency_key = str(raw.get("idempotency_key") or "").strip()
     if item_id <= 0 or chat_id is None or not text:
         return None
     return BacklogItem(
@@ -310,6 +305,7 @@ def _parse_item(raw: object) -> BacklogItem | None:
         promoted_task_id=promoted_task_id,
         context=context,
         context_source=context_source,
+        idempotency_key=idempotency_key,
     )
 
 
@@ -328,6 +324,7 @@ def _item_to_dict(item: BacklogItem | None) -> dict:
         "promoted_task_id": item.promoted_task_id,
         "context": item.context,
         "context_source": item.context_source,
+        "idempotency_key": item.idempotency_key,
     }
 
 
@@ -344,6 +341,7 @@ def _replace_item(item: BacklogItem, **changes: object) -> BacklogItem:
         "promoted_task_id": item.promoted_task_id,
         "context": item.context,
         "context_source": item.context_source,
+        "idempotency_key": item.idempotency_key,
     }
     values.update(changes)
     return BacklogItem(**values)

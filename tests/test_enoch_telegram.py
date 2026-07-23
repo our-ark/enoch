@@ -4518,7 +4518,6 @@ class EnochTelegramTests(unittest.TestCase):
     @patch("enoch.app.core.ensure_clean_worktree")
     @patch("enoch.app.core.current_branch", side_effect=["main", "enoch/readme", "enoch/readme"])
     @patch("enoch.app.core.changed_files", return_value=["README.md"])
-    @patch("enoch.app.core._worktree_snapshot", side_effect=["clean", "changed"])
     @patch("enoch.app.core.act_in_session", return_value="Updated README.")
     @patch("enoch.app.core.respond")
     @patch("enoch.app.core.ensure_long_term_memory")
@@ -4531,7 +4530,6 @@ class EnochTelegramTests(unittest.TestCase):
         _update_memory: MagicMock,
         respond: MagicMock,
         act_in_session: MagicMock,
-        _snapshot: MagicMock,
         _changed_files: MagicMock,
         _current_branch: MagicMock,
         _ensure_clean_worktree: MagicMock,
@@ -4619,17 +4617,12 @@ class EnochTelegramTests(unittest.TestCase):
     @patch("enoch.app.core.run_immune_system")
     @patch("enoch.app.core.changed_files", return_value=["README.md"])
     @patch(
-        "enoch.app.core._worktree_snapshot",
-        side_effect=["preserved README diff", "preserved README diff"],
-    )
-    @patch(
         "enoch.app.core.act_in_session",
         return_value="The preserved README edit already satisfies the request.",
     )
     def test_retry_validates_and_publishes_preserved_worktree_diff(
         self,
         _act_in_session: MagicMock,
-        _snapshot: MagicMock,
         _changed_files: MagicMock,
         run_immune_system: MagicMock,
     ) -> None:
@@ -4669,6 +4662,7 @@ class EnochTelegramTests(unittest.TestCase):
             ("README.md",),
             work_root=root,
             task_worktree=task_worktree,
+            validation_result=run_immune_system.return_value,
         )
         remove_task_worktree.assert_not_called()
         self.assertIn("Opened pull request.", result)
@@ -5090,7 +5084,7 @@ class EnochTelegramTests(unittest.TestCase):
 
     @patch("enoch.app.core.ensure_long_term_memory")
     @patch("enoch.app.core.log_conversation_turn")
-    def test_final_send_failure_still_records_and_advances_offset(
+    def test_final_send_failure_preserves_event_for_redelivery(
         self,
         log_conversation_turn: MagicMock,
         _update_memory: MagicMock,
@@ -5102,9 +5096,19 @@ class EnochTelegramTests(unittest.TestCase):
 
             _handle_update(bot, _message_update(update_id=10, chat_id=42, text="/status"))
 
-        self.assertEqual(bot.offset, 11)
-        log_conversation_turn.assert_called_once()
-        self.assertIn("Telegram send failed", log_conversation_turn.call_args.kwargs["reply"])
+        self.assertIsNone(bot.offset)
+        log_conversation_turn.assert_not_called()
+        self.log_system_event.assert_any_call(
+            "chat_reply_failed",
+            root=root,
+            status="failed",
+            details={
+                "provider": "telegram",
+                "chat_id": 42,
+                "message_id": 1010,
+                "error": "send failed",
+            },
+        )
 
     @patch("enoch.app.core.ensure_long_term_memory")
     @patch("enoch.app.core.log_conversation_turn")

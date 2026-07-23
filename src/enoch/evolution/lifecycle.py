@@ -14,6 +14,7 @@ from enoch.evolution.events import (
 from enoch.vcs_tools import VcsError, revision_is_ancestor
 from enoch.memory.paths import atomic_write
 from enoch.paths import enoch_home
+from enoch.state import StateCorruptionError, load_json_object
 from enoch.providers.contracts import (
     ForgeProvider,
     ForgeProviderError,
@@ -357,13 +358,12 @@ def _is_ancestor(revision: str, descendant: str, root: Path) -> bool:
 
 def _load_pending_adoptions(root: Path) -> tuple[PendingAdoption, ...]:
     path = pending_adoption_path(root)
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    data = load_json_object(path)
+    if not data:
         return ()
-    raw_items = data.get("adoptions") if isinstance(data, dict) else None
+    raw_items = data.get("adoptions")
     if not isinstance(raw_items, list):
-        return ()
+        raise StateCorruptionError(path, "expected adoptions to be a list")
     items = []
     default_branch = authoritative_branch_name(root)
     for raw in raw_items:

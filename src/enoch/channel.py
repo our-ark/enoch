@@ -13,6 +13,7 @@ from enoch.identity import Identity
 from enoch.paths import enoch_home
 from enoch.providers.contracts import Attachment, ChatProvider, Cursor
 from enoch.operations.update_tools import current_repository_revision, repository_sync_summary
+from enoch.state import StateCorruptionError, atomic_write, load_json_object
 
 
 MAX_IMAGE_BYTES = 20 * 1024 * 1024
@@ -39,24 +40,22 @@ def provider_label(name: str) -> str:
 
 def load_channel_cursor(name: str, root: Path | None = None) -> Cursor | None:
     path = channel_cursor_path(name, root)
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        cursor = data.get("cursor", data.get("offset"))
-    except (AttributeError, OSError, json.JSONDecodeError):
+    data = load_json_object(path)
+    if not data:
         return None
+    cursor = data.get("cursor", data.get("offset"))
     if isinstance(cursor, bool):
         return None
     if isinstance(cursor, int):
         return cursor if cursor >= 0 else None
     if isinstance(cursor, str):
         return cursor.strip() or None
-    return None
+    raise StateCorruptionError(path, "expected cursor to be a non-negative integer or string")
 
 
 def save_channel_cursor(name: str, cursor: Cursor, root: Path | None = None) -> None:
     path = channel_cursor_path(name, root)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"cursor": cursor}, indent=2), encoding="utf-8")
+    atomic_write(path, json.dumps({"cursor": cursor}, indent=2) + "\n")
 
 
 def channel_cursor_path(name: str, root: Path | None = None) -> Path:
@@ -101,13 +100,7 @@ def record_channel_shutdown(
 
 def load_channel_lifecycle(name: str, root: Path | None = None) -> dict[str, Any]:
     path = channel_lifecycle_path(name, root)
-    if not path.exists():
-        return {}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return data if isinstance(data, dict) else {}
+    return load_json_object(path)
 
 
 def save_channel_lifecycle(
@@ -116,8 +109,7 @@ def save_channel_lifecycle(
     root: Path | None = None,
 ) -> None:
     path = channel_lifecycle_path(name, root)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    atomic_write(path, json.dumps(data, indent=2) + "\n")
 
 
 def channel_lifecycle_path(name: str, root: Path | None = None) -> Path:

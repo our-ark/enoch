@@ -6,6 +6,7 @@ from typing import Any
 
 from enoch.memory.paths import atomic_write, now
 from enoch.paths import enoch_home
+from enoch.state import load_json_object
 
 
 def last_codex_input_path(root: Path | None = None) -> Path:
@@ -63,11 +64,7 @@ def _load_last_codex_input(root: Path | None = None) -> dict[str, Any] | None:
     path = last_codex_input_path(root)
     if not path.exists():
         return None
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    return data if isinstance(data, dict) else None
+    return load_json_object(path)
 
 
 def _yes_no(value: object) -> str:

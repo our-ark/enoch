@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from enoch.paths import enoch_home
+from enoch.state import atomic_write
 
 
 def memory_dir(root: Path | None = None) -> Path:
@@ -13,13 +14,6 @@ def memory_dir(root: Path | None = None) -> Path:
 
 def long_term_memory_path(root: Path | None = None) -> Path:
     return memory_dir(root) / "long_term.json"
-
-
-def atomic_write(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = path.with_suffix(path.suffix + ".tmp")
-    temp_path.write_text(text, encoding="utf-8")
-    temp_path.replace(path)
 
 
 def now() -> str:

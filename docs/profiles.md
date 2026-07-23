@@ -74,8 +74,8 @@ def create_profile(root=None):
     )
 ```
 
-Command names are lowercase chat-command identifiers. A profile may define
-aliases, but it cannot shadow Enoch's core commands. Profile command failures
+Command names are lowercase chat-command identifiers. Profiles cannot define
+aliases or shadow Enoch's core commands, keeping `/help` authoritative. Profile command failures
 are reported to the conversation and system log; prompt and lifecycle hook
 failures are logged without stopping the daemon.
 
@@ -112,7 +112,7 @@ profile change is activated only after restarting Enoch.
 embed Enoch can instead pass `profile=` directly to `EnochApplication` or use
 `register_profile()` for static registration.
 
-The current contract is `PROFILE_API_VERSION = 1`. A profile must declare that
+The current contract is `PROFILE_API_VERSION = 2`. A profile must declare that
 version (the default) and Enoch rejects unsupported versions at startup rather
 than guessing compatibility.
 

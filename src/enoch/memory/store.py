@@ -17,6 +17,7 @@ from enoch.memory.paths import (
     normalize,
     now as current_time,
 )
+from enoch.state import StateCorruptionError, file_transaction, load_json_object
 
 
 SCHEMA_VERSION = 1
@@ -78,49 +79,55 @@ def apply_memory_candidates(
         return []
 
     settings = memory_settings(root)
-    data = load_long_term_memory(root)
-    memories = data["memories"]
-    timestamp = current_time()
-    changed = False
-    written: list[dict[str, Any]] = []
+    path = long_term_memory_path(root)
+    with file_transaction(path):
+        data = _load_long_term_memory_unlocked(root, create=True)
+        memories = data["memories"]
+        timestamp = current_time()
+        changed = False
+        written: list[dict[str, Any]] = []
 
-    for raw_candidate in candidates:
-        candidate = _validated_memory_candidate(raw_candidate, settings, source_ref)
-        if candidate is None:
-            continue
-        existing = _matching_memory(memories, candidate)
-        if existing is not None:
-            existing.update(
+        for raw_candidate in candidates:
+            candidate = _validated_memory_candidate(raw_candidate, settings, source_ref)
+            if candidate is None:
+                continue
+            existing = _matching_memory(memories, candidate)
+            if existing is not None:
+                existing.update(
+                    {
+                        "text": candidate["text"],
+                        "updated_at": timestamp,
+                        "confidence": _stronger_confidence(
+                            existing.get("confidence"), candidate["confidence"]
+                        ),
+                        "sensitivity": _stronger_sensitivity(
+                            existing.get("sensitivity"), candidate["sensitivity"]
+                        ),
+                        "tags": _merged_list(existing.get("tags"), candidate["tags"]),
+                        "source_refs": _merged_list(
+                            existing.get("source_refs"), candidate["source_refs"]
+                        ),
+                    }
+                )
+                written.append(existing)
+                changed = True
+                continue
+
+            candidate.update(
                 {
-                    "text": candidate["text"],
+                    "id": _new_memory_id(memories, timestamp),
+                    "created_at": timestamp,
                     "updated_at": timestamp,
-                    "confidence": _stronger_confidence(existing.get("confidence"), candidate["confidence"]),
-                    "sensitivity": _stronger_sensitivity(
-                        existing.get("sensitivity"), candidate["sensitivity"]
-                    ),
-                    "tags": _merged_list(existing.get("tags"), candidate["tags"]),
-                    "source_refs": _merged_list(existing.get("source_refs"), candidate["source_refs"]),
+                    "last_used_at": None,
                 }
             )
-            written.append(existing)
+            memories.append(candidate)
+            written.append(candidate)
             changed = True
-            continue
 
-        candidate.update(
-            {
-                "id": _new_memory_id(memories, timestamp),
-                "created_at": timestamp,
-                "updated_at": timestamp,
-                "last_used_at": None,
-            }
-        )
-        memories.append(candidate)
-        written.append(candidate)
-        changed = True
-
-    if changed:
-        write_long_term_memory(data, root)
-    return written
+        if changed:
+            _write_long_term_memory_unlocked(data, root)
+        return written
 
 
 def forget_memory(query: str, root: Path | None = None) -> ForgetResult:
@@ -128,30 +135,37 @@ def forget_memory(query: str, root: Path | None = None) -> ForgetResult:
     if not normalized:
         return ForgetResult(0, 0, "Tell Enoch which memory to forget.")
 
-    data = load_long_term_memory(root)
-    matches = [
-        memory
-        for memory in data["memories"]
-        if (
-            normalized == normalize(str(memory.get("id") or ""))
-            or normalized in normalize(str(memory.get("text") or ""))
-            or normalized in normalize(" ".join(str(tag) for tag in memory.get("tags") or []))
-        )
-    ]
-    if not matches:
-        return ForgetResult(0, 0, f"No long-term memory matched `{query}`.")
-    if len(matches) > 1 and not any(normalized == normalize(str(match.get("id") or "")) for match in matches):
-        ids = ", ".join(str(match.get("id")) for match in matches[:5])
-        return ForgetResult(len(matches), 0, f"Multiple memories matched. Use one id: {ids}")
+    path = long_term_memory_path(root)
+    with file_transaction(path):
+        data = _load_long_term_memory_unlocked(root, create=True)
+        matches = [
+            memory
+            for memory in data["memories"]
+            if (
+                normalized == normalize(str(memory.get("id") or ""))
+                or normalized in normalize(str(memory.get("text") or ""))
+                or normalized
+                in normalize(" ".join(str(tag) for tag in memory.get("tags") or []))
+            )
+        ]
+        if not matches:
+            return ForgetResult(0, 0, f"No long-term memory matched `{query}`.")
+        if len(matches) > 1 and not any(
+            normalized == normalize(str(match.get("id") or "")) for match in matches
+        ):
+            ids = ", ".join(str(match.get("id")) for match in matches[:5])
+            return ForgetResult(len(matches), 0, f"Multiple memories matched. Use one id: {ids}")
 
-    target = matches[0]
-    data["memories"] = [memory for memory in data["memories"] if memory is not target]
-    write_long_term_memory(data, root)
-    return ForgetResult(
-        matched=1,
-        forgotten=1,
-        message=f"Deleted long-term memory {target.get('id')}. Raw logs were not redacted.",
-    )
+        target = matches[0]
+        data["memories"] = [
+            memory for memory in data["memories"] if memory is not target
+        ]
+        _write_long_term_memory_unlocked(data, root)
+        return ForgetResult(
+            matched=1,
+            forgotten=1,
+            message=f"Deleted long-term memory {target.get('id')}. Raw logs were not redacted.",
+        )
 
 
 def memory_status(root: Path | None = None) -> str:
@@ -191,31 +205,57 @@ def long_term_for_prompt(root: Path | None, settings: MemorySettings) -> str:
 
 def ensure_long_term_memory(root: Path | None = None) -> None:
     path = long_term_memory_path(root)
-    if path.exists():
-        return
-    path.parent.mkdir(parents=True, exist_ok=True)
-    atomic_write(path, json.dumps({"schema_version": SCHEMA_VERSION, "memories": []}, indent=2) + "\n")
+    with file_transaction(path):
+        if path.exists():
+            return
+        atomic_write(
+            path,
+            json.dumps({"schema_version": SCHEMA_VERSION, "memories": []}, indent=2)
+            + "\n",
+        )
 
 
 def load_long_term_memory(root: Path | None = None, *, create: bool = True) -> dict[str, Any]:
-    if create:
-        ensure_long_term_memory(root)
     path = long_term_memory_path(root)
-    if not path.exists():
-        return {"schema_version": SCHEMA_VERSION, "memories": []}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {"schema_version": SCHEMA_VERSION, "memories": []}
+    with file_transaction(path):
+        return _load_long_term_memory_unlocked(root, create=create)
+
+
+def _load_long_term_memory_unlocked(
+    root: Path | None = None,
+    *,
+    create: bool,
+) -> dict[str, Any]:
+    path = long_term_memory_path(root)
+    if create and not path.exists():
+        atomic_write(
+            path,
+            json.dumps({"schema_version": SCHEMA_VERSION, "memories": []}, indent=2)
+            + "\n",
+        )
+    data = load_json_object(
+        path,
+        default_factory=lambda: {"schema_version": SCHEMA_VERSION, "memories": []},
+    )
     memories = data.get("memories")
     if not isinstance(memories, list):
-        memories = []
+        raise StateCorruptionError(path, "expected a memories list")
+    if any(not isinstance(memory, dict) for memory in memories):
+        raise StateCorruptionError(path, "found an invalid memory entry")
     return {"schema_version": SCHEMA_VERSION, "memories": memories}
 
 
 def write_long_term_memory(data: dict[str, Any], root: Path | None = None) -> None:
     path = long_term_memory_path(root)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    with file_transaction(path):
+        _write_long_term_memory_unlocked(data, root)
+
+
+def _write_long_term_memory_unlocked(
+    data: dict[str, Any],
+    root: Path | None = None,
+) -> None:
+    path = long_term_memory_path(root)
     atomic_write(path, json.dumps(data, indent=2, ensure_ascii=False) + "\n")
 
 

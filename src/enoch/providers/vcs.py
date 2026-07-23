@@ -113,15 +113,12 @@ class GitVersionControlProvider:
         ).returncode == 0
 
     def task_base(self, root: Path | None = None) -> str:
-        try:
-            self.refresh_authoritative(root)
-        except VersionControlProviderError:
-            pass
-        for revision in (self._authoritative_ref(), self.main_branch):
-            if self.resolve_revision(revision, root):
-                return revision
+        self.refresh_authoritative(root)
+        revision = self.resolve_revision(self._authoritative_ref(), root)
+        if revision:
+            return revision
         raise VersionControlProviderError(
-            f"Could not find {self._authoritative_ref()} or local {self.main_branch}."
+            f"Could not resolve freshly fetched task base {self._authoritative_ref()}."
         )
 
     def authoritative_branch(self, root: Path | None = None) -> str:

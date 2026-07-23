@@ -135,8 +135,8 @@ Configure and start the local Enoch instance:
 ```bash
 cd /path/to/your/enoch-instance
 
-bin/enoch setup-token <token>
-bin/enoch setup-chat <your-chat-id>
+bin/enoch setup token <token>
+bin/enoch setup chat <your-chat-id>
 bin/enoch-daemon start
 ```
 
@@ -219,13 +219,16 @@ profile currently running.
 
 Core package boundaries and dependency direction are documented in
 [`docs/architecture.md`](docs/architecture.md).
+Durable chat receipts, publication stages, scheduler claims, and corruption
+behavior are documented in
+[`docs/workflow-reliability.md`](docs/workflow-reliability.md).
 
 ## Testing
 
 Run the unit and hermetic evolution E2E tests with:
 
 ```bash
-python -m unittest discover -s tests
+python -m unittest discover -s tests -t .
 ```
 
 The E2E design and covered workflows are documented in

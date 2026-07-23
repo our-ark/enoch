@@ -16,7 +16,7 @@ from enoch.providers.contracts import (
 from enoch.tasks.queue import TaskJob
 
 
-PROFILE_API_VERSION = 1
+PROFILE_API_VERSION = 2
 PromptPurpose = Literal["conversation", "image", "task-context", "task"]
 TaskEnqueuer = Callable[[str, str], TaskJob]
 
@@ -63,19 +63,14 @@ class CommandSpec:
     summary: str
     handler: CommandHandler
     usage: str = ""
-    aliases: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         name = _command_name(self.name)
-        aliases = tuple(_command_name(alias) for alias in self.aliases)
-        if name in aliases or len(set(aliases)) != len(aliases):
-            raise ProfileError(f"Profile command /{name} has duplicate aliases.")
         if not self.summary.strip():
             raise ProfileError(f"Profile command /{name} requires a summary.")
         object.__setattr__(self, "name", name)
         object.__setattr__(self, "summary", self.summary.strip())
         object.__setattr__(self, "usage", self.usage.strip())
-        object.__setattr__(self, "aliases", aliases)
 
     @property
     def command(self) -> str:
@@ -86,7 +81,7 @@ class CommandSpec:
             normalized = _command_name(command)
         except ProfileError:
             return False
-        return normalized == self.name or normalized in self.aliases
+        return normalized == self.name
 
 
 @dataclass(frozen=True)
@@ -200,10 +195,9 @@ class AgentProfile:
             )
         seen: set[str] = set()
         for spec in self.commands:
-            for command_name in (spec.name, *spec.aliases):
-                if command_name in seen:
-                    raise ProfileError(f"Duplicate profile command /{command_name}.")
-                seen.add(command_name)
+            if spec.name in seen:
+                raise ProfileError(f"Duplicate profile command /{spec.name}.")
+            seen.add(spec.name)
         object.__setattr__(self, "name", name)
 
     @property
@@ -224,7 +218,7 @@ class AgentProfile:
             (
                 spec
                 for spec in self.commands
-                if normalized == spec.name or normalized in spec.aliases
+                if normalized == spec.name
             ),
             None,
         )

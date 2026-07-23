@@ -6,6 +6,7 @@ import hashlib
 import json
 from pathlib import Path
 from typing import Callable, Iterable
+from uuid import uuid4
 
 from enoch.backlog import BacklogItem, backlog_status
 from enoch.automatic_learning import LearningArtifact, learning_index_path
@@ -37,9 +38,10 @@ from enoch.lineage.core import LineageCandidate, load_parent_inbox_candidates
 from enoch.memory.paths import atomic_write, clean_text, now as current_time
 from enoch.paths import enoch_home
 from enoch.tasks.queue import TaskJob, task_queue_status
+from enoch.state import StateCorruptionError, file_transaction, load_json_object
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 CANDIDATE_SCHEMA_VERSION = 4
 MODE_DISABLED = "disabled"
 MODE_CO_EVOLVE = "co-evolve"
@@ -75,6 +77,8 @@ class EvolveState:
     schedule_cron_expression: str = ""
     schedule_next_run_at: str = ""
     schedule_last_run_at: str = ""
+    schedule_claim_id: str = ""
+    schedule_claimed_at: str = ""
 
 
 @dataclass(frozen=True)
@@ -132,14 +136,14 @@ def evolve_brainstorm_fallback_path(root: Path | None = None) -> Path:
 
 
 def load_evolve_state(root: Path | None = None) -> EvolveState:
+    with file_transaction(evolve_state_path(root)):
+        return _load_evolve_state_unlocked(root)
+
+
+def _load_evolve_state_unlocked(root: Path | None = None) -> EvolveState:
     path = evolve_state_path(root)
-    if not path.exists():
-        return EvolveState()
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return EvolveState()
-    if not isinstance(raw, dict):
+    raw = load_json_object(path)
+    if not raw:
         return EvolveState()
     mode = normalize_evolve_mode(str(raw.get("mode") or DEFAULT_MODE))
     theme = clean_text(str(raw.get("theme") or ""))
@@ -157,10 +161,20 @@ def load_evolve_state(root: Path | None = None) -> EvolveState:
         ),
         schedule_next_run_at=str(raw.get("schedule_next_run_at") or ""),
         schedule_last_run_at=str(raw.get("schedule_last_run_at") or ""),
+        schedule_claim_id=str(raw.get("schedule_claim_id") or ""),
+        schedule_claimed_at=str(raw.get("schedule_claimed_at") or ""),
     )
 
 
 def save_evolve_state(state: EvolveState, root: Path | None = None) -> EvolveState:
+    with file_transaction(evolve_state_path(root)):
+        return _save_evolve_state_unlocked(state, root)
+
+
+def _save_evolve_state_unlocked(
+    state: EvolveState,
+    root: Path | None = None,
+) -> EvolveState:
     normalized = EvolveState(
         mode=normalize_evolve_mode(state.mode),
         theme=clean_text(state.theme),
@@ -176,6 +190,8 @@ def save_evolve_state(state: EvolveState, root: Path | None = None) -> EvolveSta
         schedule_cron_expression=_normalize_cron_expression(state.schedule_cron_expression, allow_empty=True),
         schedule_next_run_at=state.schedule_next_run_at,
         schedule_last_run_at=state.schedule_last_run_at,
+        schedule_claim_id=state.schedule_claim_id,
+        schedule_claimed_at=state.schedule_claimed_at,
     )
     payload = {
         "schema_version": SCHEMA_VERSION,
@@ -188,6 +204,8 @@ def save_evolve_state(state: EvolveState, root: Path | None = None) -> EvolveSta
         "schedule_cron_expression": normalized.schedule_cron_expression,
         "schedule_next_run_at": normalized.schedule_next_run_at,
         "schedule_last_run_at": normalized.schedule_last_run_at,
+        "schedule_claim_id": normalized.schedule_claim_id,
+        "schedule_claimed_at": normalized.schedule_claimed_at,
     }
     atomic_write(evolve_state_path(root), json.dumps(payload, indent=2, sort_keys=True) + "\n")
     return normalized
@@ -307,30 +325,54 @@ def disable_evolve_schedule(root: Path | None = None) -> EvolveState:
 
 
 def claim_due_evolve_schedule(root: Path | None = None, *, now: datetime | None = None) -> EvolveState | None:
-    state = load_evolve_state(root)
-    if not state.schedule_enabled or state.schedule_interval_seconds <= 0:
-        return None
-    current_source = now if now is not None else _local_now()
-    current = _coerce_utc(current_source)
-    next_run_at = _parse_time(state.schedule_next_run_at)
-    if next_run_at is None or next_run_at > current:
-        return None
-    claimed = state
-    next_run_at = _next_scheduled_run(state, current_source)
-    save_evolve_state(
-        EvolveState(
-            mode=state.mode,
-            theme=state.theme,
-            schedule_enabled=True,
-            schedule_interval_seconds=state.schedule_interval_seconds,
-            schedule_daily_time=state.schedule_daily_time,
-            schedule_cron_expression=state.schedule_cron_expression,
-            schedule_next_run_at=_iso(next_run_at),
-            schedule_last_run_at=_iso(current),
-        ),
-        root,
-    )
-    return claimed
+    path = evolve_state_path(root)
+    with file_transaction(path):
+        state = _load_evolve_state_unlocked(root)
+        if not state.schedule_enabled or state.schedule_interval_seconds <= 0:
+            return None
+        if state.schedule_claim_id:
+            return state
+        current_source = now if now is not None else _local_now()
+        current = _coerce_utc(current_source)
+        next_run_at = _parse_time(state.schedule_next_run_at)
+        if next_run_at is None or next_run_at > current:
+            return None
+        claimed = EvolveState(
+            **{
+                **state.__dict__,
+                "schedule_claim_id": f"evolve-{uuid4().hex}",
+                "schedule_claimed_at": _iso(current),
+            }
+        )
+        _save_evolve_state_unlocked(claimed, root)
+        return claimed
+
+
+def acknowledge_evolve_schedule(
+    claim_id: str,
+    root: Path | None = None,
+    *,
+    now: datetime | None = None,
+) -> EvolveState | None:
+    path = evolve_state_path(root)
+    with file_transaction(path):
+        state = _load_evolve_state_unlocked(root)
+        if not claim_id.strip() or state.schedule_claim_id != claim_id.strip():
+            return None
+        current_source = now if now is not None else _local_now()
+        current = _coerce_utc(current_source)
+        acknowledged = EvolveState(
+            **{
+                **state.__dict__,
+                "schedule_next_run_at": _iso(
+                    _next_scheduled_run(state, current_source)
+                ),
+                "schedule_last_run_at": state.schedule_claimed_at or _iso(current),
+                "schedule_claim_id": "",
+                "schedule_claimed_at": "",
+            }
+        )
+        return _save_evolve_state_unlocked(acknowledged, root)
 
 
 def normalize_evolve_mode(mode: str) -> str:
@@ -520,30 +562,29 @@ def _claim_auto_brainstorm(
     if not normalized_theme:
         return False
     path = evolve_brainstorm_fallback_path(root)
-    attempts: dict[str, str] = {}
-    if path.exists():
-        try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            raw = {}
-        raw_attempts = raw.get("attempts") if isinstance(raw, dict) else None
-        if isinstance(raw_attempts, dict):
-            attempts = {
-                clean_text(str(key)).casefold(): str(value)
-                for key, value in raw_attempts.items()
-                if clean_text(str(key))
-            }
-    current = _coerce_utc(now) if now is not None else _utc_now()
-    previous = _parse_time(attempts.get(normalized_theme, ""))
-    if previous is not None and current - previous < timedelta(seconds=AUTO_BRAINSTORM_COOLDOWN_SECONDS):
-        return False
-    attempts[normalized_theme] = _iso(current)
-    payload = {
-        "schema_version": 1,
-        "attempts": attempts,
-    }
-    atomic_write(path, json.dumps(payload, indent=2, sort_keys=True) + "\n")
-    return True
+    with file_transaction(path):
+        raw = load_json_object(path)
+        raw_attempts = raw.get("attempts") if raw else None
+        if raw_attempts is not None and not isinstance(raw_attempts, dict):
+            raise StateCorruptionError(path, "expected attempts to be an object")
+        attempts = {
+            clean_text(str(key)).casefold(): str(value)
+            for key, value in (raw_attempts or {}).items()
+            if clean_text(str(key))
+        }
+        current = _coerce_utc(now) if now is not None else _utc_now()
+        previous = _parse_time(attempts.get(normalized_theme, ""))
+        if previous is not None and current - previous < timedelta(
+            seconds=AUTO_BRAINSTORM_COOLDOWN_SECONDS
+        ):
+            return False
+        attempts[normalized_theme] = _iso(current)
+        payload = {
+            "schema_version": 1,
+            "attempts": attempts,
+        }
+        atomic_write(path, json.dumps(payload, indent=2, sort_keys=True) + "\n")
+        return True
 
 
 def collect_evolve_candidates(
@@ -977,23 +1018,18 @@ def rank_evolve_candidates(
 
 def _load_all_evolve_candidates(root: Path | None = None) -> tuple[EvolveCandidate, ...]:
     path = evolve_candidates_path(root)
-    if not path.exists():
-        return ()
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return ()
-    if not isinstance(raw, dict):
+    raw = load_json_object(path)
+    if not raw:
         return ()
     raw_candidates = raw.get("candidates")
     if not isinstance(raw_candidates, list):
-        return ()
+        raise StateCorruptionError(path, "expected candidates to be a list")
     candidates = []
     for raw_candidate in raw_candidates:
-        if isinstance(raw_candidate, dict):
-            candidate = _candidate_from_json(raw_candidate)
-            if candidate is not None:
-                candidates.append(candidate)
+        candidate = _candidate_from_json(raw_candidate) if isinstance(raw_candidate, dict) else None
+        if candidate is None:
+            raise StateCorruptionError(path, "found an invalid evolve candidate")
+        candidates.append(candidate)
     return tuple(candidates)
 
 

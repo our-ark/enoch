@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import sys
 from pathlib import Path
 
@@ -26,24 +27,88 @@ from enoch.operations.update_tools import schedule_daemon_restart as _schedule_d
 from enoch.operations.updater import update_from_authoritative
 
 
-HELP = """Commands:
-  help        Show this help.
-  init        Create or claim a local Enoch instance worktree.
-  status      Show identity, model, and lineage.
-  setup       Configure the selected chat provider and lineage.
-  config      Show settings or select installed providers.
-  thinking    Show or set Enoch's Codex thinking level.
-  mission     Show or update Enoch's mission.
-  ancestors   Inspect ancestor chain and inheritable updates.
-  inherit     Show inheritable direct-parent changes.
-  skills      Show declared skills for Enoch or another local agent.
-  learn       Inspect a published skill for adaptation.
-  doctor      Run Enoch's local health checks.
-  update      Update from the authoritative repository, run doctor, and restart Enoch if safe.
-  exit        Put Enoch back to sleep.
+@dataclass(frozen=True)
+class AdminCommand:
+    name: str
+    summary: str
+    usage: str
+    handler: str
 
-Enoch CLI is admin-only. Use the configured chat provider for conversation, repository edits, and self-evolution.
-"""
+    def summary_line(self) -> str:
+        return f"  {self.name:<12}{self.summary}"
+
+
+ADMIN_COMMANDS = (
+    AdminCommand("help", "Show this help.", "help [command]", "_admin_help"),
+    AdminCommand(
+        "init",
+        "Create or claim a local Enoch instance worktree.",
+        "init [--instance name] [--worktree path] [--branch branch]",
+        "_admin_init",
+    ),
+    AdminCommand("status", "Show identity, model, and lineage.", "status", "_admin_status"),
+    AdminCommand(
+        "setup",
+        "Configure the selected chat provider and lineage.",
+        "setup [token|chat|ancestor] [value]",
+        "_admin_setup",
+    ),
+    AdminCommand(
+        "config",
+        "Show settings or select installed providers.",
+        "config [provider <kind> <name>|provider <kind> default]",
+        "_admin_config",
+    ),
+    AdminCommand(
+        "thinking",
+        "Show or set Enoch's Codex thinking level.",
+        "thinking [low|medium|high|default]",
+        "_admin_thinking",
+    ),
+    AdminCommand(
+        "mission",
+        "Show or update Enoch's mission.",
+        "mission [new mission]",
+        "_admin_mission",
+    ),
+    AdminCommand(
+        "ancestors",
+        "Inspect ancestor chain and inheritable updates.",
+        "ancestors",
+        "_admin_ancestors",
+    ),
+    AdminCommand(
+        "inherit",
+        "Show inheritable direct-parent changes.",
+        "inherit [change_id|all|ignore <candidate>]",
+        "_admin_inherit",
+    ),
+    AdminCommand(
+        "skills",
+        "Show declared skills for Enoch or another local agent.",
+        "skills [agent]",
+        "_admin_skills",
+    ),
+    AdminCommand(
+        "learn",
+        "Inspect a published skill for adaptation.",
+        "learn <skill> from <agent>",
+        "_admin_learn",
+    ),
+    AdminCommand(
+        "doctor",
+        "Run Enoch's local health checks.",
+        "doctor",
+        "_admin_doctor",
+    ),
+    AdminCommand(
+        "update",
+        "Update from the authoritative repository, run doctor, and restart Enoch if safe.",
+        "update",
+        "_admin_update",
+    ),
+    AdminCommand("exit", "Put Enoch back to sleep.", "exit", "_admin_exit"),
+)
 
 ADMIN_ONLY_MESSAGE = "\n".join(
     [
@@ -103,42 +168,108 @@ def _repl(identity: Identity, root: Path) -> None:
 
 
 def _command_output(raw_command: str, identity: Identity, root: Path) -> str | object:
-    command = raw_command.strip().lower()
-    if command == "":
+    normalized = raw_command.strip()
+    if not normalized:
         return ""
-    if command == "exit":
-        return EXIT
-    if command == "help":
-        return HELP
-    if command == "init" or command.startswith("init "):
-        return _init_instance(identity, raw_command, root)
-    if command == "status":
-        return _status_text(identity, root)
-    if command == "setup" or command.startswith("setup "):
-        return _setup(raw_command, root)
-    if command == "setup-chat" or command.startswith("setup-chat "):
-        return _setup(raw_command, root)
-    if command == "setup-token" or command.startswith("setup-token "):
-        return _setup(raw_command, root)
-    if command == "config" or command.startswith("config "):
-        return config_command(raw_command, root, prefix="")
-    if command == "thinking" or command.startswith("thinking "):
-        return _thinking(raw_command, root)
-    if command == "mission" or command.startswith("mission "):
-        return _mission(raw_command, identity, root)
-    if command == "ancestors" or command.startswith("ancestors "):
-        return _ancestors(raw_command, root)
-    if command == "inherit" or command.startswith("inherit "):
-        return _inherit(raw_command, root)
-    if command == "skills" or command.startswith("skills "):
-        return _skills(raw_command, root)
-    if command == "learn" or command.startswith("learn "):
-        return _learn(raw_command, root)
-    if command == "doctor":
-        return _doctor_text(root)
-    if command == "update":
-        return _update(root)
-    return ADMIN_ONLY_MESSAGE
+    command_name = normalized.split(maxsplit=1)[0].lower()
+    command = next(
+        (candidate for candidate in ADMIN_COMMANDS if candidate.name == command_name),
+        None,
+    )
+    if command is None:
+        return ADMIN_ONLY_MESSAGE
+    handler = globals().get(command.handler)
+    if not callable(handler):
+        raise RuntimeError(
+            f"Admin command {command.name} has missing handler {command.handler}."
+        )
+    return handler(normalized, identity, root)
+
+
+def admin_help(topic: str = "") -> str:
+    normalized = topic.strip().lower().lstrip("/")
+    if normalized:
+        command = next(
+            (candidate for candidate in ADMIN_COMMANDS if candidate.name == normalized),
+            None,
+        )
+        if command is None:
+            return f"No help found for {normalized}."
+        return "\n".join(
+            [
+                command.name,
+                command.summary,
+                f"Usage: {command.usage}",
+            ]
+        )
+    lines = [
+        "Commands:",
+        *(command.summary_line() for command in ADMIN_COMMANDS),
+        "",
+        "Use help <command> for detailed usage.",
+        "Example: help setup",
+        "",
+        "Enoch CLI is admin-only. Use the configured chat provider for conversation, "
+        "repository edits, and self-evolution.",
+    ]
+    return "\n".join(lines)
+
+
+def _admin_help(text: str, _identity: Identity, _root: Path) -> str:
+    parts = text.split(maxsplit=1)
+    return admin_help(parts[1] if len(parts) == 2 else "")
+
+
+def _admin_exit(_text: str, _identity: Identity, _root: Path) -> object:
+    return EXIT
+
+
+def _admin_init(text: str, identity: Identity, root: Path) -> str:
+    return _init_instance(identity, text, root)
+
+
+def _admin_status(_text: str, identity: Identity, root: Path) -> str:
+    return _status_text(identity, root)
+
+
+def _admin_setup(text: str, _identity: Identity, root: Path) -> str:
+    return _setup(text, root)
+
+
+def _admin_config(text: str, _identity: Identity, root: Path) -> str:
+    return config_command(text, root, prefix="")
+
+
+def _admin_thinking(text: str, _identity: Identity, root: Path) -> str:
+    return _thinking(text, root)
+
+
+def _admin_mission(text: str, identity: Identity, root: Path) -> str:
+    return _mission(text, identity, root)
+
+
+def _admin_ancestors(text: str, _identity: Identity, root: Path) -> str:
+    return _ancestors(text, root)
+
+
+def _admin_inherit(text: str, _identity: Identity, root: Path) -> str:
+    return _inherit(text, root)
+
+
+def _admin_skills(text: str, _identity: Identity, root: Path) -> str:
+    return _skills(text, root)
+
+
+def _admin_learn(text: str, _identity: Identity, root: Path) -> str:
+    return _learn(text, root)
+
+
+def _admin_doctor(_text: str, _identity: Identity, root: Path) -> str:
+    return _doctor_text(root)
+
+
+def _admin_update(_text: str, _identity: Identity, root: Path) -> str:
+    return _update(root)
 
 
 def _status(identity: Identity, root: Path) -> None:

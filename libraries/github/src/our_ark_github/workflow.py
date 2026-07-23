@@ -91,6 +91,7 @@ def prepare_local_publish(
     root: Path | None = None,
     allow_protected_branch: bool = False,
     allowed_files: list[str] | tuple[str, ...] | None = None,
+    validation_result: object | None = None,
 ) -> LocalPublishResult:
     message = commit_message.strip()
     if not message:
@@ -114,7 +115,7 @@ def prepare_local_publish(
         raise PublishError("No local changes to publish.")
 
     diff = diff_summary(root)
-    doctor = run_immune_system(root)
+    doctor = validation_result or run_immune_system(root)
     if not doctor.passed:
         raise PublishError(f"Doctor failed: {doctor.diagnosis.summary}")
 
@@ -219,6 +220,38 @@ def create_pull_request(
     )
     if result.returncode != 0:
         note = result.stderr.strip() or result.stdout.strip() or "GitHub CLI could not create the PR."
+        if "already exists" in note.lower():
+            existing = subprocess.run(
+                [
+                    gh,
+                    "pr",
+                    "view",
+                    branch,
+                    "--json",
+                    "url,title,body,isDraft,state",
+                ],
+                cwd=root,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            if existing.returncode == 0:
+                try:
+                    existing_data = json.loads(existing.stdout)
+                except json.JSONDecodeError:
+                    existing_data = {}
+                existing_url = str(existing_data.get("url") or "").strip()
+                if existing_url and str(existing_data.get("state") or "OPEN").upper() == "OPEN":
+                    return PullRequestResult(
+                        branch=branch,
+                        title=str(existing_data.get("title") or pr_title),
+                        body=str(existing_data.get("body") or pr_body),
+                        created=True,
+                        url=existing_url,
+                        fallback_url=fallback_url,
+                        note="Reused the existing open pull request for this branch.",
+                        draft=bool(existing_data.get("isDraft", draft)),
+                    )
         return PullRequestResult(
             branch=branch,
             title=pr_title,
