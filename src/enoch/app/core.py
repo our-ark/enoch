@@ -1359,7 +1359,7 @@ class EnochApplication:
             return f"Enoch could not complete the requested work yet: {error}"
 
         parts = [branch_note, result or "Enoch completed the requested work.", memory_note]
-        if before_action == after_action:
+        if not action_files:
             try:
                 cleanup = remove_task_worktree(
                     self.root,
