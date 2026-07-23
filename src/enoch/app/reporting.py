@@ -471,7 +471,10 @@ def _format_counter(counts: Counter[str]) -> str:
 
 
 def _evolve_check_reason(proposal: EvolveProposal) -> str:
-    parts = [f"ranked-{len(proposal.candidates)}-candidate(s)"]
+    parts = [f"pre-ranked-{len(proposal.candidates)}-candidate(s)"]
+    if proposal.curation is not None:
+        parts.append(proposal.curation.status)
+        parts.append(f"curation-{proposal.curation.id}")
     if proposal.brainstorm_attempted:
         parts.append(f"fallback-brainstorm-added-{proposal.brainstorm_added}")
     elif proposal.brainstorm_skip_reason:
@@ -482,6 +485,9 @@ def _evolve_check_reason(proposal: EvolveProposal) -> str:
 
 
 def _evolve_skip_reason(proposal: EvolveProposal) -> str:
+    if proposal.curation is not None and proposal.curation.status == "llm":
+        if proposal.curation.remove_suggestions or proposal.new_candidates:
+            return "curation-suggestions-only"
     if proposal.brainstorm_error:
         return f"brainstorm-failed: {proposal.brainstorm_error}"
     if proposal.brainstorm_skip_reason:
@@ -496,7 +502,10 @@ def _format_evolve_proposal(proposal: EvolveProposal) -> str:
     if report.state.mode == MODE_DISABLED:
         return "Evolve is disabled. Use /evolve mode co-evolve or /evolve mode auto-evolve before proposing."
     candidate = proposal.top_candidate
-    if candidate is None:
+    curation = proposal.curation
+    if candidate is None and not (
+        curation is not None and (curation.remove_suggestions or proposal.new_candidates)
+    ):
         if proposal.brainstorm_skip_reason == "candidate-running":
             return "Enoch found no new evolve candidate because evolve work is already running."
         if proposal.brainstorm_skip_reason == "theme-not-set":
@@ -512,17 +521,52 @@ def _format_evolve_proposal(proposal: EvolveProposal) -> str:
         "Enoch proposes:",
         f"Theme: {report.state.theme or 'not set'}",
         f"Ranked {len(proposal.candidates)} actionable candidate(s) from the six evolve sources.",
+        "Deterministic ranking was used only for bounded input ordering and fallback.",
     ]
     if proposal.brainstorm_attempted:
         lines.append(f"Fallback brainstorm added {proposal.brainstorm_added} candidate(s).")
     lines.append("")
-    lines.extend(_format_evolve_candidate(candidate))
-    lines.append("")
-    if candidate.status == "failed":
-        lines.append(f"Retry with /evolve retry {candidate.id}.")
+    if curation is not None and curation.status == "llm":
+        lines.append("LLM recommended candidate:")
     else:
-        lines.append(f"Approve with /evolve approve {candidate.id}.")
-    lines.append(f"Remove with /evolve remove {candidate.id}.")
+        reason = curation.fallback_reason if curation is not None else "curator-unavailable"
+        lines.append(f"Deterministic fallback recommendation ({reason}):")
+    if candidate is None:
+        lines.append("- none")
+    else:
+        lines.extend(_format_evolve_candidate(candidate))
+        if curation is not None and curation.recommendation is not None:
+            recommendation = curation.recommendation
+            lines.extend(
+                [
+                    f"  Curation reason: {_clip_activity_text(recommendation.reason, limit=180)}",
+                    f"  Scope guidance: {_clip_activity_text(recommendation.scope_guidance, limit=180)}",
+                    f"  Risk guidance: {_clip_activity_text(recommendation.risk_guidance, limit=180)}",
+                    f"  Test guidance: {_clip_activity_text(recommendation.test_plan_guidance, limit=180)}",
+                ]
+            )
+        lines.append("")
+        if candidate.status == "failed":
+            lines.append(f"Retry with /evolve retry {candidate.id}.")
+        else:
+            lines.append(f"Approve with /evolve approve {candidate.id}.")
+        lines.append(f"Remove with /evolve remove {candidate.id}.")
+    if curation is not None and curation.remove_suggestions:
+        lines.extend(["", "LLM remove suggestions (no status changed):"])
+        for suggestion in curation.remove_suggestions:
+            lines.append(
+                f"- {suggestion.candidate_id} [{suggestion.classification}] "
+                f"{_clip_activity_text(suggestion.reason, limit=180)}"
+            )
+            lines.append(
+                f"  Human action: /evolve remove {suggestion.candidate_id} {suggestion.classification}"
+            )
+    if proposal.new_candidates:
+        lines.extend(["", "New bounded candidates suggested by LLM (brainstorming/agent provenance):"])
+        for new_candidate in proposal.new_candidates:
+            lines.extend(_format_evolve_candidate(new_candidate))
+            lines.append(f"  Human action: /evolve approve {new_candidate.id}")
+    lines.extend(["", "No recommendation or remove suggestion changes state without human action."])
     return "\n".join(lines)
 
 
@@ -541,7 +585,7 @@ def _format_evolve_report(report: EvolveReport) -> str:
             lines.append(f"- {source}: {report.counts_by_source[source]}")
     else:
         lines.append("- none")
-    lines.extend(["", "Top candidate:"])
+    lines.extend(["", "Top candidate:", "(deterministic pre-ranking; semantic selection occurs in /propose)"])
     if report.top_candidate is None:
         lines.append("- none")
     else:
@@ -610,5 +654,5 @@ def _evolve_next_action(report: EvolveReport) -> str:
     if report.top_candidate.status == "failed":
         return "propose retrying this failed candidate and wait for explicit human approval."
     if report.state.mode == MODE_AUTO_EVOLVE:
-        return "select this bounded candidate, then queue or run work only after guardrails pass."
+        return "propose this candidate and wait for explicit human approval; scheduling does not queue it."
     return "propose this candidate and wait for human approval before changing code."

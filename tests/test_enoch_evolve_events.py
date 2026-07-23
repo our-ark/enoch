@@ -184,6 +184,8 @@ class EnochEvolveEventTests(unittest.TestCase):
                 trigger="/propose",
                 mode="co-evolve",
                 candidate=candidate,
+                curation_id="curation-123",
+                recommendation_kind="llm",
             )
             open_before = load_open_proposals(root)
             closed = close_open_proposals(
@@ -199,6 +201,8 @@ class EnochEvolveEventTests(unittest.TestCase):
             )
 
         self.assertTrue(proposed.proposal_id.startswith("proposal-"))
+        self.assertEqual(proposed.curation_id, "curation-123")
+        self.assertEqual(proposed.recommendation_kind, "llm")
         self.assertEqual(open_before, (proposed,))
         self.assertEqual(open_after, "")
         self.assertEqual(closed[0].proposal_id, proposed.proposal_id)

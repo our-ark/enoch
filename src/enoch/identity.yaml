@@ -42,7 +42,7 @@ skills:
     version: 0.2.0
     path: src/enoch/skills/learn
   - name: evolve
-    version: 0.5.0
+    version: 0.6.0
     path: src/enoch/skills/evolve
   - name: teach
     version: 0.1.0

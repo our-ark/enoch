@@ -2261,10 +2261,17 @@ class EnochApplication:
             return _format_evolve_candidates(candidates, include_inactive=include_inactive)
         if subcommand == "remove":
             if not rest.strip():
-                return "Use /evolve remove <id> to remove a self-evolution candidate."
+                return "Use /evolve remove <id> [reason] to remove a self-evolution candidate."
+            remove_parts = rest.strip().split(maxsplit=1)
+            remove_reason = remove_parts[1] if len(remove_parts) > 1 else "human-requested-removal"
             state = evolve_report(self.root).state
             try:
-                candidate = remove_evolve_candidate(rest, self.root, theme=state.theme)
+                candidate = remove_evolve_candidate(
+                    remove_parts[0],
+                    self.root,
+                    theme=state.theme,
+                    reason=remove_reason,
+                )
             except ValueError as error:
                 return str(error)
             return "Removed evolve candidate.\n\n" + "\n".join(_format_evolve_candidate(candidate))
@@ -2311,15 +2318,11 @@ class EnochApplication:
     def _propose_evolve(self, chat_id: int, *, trigger: str) -> EvolveProposal:
         proposal = propose_evolve(
             self.root,
-            brainstormer=lambda theme: generate_brainstorm_ideas(
-                theme,
-                self.root,
-                mission=self.identity.mission,
-                generator=lambda prompt: self._respond_read_only_turn(
-                    chat_id,
-                    prompt,
-                    session_key=f"{self._session_key(chat_id)}:{trigger}",
-                ),
+            mission=self.identity.mission,
+            curator=lambda prompt: self._respond_read_only_turn(
+                chat_id,
+                prompt,
+                session_key=f"{self._session_key(chat_id)}:{trigger}:curation",
             ),
         )
         event_actor = "system" if trigger == "evolve-scheduler" else "human"
@@ -2394,6 +2397,10 @@ class EnochApplication:
                 retry_of_task_id=retry_of_task_id,
                 reason=reason,
                 proposal_id=proposal_id or (proposal.proposal_id if proposal is not None else ""),
+                curation_id=(proposal.curation.id if proposal is not None and proposal.curation else ""),
+                recommendation_kind=(
+                    proposal.curation.status if proposal is not None and proposal.curation else ""
+                ),
             )
         except (OSError, ValueError):
             return None
@@ -2815,102 +2822,22 @@ class EnochApplication:
             )
             return None
         proposal = self._propose_evolve(chat_id, trigger="evolve-scheduler")
-        if claimed.mode == MODE_CO_EVOLVE:
-            if proposal.top_candidate is not None:
-                self._record_evolve_event(
-                    "skipped",
-                    event_actor="system",
-                    trigger="evolve-scheduler",
-                    proposal=proposal,
-                    candidate=proposal.top_candidate,
-                    reason="awaiting-human-approval",
-                )
-            self._safe_send_message(chat_id, "Scheduled evolve check\n\n" + _format_evolve_proposal(proposal))
-            return None
-        if claimed.mode != MODE_AUTO_EVOLVE or proposal.top_candidate is None:
-            return None
-        report = proposal.report
-        candidate = proposal.top_candidate
-        if candidate.status == "failed":
+        if proposal.top_candidate is not None:
+            wait_reason = (
+                "retry-requires-human"
+                if proposal.top_candidate.status == "failed"
+                else "awaiting-human-approval"
+            )
             self._record_evolve_event(
                 "skipped",
                 event_actor="system",
                 trigger="evolve-scheduler",
                 proposal=proposal,
-                candidate=candidate,
-                reason="retry-requires-human",
+                candidate=proposal.top_candidate,
+                reason=wait_reason,
             )
-            self._safe_send_message(
-                chat_id,
-                "Scheduled evolve check\n\n" + _format_evolve_proposal(proposal),
-            )
-            return None
-        self._record_evolve_event(
-            "selected",
-            event_actor="system",
-            trigger="evolve-scheduler",
-            proposal=proposal,
-            candidate=candidate,
-            approval_actor="agent",
-        )
-        request = _evolve_task_request(candidate, report.state.theme)
-        context = _evolve_task_context(candidate)
-        try:
-            job = enqueue_task(
-                chat_id,
-                request,
-                self.root,
-                context=context,
-                context_source="evolve-scheduler",
-                source=candidate.source,
-                initiated_by="agent",
-                event_actor="system",
-                trigger="evolve-scheduler",
-                candidate_id=candidate.id,
-                evidence_source=candidate.evidence_source or candidate.source,
-                signal_actor=candidate.signal_actor,
-                candidate_actor=candidate.candidate_actor,
-                approval_actor="agent",
-                parent_candidate_id=candidate.parent_candidate_id,
-                source_task_id=candidate.source_task_id,
-            )
-        except (OSError, ValueError):
-            self._record_evolve_event(
-                "skipped",
-                event_actor="system",
-                trigger="evolve-scheduler",
-                proposal=proposal,
-                candidate=candidate,
-                reason="queue-failed",
-            )
-            return None
-        candidate = run_evolve_candidate(candidate.id, self.root, theme=report.state.theme)
-        self._record_evolve_event(
-            "queued",
-            event_actor="system",
-            trigger="evolve-scheduler",
-            proposal=proposal,
-            candidate=candidate,
-            task_id=job.id,
-            approval_actor="agent",
-        )
-        message = _format_work_status_message(
-            WorkStatusMessage(
-                chat_id=chat_id,
-                message_id=0,
-                request=job.text,
-                started_at=time.monotonic(),
-                task_id=job.id,
-                status="queued",
-                latest_update=f"Scheduled by evolve {claimed.mode}.",
-                context=job.context,
-            )
-        )
-        message_id = self._safe_send_message_id(chat_id, message)
-        if message_id is not None:
-            self._work_status_messages[job.id] = message_id
-            record_task_status_message(job.id, message_id, self.root)
-        return job
+        self._safe_send_message(chat_id, "Scheduled evolve check\n\n" + _format_evolve_proposal(proposal))
+        return None
 
     def _run_task_job(self, job: TaskJob) -> None:
         self._run_action_job(
