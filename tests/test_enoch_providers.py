@@ -23,12 +23,19 @@ from enoch.providers import (
     ProviderError,
     ProviderHealth,
     RemotePublishResult,
+    RuntimeEvent,
+    RuntimeOutputReference,
+    RuntimeResult,
+    RuntimeSideEffect,
+    RuntimeUsage,
     available_providers,
     load_provider,
     provider_name,
     register_provider,
+    normalize_runtime_result,
 )
 from enoch.providers.forge import LocalForgeProvider
+from enoch.providers.runtime import FunctionAgentRuntime
 from enoch.providers import registry as provider_registry
 from enoch.app.core import EnochApplication
 from enoch.tasks.queue import enqueue_task, record_task_status_message, task_queue_status
@@ -300,6 +307,66 @@ class _EntryPoints(list):
 
 
 class EnochProviderTests(unittest.TestCase):
+    def test_runtime_result_normalizes_legacy_strings(self) -> None:
+        result = normalize_runtime_result("legacy response")
+
+        self.assertEqual(result.final_text, "legacy response")
+        self.assertEqual(result.completion_reason, "completed")
+        self.assertEqual(result.usage, RuntimeUsage())
+
+    def test_function_runtime_preserves_structured_results(self) -> None:
+        structured = RuntimeResult(
+            final_text="structured response",
+            session_id="session-42",
+            completion_reason="completed",
+            usage=RuntimeUsage(input_tokens=12, output_tokens=4),
+            events=(RuntimeEvent("turn.completed", {"type": "turn.completed"}),),
+            output_refs=(RuntimeOutputReference("artifact", "artifact://report"),),
+            side_effects=(RuntimeSideEffect("file", "REPORT.md"),),
+        )
+        runtime = FunctionAgentRuntime(
+            respond_fn=lambda *args, **kwargs: "legacy response",
+            act_in_session_fn=lambda *args, **kwargs: structured,
+            model_summary_fn=lambda root=None: "AI model: fake",
+            model_options_fn=lambda: (),
+            reset_usage_fn=lambda: None,
+        )
+
+        response = runtime.respond(load_identity(), "hello")
+        action = runtime.act_in_session(load_identity(), "work")
+
+        self.assertIsInstance(response, RuntimeResult)
+        self.assertEqual(response.final_text, "legacy response")
+        self.assertIs(action, structured)
+
+    def test_runtime_result_rejects_unsupported_contract_version(self) -> None:
+        with self.assertRaisesRegex(ValueError, "contract version 2"):
+            RuntimeResult(final_text="future", contract_version=2)
+
+    def test_invalid_runtime_result_is_reported_without_stopping_chat(self) -> None:
+        class InvalidRuntime(_Runtime):
+            def respond(self, identity, message, **kwargs):
+                return {"text": "not a runtime result"}
+
+        with TemporaryDirectory() as temp:
+            chat = _Chat()
+            app = EnochApplication(
+                load_identity(),
+                Path(temp),
+                chat,
+                runtime=InvalidRuntime(),
+            )
+            app.handle_event(
+                ChatEvent(
+                    cursor="invalid-result",
+                    conversation_id="room-1",
+                    message_id="invalid-result",
+                    text="hello",
+                )
+            )
+
+        self.assertIn("must return RuntimeResult or str", chat.sent[-1][1])
+
     def test_defaults_preserve_existing_stack(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)

@@ -28,6 +28,9 @@ from enoch.providers.contracts import (
     AgentRuntimeAccessUnavailable,
     AgentRuntimeCancelled,
     AgentRuntimeError,
+    RuntimeEvent,
+    RuntimeResult,
+    RuntimeUsage,
 )
 from enoch.runtime import ACTION_SANDBOX_READ_ONLY, WORKSPACE_WRITE_SANDBOX
 from enoch.tasks.config import task_timeout_seconds
@@ -54,12 +57,6 @@ class TokenUsage:
     @property
     def uncached_input_tokens(self) -> int:
         return max(0, self.input_tokens - self.cached_input_tokens)
-
-
-@dataclass(frozen=True)
-class CodexRunResult:
-    answer: str
-    session_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -276,8 +273,26 @@ def respond(
     session_key: str = "",
     image_paths: Sequence[Path] = (),
 ) -> str:
+    return respond_result(
+        identity,
+        message,
+        cwd,
+        progress_callback=progress_callback,
+        session_key=session_key,
+        image_paths=image_paths,
+    ).final_text
+
+
+def respond_result(
+    identity: Identity,
+    message: str,
+    cwd: Path | None = None,
+    progress_callback: ProgressCallback | None = None,
+    session_key: str = "",
+    image_paths: Sequence[Path] = (),
+) -> RuntimeResult:
     if session_key:
-        return _respond_with_persistent_session(
+        return _respond_with_persistent_session_result(
             identity,
             message,
             cwd,
@@ -285,7 +300,7 @@ def respond(
             progress_callback=progress_callback,
             image_paths=image_paths,
         )
-    return _run_codex(
+    return _run_codex_result(
         identity,
         _build_persistent_human_message(message),
         cwd,
@@ -295,7 +310,7 @@ def respond(
     )
 
 
-def _respond_with_persistent_session(
+def _respond_with_persistent_session_result(
     identity: Identity,
     message: str,
     cwd: Path | None,
@@ -303,7 +318,7 @@ def _respond_with_persistent_session(
     session_key: str,
     progress_callback: ProgressCallback | None = None,
     image_paths: Sequence[Path] = (),
-) -> str:
+) -> RuntimeResult:
     state = load_codex_session(session_key, cwd)
     prompt = _build_persistent_prompt(message, cwd, state)
     try:
@@ -342,7 +357,7 @@ def _respond_with_persistent_session(
             cwd,
             previous=state,
         )
-    return result.answer
+    return result
 
 
 def act_in_session(
@@ -355,8 +370,30 @@ def act_in_session(
     cancellation_event: threading.Event | None = None,
     state_root: Path | None = None,
 ) -> str:
+    return act_in_session_result(
+        identity,
+        message,
+        cwd,
+        progress_callback=progress_callback,
+        sandbox=sandbox,
+        session_key=session_key,
+        cancellation_event=cancellation_event,
+        state_root=state_root,
+    ).final_text
+
+
+def act_in_session_result(
+    identity: Identity,
+    message: str,
+    cwd: Path | None = None,
+    progress_callback: ProgressCallback | None = None,
+    sandbox: str = WORKSPACE_WRITE_SANDBOX,
+    session_key: str = "",
+    cancellation_event: threading.Event | None = None,
+    state_root: Path | None = None,
+) -> RuntimeResult:
     if not session_key:
-        return act(
+        return act_result(
             identity,
             message,
             cwd=cwd,
@@ -365,7 +402,7 @@ def act_in_session(
             cancellation_event=cancellation_event,
             state_root=state_root,
         )
-    return _act_with_persistent_session(
+    return _act_with_persistent_session_result(
         identity,
         message,
         cwd,
@@ -377,7 +414,7 @@ def act_in_session(
     )
 
 
-def _act_with_persistent_session(
+def _act_with_persistent_session_result(
     identity: Identity,
     message: str,
     cwd: Path | None,
@@ -387,7 +424,7 @@ def _act_with_persistent_session(
     progress_callback: ProgressCallback | None = None,
     cancellation_event: threading.Event | None = None,
     state_root: Path | None = None,
-) -> str:
+) -> RuntimeResult:
     state_root = state_root or cwd
     state = load_codex_session(session_key, state_root)
     prompt = _build_persistent_prompt(message, state_root, state)
@@ -431,7 +468,7 @@ def _act_with_persistent_session(
             state_root,
             previous=state,
         )
-    return result.answer
+    return result
 
 
 def _build_persistent_prompt(
@@ -471,7 +508,27 @@ def act(
     cancellation_event: threading.Event | None = None,
     state_root: Path | None = None,
 ) -> str:
-    return _run_codex(
+    return act_result(
+        identity,
+        message,
+        cwd,
+        progress_callback=progress_callback,
+        sandbox=sandbox,
+        cancellation_event=cancellation_event,
+        state_root=state_root,
+    ).final_text
+
+
+def act_result(
+    identity: Identity,
+    message: str,
+    cwd: Path | None = None,
+    progress_callback: ProgressCallback | None = None,
+    sandbox: str = WORKSPACE_WRITE_SANDBOX,
+    cancellation_event: threading.Event | None = None,
+    state_root: Path | None = None,
+) -> RuntimeResult:
+    return _run_codex_result(
         identity,
         _build_persistent_human_message(message),
         cwd,
@@ -502,7 +559,7 @@ def _run_codex(
         cancellation_event=cancellation_event,
         state_root=state_root,
         image_paths=image_paths,
-    ).answer
+    ).final_text
 
 
 def _run_codex_result(
@@ -517,7 +574,7 @@ def _run_codex_result(
     cancellation_event: threading.Event | None = None,
     state_root: Path | None = None,
     image_paths: Sequence[Path] = (),
-) -> CodexRunResult:
+) -> RuntimeResult:
     state_root = state_root or cwd
     resolution = resolve_codex_executable(state_root)
     codex = resolution.path
@@ -584,10 +641,21 @@ def _run_codex_result(
 
         output.seek(0)
         answer = output.read().strip()
-        _record_token_usage(result.stdout)
+        usage = _record_token_usage(result.stdout)
         result_session_id = _session_id_from_jsonl(result.stdout) or session_id
+        runtime_result = {
+            "session_id": result_session_id,
+            "completion_reason": _completion_reason_from_jsonl(result.stdout),
+            "usage": RuntimeUsage(
+                input_tokens=usage.input_tokens,
+                cached_input_tokens=usage.cached_input_tokens,
+                output_tokens=usage.output_tokens,
+                reasoning_tokens=usage.reasoning_output_tokens,
+            ),
+            "events": _runtime_events_from_jsonl(result.stdout),
+        }
         if answer:
-            return CodexRunResult(answer=answer, session_id=result_session_id)
+            return RuntimeResult(final_text=answer, **runtime_result)
 
         if result.returncode != 0:
             stderr = result.stderr.strip() or result.stdout.strip()
@@ -596,9 +664,9 @@ def _run_codex_result(
                 raise CodexAccessUnavailable(access_reason)
             raise BrainError(f"Codex did not answer successfully: {stderr}")
 
-        return CodexRunResult(
-            answer=_final_message_from_jsonl(result.stdout),
-            session_id=result_session_id,
+        return RuntimeResult(
+            final_text=_final_message_from_jsonl(result.stdout),
+            **runtime_result,
         )
 
 
@@ -775,16 +843,41 @@ def _run_with_progress(
             return stdout_file.read(), stderr_file.read(), process.returncode
 
 
-def _record_token_usage(stdout: str) -> None:
+def _record_token_usage(stdout: str) -> TokenUsage:
     usage = _token_usage_from_jsonl(stdout)
     if usage is None:
-        return
+        return TokenUsage()
     update_token_usage(
         input_tokens=usage.input_tokens,
         cached_input_tokens=usage.cached_input_tokens,
         output_tokens=usage.output_tokens,
         reasoning_output_tokens=usage.reasoning_output_tokens,
     )
+    return usage
+
+
+def _runtime_events_from_jsonl(stdout: str) -> tuple[RuntimeEvent, ...]:
+    events: list[RuntimeEvent] = []
+    for line in stdout.splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        event_type = str(event.get("type") or "").strip()
+        if event_type:
+            events.append(RuntimeEvent(type=event_type, data=event))
+    return tuple(events)
+
+
+def _completion_reason_from_jsonl(stdout: str) -> str:
+    event_types = tuple(event.type for event in _runtime_events_from_jsonl(stdout))
+    if "turn.failed" in event_types:
+        return "failed"
+    if "turn.cancelled" in event_types:
+        return "cancelled"
+    return "completed"
 
 
 def _token_usage_from_jsonl(stdout: str) -> TokenUsage | None:

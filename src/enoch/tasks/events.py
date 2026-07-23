@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 import json
 from pathlib import Path
 import threading
@@ -17,7 +17,7 @@ from enoch.memory.paths import clean_text, now as current_time
 from enoch.paths import enoch_home
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 SUMMARY_LIMIT = 4000
 TASK_SOURCES = {
     "backlog",
@@ -74,6 +74,13 @@ class TaskLike(Protocol):
     failure_code: str
     failure_class: str
     retryable: bool
+    runtime_provider: str
+    runtime_session_id: str
+    runtime_completion_reason: str
+    runtime_usage: dict[str, int]
+    runtime_event_types: tuple[str, ...]
+    runtime_output_refs: tuple[str, ...]
+    runtime_side_effects: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -106,6 +113,13 @@ class TaskEvent:
     failure_code: str = ""
     failure_class: str = ""
     retryable: bool = False
+    runtime_provider: str = ""
+    runtime_session_id: str = ""
+    runtime_completion_reason: str = ""
+    runtime_usage: dict[str, int] = field(default_factory=dict)
+    runtime_event_types: tuple[str, ...] = ()
+    runtime_output_refs: tuple[str, ...] = ()
+    runtime_side_effects: tuple[str, ...] = ()
 
 
 def task_event_path(root: Path | None = None) -> Path:
@@ -165,6 +179,15 @@ def record_task_event(
         failure_code=clean_text(str(getattr(job, "failure_code", "") or "")).lower(),
         failure_class=clean_text(str(getattr(job, "failure_class", "") or "")).lower(),
         retryable=bool(getattr(job, "retryable", False)),
+        runtime_provider=clean_text(str(getattr(job, "runtime_provider", "") or "")).lower(),
+        runtime_session_id=clean_text(str(getattr(job, "runtime_session_id", "") or "")),
+        runtime_completion_reason=clean_text(
+            str(getattr(job, "runtime_completion_reason", "") or "")
+        ).lower(),
+        runtime_usage=_runtime_usage(getattr(job, "runtime_usage", {})),
+        runtime_event_types=_string_tuple(getattr(job, "runtime_event_types", ())),
+        runtime_output_refs=_string_tuple(getattr(job, "runtime_output_refs", ())),
+        runtime_side_effects=_string_tuple(getattr(job, "runtime_side_effects", ())),
     )
     with _task_event_transaction(root):
         path = task_event_path(root)
@@ -284,6 +307,15 @@ def _event_from_line(line: str) -> TaskEvent | None:
         failure_code=clean_text(str(raw.get("failure_code") or "")).lower(),
         failure_class=clean_text(str(raw.get("failure_class") or "")).lower(),
         retryable=raw.get("retryable") is True,
+        runtime_provider=clean_text(str(raw.get("runtime_provider") or "")).lower(),
+        runtime_session_id=clean_text(str(raw.get("runtime_session_id") or "")),
+        runtime_completion_reason=clean_text(
+            str(raw.get("runtime_completion_reason") or "")
+        ).lower(),
+        runtime_usage=_runtime_usage(raw.get("runtime_usage")),
+        runtime_event_types=_string_tuple(raw.get("runtime_event_types")),
+        runtime_output_refs=_string_tuple(raw.get("runtime_output_refs")),
+        runtime_side_effects=_string_tuple(raw.get("runtime_side_effects")),
     )
 
 
@@ -322,6 +354,18 @@ def _clip(text: str) -> str:
     return f"{cleaned[:SUMMARY_LIMIT].rstrip()}\n\n[truncated]"
 
 
+def _runtime_usage(value: object) -> dict[str, int]:
+    keys = (
+        "input_tokens",
+        "cached_input_tokens",
+        "output_tokens",
+        "reasoning_tokens",
+    )
+    if not isinstance(value, dict) or not any(key in value for key in keys):
+        return {}
+    return {key: max(0, _int(value.get(key))) for key in keys}
+
+
 def _dedupe(items: tuple[str, ...]) -> tuple[str, ...]:
     seen: set[str] = set()
     output: list[str] = []
@@ -335,7 +379,7 @@ def _dedupe(items: tuple[str, ...]) -> tuple[str, ...]:
 
 
 def _string_tuple(value: object) -> tuple[str, ...]:
-    if not isinstance(value, list):
+    if not isinstance(value, (list, tuple)):
         return ()
     return _dedupe(tuple(str(item) for item in value))
 

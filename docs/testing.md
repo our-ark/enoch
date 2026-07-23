@@ -66,6 +66,8 @@ loads the researcher profile, and handles its custom `/research` command. The
 command submits work to Enoch's single queue, then the built-in Codex runtime
 adapter and local forge complete, validate, commit, and clean up the task while
 preserving its profile trigger, context provenance, and unpushed task branch.
+The fake runtime also emits a session id and structured completion events; the
+test verifies that the installed core preserves them in task history.
 
 This catches packaging metadata conflicts and source-checkout imports that unit
 tests can accidentally hide.

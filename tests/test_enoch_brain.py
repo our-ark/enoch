@@ -17,6 +17,7 @@ from enoch.brain import (
     act_in_session,
     model_summary,
     respond,
+    respond_result,
 )
 from enoch import brain
 from enoch.codex_sessions import CodexSessionState, codex_sessions_path, load_codex_session, save_codex_session
@@ -394,6 +395,34 @@ class EnochBrainTests(unittest.TestCase):
         self.assertEqual(usage.uncached_input_tokens, 4)
         self.assertEqual(usage.output_tokens, 2)
         self.assertEqual(usage.reasoning_output_tokens, 1)
+
+    @patch("enoch.brain.shutil.which", return_value="/usr/local/bin/codex")
+    @patch("enoch.brain.subprocess.run")
+    def test_respond_result_returns_session_usage_and_events(
+        self, run: MagicMock, _which: MagicMock
+    ) -> None:
+        run.return_value.returncode = 0
+        run.return_value.stdout = "\n".join(
+            [
+                '{"type":"thread.started","thread_id":"session-rich"}',
+                '{"type":"turn.completed","usage":{"input_tokens":9,"cached_input_tokens":2,"output_tokens":3,"reasoning_output_tokens":1}}',
+            ]
+        )
+        run.return_value.stderr = ""
+
+        with TemporaryDirectory() as temp:
+            result = respond_result(load_identity(), "Hello", cwd=Path(temp))
+
+        self.assertEqual(result.session_id, "session-rich")
+        self.assertEqual(result.completion_reason, "completed")
+        self.assertEqual(result.usage.input_tokens, 9)
+        self.assertEqual(result.usage.cached_input_tokens, 2)
+        self.assertEqual(result.usage.output_tokens, 3)
+        self.assertEqual(result.usage.reasoning_tokens, 1)
+        self.assertEqual(
+            [event.type for event in result.events],
+            ["thread.started", "turn.completed"],
+        )
 
     @patch("enoch.brain.shutil.which", return_value="/usr/local/bin/codex")
     @patch("enoch.brain.memory_for_prompt", return_value="Identity and long-term memory.")

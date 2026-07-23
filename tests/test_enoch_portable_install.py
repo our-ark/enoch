@@ -171,6 +171,13 @@ class EnochPortableInstallTests(unittest.TestCase):
         self.assertEqual(result["profile_trigger"], "/research")
         self.assertEqual(result["profile_context_source"], "profile:researcher")
         self.assertIn("Queued portable research task #1", result["profile_command_reply"])
+        self.assertEqual(result["runtime_provider"], "codex")
+        self.assertEqual(result["runtime_session_id"], "portable-session")
+        self.assertEqual(result["runtime_completion_reason"], "completed")
+        self.assertEqual(
+            result["runtime_event_types"],
+            ["thread.started", "turn.completed"],
+        )
         self.assertGreater(result["startup_messages"], 0)
         self.assertEqual(result["status"], "completed")
         self.assertTrue(result["branch_preserved"])
@@ -590,6 +597,10 @@ _INSTALLED_TASK_SCRIPT = textwrap.dedent(
         "profile_trigger": completed.trigger,
         "profile_context_source": completed.context_source,
         "profile_command_reply": profile_command_reply,
+        "runtime_provider": completed.runtime_provider,
+        "runtime_session_id": completed.runtime_session_id,
+        "runtime_completion_reason": completed.runtime_completion_reason,
+        "runtime_event_types": completed.runtime_event_types,
         "startup_messages": len(chat.sent),
         "status": completed.status,
         "branch_preserved": branch_preserved,

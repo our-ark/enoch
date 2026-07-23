@@ -6,11 +6,17 @@ import threading
 from typing import Any, Callable, Sequence
 
 from enoch.identity import Identity
-from enoch.providers.contracts import ProgressCallback, ProviderHealth
+from enoch.providers.contracts import (
+    ProgressCallback,
+    ProviderHealth,
+    RuntimeResult,
+    RuntimeResultLike,
+    normalize_runtime_result,
+)
 
 
-RespondFn = Callable[..., str]
-ActFn = Callable[..., str]
+RespondFn = Callable[..., RuntimeResultLike]
+ActFn = Callable[..., RuntimeResultLike]
 SummaryFn = Callable[[Path | None], str]
 OptionsFn = Callable[[], tuple[Any, ...]]
 ResetFn = Callable[[], None]
@@ -37,14 +43,16 @@ class FunctionAgentRuntime:
         progress_callback: ProgressCallback | None = None,
         session_key: str = "",
         image_paths: Sequence[Path] = (),
-    ) -> str:
-        return self.respond_fn(
-            identity,
-            message,
-            cwd=cwd,
-            progress_callback=progress_callback,
-            session_key=session_key,
-            image_paths=image_paths,
+    ) -> RuntimeResult:
+        return normalize_runtime_result(
+            self.respond_fn(
+                identity,
+                message,
+                cwd=cwd,
+                progress_callback=progress_callback,
+                session_key=session_key,
+                image_paths=image_paths,
+            )
         )
 
     def act_in_session(
@@ -57,16 +65,18 @@ class FunctionAgentRuntime:
         session_key: str = "",
         cancellation_event: threading.Event | None = None,
         state_root: Path | None = None,
-    ) -> str:
-        return self.act_in_session_fn(
-            identity,
-            message,
-            cwd=cwd,
-            progress_callback=progress_callback,
-            sandbox=sandbox,
-            session_key=session_key,
-            cancellation_event=cancellation_event,
-            state_root=state_root,
+    ) -> RuntimeResult:
+        return normalize_runtime_result(
+            self.act_in_session_fn(
+                identity,
+                message,
+                cwd=cwd,
+                progress_callback=progress_callback,
+                sandbox=sandbox,
+                session_key=session_key,
+                cancellation_event=cancellation_event,
+                state_root=state_root,
+            )
         )
 
     def model_summary(self, root: Path | None = None) -> str:
@@ -95,15 +105,15 @@ class CodexRuntime(FunctionAgentRuntime):
 
     def __init__(self, root: Path | None = None) -> None:
         from enoch.brain import (
-            act_in_session,
+            act_in_session_result,
             codex_model_options,
             model_summary,
             reset_token_usage,
-            respond,
+            respond_result,
         )
         super().__init__(
-            respond_fn=respond,
-            act_in_session_fn=act_in_session,
+            respond_fn=respond_result,
+            act_in_session_fn=act_in_session_result,
             model_summary_fn=model_summary,
             model_options_fn=lambda: tuple(
                 option

@@ -24,6 +24,7 @@ from enoch.tasks.queue import (
     pause_task,
     recover_interrupted_task,
     record_task_result,
+    record_task_runtime_result,
     record_task_status_message,
     record_task_worktree,
     regress_task,
@@ -35,11 +36,65 @@ from enoch.tasks.queue import (
     task_result_has_pull_request,
     task_queue_status,
 )
+from enoch.providers import (
+    RuntimeEvent,
+    RuntimeOutputReference,
+    RuntimeResult,
+    RuntimeSideEffect,
+    RuntimeUsage,
+)
 from enoch.tasks.events import load_task_events
 from enoch.tasks import queue as task_queue
 
 
 class EnochTaskQueueTests(unittest.TestCase):
+    def test_runtime_result_metadata_is_persisted_in_task_and_event_history(self) -> None:
+        runtime_result = RuntimeResult(
+            final_text="Implemented the task.",
+            session_id="runtime-session-7",
+            usage=RuntimeUsage(
+                input_tokens=100,
+                cached_input_tokens=80,
+                output_tokens=20,
+                reasoning_tokens=5,
+            ),
+            events=(
+                RuntimeEvent("thread.started"),
+                RuntimeEvent("turn.completed"),
+            ),
+            output_refs=(RuntimeOutputReference("artifact", "artifact://task-1"),),
+            side_effects=(RuntimeSideEffect("file", "REPORT.md"),),
+        )
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            queued = enqueue_task(42, "record runtime metadata", root)
+            running = begin_next_task(root)
+            assert running is not None
+            record_task_runtime_result(
+                running.id,
+                runtime_result,
+                root,
+                provider="test-runtime",
+            )
+            completed = complete_task(running.id, root, result=runtime_result.final_text)
+            events = load_task_events(root, task_id=queued.id)
+
+        assert completed is not None
+        self.assertEqual(completed.runtime_provider, "test-runtime")
+        self.assertEqual(completed.runtime_session_id, "runtime-session-7")
+        self.assertEqual(completed.runtime_completion_reason, "completed")
+        self.assertEqual(completed.runtime_usage["input_tokens"], 100)
+        self.assertEqual(
+            completed.runtime_event_types,
+            ("thread.started", "turn.completed"),
+        )
+        self.assertEqual(completed.runtime_output_refs, ("artifact:artifact://task-1",))
+        self.assertEqual(completed.runtime_side_effects, ("file:REPORT.md:completed",))
+        completed_event = events[-1]
+        self.assertEqual(completed_event.runtime_session_id, "runtime-session-7")
+        self.assertEqual(completed_event.runtime_usage["output_tokens"], 20)
+        self.assertEqual(completed_event.runtime_event_types[-1], "turn.completed")
+
     def test_retry_failed_task_creates_new_linked_job_with_provenance(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)

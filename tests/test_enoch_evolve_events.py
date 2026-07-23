@@ -1,6 +1,7 @@
 from pathlib import Path
 import sys
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 import unittest
 
 
@@ -81,6 +82,52 @@ class EnochEvolveEventTests(unittest.TestCase):
 
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0].event, "checked")
+
+    def test_records_runtime_trace_for_candidate_task_events(self) -> None:
+        runtime_task = SimpleNamespace(
+            runtime_provider="codex",
+            runtime_session_id="session-42",
+            runtime_completion_reason="completed",
+            runtime_usage={
+                "input_tokens": 120,
+                "cached_input_tokens": 80,
+                "output_tokens": 30,
+                "reasoning_tokens": 20,
+            },
+            runtime_event_types=("thread.started", "turn.completed"),
+            runtime_output_refs=("pull-request:https://example.test/pr/7",),
+            runtime_side_effects=("repository:branch-7:created",),
+        )
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            record_evolve_event(
+                "completed",
+                root,
+                event_actor="agent",
+                trigger="task-runner",
+                candidate=_candidate(),
+                task_id=7,
+                runtime_task=runtime_task,
+            )
+
+            event = load_evolve_events(root, task_id=7)[0]
+
+        self.assertEqual(event.runtime_provider, "codex")
+        self.assertEqual(event.runtime_session_id, "session-42")
+        self.assertEqual(event.runtime_completion_reason, "completed")
+        self.assertEqual(event.runtime_usage["reasoning_tokens"], 20)
+        self.assertEqual(
+            event.runtime_event_types,
+            ("thread.started", "turn.completed"),
+        )
+        self.assertEqual(
+            event.runtime_output_refs,
+            ("pull-request:https://example.test/pr/7",),
+        )
+        self.assertEqual(
+            event.runtime_side_effects,
+            ("repository:branch-7:created",),
+        )
 
     def test_legacy_feedback_event_infers_split_provenance(self) -> None:
         with TemporaryDirectory() as temp:

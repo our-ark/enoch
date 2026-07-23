@@ -189,6 +189,57 @@ failures and `AgentRuntimeCancelled` for human cancellation. Forge and VCS
 providers should raise their matching provider errors. This preserves Enoch's
 pause, resume, failure, and audit behavior across implementations.
 
+## Typed runtime results
+
+Runtime contract version 1 uses `RuntimeResult` for both `respond()` and
+`act_in_session()`:
+
+```python
+from enoch.providers import (
+    RuntimeEvent,
+    RuntimeOutputReference,
+    RuntimeResult,
+    RuntimeSideEffect,
+    RuntimeUsage,
+)
+
+
+return RuntimeResult(
+    final_text="Research complete.",
+    session_id="session-42",
+    completion_reason="completed",
+    usage=RuntimeUsage(
+        input_tokens=1200,
+        cached_input_tokens=800,
+        output_tokens=240,
+        reasoning_tokens=60,
+    ),
+    events=(RuntimeEvent("turn.completed"),),
+    output_refs=(
+        RuntimeOutputReference("artifact", "artifact://reports/42"),
+    ),
+    side_effects=(
+        RuntimeSideEffect("file", "reports/42.md"),
+    ),
+)
+```
+
+`final_text` is the user-visible result. `session_id` identifies resumable
+provider state, while `completion_reason` describes why the invocation ended.
+Usage is provider-neutral; provider-native structured events remain available
+in `events`. Output references identify durable results, and side effects
+describe externally observable actions.
+
+For migration compatibility, Enoch accepts a plain `str` and normalizes it to
+`RuntimeResult(final_text=value, completion_reason="completed")`. New runtime
+providers should return `RuntimeResult`. Returning any other type is a provider
+contract error and does not stop the chat daemon.
+
+Task and evolve audit records persist a bounded runtime trace: provider,
+session, completion reason, token usage, event types, output references, and
+side-effect references. Full provider event payloads remain in the in-memory
+result and are not copied wholesale into private task logs.
+
 Runtime-specific settings stay with the provider. A runtime may optionally
 implement `configure(args, root, prefix="/")` for
 `/config runtime <provider> ...` and `config_summary(root)` for its section in

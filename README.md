@@ -191,7 +191,7 @@ adding a forge later enables remote push and review workflows. A service
 provider is needed only for `bin/enoch-daemon` lifecycle management.
 
 Provider contracts, packaging examples, provider-specific settings, normalized
-chat events, and migration compatibility are documented in
+chat events, typed runtime results, and migration compatibility are documented in
 [`docs/providers.md`](docs/providers.md).
 
 Downstream agent bodies can also add commands, prompt context, and lifecycle

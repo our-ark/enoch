@@ -184,6 +184,8 @@ from enoch.providers.contracts import (
     ForgeProvider,
     ForgeProviderError,
     MessageId,
+    RuntimeResult,
+    normalize_runtime_result,
     normalize_message_id,
 )
 from enoch.providers.forge import FunctionForgeProvider
@@ -221,6 +223,7 @@ from enoch.tasks.queue import (
     regress_task,
     recover_interrupted_task,
     record_task_result,
+    record_task_runtime_result,
     record_task_status_message,
     record_task_worktree,
     resolve_regressed_task,
@@ -771,17 +774,19 @@ class EnochApplication:
         session_key: str | None = None,
     ) -> str:
         try:
-            return self.runtime.respond(
-                self.identity,
-                self._profile_prompt(
-                    read_only_turn_prompt(text),
-                    purpose="conversation",
-                    chat_id=chat_id,
-                ),
-                cwd=self.root,
-                session_key=session_key or self._session_key(chat_id),
-            )
-        except AgentRuntimeError as error:
+            return normalize_runtime_result(
+                self.runtime.respond(
+                    self.identity,
+                    self._profile_prompt(
+                        read_only_turn_prompt(text),
+                        purpose="conversation",
+                        chat_id=chat_id,
+                    ),
+                    cwd=self.root,
+                    session_key=session_key or self._session_key(chat_id),
+                )
+            ).final_text
+        except (AgentRuntimeError, TypeError) as error:
             return str(error)
 
     def _respond_to_image(
@@ -797,21 +802,29 @@ class EnochApplication:
                 self.root,
                 channel_name=self.channel_name,
             ) as image_path:
-                return self.runtime.respond(
-                    self.identity,
-                    self._profile_prompt(
-                        image_prompt(caption, self.channel_name),
-                        purpose="image",
-                        chat_id=chat_id,
-                    ),
-                    cwd=self.root,
-                    session_key=self._session_key(chat_id),
-                    image_paths=(image_path,),
-                    progress_callback=lambda elapsed, sandbox: self._send_progress(
-                        chat_id, elapsed, sandbox
-                    ),
-                )
-        except (AgentRuntimeError, OSError, ChatProviderError, ChannelAttachmentError) as error:
+                return normalize_runtime_result(
+                    self.runtime.respond(
+                        self.identity,
+                        self._profile_prompt(
+                            image_prompt(caption, self.channel_name),
+                            purpose="image",
+                            chat_id=chat_id,
+                        ),
+                        cwd=self.root,
+                        session_key=self._session_key(chat_id),
+                        image_paths=(image_path,),
+                        progress_callback=lambda elapsed, sandbox: self._send_progress(
+                            chat_id, elapsed, sandbox
+                        ),
+                    )
+                ).final_text
+        except (
+            AgentRuntimeError,
+            TypeError,
+            OSError,
+            ChatProviderError,
+            ChannelAttachmentError,
+        ) as error:
             return f"Enoch could not view that image: {error}"
 
     def _queue_session_sync(self, chat_id: ConversationId | None, note: str) -> None:
@@ -901,19 +914,21 @@ class EnochApplication:
         request: str,
     ) -> TaskContextSnapshot:
         try:
-            reply = self.runtime.respond(
-                self.identity,
-                self._profile_prompt(
-                    _task_context_snapshot_prompt(request, provider=self.channel_name),
-                    purpose="task-context",
-                    chat_id=chat_id,
-                ),
-                cwd=self.root,
-                session_key=self._session_key(chat_id),
-            )
+            reply = normalize_runtime_result(
+                self.runtime.respond(
+                    self.identity,
+                    self._profile_prompt(
+                        _task_context_snapshot_prompt(request, provider=self.channel_name),
+                        purpose="task-context",
+                        chat_id=chat_id,
+                    ),
+                    cwd=self.root,
+                    session_key=self._session_key(chat_id),
+                )
+            ).final_text
         except AgentRuntimeAccessUnavailable as error:
             return TaskContextSnapshot(codex_unavailable_reason=str(error))
-        except AgentRuntimeError as error:
+        except (AgentRuntimeError, TypeError) as error:
             return TaskContextSnapshot(error=str(error))
         return _parse_task_context_snapshot(reply)
 
@@ -1211,25 +1226,35 @@ class EnochApplication:
             )
             before_action = _worktree_snapshot(work_root)
             self._send_step_update(chat_id, "Working.")
-            result = self.runtime.act_in_session(
-                self.identity,
-                self._profile_prompt(
-                    work_request_prompt(
-                        _work_request_with_context(request, context),
-                        remote_review=bool(
-                            getattr(self.forge, "supports_remote_review", True)
+            runtime_result = normalize_runtime_result(
+                self.runtime.act_in_session(
+                    self.identity,
+                    self._profile_prompt(
+                        work_request_prompt(
+                            _work_request_with_context(request, context),
+                            remote_review=bool(
+                                getattr(self.forge, "supports_remote_review", True)
+                            ),
                         ),
+                        purpose="task",
+                        chat_id=chat_id,
                     ),
-                    purpose="task",
-                    chat_id=chat_id,
-                ),
-                cwd=work_root,
-                sandbox=sandbox,
-                session_key=session_key,
-                progress_callback=lambda elapsed, sandbox: self._send_progress(chat_id, elapsed, sandbox),
-                cancellation_event=self._current_task_cancellation_event(),
-                state_root=self.root,
+                    cwd=work_root,
+                    sandbox=sandbox,
+                    session_key=session_key,
+                    progress_callback=lambda elapsed, sandbox: self._send_progress(
+                        chat_id, elapsed, sandbox
+                    ),
+                    cancellation_event=self._current_task_cancellation_event(),
+                    state_root=self.root,
+                )
             )
+            _record_current_task_runtime_result(
+                runtime_result,
+                provider=self.runtime.name,
+                root=self.root,
+            )
+            result = runtime_result.final_text
             self._raise_if_current_task_cancelled()
             result = self._capture_task_regression_signals(result)
             memory_result = extract_memory_requests(result)
@@ -1242,7 +1267,7 @@ class EnochApplication:
             raise
         except AgentRuntimeAccessUnavailable:
             raise
-        except (AgentRuntimeError, VcsError, OSError) as error:
+        except (AgentRuntimeError, TypeError, VcsError, OSError) as error:
             return f"Enoch could not complete the requested work yet: {error}"
 
         parts = [branch_note, result or "Enoch completed the requested work.", memory_note]
@@ -3011,7 +3036,7 @@ class EnochApplication:
                 )
                 if finished_job is not None:
                     cancel_evolve_candidate_for_task(
-                        job,
+                        finished_job,
                         self.root,
                         event_actor="human",
                         trigger="/stop",
@@ -3049,7 +3074,7 @@ class EnochApplication:
                     )
                 if finished_job is not None and completed_status == "failed":
                     fail_evolve_candidate_for_task(
-                        job,
+                        finished_job,
                         self.root,
                         event_actor=failure_actor,
                         trigger=failure_trigger,
@@ -3081,7 +3106,7 @@ class EnochApplication:
                 )
                 if finished_job is not None:
                     complete_evolve_candidate_for_task(
-                        job,
+                        finished_job,
                         self.root,
                         event_actor="agent",
                         trigger="task-runner",
@@ -3615,6 +3640,23 @@ def _record_current_task_result(result: str, root: Path) -> None:
     record_task_result(task_id, result, root)
 
 
+def _record_current_task_runtime_result(
+    result: RuntimeResult,
+    *,
+    provider: str,
+    root: Path,
+) -> None:
+    task_status = _CURRENT_WORK_STATUS.get()
+    task_id = (
+        task_status.task_id
+        if task_status is not None and task_status.task_id is not None
+        else _CURRENT_TASK_ID.get()
+    )
+    if task_id is None:
+        return
+    record_task_runtime_result(task_id, result, root, provider=provider)
+
+
 def _reconciled_retry_result(
     job: TaskJob,
     root: Path,
@@ -3674,7 +3716,7 @@ def _recover_running_task_from_direct_action_log(root: Path) -> TaskJob | None:
         recovered = fail_task(running.id, root, result=result, event_actor="system", trigger="recovery")
         if recovered is not None:
             fail_evolve_candidate_for_task(
-                running,
+                recovered,
                 root,
                 event_actor="system",
                 trigger="recovery",
@@ -3691,7 +3733,7 @@ def _recover_running_task_from_direct_action_log(root: Path) -> TaskJob | None:
         )
         if recovered is not None:
             complete_evolve_candidate_for_task(
-                running,
+                recovered,
                 root,
                 event_actor="system",
                 trigger="recovery",
@@ -3996,7 +4038,7 @@ def _sync_session_activity(
             cwd=root,
             session_key=session_key or f"chat:{chat_id}",
         )
-    except AgentRuntimeError:
+    except (AgentRuntimeError, TypeError):
         return
 
 

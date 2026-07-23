@@ -1,4 +1,5 @@
 from pathlib import Path
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 import json
 import sys
@@ -446,6 +447,14 @@ class EnochEvolveTests(unittest.TestCase):
                 context="\n".join(["Evolve candidate context:", "ID: backlog-1"]),
                 context_source="evolve-approve",
             )
+            job = replace(
+                job,
+                runtime_provider="codex",
+                runtime_session_id="session-7",
+                runtime_completion_reason="completed",
+                runtime_usage={"input_tokens": 100, "output_tokens": 25},
+                runtime_event_types=("turn.completed",),
+            )
 
             completed = complete_evolve_candidate_for_task(job, root)
             visible = load_evolve_candidates(root)
@@ -460,6 +469,9 @@ class EnochEvolveTests(unittest.TestCase):
         self.assertEqual([event.event for event in events], ["completed"])
         self.assertEqual(events[0].event_actor, "agent")
         self.assertEqual(events[0].trigger, "task-runner")
+        self.assertEqual(events[0].runtime_provider, "codex")
+        self.assertEqual(events[0].runtime_session_id, "session-7")
+        self.assertEqual(events[0].runtime_usage["output_tokens"], 25)
 
     def test_failed_candidate_stays_retryable_while_cancelled_candidate_is_inactive(self) -> None:
         with TemporaryDirectory() as temp:

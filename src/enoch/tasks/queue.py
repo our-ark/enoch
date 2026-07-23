@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 import json
 import os
@@ -19,13 +19,14 @@ from enoch.paths import enoch_home
 from enoch.providers.contracts import (
     ConversationId,
     MessageId,
+    RuntimeResult,
     normalize_conversation_id,
     normalize_message_id,
 )
 from enoch.tasks.events import normalize_task_initiator, normalize_task_source, record_task_event
 
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 DEFAULT_MAX_ATTEMPTS = 3
 PULL_REQUEST_URL_PATTERN = re.compile(r"https://[^\s]+/(?:pull|pulls|merge_requests)/\d+")
 _QUEUE_THREAD_LOCK = threading.RLock()
@@ -66,6 +67,13 @@ class TaskJob:
     failure_code: str = ""
     failure_class: str = ""
     retryable: bool = False
+    runtime_provider: str = ""
+    runtime_session_id: str = ""
+    runtime_completion_reason: str = ""
+    runtime_usage: dict[str, int] = field(default_factory=dict)
+    runtime_event_types: tuple[str, ...] = ()
+    runtime_output_refs: tuple[str, ...] = ()
+    runtime_side_effects: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -858,6 +866,59 @@ def record_task_result(task_id: int, result: str, root: Path | None = None) -> N
         _write_queue(data, root)
 
 
+def record_task_runtime_result(
+    task_id: int,
+    runtime_result: RuntimeResult,
+    root: Path | None = None,
+    *,
+    provider: str,
+) -> None:
+    runtime_fields = {
+        "runtime_provider": provider.strip().lower(),
+        "runtime_session_id": runtime_result.session_id,
+        "runtime_completion_reason": runtime_result.completion_reason,
+        "runtime_usage": {
+            "input_tokens": runtime_result.usage.input_tokens,
+            "cached_input_tokens": runtime_result.usage.cached_input_tokens,
+            "output_tokens": runtime_result.usage.output_tokens,
+            "reasoning_tokens": runtime_result.usage.reasoning_tokens,
+        },
+        "runtime_event_types": _dedupe_strings(
+            tuple(event.type for event in runtime_result.events)
+        ),
+        "runtime_output_refs": _dedupe_strings(
+            tuple(
+                f"{output.kind}:{output.uri}"
+                for output in runtime_result.output_refs
+            )
+        ),
+        "runtime_side_effects": _dedupe_strings(
+            tuple(
+                f"{effect.kind}:{effect.reference}:{effect.status}"
+                for effect in runtime_result.side_effects
+            )
+        ),
+    }
+    with _queue_transaction(root):
+        data = _load_queue(root)
+        pending = []
+        changed = False
+        for job in _pending_jobs(data):
+            if job.id == task_id:
+                job = _replace_job(job, **runtime_fields)
+                changed = True
+            pending.append(_job_to_dict(job))
+        running = _parse_job(data.get("running"))
+        if running is not None and running.id == task_id:
+            running = _replace_job(running, **runtime_fields)
+            changed = True
+        if not changed:
+            return
+        data["pending"] = pending
+        data["running"] = _job_to_dict(running) if running is not None else None
+        _write_queue(data, root)
+
+
 def _finish_running_task(
     task_id: int,
     status: str,
@@ -1255,6 +1316,15 @@ def _parse_job(raw: object) -> TaskJob | None:
     failure_code = str(raw.get("failure_code") or "").strip()
     failure_class = str(raw.get("failure_class") or "").strip()
     retryable = bool(raw.get("retryable", False))
+    runtime_provider = str(raw.get("runtime_provider") or "").strip().lower()
+    runtime_session_id = str(raw.get("runtime_session_id") or "").strip()
+    runtime_completion_reason = str(
+        raw.get("runtime_completion_reason") or ""
+    ).strip().lower()
+    runtime_usage = _parse_runtime_usage(raw.get("runtime_usage"))
+    runtime_event_types = _parse_string_tuple(raw.get("runtime_event_types"))
+    runtime_output_refs = _parse_string_tuple(raw.get("runtime_output_refs"))
+    runtime_side_effects = _parse_string_tuple(raw.get("runtime_side_effects"))
     if candidate_id:
         evidence_source = evidence_source or source
         signal_actor = signal_actor or _legacy_signal_actor(evidence_source)
@@ -1296,6 +1366,13 @@ def _parse_job(raw: object) -> TaskJob | None:
         failure_code=failure_code,
         failure_class=failure_class,
         retryable=retryable,
+        runtime_provider=runtime_provider,
+        runtime_session_id=runtime_session_id,
+        runtime_completion_reason=runtime_completion_reason,
+        runtime_usage=runtime_usage,
+        runtime_event_types=runtime_event_types,
+        runtime_output_refs=runtime_output_refs,
+        runtime_side_effects=runtime_side_effects,
     )
 
 
@@ -1336,6 +1413,13 @@ def _job_to_dict(job: TaskJob | None) -> dict:
         "failure_code": job.failure_code,
         "failure_class": job.failure_class,
         "retryable": job.retryable,
+        "runtime_provider": job.runtime_provider,
+        "runtime_session_id": job.runtime_session_id,
+        "runtime_completion_reason": job.runtime_completion_reason,
+        "runtime_usage": job.runtime_usage,
+        "runtime_event_types": list(job.runtime_event_types),
+        "runtime_output_refs": list(job.runtime_output_refs),
+        "runtime_side_effects": list(job.runtime_side_effects),
     }
 
 
@@ -1374,6 +1458,13 @@ def _replace_job(job: TaskJob, **changes: object) -> TaskJob:
         "failure_code": job.failure_code,
         "failure_class": job.failure_class,
         "retryable": job.retryable,
+        "runtime_provider": job.runtime_provider,
+        "runtime_session_id": job.runtime_session_id,
+        "runtime_completion_reason": job.runtime_completion_reason,
+        "runtime_usage": job.runtime_usage,
+        "runtime_event_types": job.runtime_event_types,
+        "runtime_output_refs": job.runtime_output_refs,
+        "runtime_side_effects": job.runtime_side_effects,
     }
     values.update(changes)
     return TaskJob(**values)
@@ -1394,6 +1485,36 @@ def _int(value: object, *, default: int = 0) -> int:
 def _optional_int(value: object) -> int | None:
     parsed = _int(value)
     return parsed if parsed > 0 else None
+
+
+def _parse_runtime_usage(value: object) -> dict[str, int]:
+    keys = (
+        "input_tokens",
+        "cached_input_tokens",
+        "output_tokens",
+        "reasoning_tokens",
+    )
+    if not isinstance(value, dict) or not any(key in value for key in keys):
+        return {}
+    return {key: max(0, _int(value.get(key))) for key in keys}
+
+
+def _parse_string_tuple(value: object) -> tuple[str, ...]:
+    if not isinstance(value, (list, tuple)):
+        return ()
+    return _dedupe_strings(tuple(str(item) for item in value))
+
+
+def _dedupe_strings(values: tuple[str, ...]) -> tuple[str, ...]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        cleaned = value.strip()
+        if not cleaned or cleaned in seen:
+            continue
+        seen.add(cleaned)
+        result.append(cleaned)
+    return tuple(result)
 
 
 def _normalize_provenance_actor(value: str) -> str:

@@ -592,6 +592,7 @@ def complete_evolve_candidate_for_task(
         task_id=job.id,
         retry_of_task_id=job.parent_task_id,
         reason=reason,
+        runtime_task=job,
     )
     return candidate
 
@@ -622,6 +623,7 @@ def fail_evolve_candidate_for_task(
         task_id=job.id,
         retry_of_task_id=job.parent_task_id,
         reason=reason,
+        runtime_task=job,
     )
     return candidate
 
@@ -652,6 +654,7 @@ def cancel_evolve_candidate_for_task(
         task_id=job.id,
         retry_of_task_id=job.parent_task_id,
         reason=reason,
+        runtime_task=job,
     )
     return candidate
 
@@ -723,6 +726,7 @@ def _record_evolve_candidate_task_event(
         task_id=job.id,
         retry_of_task_id=job.parent_task_id,
         reason=reason,
+        runtime_task=job,
     )
     return candidate
 
@@ -798,6 +802,7 @@ def _transition_evolve_candidate_for_task(
         task_id=job.id,
         retry_of_task_id=job.parent_task_id,
         reason=reason,
+        runtime_task=job,
     )
     return candidate
 
@@ -814,6 +819,7 @@ def _record_candidate_event_safely(
     retry_of_task_id: int | None = None,
     reason: str = "",
     proposal_id: str = "",
+    runtime_task: TaskJob | None = None,
 ) -> None:
     state = load_evolve_state(root)
     linked_id = proposal_id or linked_proposal_id(
@@ -834,6 +840,7 @@ def _record_candidate_event_safely(
             retry_of_task_id=retry_of_task_id,
             reason=reason,
             proposal_id=linked_id,
+            runtime_task=runtime_task,
         )
     except (OSError, ValueError):
         return

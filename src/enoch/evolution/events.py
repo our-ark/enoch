@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 import json
 from pathlib import Path
 import threading
@@ -17,7 +17,7 @@ from enoch.memory.paths import clean_text, now as current_time
 from enoch.paths import enoch_home
 
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 EVOLVE_EVENT_TYPES = {
     "checked",
     "proposed",
@@ -80,6 +80,16 @@ class CandidateLike(Protocol):
     score: int
 
 
+class RuntimeTaskLike(Protocol):
+    runtime_provider: str
+    runtime_session_id: str
+    runtime_completion_reason: str
+    runtime_usage: dict[str, int]
+    runtime_event_types: tuple[str, ...]
+    runtime_output_refs: tuple[str, ...]
+    runtime_side_effects: tuple[str, ...]
+
+
 @dataclass(frozen=True)
 class EvolveEvent:
     id: str
@@ -111,6 +121,13 @@ class EvolveEvent:
     version: str = ""
     health_check: str = ""
     recording_mode: str = ""
+    runtime_provider: str = ""
+    runtime_session_id: str = ""
+    runtime_completion_reason: str = ""
+    runtime_usage: dict[str, int] = field(default_factory=dict)
+    runtime_event_types: tuple[str, ...] = ()
+    runtime_output_refs: tuple[str, ...] = ()
+    runtime_side_effects: tuple[str, ...] = ()
 
 
 def evolve_event_path(root: Path | None = None) -> Path:
@@ -139,6 +156,7 @@ def record_evolve_event(
     version: str = "",
     health_check: str = "",
     recording_mode: str = "",
+    runtime_task: RuntimeTaskLike | None = None,
 ) -> EvolveEvent:
     normalized_event = clean_text(event).lower()
     normalized_actor = clean_text(event_actor).lower()
@@ -271,6 +289,27 @@ def record_evolve_event(
         version=normalized_version,
         health_check=normalized_health_check,
         recording_mode=normalized_recording_mode,
+        runtime_provider=clean_text(
+            str(getattr(runtime_task, "runtime_provider", "") or "")
+        ).lower(),
+        runtime_session_id=clean_text(
+            str(getattr(runtime_task, "runtime_session_id", "") or "")
+        ),
+        runtime_completion_reason=clean_text(
+            str(getattr(runtime_task, "runtime_completion_reason", "") or "")
+        ).lower(),
+        runtime_usage=_runtime_usage(
+            getattr(runtime_task, "runtime_usage", {})
+        ),
+        runtime_event_types=_string_tuple(
+            getattr(runtime_task, "runtime_event_types", ())
+        ),
+        runtime_output_refs=_string_tuple(
+            getattr(runtime_task, "runtime_output_refs", ())
+        ),
+        runtime_side_effects=_string_tuple(
+            getattr(runtime_task, "runtime_side_effects", ())
+        ),
     )
     with _evolve_event_transaction(root):
         path = evolve_event_path(root)
@@ -506,6 +545,19 @@ def _event_from_line(line: str) -> EvolveEvent | None:
         version=clean_text(str(raw.get("version") or "")),
         health_check=clean_text(str(raw.get("health_check") or "")).lower(),
         recording_mode=recording_mode,
+        runtime_provider=clean_text(
+            str(raw.get("runtime_provider") or "")
+        ).lower(),
+        runtime_session_id=clean_text(
+            str(raw.get("runtime_session_id") or "")
+        ),
+        runtime_completion_reason=clean_text(
+            str(raw.get("runtime_completion_reason") or "")
+        ).lower(),
+        runtime_usage=_runtime_usage(raw.get("runtime_usage")),
+        runtime_event_types=_string_tuple(raw.get("runtime_event_types")),
+        runtime_output_refs=_string_tuple(raw.get("runtime_output_refs")),
+        runtime_side_effects=_string_tuple(raw.get("runtime_side_effects")),
     )
 
 
@@ -535,6 +587,32 @@ def _int(value: object) -> int:
         return int(value)
     except (TypeError, ValueError):
         return 0
+
+
+def _runtime_usage(value: object) -> dict[str, int]:
+    keys = (
+        "input_tokens",
+        "cached_input_tokens",
+        "output_tokens",
+        "reasoning_tokens",
+    )
+    if not isinstance(value, dict) or not any(key in value for key in keys):
+        return {}
+    return {key: max(0, _int(value.get(key))) for key in keys}
+
+
+def _string_tuple(value: object) -> tuple[str, ...]:
+    if not isinstance(value, (list, tuple)):
+        return ()
+    seen: set[str] = set()
+    output: list[str] = []
+    for item in value:
+        cleaned = clean_text(str(item or ""))
+        if not cleaned or cleaned in seen:
+            continue
+        seen.add(cleaned)
+        output.append(cleaned)
+    return tuple(output)
 
 
 def _actor(value: object) -> str:

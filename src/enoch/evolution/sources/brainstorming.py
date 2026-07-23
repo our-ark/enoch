@@ -109,10 +109,13 @@ def brainstorm_prompt(theme: str, mission: str, *, limit: int = 3) -> str:
 
 def _default_generator(root: Path | None) -> BrainstormGenerator:
     def generate(prompt: str) -> str:
+        from enoch.providers.contracts import normalize_runtime_result
         from enoch.providers.registry import load_provider
 
         runtime = load_provider("runtime", root)
-        return runtime.respond(load_identity(), prompt, cwd=root)
+        return normalize_runtime_result(
+            runtime.respond(load_identity(), prompt, cwd=root)
+        ).final_text
 
     return generate
 
