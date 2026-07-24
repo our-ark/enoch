@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Use this skill when Enoch should adapt and integrate a published skill from Lucy, Adam, Enoch, a descendant, or another trusted Our-Ark agent.
+Use this skill when Enoch should adapt and integrate a published skill from Lucy, Adam, Enoch, a descendant, or another trusted OurArk agent.
 
 ## Use When
 

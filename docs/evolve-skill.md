@@ -123,7 +123,7 @@ If Seth gains a useful change that Enoch does not have, that can become an evolv
 
 Enoch can learn from other agents.
 
-Learn candidates come from useful skills, patterns, or implementations in other published Our-Ark agents. Learning is different from inheritance: it can come from non-parent agents and should be adapted rather than blindly copied.
+Learn candidates come from useful skills, patterns, or implementations in other published OurArk agents. Learning is different from inheritance: it can come from non-parent agents and should be adapted rather than blindly copied.
 
 ## Candidate Shape
 

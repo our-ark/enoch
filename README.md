@@ -10,7 +10,7 @@ Enoch is a personal software agent you build for yourself. She lives in your
 environment, works with your tools and repositories, and grows through your
 shared history.
 
-This repository is the reference implementation of the Our-Ark agent
+This repository is the reference implementation of the OurArk agent
 architecture. It demonstrates governed code evolution: Enoch can turn feedback
 and operational experience into tested, reviewable changes while you control
 what is adopted. It is built for researchers, agent builders, and power users
@@ -54,7 +54,7 @@ checkpoints or a fictional family tree.
 | [`code`](src/enoch/skills/code/SKILL.md) | Inspect, modify, test, and explain changes to her local code body. |
 | [`work`](src/enoch/skills/work/SKILL.md) | Run leased tasks in isolated worktrees through a queue, backlog, schedules, retries, and recovery. |
 | [`evolve`](src/enoch/skills/evolve/SKILL.md) | Collect and rank improvement candidates, propose bounded self-evolution, and track work through human review, promotion, and adoption. |
-| [`learn`](src/enoch/skills/learn/SKILL.md) | Adapt a published skill from another trusted Our-Ark agent instead of copying it blindly. |
+| [`learn`](src/enoch/skills/learn/SKILL.md) | Adapt a published skill from another trusted OurArk agent instead of copying it blindly. |
 | [`inherit`](src/enoch/skills/inherit/SKILL.md) | Discover direct-ancestor skills and changes for selective inheritance. |
 | [`skill-library`](src/enoch/skills/skill-library/SKILL.md) | Package reusable, agent-neutral skill implementations as immutable libraries with thin adapters. |
 
@@ -265,11 +265,12 @@ Genesis is the primary tool for creating a descendant from Enoch. It carries
 forward the versioned code body and Git lineage, assigns the descendant a new
 identity and mission, and validates it against inherited contracts.
 
-> **Genesis availability:** Genesis is not yet open source. The command below
-> documents the intended Our-Ark workflow rather than a currently available
-> public installation path. You can still clone or fork Enoch manually to
-> inspect and adapt the reference implementation, but that does not perform the
-> Genesis birth and validation lifecycle.
+Genesis is open source at
+[`our-ark/genesis`](https://github.com/our-ark/genesis). The current stable
+public path pairs [Genesis
+v0.1.1](https://github.com/our-ark/genesis/releases/tag/v0.1.1) with [Enoch
+v0.2.0](https://github.com/our-ark/enoch/releases/tag/v0.2.0). The command below
+uses adjacent clean checkouts so the selected Enoch source is explicit.
 
 Enoch is a public Genesis-compatible reference body. Its `genesis.toml`
 declares the Git-tracked body boundary, inherited validation, launchers, source,
