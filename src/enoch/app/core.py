@@ -16,7 +16,6 @@ from enoch.backlog import (
     BacklogItem,
     add_backlog_item,
     backlog_item,
-    backlog_status,
     next_backlog_item,
     promote_backlog_item,
     remove_backlog_item,
@@ -44,13 +43,10 @@ from enoch.channel import (
     startup_message as channel_startup_message,
     temporary_image_attachment,
 )
-from enoch.config import read_section
 from enoch.cron import (
-    CronJob,
     add_cron_job,
     cancel_cron_job,
     claim_due_cron_jobs,
-    cron_status,
     format_cron_interval,
     parse_cron_interval,
     record_cron_task,
@@ -64,7 +60,6 @@ from enoch.evolution.core import (
     acknowledge_evolve_schedule,
     cancel_evolve_candidate_for_task,
     claim_due_evolve_schedule,
-    collect_experience_candidates,
     complete_evolve_candidate_for_task,
     disable_evolve_schedule,
     evolve_report,
@@ -78,7 +73,6 @@ from enoch.evolution.core import (
     regress_evolve_candidate_for_task,
     remove_evolve_candidate,
     retry_evolve_candidate,
-    rank_evolve_candidates,
     resolve_evolve_candidate_regression_for_task,
     resume_evolve_candidate_for_task,
     run_evolve_candidate,
@@ -105,7 +99,6 @@ from enoch.vcs_tools import (
     changed_files,
     delete_branch,
     current_branch,
-    diff_summary,
     ensure_clean_worktree,
     switch_branch,
 )
@@ -121,9 +114,7 @@ from enoch.formatting import (
     summarize_for_log,
 )
 from enoch.providers.contracts import (
-    EvolutionProvenance,
     LocalPublishResult,
-    PullRequestCloseResult,
     PullRequestResult,
     RemotePublishResult,
 )
@@ -167,9 +158,7 @@ from enoch.prompt_append import (
     extract_memory_requests,
     extract_task_regression_signals,
     read_only_turn_prompt,
-    repository_handoff_note,
     startup_context_note,
-    work_request_prompt,
 )
 from enoch.providers.contracts import (
     AgentRuntime,
@@ -186,7 +175,6 @@ from enoch.providers.contracts import (
     ForgeProvider,
     ForgeProviderError,
     MessageId,
-    RuntimeResult,
     RuntimeExecutionControl,
     normalize_message_id,
 )
@@ -194,7 +182,6 @@ from enoch.providers.forge import FunctionForgeProvider
 from enoch.providers.registry import ProviderError, load_provider
 from enoch.providers.runtime import (
     FunctionAgentRuntime,
-    invoke_runtime_action,
     invoke_runtime_respond,
 )
 from enoch.profiles import (
@@ -208,11 +195,7 @@ from enoch.profiles import (
     load_profile,
 )
 from enoch.profiles.contracts import extend_prompt
-from enoch.runtime import (
-    ACTION_SANDBOX_FULL_ACCESS,
-    DEFAULT_BRANCH,
-    WORKSPACE_WRITE_SANDBOX,
-)
+from enoch.runtime import DEFAULT_BRANCH
 from enoch.tasks.queue import (
     TaskJob,
     TaskAlreadyExists,
@@ -229,11 +212,7 @@ from enoch.tasks.queue import (
     pause_task,
     regress_task,
     recover_interrupted_task,
-    record_task_result,
-    record_task_publish_state,
-    record_task_runtime_result,
     record_task_status_message,
-    record_task_worktree,
     resolve_regressed_task,
     retry_failed_task,
     retry_running_task,
@@ -242,7 +221,6 @@ from enoch.tasks.queue import (
     task_queue_status,
     task_worker_is_active,
 )
-from enoch.tasks.events import TASK_SOURCES
 from enoch.commands import (
     CoreCommand,
     action_lock_message as _format_action_lock_message,
@@ -290,6 +268,12 @@ from enoch.app.models import (
     WorkStatusMessage,
     WorkOutcome,
 )
+from enoch.app.execution_context import (
+    CURRENT_REGRESSION_SIGNALS as _CURRENT_REGRESSION_SIGNALS,
+    CURRENT_TASK_ID as _CURRENT_TASK_ID,
+    CURRENT_TASK_WORKER_ID as _CURRENT_TASK_WORKER_ID,
+    CURRENT_WORK_STATUS as _CURRENT_WORK_STATUS,
+)
 from enoch.app.inbox import (
     InboxReceipt,
     acknowledge_event,
@@ -303,8 +287,6 @@ from enoch.app.parsing import (
     backlog_priority_and_request as _backlog_priority_and_request,
     backlog_priority_update as _backlog_priority_update,
     cron_job_id as _cron_job_id,
-    existing_branch_publish_request as _existing_branch_publish_request,
-    forge_maintenance_request as _forge_maintenance_request,
     parse_chat_command as _parse_chat_command,
     task_cancel_id as _task_cancel_id,
     task_resume_target as _task_resume_target,
@@ -313,7 +295,6 @@ from enoch.app.parsing import (
 )
 from enoch.app.presentation import (
     backlog_usage as _backlog_usage,
-    clip_activity_block as _clip_activity_block,
     clip_activity_text as _clip_activity_text,
     cron_usage as _cron_usage,
     evolve_usage as _evolve_usage,
@@ -340,19 +321,26 @@ from enoch.app.reporting import (
     _format_tasks_report,
     _task_status_message,
 )
+from enoch.app.task_workflow import (
+    TaskWorkflow,
+    TaskWorkflowDependencies,
+    action_sandbox as _action_sandbox,
+    activity_sync_note as _activity_sync_note,
+    coerce_work_outcome as _coerce_work_outcome,
+    create_pull_request_for_current_task as _task_create_pull_request_for_current_task,
+    evolution_provenance_for_job as _evolution_provenance_for_job,
+    sandbox_description as _sandbox_description,
+    task_by_id as _task_by_id,
+    work_reply_failed as _work_reply_failed,
+)
 
 
 TASK_CONTEXT_SOURCE_CHAT = "chat-snapshot"
 NEEDS_CLARIFICATION_PREFIX = "NEEDS_CLARIFICATION:"
 NO_EXTRA_TASK_CONTEXT = "No extra context needed."
-_CURRENT_WORK_STATUS: ContextVar[WorkStatusMessage | None] = ContextVar("enoch_work_status", default=None)
-_CURRENT_TASK_ID: ContextVar[int | None] = ContextVar("enoch_task_id", default=None)
-_CURRENT_TASK_WORKER_ID: ContextVar[str] = ContextVar("enoch_task_worker_id", default="")
 _CURRENT_EVENT_KEY: ContextVar[str] = ContextVar("enoch_event_key", default="")
-_CURRENT_REGRESSION_SIGNALS: ContextVar[tuple[TaskRegressionSignal, ...]] = ContextVar(
-    "enoch_regression_signals",
-    default=(),
-)
+
+
 def _load_provider_cursor(name: str, root: Path | None = None) -> Cursor | None:
     return load_channel_cursor(name, root)
 
@@ -444,6 +432,47 @@ class EnochApplication:
         self._task_cancellations: dict[int, threading.Event] = {}
         self._stopping = False
         self._resident_branch = instance_branch(root)
+        self._task_workflow = TaskWorkflow(
+            self,
+            dependencies=TaskWorkflowDependencies(
+                run_immune_system=lambda *args, **kwargs: run_immune_system(
+                    *args,
+                    **kwargs,
+                ),
+                changed_files=lambda *args, **kwargs: changed_files(*args, **kwargs),
+                task_branch_base=lambda *args, **kwargs: _task_branch_base(
+                    *args,
+                    **kwargs,
+                ),
+                prepare_task_worktree=lambda *args, **kwargs: prepare_task_worktree(
+                    *args,
+                    **kwargs,
+                ),
+                prepare_existing_branch_worktree=lambda *args, **kwargs: (
+                    prepare_existing_branch_worktree(*args, **kwargs)
+                ),
+                remove_task_worktree=lambda *args, **kwargs: remove_task_worktree(
+                    *args,
+                    **kwargs,
+                ),
+                ensure_clean_worktree=lambda *args, **kwargs: ensure_clean_worktree(
+                    *args,
+                    **kwargs,
+                ),
+                prepare_local_publish=lambda *args, **kwargs: prepare_local_publish(
+                    *args,
+                    **kwargs,
+                ),
+                push_current_branch=lambda *args, **kwargs: push_current_branch(
+                    *args,
+                    **kwargs,
+                ),
+                feature_title=lambda *args, **kwargs: feature_title(*args, **kwargs),
+                current_branch=lambda *args, **kwargs: current_branch(*args, **kwargs),
+                switch_branch=lambda *args, **kwargs: switch_branch(*args, **kwargs),
+                delete_branch=lambda *args, **kwargs: delete_branch(*args, **kwargs),
+            ),
+        )
         recovered = _recover_running_task_from_direct_action_log(root)
         if recovered is None:
             recovered = recover_interrupted_task(root)
@@ -1392,306 +1421,37 @@ class EnochApplication:
         session_key: str,
         execution: RuntimeExecutionControl | None = None,
     ) -> WorkOutcome:
-        self._raise_if_current_task_cancelled()
-        forge_maintenance = _forge_maintenance_request(request)
-        if forge_maintenance is not None:
-            reply = self._run_forge_maintenance(forge_maintenance)
-            self._raise_if_current_task_cancelled()
-            return WorkOutcome.completed(reply)
-
-        publish_branch = _existing_branch_publish_request(request)
-        if publish_branch is not None:
-            reply = self._publish_existing_branch(chat_id, publish_branch)
-            self._raise_if_current_task_cancelled()
-            if reply.strip().lower().startswith("enoch could not"):
-                failure = classify_task_failure(reply)
-                return WorkOutcome.failure(
-                    reply,
-                    code=failure.code,
-                    failure_class=failure.failure_class,
-                    retryable=failure.retryable,
-                )
-            return WorkOutcome.completed(reply)
-
-        try:
-            sandbox = _action_sandbox(self.root)
-            self._send_step_update(chat_id, "Preparing an isolated task worktree.")
-            task_worktree = self._prepare_task_worktree(request)
-            work_root = task_worktree.path
-            branch_note = (
-                f"Enoch prepared isolated worktree {work_root} on branch "
-                f"{task_worktree.branch} from the latest task base."
-            )
-            self._send_step_update(chat_id, "Working.")
-            runtime_result = invoke_runtime_action(
-                self.runtime,
-                self.identity,
-                self._profile_prompt(
-                    work_request_prompt(
-                        _work_request_with_context(request, context),
-                        remote_review=bool(
-                            getattr(self.forge, "supports_remote_review", True)
-                        ),
-                    ),
-                    purpose="task",
-                    chat_id=chat_id,
-                ),
-                cwd=work_root,
-                sandbox=sandbox,
-                execution=execution
-                or RuntimeExecutionControl(
-                    request_id=f"task:{_CURRENT_TASK_ID.get() or 'inline'}",
-                    session_key=session_key,
-                    cancellation_event=self._current_task_cancellation_event(),
-                    progress_callback=lambda progress: self._send_progress(
-                        chat_id,
-                        progress.elapsed_seconds,
-                        progress.sandbox,
-                    ),
-                ),
-                state_root=self.root,
-            )
-            _record_current_task_runtime_result(
-                runtime_result,
-                provider=self.runtime.name,
-                root=self.root,
-            )
-            result = runtime_result.final_text
-            self._raise_if_current_task_cancelled()
-            result = self._capture_task_regression_signals(result)
-            memory_result = extract_memory_requests(result)
-            result = memory_result.visible_reply
-            memory_note = self._save_memory_requests(memory_result.requests)
-            _record_direct_action(request, result, self.root)
-            action_files = tuple(sorted(_changed_files_or_empty(work_root)))
-        except AgentRuntimeCancelled:
-            raise
-        except AgentRuntimeTimedOut:
-            raise
-        except AgentRuntimeAccessUnavailable:
-            raise
-        except (AgentRuntimeError, TypeError, VcsError, OSError) as error:
-            message = f"Enoch could not complete the requested work yet: {error}"
-            failure = classify_task_failure(message)
-            return WorkOutcome.failure(
-                message,
-                code=failure.code,
-                failure_class=failure.failure_class,
-                retryable=failure.retryable,
-            )
-
-        parts = [branch_note, result or "Enoch completed the requested work.", memory_note]
-        if not action_files:
-            try:
-                cleanup = remove_task_worktree(
-                    self.root,
-                    task_worktree,
-                    force_delete_branch=True,
-                )
-                parts.append("No files changed.")
-                parts.append(cleanup)
-            except VcsError as error:
-                parts.append(f"Enoch could not clean up the task worktree: {error}")
-            return WorkOutcome.completed(
-                "\n\n".join(part for part in parts if part),
-                completed_stages=("edited",),
-            )
-
-        self._send_step_update(chat_id, "Running doctor.")
-        self._raise_if_current_task_cancelled()
-        doctor = run_immune_system(work_root, state_root=self.root)
-        self._raise_if_current_task_cancelled()
-        parts.append(_format_doctor_result(doctor))
-        self._send_step_update(chat_id, "Doctor passed." if doctor.passed else "Doctor failed.")
-        if not doctor.passed:
-            parts.append(
-                f"I did not open a PR because doctor failed. Task worktree {work_root} "
-                "was preserved for inspection."
-            )
-            return WorkOutcome.failure(
-                "\n\n".join(part for part in parts if part),
-                code="validation_failed",
-                failure_class="permanent",
-                retryable=False,
-                completed_stages=("edited",),
-            )
-
-        self._raise_if_current_task_cancelled()
-        self._record_current_publish_stage("validated")
-        publish_outcome = _coerce_work_outcome(
-            self._publish_feature_pr(
-                chat_id,
-                request,
-                action_files,
-                work_root=work_root,
-                task_worktree=task_worktree,
-                validation_result=doctor,
-            )
-        )
-        self._raise_if_current_task_cancelled()
-        return replace(
-            publish_outcome,
-            message="\n\n".join(
-                part for part in [*parts, publish_outcome.message] if part
-            ),
-            completed_stages=tuple(
-                dict.fromkeys(("edited", "validated", *publish_outcome.completed_stages))
-            ),
+        return self._task_workflow.run_direct_work(
+            chat_id,
+            request,
+            context=context,
+            session_key=session_key,
+            execution=execution,
         )
 
     def _prepare_task_worktree(self, request: str) -> TaskWorktree:
-        task_id = _CURRENT_TASK_ID.get()
-        worker_id = _CURRENT_TASK_WORKER_ID.get()
-        if task_id is None or not worker_id:
-            raise VcsError("Task worktree preparation requires an owned running task.")
-        job = _task_by_id(task_id, self.root)
-        if job is None or job.status != "running" or job.worker_id != worker_id:
-            raise VcsError(f"Task #{task_id} no longer owns its execution lease.")
-        base = _task_branch_base(self.root)
-        worktree = prepare_task_worktree(
-            self.root,
-            task_id,
-            request,
-            start_point=base,
-            resident_branch=self._resident_branch_name(),
-            created_at=job.created_at,
-            existing_path=job.worktree_path,
-            existing_branch=job.branch_name,
-        )
-        recorded = record_task_worktree(
-            task_id,
-            worker_id,
-            worktree.path,
-            worktree.branch,
-            self.root,
-        )
-        if recorded is None:
-            raise VcsError(f"Task #{task_id} lost its execution lease while preparing its worktree.")
-        return worktree
+        return self._task_workflow.prepare_task_worktree(request)
 
-    def _run_forge_maintenance(self, request: "ForgeMaintenanceRequest") -> str:
-        self._update_work_status("Updating pull requests.")
-        results = [
-            self.forge.close_pull_request(
-                number,
-                root=self.root,
-                comment=_duplicate_close_comment(request.keep_number) if request.keep_number else None,
-            )
-            for number in request.close_numbers
-        ]
-        return _format_pr_close_results(results, request.keep_number)
+    def _run_forge_maintenance(self, request: ForgeMaintenanceRequest) -> str:
+        return self._task_workflow.run_forge_maintenance(request)
 
-    def _run_existing_branch_publish_with_status(self, chat_id: int, text: str, branch: str) -> str:
-        status_message = _CURRENT_WORK_STATUS.get()
-        token = None
-        if status_message is None:
-            status_message = WorkStatusMessage(
-                chat_id=chat_id,
-                message_id=0,
-                request=text,
-                started_at=time.monotonic(),
-                status="running",
-                latest_update=f"Publishing branch {branch}.",
-            )
-            message_id = self._safe_send_message_id(
-                chat_id,
-                self._format_work_status(status_message),
-            )
-            if message_id is not None:
-                status_message.message_id = message_id
-                token = _CURRENT_WORK_STATUS.set(status_message)
-        try:
-            result = self._publish_existing_branch(chat_id, branch)
-            if status_message is not None and status_message.message_id:
-                self._update_work_status(_clip_activity_text(result, limit=800), status="completed")
-                return ""
-            return result
-        finally:
-            if token is not None:
-                _CURRENT_WORK_STATUS.reset(token)
+    def _run_existing_branch_publish_with_status(
+        self,
+        chat_id: int,
+        text: str,
+        branch: str,
+    ) -> str:
+        return self._task_workflow.run_existing_branch_publish_with_status(
+            chat_id,
+            text,
+            branch,
+        )
 
     def _publish_existing_branch(self, chat_id: int, branch: str) -> str:
-        resident_branch = self._resident_branch_name()
-        outputs: list[str] = []
-        try:
-            self._send_step_update(chat_id, f"Preparing an isolated worktree for {branch}.")
-            task_worktree = self._prepare_existing_branch_task_worktree(branch)
-            work_root = task_worktree.path
-            ensure_clean_worktree(work_root)
-
-            self._send_step_update(chat_id, f"Handing off branch {branch}.")
-            pushed = push_current_branch(root=work_root)
-            outputs.append(_format_remote_publish_result(pushed))
-            self._send_step_update(
-                chat_id,
-                (
-                    f"Pushed branch {pushed.branch}."
-                    if pushed.pushed
-                    else f"Kept branch {pushed.branch} locally."
-                ),
-            )
-
-            self._send_step_update(chat_id, "Preparing the review handoff.")
-            pr = _create_pull_request_for_current_task(
-                work_root,
-                self.root,
-                forge=self.forge,
-            )
-            outputs.append(_format_pr_result(pr))
-            if pr.url:
-                self._update_work_status(_pr_step_update(pr), pr_url=pr.url)
-                _record_current_task_result("\n\n".join(outputs), self.root)
-            self._send_step_update(chat_id, _pr_step_update(pr))
-
-            self._send_step_update(chat_id, "Cleaning up the isolated task worktree.")
-            outputs.append(
-                remove_task_worktree(
-                    self.root,
-                    task_worktree,
-                    delete_local_branch=False,
-                )
-            )
-            self._send_step_update(chat_id, f"Resident checkout remains on {resident_branch}.")
-            if pr.url:
-                self._queue_session_sync(
-                    chat_id,
-                    repository_handoff_note(
-                        pr.branch,
-                        pr.url,
-                        resident_branch,
-                        self._authoritative_branch_name(),
-                    ),
-                )
-        except (VcsError, ForgeProviderError) as error:
-            failure = f"Enoch could not publish existing branch {branch}: {error}"
-            self._send_step_update(chat_id, failure)
-            return "\n\n".join([*outputs, failure]) if outputs else failure
-        return "\n\n".join(outputs)
+        return self._task_workflow.publish_existing_branch(chat_id, branch)
 
     def _prepare_existing_branch_task_worktree(self, branch: str) -> TaskWorktree:
-        task_id = _CURRENT_TASK_ID.get()
-        worker_id = _CURRENT_TASK_WORKER_ID.get()
-        if task_id is None or not worker_id:
-            raise VcsError("Branch publishing requires an owned running task.")
-        job = _task_by_id(task_id, self.root)
-        if job is None or job.status != "running" or job.worker_id != worker_id:
-            raise VcsError(f"Task #{task_id} no longer owns its execution lease.")
-        worktree = prepare_existing_branch_worktree(
-            self.root,
-            task_id,
-            branch,
-            existing_path=job.worktree_path,
-        )
-        recorded = record_task_worktree(
-            task_id,
-            worker_id,
-            worktree.path,
-            worktree.branch,
-            self.root,
-        )
-        if recorded is None:
-            raise VcsError(f"Task #{task_id} lost its execution lease while preparing its worktree.")
-        return worktree
+        return self._task_workflow.prepare_existing_branch_task_worktree(branch)
 
     def _save_memory_requests(self, requests: tuple[str, ...]) -> str:
         if not requests:
@@ -1724,197 +1484,14 @@ class EnochApplication:
         validation_result: ImmuneResult | None = None,
         resume_job: TaskJob | None = None,
     ) -> WorkOutcome:
-        publish_root = work_root or self.root
-        outputs: list[str] = []
-        summaries: list[str] = []
-        stage = resume_job.publish_stage if resume_job is not None else ""
-        commit_sha = resume_job.commit_sha if resume_job is not None else ""
-        remote_branch = resume_job.remote_branch if resume_job is not None else ""
-        pr_url = resume_job.pr_url if resume_job is not None else ""
-        pushed_remotely = (
-            resume_job.published_remotely if resume_job is not None else False
-        )
-        completed_stages = [
-            candidate
-            for candidate in ("committed", "pushed", "pr_opened")
-            if candidate == stage
-            or (
-                stage == "pushed"
-                and candidate == "committed"
-            )
-            or (
-                stage == "pr_opened"
-                and candidate in {"committed", "pushed"}
-            )
-        ]
-        try:
-            if stage not in {"committed", "pushed", "pr_opened"}:
-                self._send_step_update(chat_id, "Committing the change.")
-                commit = prepare_local_publish(
-                    feature_title(request),
-                    root=publish_root,
-                    allowed_files=allowed_files,
-                    validation_result=validation_result,
-                )
-                commit_sha = commit.commit_sha
-                remote_branch = commit.branch
-                outputs.append(_format_publish_result(commit))
-                summaries.append(_publish_summary(commit))
-                completed_stages.append("committed")
-                self._record_current_publish_stage(
-                    "committed",
-                    commit_sha=commit_sha,
-                    remote_branch=remote_branch,
-                )
-                self._send_step_update(chat_id, f"Committed {commit.commit_sha}.")
-                stage = "committed"
-            else:
-                outputs.append(
-                    f"Resuming publish workflow after commit {commit_sha or 'unknown'}."
-                )
-
-            if stage not in {"pushed", "pr_opened"}:
-                self._send_step_update(
-                    chat_id,
-                    "Handing off the branch to the configured forge.",
-                )
-                pushed = push_current_branch(root=publish_root)
-                remote_branch = pushed.branch
-                pushed_remotely = pushed.pushed
-                outputs.append(_format_remote_publish_result(pushed))
-                summaries.append(_remote_publish_summary(pushed))
-                completed_stages.append("pushed")
-                self._record_current_publish_stage(
-                    "pushed",
-                    commit_sha=commit_sha,
-                    remote_branch=remote_branch,
-                    published_remotely=pushed_remotely,
-                )
-                self._send_step_update(
-                    chat_id,
-                    (
-                        f"Pushed branch {pushed.branch}."
-                        if pushed.pushed
-                        else f"Kept branch {pushed.branch} locally."
-                    ),
-                )
-                stage = "pushed"
-
-            if stage != "pr_opened":
-                self._send_step_update(chat_id, "Preparing the review handoff.")
-                pr = _create_pull_request_for_current_task(
-                    publish_root,
-                    self.root,
-                    forge=self.forge,
-                )
-                outputs.append(_format_pr_result(pr))
-                summaries.append(_pr_summary(pr))
-                self._send_step_update(chat_id, _pr_step_update(pr))
-                if bool(getattr(self.forge, "supports_remote_review", True)) and (
-                    not pr.created or not pr.url
-                ):
-                    detail = pr.note or pr.fallback_url or "the forge did not return a PR URL"
-                    failure = (
-                        "Enoch pushed the task branch but could not open its pull request. "
-                        f"The worktree and branch were preserved for retry. {detail}"
-                    )
-                    self._send_step_update(chat_id, failure)
-                    return WorkOutcome.failure(
-                        "\n\n".join([*outputs, failure]),
-                        status="publish_incomplete",
-                        code="pr_creation_failed",
-                        failure_class="transient",
-                        retryable=True,
-                        completed_stages=tuple(dict.fromkeys(completed_stages)),
-                        commit_sha=commit_sha,
-                        remote_branch=remote_branch,
-                    )
-                pr_url = pr.url or ""
-                if pr_url:
-                    completed_stages.append("pr_opened")
-                    self._record_current_publish_stage(
-                        "pr_opened",
-                        commit_sha=commit_sha,
-                        remote_branch=remote_branch,
-                        pr_url=pr_url,
-                        published_remotely=pushed_remotely,
-                    )
-                    self._update_work_status(_pr_step_update(pr), pr_url=pr_url)
-                    _record_current_task_result("\n\n".join(outputs), self.root)
-                    stage = "pr_opened"
-            elif pr_url:
-                outputs.append(f"Pull request already opened: {pr_url}")
-
-            resident_branch = self._resident_branch_name()
-            if task_worktree is not None:
-                self._send_step_update(chat_id, "Cleaning up the isolated task worktree.")
-                handoff = remove_task_worktree(
-                    self.root,
-                    task_worktree,
-                    delete_local_branch=pushed_remotely,
-                    force_delete_branch=pushed_remotely,
-                )
-            else:
-                self._send_step_update(chat_id, f"Returning local checkout to {resident_branch}.")
-                handoff = self._return_to_resident_after_handoff(
-                    published_remotely=pushed_remotely,
-                )
-            outputs.append(handoff)
-            summaries.append(handoff)
-            self._send_step_update(chat_id, f"Resident checkout remains on {resident_branch}.")
-            if pr_url:
-                self._queue_session_sync(
-                    chat_id,
-                    repository_handoff_note(
-                        remote_branch,
-                        pr_url,
-                        resident_branch,
-                        self._authoritative_branch_name(),
-                    ),
-                )
-        except (VcsError, ForgeProviderError) as error:
-            failure = f"Enoch could not publish this edit as a pull request: {error}"
-            self._send_step_update(chat_id, failure)
-            classified = classify_task_failure(failure)
-            publish_started = bool(completed_stages)
-            return WorkOutcome.failure(
-                "\n\n".join([*outputs, failure]) if outputs else failure,
-                status="publish_incomplete" if publish_started else "failed",
-                code=(
-                    classified.code
-                    if classified.code != "unknown_failure"
-                    else "publish_failed"
-                ),
-                failure_class=(
-                    "transient" if publish_started else classified.failure_class
-                ),
-                retryable=publish_started or classified.retryable,
-                completed_stages=tuple(dict.fromkeys(completed_stages)),
-                commit_sha=commit_sha,
-                remote_branch=remote_branch,
-            )
-
-        action = (
-            f"published edit as pull request: {request}"
-            if pr_url
-            else f"committed edit to local branch: {request}"
-        )
-        _record_direct_action(action, "\n\n".join(summaries), self.root)
-        reply = "\n\n".join(outputs)
-        self._queue_session_sync(
+        return self._task_workflow.publish_feature_pr(
             chat_id,
-            _activity_sync_note(
-                f"Enoch {action}",
-                f"Final workflow summary: {_clip_activity_text(summaries[-1]) if summaries else 'none'}",
-                f"Result: {_clip_activity_text(reply)}",
-            ),
-        )
-        return WorkOutcome.completed(
-            reply,
-            completed_stages=tuple(dict.fromkeys(completed_stages)),
-            commit_sha=commit_sha,
-            remote_branch=remote_branch,
-            pr_url=pr_url,
+            request,
+            allowed_files,
+            work_root=work_root,
+            task_worktree=task_worktree,
+            validation_result=validation_result,
+            resume_job=resume_job,
         )
 
     def _record_current_publish_stage(
@@ -1926,76 +1503,24 @@ class EnochApplication:
         pr_url: str = "",
         published_remotely: bool | None = None,
     ) -> None:
-        task_id = _CURRENT_TASK_ID.get()
-        worker_id = _CURRENT_TASK_WORKER_ID.get()
-        if task_id is None or not worker_id:
-            return
-        recorded = record_task_publish_state(
-            task_id,
-            worker_id,
-            self.root,
-            stage=stage,
+        self._task_workflow.record_current_publish_stage(
+            stage,
             commit_sha=commit_sha,
             remote_branch=remote_branch,
             pr_url=pr_url,
             published_remotely=published_remotely,
         )
-        if recorded is None:
-            raise VcsError(
-                f"Task #{task_id} lost its execution lease while recording publish stage {stage}."
-            )
 
     def _resume_task_publish(self, job: TaskJob) -> WorkOutcome:
-        if not job.worktree_path or not job.branch_name:
-            return WorkOutcome.failure(
-                f"Task #{job.id} cannot resume publishing because its worktree metadata is missing.",
-                code="worktree_precondition",
-            )
-        worktree = TaskWorktree(
-            task_id=job.id,
-            path=Path(job.worktree_path),
-            branch=job.branch_name,
-            created=False,
-        )
-        return self._publish_feature_pr(
-            job.chat_id,
-            job.text,
-            (),
-            work_root=worktree.path,
-            task_worktree=worktree,
-            resume_job=job,
-        )
+        return self._task_workflow.resume_task_publish(job)
 
-    def _return_to_resident_after_handoff(self, *, published_remotely: bool = True) -> str:
-        branch = current_branch(self.root)
-        resident_branch = self._resident_branch_name(branch)
-        if branch == resident_branch:
-            return f"Local checkout is already on {resident_branch}."
-        ensure_clean_worktree(self.root)
-        switch_branch(resident_branch, self.root)
-        cleanup = ""
-        if published_remotely:
-            cleanup = _delete_local_branch_if_enabled(
-                branch,
-                self.root,
-                protected_branch=resident_branch,
-            )
-        location = (
-            "The change remains on the pushed remote branch."
-            if published_remotely
-            else f"The change remains on local branch {branch}."
-        )
-        if cleanup:
-            return "\n".join(
-                [
-                    f"Enoch switched local checkout back to {resident_branch}.",
-                    cleanup,
-                    location,
-                ]
-            )
-        return (
-            f"Enoch switched local checkout back to {resident_branch}. "
-            f"{location}"
+    def _return_to_resident_after_handoff(
+        self,
+        *,
+        published_remotely: bool = True,
+    ) -> str:
+        return self._task_workflow.return_to_resident_after_handoff(
+            published_remotely=published_remotely,
         )
 
     def _remember_resident_branch(self, fallback: str) -> str:
@@ -3923,81 +3448,6 @@ def _event_idempotency_key(purpose: str) -> str:
     return f"chat:{event_key}:{normalized_purpose}"
 
 
-def _action_sandbox(_root: Path) -> str:
-    return ACTION_SANDBOX_FULL_ACCESS
-
-
-def _sandbox_description(sandbox: str) -> str:
-    if sandbox == WORKSPACE_WRITE_SANDBOX:
-        return "editing her code body"
-    if sandbox == ACTION_SANDBOX_FULL_ACCESS:
-        return "working with full filesystem access"
-    return "thinking in read-only mode"
-
-
-def _changed_files_or_empty(root: Path) -> tuple[str, ...]:
-    try:
-        return tuple(changed_files(root))
-    except VcsError:
-        return ()
-
-
-def _delete_local_branch_if_enabled(
-    branch: str,
-    root: Path,
-    *,
-    protected_branch: str = "",
-) -> str:
-    if not _cleanup_local_branches(root):
-        return ""
-    if not branch or branch in {DEFAULT_BRANCH, protected_branch}:
-        return ""
-    delete_branch(branch, root, force=True)
-    return f"Deleted local branch {branch}."
-
-
-def _cleanup_local_branches(root: Path) -> bool:
-    value = read_section("git", root).get("cleanup_local_branches", "").strip().lower()
-    if not value:
-        return True
-    return value not in {"0", "false", "no", "off"}
-
-
-def _activity_sync_note(*lines: str) -> str:
-    body = "\n".join(f"- {line.strip()}" for line in lines if line.strip())
-    return "\n".join(
-        [
-            "Internal Enoch activity sync.",
-            "Record this as factual recent context for future recall. Do not treat it as a new user request.",
-            body,
-        ]
-    )
-
-
-def _work_reply_failed(reply: str) -> bool:
-    normalized = reply.strip().lower()
-    return (
-        normalized.startswith("enoch could not ")
-        or "i did not open a pr because doctor failed" in normalized
-        or "doctor failed:" in normalized
-    )
-
-
-def _coerce_work_outcome(value: WorkOutcome | str) -> WorkOutcome:
-    if isinstance(value, WorkOutcome):
-        return value
-    message = str(value)
-    if _work_reply_failed(message):
-        failure = classify_task_failure(message)
-        return WorkOutcome.failure(
-            message,
-            code=failure.code,
-            failure_class=failure.failure_class,
-            retryable=failure.retryable,
-        )
-    return WorkOutcome.completed(message)
-
-
 def _start_task_deadline(
     root: Path,
     cancellation_event: threading.Event,
@@ -4080,20 +3530,6 @@ def _parse_task_context_snapshot(reply: str) -> TaskContextSnapshot:
     )
 
 
-def _work_request_with_context(request: str, context: str) -> str:
-    context = context.strip()
-    if not context:
-        return request
-    return "\n\n".join(
-        [
-            "Task request:",
-            request.strip(),
-            "Conversation context snapshot:",
-            context,
-        ]
-    )
-
-
 def _replied_message_text(message: dict[str, Any]) -> str:
     reply = message.get("reply_to_message")
     if not isinstance(reply, dict):
@@ -4103,31 +3539,6 @@ def _replied_message_text(message: dict[str, Any]) -> str:
         if isinstance(value, str) and value.strip():
             return value.strip()
     return ""
-
-
-def _record_current_task_result(result: str, root: Path) -> None:
-    task_status = _CURRENT_WORK_STATUS.get()
-    task_id = task_status.task_id if task_status is not None and task_status.task_id is not None else _CURRENT_TASK_ID.get()
-    if task_id is None:
-        return
-    record_task_result(task_id, result, root)
-
-
-def _record_current_task_runtime_result(
-    result: RuntimeResult,
-    *,
-    provider: str,
-    root: Path,
-) -> None:
-    task_status = _CURRENT_WORK_STATUS.get()
-    task_id = (
-        task_status.task_id
-        if task_status is not None and task_status.task_id is not None
-        else _CURRENT_TASK_ID.get()
-    )
-    if task_id is None:
-        return
-    record_task_runtime_result(task_id, result, root, provider=provider)
 
 
 def _reconciled_retry_result(
@@ -4374,74 +3785,11 @@ def _task_worker_context(job: TaskJob) -> str:
     return "\n\n".join(part for part in parts if part)
 
 
-def _evolution_provenance_for_job(job: TaskJob) -> EvolutionProvenance | None:
-    if not job.candidate_id:
-        return None
-    return EvolutionProvenance(
-        candidate_id=job.candidate_id,
-        evidence_source=job.evidence_source or job.source,
-        signal_actor=job.signal_actor or _legacy_candidate_signal_actor(job.source),
-        candidate_actor=job.candidate_actor or "agent",
-        approval_actor=job.approval_actor or _legacy_task_approval_actor(job),
-        task_id=job.id,
-        parent_candidate_id=job.parent_candidate_id,
-        source_task_id=job.source_task_id,
-        retry_of_task_id=job.parent_task_id,
-    )
-
-
-def _legacy_candidate_signal_actor(source: str) -> str:
-    if source in {"backlog", "feedback", "learning"}:
-        return "human"
-    if source in {"inheritance", "brainstorming"}:
-        return "agent"
-    return "system"
-
-
-def _legacy_task_approval_actor(job: TaskJob) -> str:
-    if job.trigger.startswith("/evolve ") or job.context_source in {"evolve-approve", "evolve-retry"}:
-        return "human"
-    if job.context_source == "evolve-scheduler":
-        return "agent"
-    return job.initiated_by
-
-
-def _create_pull_request_for_current_task(
-    work_root: Path,
-    state_root: Path | None = None,
-    *,
-    forge: ForgeProvider | None = None,
-) -> PullRequestResult:
-    forge = forge or FunctionForgeProvider(
-        close_fn=close_pull_request,
-        create_fn=create_pull_request,
-        inspect_fn=inspect_pull_request,
-        inspect_merge_fn=inspect_pull_request_merge,
-        list_fn=list_open_pull_requests,
-        merge_fn=merge_pull_request,
-    )
-    state_root = state_root or work_root
-    task_id = _CURRENT_TASK_ID.get()
-    job = _task_by_id(task_id, state_root) if task_id is not None else None
-    provenance = _evolution_provenance_for_job(job) if job is not None else None
-    if provenance is None:
-        return forge.create_pull_request(root=work_root)
-    return forge.create_pull_request(root=work_root, evolution_provenance=provenance)
-
-
 def _history_task(task_id: int, root: Path) -> TaskJob | None:
     for job in reversed(task_queue_status(root).history):
         if job.id == task_id:
             return job
     return None
-
-
-def _task_by_id(task_id: int, root: Path) -> TaskJob | None:
-    status = task_queue_status(root)
-    jobs = [*status.pending, *status.paused, *status.history]
-    if status.running is not None:
-        jobs.append(status.running)
-    return next((job for job in jobs if job.id == task_id), None)
 
 
 def _format_task_worktrees(states: tuple[TaskWorktreeState, ...], root: Path) -> str:
@@ -4526,30 +3874,28 @@ def _codex_pause_warning(task_id: int, reason: str) -> str:
     )
 
 
-def _duplicate_close_comment(keep_number: int | None) -> str:
-    if keep_number is None:
-        return "Closing this pull request from a Enoch maintenance job."
-    return f"Closing as a duplicate of #{keep_number}. Keeping #{keep_number} as the canonical PR for this change."
-
-
-def _format_pr_close_results(results: list[PullRequestCloseResult], keep_number: int | None) -> str:
-    if not results:
-        return "Enoch could not close any pull requests: no duplicate PR numbers were found."
-    lines = ["Enoch updated pull requests."]
-    if keep_number is not None:
-        lines.append(f"Kept PR: #{keep_number}")
-    lines.append("Closed PRs:")
-    failed = False
-    for result in results:
-        if result.closed:
-            target = result.url or f"#{result.number}"
-            lines.append(f"- #{result.number}: closed ({target})")
-        else:
-            failed = True
-            lines.append(f"- #{result.number}: failed ({result.note or 'unknown error'})")
-    if failed:
-        return "Enoch could not complete every pull request update.\n\n" + "\n".join(lines)
-    return "\n".join(lines)
+def _create_pull_request_for_current_task(
+    work_root: Path,
+    state_root: Path | None = None,
+    *,
+    forge: ForgeProvider | None = None,
+) -> PullRequestResult:
+    forge = forge or FunctionForgeProvider(
+        close_fn=lambda *args, **kwargs: close_pull_request(*args, **kwargs),
+        create_fn=lambda **kwargs: create_pull_request(**kwargs),
+        inspect_fn=lambda *args, **kwargs: inspect_pull_request(*args, **kwargs),
+        inspect_merge_fn=lambda *args, **kwargs: inspect_pull_request_merge(
+            *args,
+            **kwargs,
+        ),
+        list_fn=lambda *args, **kwargs: list_open_pull_requests(*args, **kwargs),
+        merge_fn=lambda *args, **kwargs: merge_pull_request(*args, **kwargs),
+    )
+    return _task_create_pull_request_for_current_task(
+        work_root,
+        state_root,
+        forge=forge,
+    )
 
 
 def _load_task_status_messages(root: Path) -> dict[int, MessageId]:
