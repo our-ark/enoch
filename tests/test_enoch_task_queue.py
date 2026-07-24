@@ -44,11 +44,59 @@ from enoch.providers import (
     RuntimeSideEffect,
     RuntimeUsage,
 )
-from enoch.tasks.events import load_task_events
+from enoch.tasks.events import load_recent_task_outcomes, load_task_events
 from enoch.tasks import queue as task_queue
 
 
 class EnochTaskQueueTests(unittest.TestCase):
+    def test_recent_task_outcomes_keep_latest_terminal_state_and_publish_evidence(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            first = enqueue_task(42, "publish bounded task", root)
+            running = begin_next_task(root)
+            assert running is not None
+            claim_running_task(running.id, "worker-one", os.getpid(), root)
+            record_task_publish_state(
+                running.id,
+                "worker-one",
+                root,
+                stage="pr_opened",
+                commit_sha="d58edcc",
+                pr_url="https://github.com/our-ark/enoch/pull/19",
+                published_remotely=True,
+            )
+            complete_task(
+                running.id,
+                root,
+                result=(
+                    "Implemented bounded task.\n"
+                    "Files:\n"
+                    "- src/enoch/evolution/curation.py"
+                ),
+                worker_id="worker-one",
+            )
+            regress_task(first.id, root, result="A regression was confirmed.")
+
+            second = enqueue_task(42, "complete stable task", root)
+            running_second = begin_next_task(root)
+            assert running_second is not None
+            complete_task(running_second.id, root, result="Completed stable task.")
+            outcomes = load_recent_task_outcomes(root)
+            published_event = next(
+                event
+                for event in load_task_events(root, task_id=first.id)
+                if event.event == "completed"
+            )
+
+        self.assertEqual([event.task_id for event in outcomes], [first.id, second.id])
+        self.assertEqual([event.event for event in outcomes], ["regressed", "completed"])
+        self.assertEqual(published_event.publish_stage, "pr_opened")
+        self.assertEqual(published_event.commit_sha, "d58edcc")
+        self.assertEqual(
+            published_event.changed_files,
+            ("src/enoch/evolution/curation.py",),
+        )
+
     def test_runtime_result_metadata_is_persisted_in_task_and_event_history(self) -> None:
         runtime_result = RuntimeResult(
             final_text="Implemented the task.",

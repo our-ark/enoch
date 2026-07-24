@@ -4,6 +4,7 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 import json
 from pathlib import Path
+import re
 import threading
 from typing import Protocol
 from uuid import uuid4
@@ -17,7 +18,7 @@ from enoch.memory.paths import clean_text, now as current_time
 from enoch.paths import enoch_home
 
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 EVOLVE_EVENT_TYPES = {
     "checked",
     "proposed",
@@ -65,6 +66,20 @@ _CANDIDATE_EVENTS = {
 }
 PROPOSAL_DISPOSITION_EVENTS = {"selected", "removed", "no-action"}
 RECORDING_MODES = {"realtime", "backfill"}
+REMOVAL_CLASSIFICATIONS = {
+    "duplicate",
+    "superseded",
+    "obsolete",
+    "already-resolved",
+    "context-only",
+    "not-actionable",
+}
+_EVIDENCE_REF_PATTERNS = (
+    re.compile(r"task:[1-9]\d*$"),
+    re.compile(r"pr:https://[A-Za-z0-9.-]+/[^\s]+/(?:pull|pulls|merge_requests)/\d+/?$"),
+    re.compile(r"merge:[0-9a-fA-F]{7,64}$"),
+    re.compile(r"version:[A-Za-z0-9._-]{1,80}$"),
+)
 _EVOLVE_EVENT_THREAD_LOCK = threading.RLock()
 
 
@@ -115,6 +130,8 @@ class EvolveEvent:
     retry_of_task_id: int | None = None
     score: int = 0
     reason: str = ""
+    removal_classification: str = ""
+    evidence_refs: tuple[str, ...] = ()
     pr_url: str = ""
     merge_commit: str = ""
     authoritative_branch: str = ""
@@ -149,6 +166,8 @@ def record_evolve_event(
     approval_actor: str = "",
     retry_of_task_id: int | None = None,
     reason: str = "",
+    removal_classification: str = "",
+    evidence_refs: tuple[str, ...] = (),
     proposal_id: str = "",
     curation_id: str = "",
     recommendation_kind: str = "",
@@ -219,6 +238,15 @@ def record_evolve_event(
     if approval_actor and not normalized_approval_actor:
         raise ValueError("Approval actor must be human, agent, or system.")
     normalized_task_id = _positive_int(task_id)
+    normalized_removal_classification = clean_text(removal_classification).lower()
+    if (
+        normalized_removal_classification
+        and normalized_removal_classification not in REMOVAL_CLASSIFICATIONS
+    ):
+        raise ValueError("Unknown evolve candidate removal classification.")
+    if normalized_removal_classification and normalized_event != "removed":
+        raise ValueError("Removal classification is only valid for removed events.")
+    normalized_evidence_refs = _validated_evidence_refs(evidence_refs)
     normalized_proposal_id = clean_text(proposal_id)
     if normalized_event == "proposed" and not normalized_proposal_id:
         normalized_proposal_id = f"proposal-{uuid4().hex}"
@@ -287,6 +315,8 @@ def record_evolve_event(
         retry_of_task_id=_positive_int(retry_of_task_id),
         score=_int(getattr(candidate, "score", 0)),
         reason=_clip(clean_text(reason)),
+        removal_classification=normalized_removal_classification,
+        evidence_refs=normalized_evidence_refs,
         pr_url=normalized_pr_url,
         merge_commit=normalized_merge_commit,
         authoritative_branch=normalized_authoritative_branch,
@@ -545,6 +575,10 @@ def _event_from_line(line: str) -> EvolveEvent | None:
         retry_of_task_id=_positive_int(raw.get("retry_of_task_id")),
         score=_int(raw.get("score")),
         reason=_clip(clean_text(str(raw.get("reason") or ""))),
+        removal_classification=_loaded_removal_classification(
+            raw.get("removal_classification")
+        ),
+        evidence_refs=_loaded_evidence_refs(raw.get("evidence_refs")),
         pr_url=clean_text(str(raw.get("pr_url") or "")),
         merge_commit=clean_text(str(raw.get("merge_commit") or "")),
         authoritative_branch=clean_text(
@@ -623,6 +657,37 @@ def _string_tuple(value: object) -> tuple[str, ...]:
         seen.add(cleaned)
         output.append(cleaned)
     return tuple(output)
+
+
+def _validated_evidence_refs(value: object) -> tuple[str, ...]:
+    if not isinstance(value, (list, tuple)):
+        raise ValueError("Evolution evidence refs must be a list or tuple.")
+    refs = _loaded_evidence_refs(value)
+    if len(refs) != len(value):
+        raise ValueError("Evolution evidence refs contain a malformed or duplicate ref.")
+    return refs
+
+
+def _loaded_evidence_refs(value: object) -> tuple[str, ...]:
+    if not isinstance(value, (list, tuple)):
+        return ()
+    output: list[str] = []
+    for item in value:
+        ref = clean_text(str(item or ""))
+        if (
+            ref
+            and ref not in output
+            and any(pattern.fullmatch(ref) for pattern in _EVIDENCE_REF_PATTERNS)
+        ):
+            output.append(ref)
+        if len(output) >= 64:
+            break
+    return tuple(output)
+
+
+def _loaded_removal_classification(value: object) -> str:
+    classification = clean_text(str(value or "")).lower()
+    return classification if classification in REMOVAL_CLASSIFICATIONS else ""
 
 
 def _actor(value: object) -> str:

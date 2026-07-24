@@ -20,10 +20,14 @@ from enoch.cron import CronJob, cron_status, format_cron_interval
 from enoch.evolution.curation import (
     DEFAULT_CURATION_LIMIT,
     CurationGenerator,
+    REMOVE_CLASSIFICATIONS,
     SemanticCuration,
     curate_candidates,
     deterministic_fallback,
+    load_curations,
+    recent_completion_evidence,
     record_curation,
+    sanitize_curation_text,
     with_new_candidate_ids,
 )
 from enoch.evolution.sources.experience import ExperienceRecord, load_experience_records
@@ -451,16 +455,36 @@ def propose_evolve(
         if curator is None:
             curation = deterministic_fallback(snapshots, reason="curator-unavailable")
         else:
+            completion_evidence: tuple[dict[str, object], ...] = ()
             try:
-                curation = curate_candidates(
-                    mission=mission,
-                    theme=report.state.theme,
-                    candidates=snapshots,
-                    generator=curator,
+                completion_evidence = recent_completion_evidence(snapshots, root)
+            except (OSError, RuntimeError, TimeoutError, ValueError) as evidence_error:
+                detail = clean_text(str(evidence_error)) or evidence_error.__class__.__name__
+                curation = deterministic_fallback(
+                    snapshots,
+                    reason=f"completion-evidence-unavailable: {detail}",
                 )
-            except (OSError, RuntimeError, TimeoutError, ValueError) as curation_error:
-                reason = clean_text(str(curation_error)) or curation_error.__class__.__name__
-                curation = deterministic_fallback(snapshots, reason=reason)
+            if curation is None:
+                try:
+                    curation = curate_candidates(
+                        mission=mission,
+                        theme=report.state.theme,
+                        candidates=snapshots,
+                        completion_evidence=completion_evidence,
+                        generator=curator,
+                    )
+                except (OSError, RuntimeError, TimeoutError, ValueError) as curation_error:
+                    reason = clean_text(str(curation_error)) or curation_error.__class__.__name__
+                    refs = (
+                        ref
+                        for item in completion_evidence
+                        for ref in item.get("evidence_refs", ())
+                    )
+                    curation = deterministic_fallback(
+                        snapshots,
+                        reason=reason,
+                        evidence_refs=refs,
+                    )
         if curation.status == "llm" and curation.new_candidates:
             ideas = tuple(
                 brainstorm_idea(
@@ -548,8 +572,7 @@ def _select_curation_candidates(
 
 
 def _bounded_curation_text(value: str, *, limit: int = 1200) -> str:
-    cleaned = clean_text(value)
-    return cleaned if len(cleaned) <= limit else cleaned[: limit - 3].rstrip() + "..."
+    return sanitize_curation_text(value, limit=limit)
 
 
 def _claim_auto_brainstorm(
@@ -669,7 +692,33 @@ def remove_evolve_candidate(
     event_actor: str = "human",
     trigger: str = "/evolve remove",
     reason: str = "human-requested-removal",
+    classification: str = "",
+    curation_id: str = "",
+    evidence_refs: tuple[str, ...] = (),
 ) -> EvolveCandidate:
+    normalized_actor = clean_text(event_actor).lower()
+    if normalized_actor != "human":
+        raise ValueError("Only a human can remove an evolve candidate.")
+    normalized_classification = clean_text(classification).lower()
+    if normalized_classification and normalized_classification not in REMOVE_CLASSIFICATIONS:
+        raise ValueError("Unknown evolve candidate removal classification.")
+    normalized_curation_id = clean_text(curation_id)
+    normalized_refs = tuple(clean_text(ref) for ref in evidence_refs if clean_text(ref))
+    if normalized_curation_id or normalized_refs:
+        matching = next(
+            (
+                suggestion
+                for curation in load_curations(root)
+                if curation.id == normalized_curation_id
+                for suggestion in curation.remove_suggestions
+                if suggestion.candidate_id.lower() == candidate_id.strip().lower().lstrip("#")
+                and suggestion.classification == normalized_classification
+                and suggestion.evidence_refs == normalized_refs
+            ),
+            None,
+        )
+        if matching is None:
+            raise ValueError("Removal evidence does not match the recorded curation suggestion.")
     candidate = get_evolve_candidate(candidate_id, root, theme=theme)
     if candidate.status not in ACTIONABLE_CANDIDATE_STATUSES:
         raise ValueError(f"Evolve candidate {candidate.id} cannot be removed from status {candidate.status}.")
@@ -683,6 +732,9 @@ def remove_evolve_candidate(
         theme=theme,
         proposal_id=latest_open_proposal_id(removed.id, root),
         reason=reason,
+        curation_id=normalized_curation_id,
+        removal_classification=normalized_classification,
+        evidence_refs=normalized_refs,
     )
     return removed
 
@@ -980,6 +1032,9 @@ def _record_candidate_event_safely(
     retry_of_task_id: int | None = None,
     reason: str = "",
     proposal_id: str = "",
+    curation_id: str = "",
+    removal_classification: str = "",
+    evidence_refs: tuple[str, ...] = (),
     runtime_task: TaskJob | None = None,
 ) -> None:
     state = load_evolve_state(root)
@@ -1001,6 +1056,9 @@ def _record_candidate_event_safely(
             retry_of_task_id=retry_of_task_id,
             reason=reason,
             proposal_id=linked_id,
+            curation_id=curation_id,
+            removal_classification=removal_classification,
+            evidence_refs=evidence_refs,
             runtime_task=runtime_task,
         )
     except (OSError, ValueError):

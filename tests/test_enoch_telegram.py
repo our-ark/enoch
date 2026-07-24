@@ -2538,6 +2538,7 @@ class EnochTelegramTests(unittest.TestCase):
                             "candidate_id": "backlog-1",
                             "classification": "context-only",
                             "reason": "The note does not request an implementation change.",
+                            "evidence_refs": ["task:17"],
                         }
                     ],
                     "new_candidates": [],
@@ -2546,7 +2547,16 @@ class EnochTelegramTests(unittest.TestCase):
             client = FakeTelegramClient(allowed_chat_id=42)
             bot = EnochApplication(load_identity(), root, client)
 
-            with patch.object(bot, "_respond_read_only_turn", return_value=response):
+            with patch(
+                "enoch.evolution.core.recent_completion_evidence",
+                return_value=(
+                    {
+                        "task_id": 17,
+                        "resolution_authority": "task-completion",
+                        "evidence_refs": ["task:17"],
+                    },
+                ),
+            ), patch.object(bot, "_respond_read_only_turn", return_value=response):
                 _handle_update(bot, _message_update(chat_id=42, text="/propose"))
             candidates = load_evolve_candidates(root)
             events = load_evolve_events(root)
@@ -2557,10 +2567,12 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("backlog-2 [candidate backlog]", reply)
         self.assertIn("LLM remove suggestions (no status changed):", reply)
         self.assertIn("backlog-1 [context-only]", reply)
+        self.assertIn("Evidence: task:17", reply)
         self.assertEqual({candidate.status for candidate in candidates}, {"candidate"})
         self.assertEqual(queued.pending_count, 0)
         self.assertEqual(events[-1].recommendation_kind, "llm")
         self.assertTrue(events[-1].curation_id.startswith("curation-"))
+        self.assertEqual(events[-1].evidence_refs, ("task:17",))
 
     def test_repeated_proposal_marks_previous_one_no_action(self) -> None:
         with TemporaryDirectory() as temp:
@@ -2609,6 +2621,63 @@ class EnochTelegramTests(unittest.TestCase):
 
         self.assertEqual([event.event for event in events], ["proposed", "removed"])
         self.assertEqual(events[0].proposal_id, events[1].proposal_id)
+
+    def test_human_remove_applies_recorded_curation_classification_and_refs(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            add_backlog_item(42, "add bounded curation evidence", root, priority="p0")
+            response = json.dumps(
+                {
+                    "recommended_candidate_id": None,
+                    "recommendation_reason": "",
+                    "scope_guidance": "",
+                    "risk_guidance": "",
+                    "test_plan_guidance": "",
+                    "remove_suggestions": [
+                        {
+                            "candidate_id": "backlog-1",
+                            "classification": "already-resolved",
+                            "reason": "Task 17 was merged into the authoritative body.",
+                            "evidence_refs": ["task:17", "merge:e536d32"],
+                        }
+                    ],
+                    "new_candidates": [],
+                }
+            )
+            evidence = (
+                {
+                    "task_id": 17,
+                    "resolution_authority": "authoritative-body",
+                    "evidence_refs": ["task:17", "merge:e536d32"],
+                },
+            )
+            client = FakeTelegramClient(allowed_chat_id=42)
+            bot = EnochApplication(load_identity(), root, client)
+
+            with patch(
+                "enoch.evolution.core.recent_completion_evidence",
+                return_value=evidence,
+            ), patch.object(bot, "_respond_read_only_turn", return_value=response):
+                _handle_update(bot, _message_update(chat_id=42, text="/propose"))
+            _handle_update(
+                bot,
+                _message_update(
+                    update_id=2,
+                    chat_id=42,
+                    text="/evolve remove backlog-1 already-resolved",
+                ),
+            )
+            removed = load_evolve_events(root, candidate_id="backlog-1")[-1]
+
+        self.assertEqual(removed.event, "removed")
+        self.assertEqual(removed.event_actor, "human")
+        self.assertEqual(removed.removal_classification, "already-resolved")
+        self.assertTrue(removed.curation_id.startswith("curation-"))
+        self.assertEqual(removed.evidence_refs, ("task:17", "merge:e536d32"))
+        self.assertEqual(
+            removed.reason,
+            "Task 17 was merged into the authoritative body.",
+        )
 
     def test_propose_curator_suggests_bounded_candidate_when_pool_is_empty(self) -> None:
         response = json.dumps(

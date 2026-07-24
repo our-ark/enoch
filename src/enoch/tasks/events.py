@@ -17,7 +17,7 @@ from enoch.memory.paths import clean_text, now as current_time
 from enoch.paths import enoch_home
 
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 SUMMARY_LIMIT = 4000
 TASK_SOURCES = {
     "backlog",
@@ -56,6 +56,8 @@ class TaskLike(Protocol):
     completed_at: str
     result: str
     pr_urls: tuple[str, ...]
+    publish_stage: str
+    commit_sha: str
     context_source: str
     source: str
     initiated_by: str
@@ -107,6 +109,8 @@ class TaskEvent:
     related_task_id: int | None = None
     pr_urls: tuple[str, ...] = ()
     changed_files: tuple[str, ...] = ()
+    publish_stage: str = ""
+    commit_sha: str = ""
     attempt: int = 0
     max_attempts: int = 3
     next_attempt_at: str = ""
@@ -173,6 +177,8 @@ def record_task_event(
         related_task_id=_positive_int(related_task_id),
         pr_urls=_dedupe(tuple(getattr(job, "pr_urls", ()) or ())),
         changed_files=_changed_files(summary),
+        publish_stage=clean_text(str(getattr(job, "publish_stage", "") or "")).lower(),
+        commit_sha=clean_text(str(getattr(job, "commit_sha", "") or "")),
         attempt=max(0, _int(getattr(job, "attempt", 0))),
         max_attempts=max(1, _int(getattr(job, "max_attempts", 3), default=3)),
         next_attempt_at=str(getattr(job, "next_attempt_at", "") or "").strip(),
@@ -220,6 +226,40 @@ def load_task_events(
             break
     events.reverse()
     return tuple(events)
+
+
+def load_recent_task_outcomes(
+    root: Path | None = None,
+    *,
+    limit: int = 100,
+) -> tuple[TaskEvent, ...]:
+    """Return the latest terminal event for each recent task.
+
+    A later failure, cancellation, or regression replaces an earlier completion,
+    so callers cannot accidentally treat a stale completed event as current
+    completion evidence.
+    """
+    if limit <= 0:
+        return ()
+    terminal = {
+        "completed",
+        "failed",
+        "cancelled",
+        "regressed",
+        "reverted",
+        "forward-fixed",
+    }
+    outcomes: list[TaskEvent] = []
+    seen: set[int] = set()
+    for event in reversed(load_task_events(root)):
+        if event.task_id in seen or event.event not in terminal:
+            continue
+        seen.add(event.task_id)
+        outcomes.append(event)
+        if len(outcomes) >= limit:
+            break
+    outcomes.reverse()
+    return tuple(outcomes)
 
 
 def normalize_task_source(value: str) -> str:
@@ -301,6 +341,8 @@ def _event_from_line(line: str) -> TaskEvent | None:
         related_task_id=_positive_int(raw.get("related_task_id")),
         pr_urls=_string_tuple(raw.get("pr_urls")),
         changed_files=_string_tuple(raw.get("changed_files")),
+        publish_stage=clean_text(str(raw.get("publish_stage") or "")).lower(),
+        commit_sha=clean_text(str(raw.get("commit_sha") or "")),
         attempt=max(0, _int(raw.get("attempt"))),
         max_attempts=max(1, _int(raw.get("max_attempts"), default=3)),
         next_attempt_at=str(raw.get("next_attempt_at") or "").strip(),

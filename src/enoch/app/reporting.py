@@ -454,6 +454,10 @@ def _format_evolve_event(event: EvolveEvent) -> list[str]:
         details.append(f"health {event.health_check}")
     if event.recording_mode:
         details.append(f"recording {event.recording_mode}")
+    if event.removal_classification:
+        details.append(f"classification {event.removal_classification}")
+    if event.evidence_refs:
+        details.append(f"refs {', '.join(event.evidence_refs)}")
     lines.append(f"  {'; '.join(details)}")
     if event.reason:
         lines.append(f"  Reason: {_clip_activity_text(event.reason, limit=180)}")
@@ -558,6 +562,11 @@ def _format_evolve_proposal(proposal: EvolveProposal) -> str:
                 f"- {suggestion.candidate_id} [{suggestion.classification}] "
                 f"{_clip_activity_text(suggestion.reason, limit=180)}"
             )
+            if suggestion.evidence_refs:
+                lines.append(
+                    "  Evidence: "
+                    + ", ".join(suggestion.evidence_refs)
+                )
             lines.append(
                 f"  Human action: /evolve remove {suggestion.candidate_id} {suggestion.classification}"
             )
