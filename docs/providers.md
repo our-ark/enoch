@@ -189,6 +189,12 @@ failures and `AgentRuntimeCancelled` for human cancellation. Forge and VCS
 providers should raise their matching provider errors. This preserves Enoch's
 pause, resume, failure, and audit behavior across implementations.
 
+Remote forge providers may also expose `health(root) -> ProviderHealth`.
+Doctor uses it when available to detect missing clients or expired
+authentication before a task reaches the publish stage. Providers without the
+optional hook remain compatible and are reported as loaded with authentication
+status unavailable.
+
 ## Typed runtime results
 
 Runtime contract version 1 uses `RuntimeResult` for both `respond()` and

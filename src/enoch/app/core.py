@@ -1499,7 +1499,7 @@ class EnochApplication:
 
         self._send_step_update(chat_id, "Running doctor.")
         self._raise_if_current_task_cancelled()
-        doctor = run_immune_system(work_root)
+        doctor = run_immune_system(work_root, state_root=self.root)
         self._raise_if_current_task_cancelled()
         parts.append(_format_doctor_result(doctor))
         self._send_step_update(chat_id, "Doctor passed." if doctor.passed else "Doctor failed.")

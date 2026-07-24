@@ -3,10 +3,19 @@
 Run the complete suite with:
 
 ```bash
+python -m pip install --disable-pip-version-check --require-hashes \
+  -r .github/requirements/test-build.txt
 python -m unittest discover -s tests
 python -m unittest discover -s libraries/launchd/tests
 python -m unittest discover -s libraries/systemd/tests
 ```
+
+The locked build backend is required because the portable-install test builds
+all distributions offline with build isolation disabled. Doctor checks this
+prerequisite before running the suite and reports the install command when it
+is missing or below the project requirement. When that preflight fails, Doctor
+skips the suite instead of reporting downstream packaging failures as source
+regressions.
 
 The service-provider suites verify manifest generation and lifecycle command
 delegation independently. GitHub Actions runs them on Linux alongside the core

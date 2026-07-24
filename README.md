@@ -180,6 +180,31 @@ The Codex executable is resolved independently in this order:
 Use `/config runtime codex executable <path|auto>` to configure or restore
 automatic discovery. The daemon reads this instance setting directly.
 
+## Doctor
+
+Run `bin/enoch doctor` or `/doctor` before publishing changes. Doctor reports
+three separate sections:
+
+- code health: Python, the complete test suite, and import smoke tests;
+- environment readiness: the locked Python build backend required by the
+  portable-install tests;
+- operational readiness: Codex login, forge authentication, version-control
+  workspace state, and durable `.enoch` state storage.
+
+Doctor preserves the beginning and end of long failures so the final exception
+is not lost. It validates existing JSON and JSONL state without replacing
+unreadable files. When Doctor runs for an isolated task worktree, code checks
+use that worktree while operational state checks use the resident Enoch
+instance.
+
+If the build-backend preflight fails, install the same locked prerequisite used
+by CI:
+
+```bash
+python -m pip install --disable-pip-version-check --require-hashes \
+  -r .github/requirements/test-build.txt
+```
+
 ## Providers
 
 Codex, Git, and a local-only forge are core defaults. Telegram, GitHub,

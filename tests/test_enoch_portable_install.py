@@ -426,6 +426,9 @@ def _write_fake_codex(path: Path) -> None:
             import sys
 
             args = sys.argv[1:]
+            if args[:2] == ["login", "status"]:
+                print("Logged in using portable test runtime.")
+                raise SystemExit(0)
             prompt = sys.stdin.read()
             if "Operate as a careful researcher." not in prompt:
                 raise SystemExit("Installed profile context did not reach the task prompt.")
