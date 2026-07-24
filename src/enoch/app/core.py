@@ -82,6 +82,11 @@ from enoch.evolution.core import (
     set_evolve_mode,
     set_evolve_theme,
 )
+from enoch.evolution.curation import (
+    REMOVE_CLASSIFICATIONS,
+    curation_evidence_refs,
+    latest_remove_suggestion,
+)
 from enoch.evolution.events import (
     EvolveEvent,
     close_open_proposals,
@@ -2187,6 +2192,27 @@ class EnochApplication:
                 return "Use /evolve remove <id> [reason] to remove a self-evolution candidate."
             remove_parts = rest.strip().split(maxsplit=1)
             remove_reason = remove_parts[1] if len(remove_parts) > 1 else "human-requested-removal"
+            removal_classification = ""
+            removal_curation_id = ""
+            removal_evidence_refs: tuple[str, ...] = ()
+            reason_parts = remove_reason.split(maxsplit=1)
+            requested_classification = reason_parts[0].lower()
+            if requested_classification in REMOVE_CLASSIFICATIONS:
+                removal_classification = requested_classification
+                recorded = latest_remove_suggestion(
+                    remove_parts[0],
+                    self.root,
+                    classification=requested_classification,
+                )
+                if recorded is not None:
+                    curation, suggestion = recorded
+                    removal_curation_id = curation.id
+                    removal_evidence_refs = suggestion.evidence_refs
+                    remove_reason = (
+                        reason_parts[1]
+                        if len(reason_parts) > 1
+                        else suggestion.reason
+                    )
             state = evolve_report(self.root).state
             try:
                 candidate = remove_evolve_candidate(
@@ -2194,6 +2220,9 @@ class EnochApplication:
                     self.root,
                     theme=state.theme,
                     reason=remove_reason,
+                    classification=removal_classification,
+                    curation_id=removal_curation_id,
+                    evidence_refs=removal_evidence_refs,
                 )
             except ValueError as error:
                 return str(error)
@@ -2323,6 +2352,11 @@ class EnochApplication:
                 curation_id=(proposal.curation.id if proposal is not None and proposal.curation else ""),
                 recommendation_kind=(
                     proposal.curation.status if proposal is not None and proposal.curation else ""
+                ),
+                evidence_refs=(
+                    curation_evidence_refs(proposal.curation)
+                    if proposal is not None
+                    else ()
                 ),
             )
         except (OSError, ValueError):

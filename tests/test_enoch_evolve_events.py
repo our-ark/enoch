@@ -212,6 +212,63 @@ class EnochEvolveEventTests(unittest.TestCase):
         )
         self.assertEqual(proposal_events[-1].reason, "superseded-by-new-proposal")
 
+    def test_proposal_and_human_removal_preserve_bounded_evidence_refs(self) -> None:
+        candidate = _candidate()
+        refs = ("task:17", "merge:e536d32")
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            proposal = record_evolve_event(
+                "proposed",
+                root,
+                event_actor="human",
+                trigger="/propose",
+                candidate=candidate,
+                curation_id="curation-123",
+                recommendation_kind="llm",
+                evidence_refs=refs,
+            )
+            removed = record_evolve_event(
+                "removed",
+                root,
+                event_actor="human",
+                trigger="/evolve remove",
+                candidate=candidate,
+                proposal_id=proposal.proposal_id,
+                curation_id="curation-123",
+                removal_classification="already-resolved",
+                evidence_refs=refs,
+                reason="Merged by task 17.",
+            )
+            loaded = load_evolve_events(root)[-1]
+
+        self.assertEqual(removed.evidence_refs, refs)
+        self.assertEqual(loaded.removal_classification, "already-resolved")
+        self.assertEqual(loaded.curation_id, "curation-123")
+        self.assertEqual(loaded.evidence_refs, refs)
+
+    def test_malformed_evidence_refs_are_rejected_and_legacy_events_still_load(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            with self.assertRaisesRegex(ValueError, "malformed"):
+                record_evolve_event(
+                    "proposed",
+                    root,
+                    event_actor="human",
+                    trigger="/propose",
+                    candidate=_candidate(),
+                    evidence_refs=("local:/Users/private",),
+                )
+            path = evolve_event_path(root)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                """{"event":"proposed","event_actor":"human","trigger":"/propose","candidate_id":"brainstorm-1","source":"brainstorming","candidate_initiated_by":"agent"}\n""",
+                encoding="utf-8",
+            )
+            legacy = load_evolve_events(root)[0]
+
+        self.assertEqual(legacy.evidence_refs, ())
+        self.assertEqual(legacy.removal_classification, "")
+
     def test_governed_lifecycle_events_require_verified_evidence(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)

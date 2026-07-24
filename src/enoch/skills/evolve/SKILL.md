@@ -29,17 +29,33 @@ The theme is semantic curation context and deterministic pre-ranking pressure, n
 
 `/propose` refreshes all six sources, applies deterministic pre-ranking, and
 passes a bounded set of structured candidate fields and provenance to semantic
-curation. The curator may recommend one existing ID with narrower scope, risk,
+curation. It also includes bounded, privacy-cleaned recent completion evidence
+from the structured task and evolution journals: task/candidate linkage,
+request and result summaries, PRs and changed files, and recorded
+promotion/merge/version verification. Absolute local paths, credentials,
+private-state paths, chat identifiers, memory identifiers, full logs, and
+runtime session identifiers are not included. The curator may recommend one existing ID with narrower scope, risk,
 and test guidance; suggest duplicate, superseded, obsolete, already-resolved,
 context-only, or not-actionable candidates for removal; and suggest up to three
 new bounded candidates. New suggestions are persisted with
 `brainstorming`/`agent` provenance and never masquerade as human feedback.
 
+Completion evidence distinguishes a worker-completed open PR from a promoted
+body change on the authoritative branch, a completed non-body task, and a
+partial runtime result. Failed, cancelled, regressed, and stale earlier
+completion events are excluded. An open PR or task status of `completed` alone
+does not establish authoritative body resolution. `already-resolved` and
+`superseded` suggestions must cite prompt-provided refs such as `task:<id>`,
+`pr:<url>`, `merge:<revision>`, or `version:<version>`; body-change candidates
+require evidence labelled `authoritative-body`.
+
 Semantic curation is stored separately in `.enoch/evolve_curations.jsonl`. It
 references raw candidate IDs and immutable provenance instead of rewriting raw
-evidence. Deterministic ranking remains only for bounded context ordering and an
+evidence. It records bounded input and suggestion evidence refs, never the full
+private task result or conversation. Deterministic ranking remains only for bounded context ordering and an
 explicitly labelled fallback when the reasoning engine is unavailable, times
-out, returns malformed JSON, or produces no valid result. The legacy empty-pool
+out, completion evidence cannot be loaded, returns malformed JSON, cites
+unknown or non-authoritative resolution evidence, or produces no valid result. The legacy empty-pool
 brainstorm fallback remains available to direct callers, while the application
 proposal flow uses semantic curation for both existing and newly suggested work.
 
@@ -48,7 +64,10 @@ Candidates are persisted in `.enoch/evolve_candidates.json` so Enoch can remembe
 Evolution decisions are appended to `.enoch/evolve_events.jsonl`. The funnel
 records checks, proposals, selections, queueing, terminal outcomes, skips, and
 human removals. Proposal events link `curation_id` and `recommendation_kind` to
-the separate curation journal. Candidate provenance separates `evidence_source`, `signal_actor`, and
+the separate curation journal and retain bounded evidence refs. Human removals
+made from a curator suggestion preserve the removal classification, reason,
+curation ID, and evidence refs. The LLM and scheduler never apply a suggestion
+or change candidate status. Candidate provenance separates `evidence_source`, `signal_actor`, and
 `candidate_actor`; execution records `approval_actor`, while `event_actor` and
 `trigger` identify who caused each lifecycle decision. `parent_candidate_id`
 and `source_task_id` preserve causal links for candidates learned from prior

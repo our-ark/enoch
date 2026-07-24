@@ -2,6 +2,7 @@ from pathlib import Path
 import json
 import sys
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 import unittest
 
 
@@ -17,8 +18,9 @@ from enoch.evolution.core import (
     propose_evolve,
     remove_evolve_candidate,
 )
-from enoch.evolution.curation import load_curations
-from enoch.evolution.events import load_evolve_events
+from enoch.evolution.curation import curation_index_path, load_curations
+from enoch.evolution.events import load_evolve_events, record_evolve_event
+from enoch.tasks.events import record_task_event
 from enoch.tasks.queue import task_queue_status
 from enoch.logs import log_conversation_turn
 
@@ -123,12 +125,26 @@ class EnochEvolveCurationTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             _write_candidates(root, (first, second))
+            _record_completed_work(
+                root,
+                task_id=17,
+                candidate=second,
+                request="Implement focused experience validation.",
+                result="Implemented focused experience validation.\nFiles:\n- src/enoch/evolution/core.py",
+                pr_url="https://github.com/our-ark/enoch/pull/19",
+                promoted=True,
+            )
             proposal = propose_evolve(
                 root,
                 curator=lambda _prompt: _response(
                     remove=[
                         {"candidate_id": first.id, "classification": "duplicate", "reason": "Same bounded change."},
-                        {"candidate_id": second.id, "classification": "already-resolved", "reason": "Tests show it is fixed."},
+                        {
+                            "candidate_id": second.id,
+                            "classification": "already-resolved",
+                            "reason": "Task 17 was promoted through PR 19.",
+                            "evidence_refs": ["task:17", "merge:e536d32"],
+                        },
                     ]
                 ),
             )
@@ -140,6 +156,246 @@ class EnochEvolveCurationTests(unittest.TestCase):
             ["duplicate", "already-resolved"],
         )
         self.assertEqual(statuses, {first.id: "candidate", second.id: "candidate"})
+
+    def test_prompt_receives_bounded_redacted_recent_completed_work(self) -> None:
+        candidate = _candidate(
+            "feedback",
+            1,
+            title="Review /workspace/private/candidate.py token=candidate-secret",
+        )
+        prompts: list[str] = []
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            _write_candidates(root, (candidate,))
+            for task_id in range(1, 16):
+                _record_completed_work(
+                    root,
+                    task_id=task_id,
+                    request=(
+                        f"Review task {task_id} at /Users/gary/private/repo "
+                        "chat_id=987 mem_20260723_private api_key=top-secret"
+                    ),
+                    result=(
+                        "Completed review in /tmp/private.log with password=hunter2. "
+                        + "bounded " * 300
+                    ),
+                )
+            propose_evolve(
+                root,
+                mission="Evolve /workspace/private/body.py with secret=mission-secret",
+                curator=lambda prompt: prompts.append(prompt)
+                or _response(recommended_candidate_id=candidate.id),
+            )
+
+        prompt_payload = _prompt_input(prompts[0])
+        evidence = prompt_payload["recent_completed_work"]
+        serialized = json.dumps(prompt_payload)
+        self.assertEqual(len(evidence), 12)
+        self.assertNotIn("/Users/", serialized)
+        self.assertNotIn("/tmp/", serialized)
+        self.assertNotIn("chat_id=987", serialized)
+        self.assertNotIn("mem_20260723_private", serialized)
+        self.assertNotIn("top-secret", serialized)
+        self.assertNotIn("hunter2", serialized)
+        self.assertNotIn("candidate-secret", serialized)
+        self.assertNotIn("mission-secret", serialized)
+        self.assertLessEqual(
+            max(len(item["result_summary"]) for item in evidence),
+            800,
+        )
+        self.assertEqual(
+            {item["completion_kind"] for item in evidence},
+            {"completed-no-body-change"},
+        )
+        self.assertEqual(
+            {item["resolution_authority"] for item in evidence},
+            {"task-completion"},
+        )
+
+    def test_direct_merged_candidate_link_supports_already_resolved_evidence(self) -> None:
+        candidate = EvolveCandidate(
+            **{**_candidate("feedback", 1).__dict__, "source_task_id": 17}
+        )
+        prompts: list[str] = []
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            _write_candidates(root, (candidate,))
+            _record_completed_work(
+                root,
+                task_id=17,
+                candidate=candidate,
+                request="Add semantic candidate curation.",
+                result="Added semantic candidate curation.\nFiles:\n- src/enoch/evolution/curation.py",
+                pr_url="https://github.com/our-ark/enoch/pull/19",
+                promoted=True,
+                version="v0.2.1",
+            )
+            proposal = propose_evolve(
+                root,
+                curator=lambda prompt: prompts.append(prompt)
+                or _response(
+                    remove=[
+                        {
+                            "candidate_id": candidate.id,
+                            "classification": "already-resolved",
+                            "reason": (
+                                "The linked task is merged into the authoritative body; "
+                                "/Users/gary/private/result token=private-token."
+                            ),
+                            "evidence_refs": ["task:17", "pr:https://github.com/our-ark/enoch/pull/19", "merge:e536d32"],
+                        }
+                    ]
+                ),
+            )
+            stored = load_evolve_candidates(root, include_inactive=True)[0]
+            journal = load_curations(root)[0]
+            raw_journal = curation_index_path(root).read_text(encoding="utf-8")
+
+        completion = _prompt_input(prompts[0])["recent_completed_work"][0]
+        self.assertIn(candidate.id, completion["direct_candidate_ids"])
+        self.assertEqual(completion["resolution_authority"], "authoritative-body")
+        self.assertEqual(completion["authoritative_version"], "v0.2.1")
+        self.assertIn("version:v0.2.1", completion["evidence_refs"])
+        self.assertEqual(proposal.curation.status, "llm")
+        self.assertEqual(stored.status, "candidate")
+        self.assertEqual(
+            journal.remove_suggestions[0].evidence_refs,
+            (
+                "task:17",
+                "pr:https://github.com/our-ark/enoch/pull/19",
+                "merge:e536d32",
+            ),
+        )
+        self.assertNotIn("Added semantic candidate curation", raw_journal)
+        self.assertNotIn("/Users/gary", raw_journal)
+        self.assertNotIn("private-token", raw_journal)
+
+    def test_semantic_resolution_without_direct_link_and_supersession_are_allowed(self) -> None:
+        resolved = _candidate("feedback", 1, title="Use LLM semantic candidate curation")
+        superseded = _candidate("backlog", 2, title="Add fixed-score candidate pruning")
+        completed_candidate = _candidate("brainstorming", 99)
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            _write_candidates(root, (resolved, superseded))
+            _record_completed_work(
+                root,
+                task_id=22,
+                candidate=completed_candidate,
+                request="Replace fixed pruning with LLM semantic candidate curation.",
+                result=(
+                    "Implemented LLM semantic curation and replaced fixed pruning."
+                    "\nFiles:\n- src/enoch/evolution/curation.py"
+                ),
+                pr_url="https://github.com/our-ark/enoch/pull/22",
+                promoted=True,
+                merge_commit="abcdef123456",
+            )
+            proposal = propose_evolve(
+                root,
+                curator=lambda _prompt: _response(
+                    remove=[
+                        {
+                            "candidate_id": resolved.id,
+                            "classification": "already-resolved",
+                            "reason": "Task 22 semantically implements this request.",
+                            "evidence_refs": ["task:22", "merge:abcdef123456"],
+                        },
+                        {
+                            "candidate_id": superseded.id,
+                            "classification": "superseded",
+                            "reason": "The later semantic implementation replaces fixed pruning.",
+                            "evidence_refs": ["task:22", "merge:abcdef123456"],
+                        },
+                    ]
+                ),
+            )
+
+        self.assertEqual(
+            [item.classification for item in proposal.curation.remove_suggestions],
+            ["already-resolved", "superseded"],
+        )
+
+    def test_open_pr_partial_failed_and_cancelled_work_cannot_resolve_body_candidate(self) -> None:
+        candidate = _candidate("feedback", 1)
+        for label, event, runtime_reason, promoted in (
+            ("open-pr", "completed", "completed", False),
+            ("partial", "completed", "output-limit", True),
+            ("failed", "failed", "failed", False),
+            ("cancelled", "cancelled", "cancelled", False),
+        ):
+            with self.subTest(label=label), TemporaryDirectory() as temp:
+                root = Path(temp)
+                _write_candidates(root, (candidate,))
+                _record_completed_work(
+                    root,
+                    task_id=31,
+                    candidate=candidate,
+                    result="Changed curation.\nFiles:\n- src/enoch/evolution/curation.py",
+                    pr_url="https://github.com/our-ark/enoch/pull/31",
+                    event=event,
+                    runtime_reason=runtime_reason,
+                    promoted=promoted,
+                )
+                proposal = propose_evolve(
+                    root,
+                    curator=lambda _prompt: _response(
+                        remove=[
+                            {
+                                "candidate_id": candidate.id,
+                                "classification": "already-resolved",
+                                "reason": "Claimed complete.",
+                                "evidence_refs": ["task:31"],
+                            }
+                        ]
+                    ),
+                )
+                stored = load_evolve_candidates(root, include_inactive=True)[0]
+
+            self.assertEqual(proposal.curation.status, "deterministic-fallback")
+            self.assertEqual(stored.status, "candidate")
+
+    def test_unknown_and_malformed_evidence_refs_are_rejected_without_mutation(self) -> None:
+        candidate = _candidate("feedback", 1)
+        for ref in ("task:999", "local:/Users/gary/private"):
+            with self.subTest(ref=ref), TemporaryDirectory() as temp:
+                root = Path(temp)
+                _write_candidates(root, (candidate,))
+                _record_completed_work(root, task_id=17)
+                proposal = propose_evolve(
+                    root,
+                    curator=lambda _prompt, value=ref: _response(
+                        remove=[
+                            {
+                                "candidate_id": candidate.id,
+                                "classification": "already-resolved",
+                                "reason": "Invalid evidence must not be trusted.",
+                                "evidence_refs": [value],
+                            }
+                        ]
+                    ),
+                )
+                status = load_evolve_candidates(root, include_inactive=True)[0].status
+            self.assertEqual(proposal.curation.status, "deterministic-fallback")
+            self.assertEqual(status, "candidate")
+
+    def test_completion_evidence_loading_failure_uses_explicit_fallback(self) -> None:
+        candidate = _candidate("feedback", 1)
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            _write_candidates(root, (candidate,))
+            from unittest.mock import patch
+
+            with patch(
+                "enoch.evolution.core.recent_completion_evidence",
+                side_effect=OSError("journal unavailable"),
+            ):
+                proposal = propose_evolve(
+                    root,
+                    curator=lambda _prompt: self.fail("curator must not run"),
+                )
+
+        self.assertEqual(proposal.curation.status, "deterministic-fallback")
+        self.assertIn("completion-evidence-unavailable", proposal.curation.fallback_reason)
 
     def test_llm_recommends_existing_candidate_without_state_change(self) -> None:
         first = _candidate("backlog", 1, score=100)
@@ -287,22 +543,86 @@ class EnochEvolveCurationTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             _write_candidates(root, (candidate,))
-            propose_evolve(
+            _record_completed_work(
+                root,
+                task_id=17,
+                candidate=candidate,
+                result="Resolved candidate.\nFiles:\n- src/enoch/evolution/curation.py",
+                pr_url="https://github.com/our-ark/enoch/pull/19",
+                promoted=True,
+            )
+            proposal = propose_evolve(
                 root,
                 curator=lambda _prompt: _response(
                     remove=[
-                        {"candidate_id": candidate.id, "classification": "not-actionable", "reason": "No concrete change."}
+                        {
+                            "candidate_id": candidate.id,
+                            "classification": "already-resolved",
+                            "reason": "Merged by task 17.",
+                            "evidence_refs": ["task:17", "merge:e536d32"],
+                        }
                     ]
                 ),
             )
             before = load_evolve_candidates(root, include_inactive=True)[0]
-            removed = remove_evolve_candidate(candidate.id, root, reason="not-actionable: No concrete change")
+            suggestion = proposal.curation.remove_suggestions[0]
+            with self.assertRaisesRegex(ValueError, "Only a human"):
+                remove_evolve_candidate(
+                    candidate.id,
+                    root,
+                    event_actor="agent",
+                    reason=suggestion.reason,
+                    classification=suggestion.classification,
+                    curation_id=proposal.curation.id,
+                    evidence_refs=suggestion.evidence_refs,
+                )
+            removed = remove_evolve_candidate(
+                candidate.id,
+                root,
+                reason=suggestion.reason,
+                classification=suggestion.classification,
+                curation_id=proposal.curation.id,
+                evidence_refs=suggestion.evidence_refs,
+            )
             event = load_evolve_events(root, candidate_id=candidate.id)[-1]
 
         self.assertEqual(before.status, "candidate")
         self.assertEqual(removed.status, "removed")
         self.assertEqual(event.event_actor, "human")
-        self.assertEqual(event.reason, "not-actionable: No concrete change")
+        self.assertEqual(event.reason, "Merged by task 17.")
+        self.assertEqual(event.removal_classification, "already-resolved")
+        self.assertEqual(event.curation_id, proposal.curation.id)
+        self.assertEqual(event.evidence_refs, ("task:17", "merge:e536d32"))
+
+    def test_legacy_curation_without_evidence_fields_still_loads(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            path = curation_index_path(root)
+            path.parent.mkdir(parents=True)
+            path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "id": "curation-legacy",
+                        "created_at": "2026-07-19T00:00:00Z",
+                        "status": "llm",
+                        "input_candidate_ids": ["feedback-1"],
+                        "remove_suggestions": [
+                            {
+                                "candidate_id": "feedback-1",
+                                "classification": "duplicate",
+                                "reason": "Legacy duplicate.",
+                            }
+                        ],
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            loaded = load_curations(root)[0]
+
+        self.assertEqual(loaded.input_evidence_refs, ())
+        self.assertEqual(loaded.remove_suggestions[0].evidence_refs, ())
 
 
 def _sources() -> tuple[str, ...]:
@@ -336,6 +656,10 @@ def _response(
     new: list[dict[str, str]] | None = None,
     scope: str = "Limit the change to one focused module.",
 ) -> str:
+    remove_suggestions = [
+        {**item, "evidence_refs": item.get("evidence_refs", [])}
+        for item in (remove or [])
+    ]
     return json.dumps(
         {
             "recommended_candidate_id": recommended_candidate_id,
@@ -343,7 +667,7 @@ def _response(
             "scope_guidance": scope if recommended_candidate_id else "",
             "risk_guidance": "Keep the change reversible and reviewable." if recommended_candidate_id else "",
             "test_plan_guidance": "Run focused tests and doctor." if recommended_candidate_id else "",
-            "remove_suggestions": remove or [],
+            "remove_suggestions": remove_suggestions,
             "new_candidates": new or [],
         }
     )
@@ -366,6 +690,95 @@ def _write_candidates(root: Path, candidates: tuple[EvolveCandidate, ...]) -> No
         ),
         encoding="utf-8",
     )
+
+
+def _record_completed_work(
+    root: Path,
+    *,
+    task_id: int,
+    candidate: EvolveCandidate | None = None,
+    request: str = "Complete a bounded non-code review.",
+    result: str = "Completed the bounded review.",
+    pr_url: str = "",
+    event: str = "completed",
+    runtime_reason: str = "completed",
+    promoted: bool = False,
+    merge_commit: str = "e536d32",
+    version: str = "",
+) -> None:
+    completed_at = f"2026-07-23T12:{task_id % 60:02d}:00Z"
+    job = SimpleNamespace(
+        id=task_id,
+        text=request,
+        created_at=completed_at,
+        started_at=completed_at,
+        completed_at=completed_at,
+        result=result,
+        pr_urls=(pr_url,) if pr_url else (),
+        publish_stage="pr_opened" if pr_url else "",
+        commit_sha="d58edcc" if pr_url else "",
+        context_source="",
+        source=candidate.source if candidate is not None else "task",
+        initiated_by="human",
+        trigger="/task",
+        candidate_id=candidate.id if candidate is not None else "",
+        parent_task_id=None,
+        evidence_source=candidate.evidence_source if candidate is not None else "",
+        signal_actor=candidate.signal_actor if candidate is not None else "",
+        candidate_actor=candidate.candidate_actor if candidate is not None else "",
+        approval_actor="human" if candidate is not None else "",
+        parent_candidate_id="",
+        source_task_id=None,
+        attempt=1,
+        max_attempts=3,
+        next_attempt_at="",
+        failure_code="",
+        failure_class="",
+        retryable=False,
+        runtime_provider="codex",
+        runtime_session_id="private-session-not-persisted-in-curation",
+        runtime_completion_reason=runtime_reason,
+        runtime_usage={},
+        runtime_event_types=(),
+        runtime_output_refs=(),
+        runtime_side_effects=(),
+    )
+    record_task_event(
+        job,
+        event,
+        root,
+        event_actor="agent" if event != "cancelled" else "human",
+        trigger="task-runner",
+    )
+    if promoted:
+        promoted_candidate = candidate or _candidate("brainstorming", task_id)
+        record_evolve_event(
+            "promoted",
+            root,
+            event_actor="human",
+            trigger="/evolve reconcile",
+            candidate=promoted_candidate,
+            task_id=task_id,
+            pr_url=pr_url or f"https://github.com/our-ark/enoch/pull/{task_id}",
+            merge_commit=merge_commit,
+            authoritative_branch="main",
+            promoted_at=completed_at,
+        )
+        if version:
+            record_evolve_event(
+                "adopted",
+                root,
+                event_actor="system",
+                trigger="daemon-startup",
+                candidate=promoted_candidate,
+                task_id=task_id,
+                pr_url=pr_url or f"https://github.com/our-ark/enoch/pull/{task_id}",
+                merge_commit=merge_commit,
+                authoritative_branch="main",
+                promoted_at=completed_at,
+                version=version,
+                health_check="passed",
+            )
 
 
 if __name__ == "__main__":
