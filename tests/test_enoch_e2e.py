@@ -63,7 +63,7 @@ class EnochEvolutionEndToEndTests(unittest.TestCase):
 
         bot_doctor = patch(
             "enoch.app.core.run_immune_system",
-            side_effect=lambda _root=None: _passing_doctor(),
+            side_effect=lambda _root=None, **_kwargs: _passing_doctor(),
         )
         publish_doctor = patch(
             "our_ark_github.workflow.run_immune_system",

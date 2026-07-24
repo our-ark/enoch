@@ -4655,7 +4655,7 @@ class EnochTelegramTests(unittest.TestCase):
                             session_key="telegram:42:task:2",
                         )
 
-        run_immune_system.assert_called_once_with(root)
+        run_immune_system.assert_called_once_with(root, state_root=root)
         publish_feature_pr.assert_called_once_with(
             42,
             "add test to the README",

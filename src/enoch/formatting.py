@@ -52,6 +52,7 @@ def format_doctor_result(result: ImmuneResult) -> str:
 def _doctor_check_sections(checks: list[object]) -> list[str]:
     categories = [
         ("code health", "Code health:"),
+        ("environment readiness", "Environment readiness:"),
         ("operational readiness", "Operational readiness:"),
     ]
     lines = []
@@ -62,7 +63,11 @@ def _doctor_check_sections(checks: list[object]) -> list[str]:
         lines.append("")
         lines.append(heading)
         for check in category_checks:
-            status = "passed" if check.passed else "failed"
+            status = (
+                "skipped"
+                if getattr(check, "skipped", False)
+                else ("passed" if check.passed else "failed")
+            )
             summary = getattr(check, "summary", "")
             suffix = f" ({summary})" if summary else ""
             lines.append(f"- {check.name}: {status}{suffix}")
@@ -73,7 +78,11 @@ def doctor_output_excerpt(output: str, limit: int = SUMMARY_CLIP_CHARS) -> str:
     cleaned = output.strip()
     if len(cleaned) <= limit:
         return cleaned
-    return f"{cleaned[:limit].rstrip()}\n\n[truncated]"
+    marker = "\n\n[truncated; final output preserved]\n\n"
+    remaining = limit - len(marker)
+    head = remaining // 2
+    tail = remaining - head
+    return f"{cleaned[:head].rstrip()}{marker}{cleaned[-tail:].lstrip()}"
 
 
 def format_publish_result(result: LocalPublishResult) -> str:

@@ -9,7 +9,7 @@ import subprocess
 from typing import Any
 
 from our_ark_github import workflow
-from our_ark_provider_kit import ForgeProviderError, agent_context
+from our_ark_provider_kit import ForgeProviderError, ProviderHealth, agent_context
 
 
 class GithubForgeProvider:
@@ -46,6 +46,45 @@ class GithubForgeProvider:
 
     def merge_pull_request(self, reference: str, root=None):
         return workflow.merge_pull_request(reference, root)
+
+    def health(self, root: Path | None = None) -> ProviderHealth:
+        if self.gh is None:
+            return ProviderHealth(
+                name="github forge",
+                passed=False,
+                command="gh auth status",
+                output="GitHub CLI is not available.",
+                summary="gh not found",
+            )
+        try:
+            result = subprocess.run(
+                [self.gh, "auth", "status"],
+                cwd=root or self.root,
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=15,
+            )
+        except (OSError, subprocess.TimeoutExpired) as error:
+            return ProviderHealth(
+                name="github forge",
+                passed=False,
+                command=f"{self.gh} auth status",
+                output=str(error),
+                summary="authentication check failed",
+            )
+        output = "\n".join(
+            part.strip()
+            for part in (result.stdout, result.stderr)
+            if part and part.strip()
+        )
+        return ProviderHealth(
+            name="github forge",
+            passed=result.returncode == 0,
+            command=f"{self.gh} auth status",
+            output=output,
+            summary="authenticated" if result.returncode == 0 else "not authenticated",
+        )
 
     def read_text(self, repo: str, path: str, ref: str = "main") -> str:
         content = self._content_text(repo, path, ref)

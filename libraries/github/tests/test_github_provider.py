@@ -47,6 +47,41 @@ class GithubProviderTests(unittest.TestCase):
             ],
         )
 
+    @patch("our_ark_github.subprocess.run")
+    def test_health_reports_authenticated_cli(self, run) -> None:
+        run.return_value.returncode = 0
+        run.return_value.stdout = "Logged in to github.com"
+        run.return_value.stderr = ""
+        provider = GithubForgeProvider(gh="/usr/local/bin/gh")
+
+        health = provider.health(ROOT)
+
+        self.assertTrue(health.passed)
+        self.assertEqual(health.summary, "authenticated")
+        self.assertEqual(
+            run.call_args.args[0],
+            ["/usr/local/bin/gh", "auth", "status"],
+        )
+
+    @patch("our_ark_github.subprocess.run")
+    def test_health_reports_invalid_authentication(self, run) -> None:
+        run.return_value.returncode = 1
+        run.return_value.stdout = ""
+        run.return_value.stderr = "The token is invalid."
+        provider = GithubForgeProvider(gh="/usr/local/bin/gh")
+
+        health = provider.health(ROOT)
+
+        self.assertFalse(health.passed)
+        self.assertEqual(health.summary, "not authenticated")
+        self.assertIn("token is invalid", health.output)
+
+    @patch("our_ark_github.shutil.which", return_value=None)
+    def test_health_reports_missing_cli(self, _which) -> None:
+        health = GithubForgeProvider().health(ROOT)
+
+        self.assertEqual(health.summary, "gh not found")
+
 
 if __name__ == "__main__":
     unittest.main()
