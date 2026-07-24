@@ -5,11 +5,11 @@ type: software
 authors:
   - family-names: Zhao
     given-names: Gary
-version: 0.2.0
-date-released: 2026-07-22
+version: 0.2.1
+date-released: 2026-07-23
 license: Apache-2.0
 repository-code: "https://github.com/our-ark/enoch"
-url: "https://github.com/our-ark/enoch/releases/tag/v0.2.0"
+url: "https://github.com/our-ark/enoch/releases/tag/v0.2.1"
 keywords:
   - agent-owned software
   - personal agents

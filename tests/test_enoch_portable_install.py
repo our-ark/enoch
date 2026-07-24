@@ -163,7 +163,7 @@ class EnochPortableInstallTests(unittest.TestCase):
         self.assertEqual(result["vcs"], "portable-vcs")
         self.assertEqual(result["runtime"], "codex")
         self.assertEqual(result["forge"], "local")
-        self.assertEqual(result["enoch_version"], "0.2.0")
+        self.assertEqual(result["enoch_version"], "0.2.1")
         self.assertEqual(result["chat_provider_version"], "0.0.1")
         self.assertEqual(result["vcs_provider_version"], "0.0.1")
         self.assertEqual(result["profile"], "researcher")
