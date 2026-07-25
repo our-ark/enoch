@@ -184,6 +184,8 @@ class TaskWorkflowHost(Protocol):
         self,
         chat_id: ConversationId,
         message: str,
+        *,
+        notification_key: str = "",
     ) -> MessageId | None: ...
 
     def _format_work_status(self, status: WorkStatusMessage) -> str: ...

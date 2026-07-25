@@ -18,6 +18,10 @@ from our_ark_provider_kit import (
     AttachmentProvider,
     ChatEvent,
     ChatProvider,
+    DurableNotificationProvider,
+    NotificationCapabilities,
+    NotificationIntent,
+    NotificationReceipt,
     RuntimeExecutionControl,
     RuntimeProgress,
     agent_context,
@@ -85,6 +89,36 @@ class ProviderKitTests(unittest.TestCase):
     def test_chat_provider_contract_is_runtime_checkable(self) -> None:
         self.assertIsInstance(FakeChatProvider(), ChatProvider)
         self.assertIsInstance(FakeChatProvider(), AttachmentProvider)
+        self.assertIsInstance(FakeDurableChatProvider(), DurableNotificationProvider)
+
+    def test_notification_contract_validates_operations_and_versions(self) -> None:
+        intent = NotificationIntent(
+            idempotency_key="task:1:final",
+            operation="send",
+            conversation_id=42,
+            text="done",
+            daemon_epoch="epoch-1",
+        )
+        receipt = NotificationReceipt(
+            idempotency_key=intent.idempotency_key,
+            status="delivered",
+            message_id=7,
+        )
+
+        self.assertEqual(intent.operation, "send")
+        self.assertEqual(receipt.message_id, 7)
+        with self.assertRaisesRegex(ValueError, "require a message id"):
+            NotificationIntent(
+                idempotency_key="edit-1",
+                operation="edit",
+                conversation_id=42,
+                text="progress",
+            )
+        with self.assertRaisesRegex(ValueError, "idempotency key is required"):
+            NotificationReceipt(
+                idempotency_key=" ",
+                status="delivered",
+            )
 
     def test_runtime_progress_is_provider_neutral_and_normalized(self) -> None:
         progress = RuntimeProgress(
@@ -136,6 +170,26 @@ class FakeChatProvider:
 
     def download_attachment(self, attachment, destination, *, max_bytes):
         return None
+
+
+class FakeDurableChatProvider(FakeChatProvider):
+    notification_capabilities = NotificationCapabilities(
+        idempotent_delivery=True,
+        reconciliation=True,
+    )
+
+    def deliver_notification(self, intent):
+        return NotificationReceipt(
+            idempotency_key=intent.idempotency_key,
+            status="delivered",
+            message_id="sent",
+        )
+
+    def reconcile_notification(self, intent):
+        return NotificationReceipt(
+            idempotency_key=intent.idempotency_key,
+            status="not_found",
+        )
 
 
 if __name__ == "__main__":

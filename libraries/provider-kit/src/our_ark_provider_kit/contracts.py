@@ -13,6 +13,7 @@ Cursor = int | str
 ProgressCallback = Callable[[int, str], None]
 RUNTIME_CONTRACT_VERSION = 1
 RUNTIME_EXECUTION_CONTRACT_VERSION = 1
+NOTIFICATION_CONTRACT_VERSION = 1
 
 
 def normalize_conversation_id(value: object) -> ConversationId | None:
@@ -50,6 +51,21 @@ class ChatProviderError(RuntimeError):
     """Raised when a chat provider cannot receive or deliver an event."""
 
 
+class NotificationDeliveryError(ChatProviderError):
+    """Raised when notification delivery fails with known retry semantics."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        retryable: bool = False,
+        ambiguous: bool = False,
+    ) -> None:
+        super().__init__(message)
+        self.retryable = retryable
+        self.ambiguous = ambiguous
+
+
 class ForgeProviderError(RuntimeError):
     """Raised when a remote code forge operation fails."""
 
@@ -83,6 +99,79 @@ class ChatEvent:
     replied_text: str = ""
     raw: dict[str, Any] = field(default_factory=dict)
     attachments: tuple[Attachment, ...] = ()
+
+
+@dataclass(frozen=True)
+class NotificationCapabilities:
+    idempotent_delivery: bool = False
+    reconciliation: bool = False
+    contract_version: int = NOTIFICATION_CONTRACT_VERSION
+
+    def __post_init__(self) -> None:
+        if self.contract_version != NOTIFICATION_CONTRACT_VERSION:
+            raise ValueError(
+                f"Notification capabilities use contract version {self.contract_version}; "
+                f"supported version is {NOTIFICATION_CONTRACT_VERSION}."
+            )
+
+
+@dataclass(frozen=True)
+class NotificationIntent:
+    idempotency_key: str
+    operation: str
+    conversation_id: ConversationId
+    text: str
+    message_id: MessageId | None = None
+    daemon_epoch: str = ""
+    contract_version: int = NOTIFICATION_CONTRACT_VERSION
+
+    def __post_init__(self) -> None:
+        key = self.idempotency_key.strip()
+        operation = self.operation.strip().lower()
+        if self.contract_version != NOTIFICATION_CONTRACT_VERSION:
+            raise ValueError(
+                f"Notification intent uses contract version {self.contract_version}; "
+                f"supported version is {NOTIFICATION_CONTRACT_VERSION}."
+            )
+        if not key:
+            raise ValueError("Notification idempotency key is required.")
+        if operation not in {"send", "edit"}:
+            raise ValueError("Notification operation must be send or edit.")
+        if operation == "edit" and normalize_message_id(self.message_id) is None:
+            raise ValueError("Edit notifications require a message id.")
+        object.__setattr__(self, "idempotency_key", key)
+        object.__setattr__(self, "operation", operation)
+        object.__setattr__(self, "text", str(self.text))
+        object.__setattr__(self, "daemon_epoch", self.daemon_epoch.strip())
+
+
+@dataclass(frozen=True)
+class NotificationReceipt:
+    idempotency_key: str
+    status: str
+    message_id: MessageId | None = None
+    provider_reference: str = ""
+    detail: str = ""
+    contract_version: int = NOTIFICATION_CONTRACT_VERSION
+
+    def __post_init__(self) -> None:
+        key = self.idempotency_key.strip()
+        status = self.status.strip().lower()
+        if self.contract_version != NOTIFICATION_CONTRACT_VERSION:
+            raise ValueError(
+                f"Notification receipt uses contract version {self.contract_version}; "
+                f"supported version is {NOTIFICATION_CONTRACT_VERSION}."
+            )
+        if status not in {"delivered", "not_found", "unknown"}:
+            raise ValueError(
+                "Notification receipt status must be delivered, not_found, or unknown."
+            )
+        if not key:
+            raise ValueError("Notification receipt idempotency key is required.")
+        object.__setattr__(self, "idempotency_key", key)
+        object.__setattr__(self, "status", status)
+        object.__setattr__(self, "provider_reference", self.provider_reference.strip())
+        object.__setattr__(self, "detail", self.detail.strip())
 
 
 @dataclass(frozen=True)
@@ -400,6 +489,22 @@ class ChatProvider(Protocol):
         conversation_id: ConversationId,
         message_id: MessageId,
     ) -> None: ...
+
+
+@runtime_checkable
+class DurableNotificationProvider(Protocol):
+    @property
+    def notification_capabilities(self) -> NotificationCapabilities: ...
+
+    def deliver_notification(
+        self,
+        intent: NotificationIntent,
+    ) -> NotificationReceipt: ...
+
+    def reconcile_notification(
+        self,
+        intent: NotificationIntent,
+    ) -> NotificationReceipt: ...
 
 
 @runtime_checkable

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextvars import ContextVar
 from dataclasses import replace
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -98,6 +99,17 @@ from enoch.evolution.lifecycle import (
     finalize_promoted_evolve_adoptions,
     format_reconcile_result,
     reconcile_evolve_candidate,
+)
+from enoch.app.epoch import (
+    DaemonEpoch,
+    StaleDaemonEpoch,
+    begin_daemon_epoch,
+    daemon_epoch_guard,
+    require_current_daemon_epoch,
+)
+from enoch.app.notifications import (
+    NotificationDeliveryService,
+    NotificationResult,
 )
 from enoch.vcs_tools import (
     VcsError,
@@ -405,11 +417,23 @@ class EnochApplication:
         runtime: AgentRuntime | None = None,
         forge: ForgeProvider | None = None,
         profile: AgentProfile | None = None,
+        daemon_epoch: DaemonEpoch | None = None,
     ) -> None:
         self.identity = identity
         self.root = root
         self.client = client
         self.channel_name = _chat_provider_name(client)
+        self.daemon_epoch = daemon_epoch or begin_daemon_epoch(
+            root,
+            provider=self.channel_name,
+        )
+        self.notifications = NotificationDeliveryService(
+            client,
+            self.channel_name,
+            root,
+            self.daemon_epoch,
+        )
+        self._notification_order_lock = threading.RLock()
         self._forge_injected = forge is not None
         self.runtime = runtime or FunctionAgentRuntime(
             respond_fn=lambda *args, **kwargs: respond(*args, **kwargs),
@@ -483,6 +507,7 @@ class EnochApplication:
             recovered = recover_interrupted_task(root)
         _cleanup_completed_task_worktree(recovered, root)
         self._work_status_messages: dict[int, MessageId] = _load_task_status_messages(root)
+        self.notifications.recover()
         self._run_profile_hook("on_initialize")
 
     def run_forever(self) -> None:
@@ -490,6 +515,8 @@ class EnochApplication:
             try:
                 self.run_once()
             except ShutdownRequested:
+                raise
+            except StaleDaemonEpoch:
                 raise
             except Exception as error:
                 print(f"Enoch {provider_label(self.channel_name)} polling error: {error}")
@@ -499,7 +526,7 @@ class EnochApplication:
         chat_id = _allowed_conversation_id(self.client)
         if chat_id is None:
             return
-        self.client.send_message(
+        result = self._deliver_message(
             chat_id,
             _startup_message(
                 self.identity,
@@ -507,7 +534,10 @@ class EnochApplication:
                 self.previous_shutdown_warning,
                 provider=self.channel_name,
             ),
+            notification_key=f"daemon:{self.daemon_epoch.generation}:startup",
         )
+        if not result.delivered:
+            raise ChatProviderError(result.error or "Startup notification was not delivered.")
         _sync_session_activity(
             self.identity,
             self.root,
@@ -524,12 +554,16 @@ class EnochApplication:
         chat_id = _allowed_conversation_id(self.client)
         if chat_id is None:
             return
-        self.client.send_message(
+        result = self._deliver_message(
             chat_id,
             _shutdown_message(self.identity, self.root, reason, provider=self.channel_name),
+            notification_key=f"daemon:{self.daemon_epoch.generation}:shutdown",
         )
+        if not result.delivered:
+            raise ChatProviderError(result.error or "Shutdown notification was not delivered.")
 
     def run_once(self) -> None:
+        require_current_daemon_epoch(self.daemon_epoch, self.root)
         self._run_profile_hook("before_run")
         try:
             recovered = _recover_running_task_from_direct_action_log(self.root)
@@ -545,6 +579,7 @@ class EnochApplication:
             self._run_profile_hook("after_run")
 
     def handle_event(self, event: ChatEvent) -> None:
+        require_current_daemon_epoch(self.daemon_epoch, self.root)
         chat_id = event.conversation_id
         message_id = event.message_id
         if not self._chat_allowed(chat_id):
@@ -566,6 +601,8 @@ class EnochApplication:
                 reply=reply,
                 logged_input=logged_input,
             )
+        except StaleDaemonEpoch:
+            raise
         except Exception as error:
             failed = fail_event(self.channel_name, receipt.key, str(error), self.root)
             print(
@@ -626,24 +663,32 @@ class EnochApplication:
 
     def _finish_chat_event(self, event: ChatEvent, receipt: InboxReceipt) -> None:
         if not receipt.reply_sent:
-            send_error = (
-                self._safe_send_message(event.conversation_id, receipt.reply)
+            delivery = (
+                self._deliver_message(
+                    event.conversation_id,
+                    receipt.reply,
+                    notification_key=f"inbox:{receipt.key}:reply",
+                )
                 if receipt.reply
-                else ""
+                else NotificationResult(delivered=True)
             )
-            if send_error:
+            if not delivery.delivered:
+                details = {
+                    "provider": self.channel_name,
+                    "chat_id": event.conversation_id,
+                    "message_id": event.message_id,
+                    "error": delivery.error,
+                }
+                if delivery.terminal:
+                    details["terminal"] = True
                 _record_system_event(
                     "chat_reply_failed",
                     self.root,
                     status="failed",
-                    details={
-                        "provider": self.channel_name,
-                        "chat_id": event.conversation_id,
-                        "message_id": event.message_id,
-                        "error": send_error,
-                    },
+                    details=details,
                 )
-                return
+                if not delivery.terminal:
+                    return
             self._record_turn(
                 event.conversation_id,
                 receipt.logged_input,
@@ -1152,6 +1197,7 @@ class EnochApplication:
         message_id = self._safe_send_message_id(
             chat_id,
             self._format_work_status(status_message),
+            notification_key=f"task:{direct_task.id}:status",
         )
         if message_id is not None:
             self._work_status_messages[direct_task.id] = message_id
@@ -1371,7 +1417,11 @@ class EnochApplication:
                 context=job.context,
             )
         )
-        message_id = self._safe_send_message_id(chat_id, message)
+        message_id = self._safe_send_message_id(
+            chat_id,
+            message,
+            notification_key=f"task:{job.id}:status",
+        )
         if message_id is not None:
             self._work_status_messages[job.id] = message_id
             record_task_status_message(job.id, message_id, self.root)
@@ -1553,57 +1603,139 @@ class EnochApplication:
             return
         self._safe_send_message(chat_id, f"Enoch update: {message}")
 
-    def _safe_send_message(self, chat_id: ConversationId, message: str) -> str:
+    def _deliver_message(
+        self,
+        chat_id: ConversationId,
+        message: str,
+        *,
+        notification_key: str = "",
+    ) -> NotificationResult:
+        key = notification_key or self._notification_key(
+            "send",
+            chat_id,
+            message,
+        )
         try:
-            self.client.send_message(chat_id, message)
+            return self.notifications.send(
+                chat_id,
+                message,
+                idempotency_key=key,
+            )
         except (OSError, ChatProviderError) as error:
-            return str(error)
-        return ""
+            return NotificationResult(
+                delivered=False,
+                error=str(error),
+            )
+
+    def _safe_send_message(
+        self,
+        chat_id: ConversationId,
+        message: str,
+        *,
+        notification_key: str = "",
+    ) -> str:
+        result = self._deliver_message(
+            chat_id,
+            message,
+            notification_key=notification_key,
+        )
+        return "" if result.delivered else result.error
 
     def _safe_send_message_id(
         self,
         chat_id: ConversationId,
         message: str,
+        *,
+        notification_key: str = "",
     ) -> MessageId | None:
-        try:
-            return self.client.send_message(chat_id, message)
-        except (OSError, ChatProviderError):
-            return None
+        result = self._deliver_message(
+            chat_id,
+            message,
+            notification_key=notification_key,
+        )
+        return result.message_id if result.delivered else None
 
     def _safe_edit_message(
         self,
         chat_id: ConversationId,
         message_id: MessageId,
         message: str,
+        *,
+        notification_key: str = "",
     ) -> None:
+        key = notification_key or self._notification_key(
+            "edit",
+            chat_id,
+            message,
+            message_id=message_id,
+        )
         try:
-            self.client.edit_message(chat_id, message_id, message)
+            self.notifications.edit(
+                chat_id,
+                message_id,
+                message,
+                idempotency_key=key,
+            )
         except (OSError, ChatProviderError):
             return
 
-    def _update_work_status(self, latest_update: str, *, status: str | None = None, pr_url: str = "") -> bool:
-        task_status = _CURRENT_WORK_STATUS.get()
-        if task_status is None:
-            return False
-        if status:
-            task_status.status = status
-        task_status.latest_update = latest_update
-        if pr_url and pr_url not in task_status.prs:
-            task_status.prs.append(pr_url)
-        if normalize_message_id(task_status.message_id) is None:
-            return True
-        self._safe_edit_message(
-            task_status.chat_id,
-            task_status.message_id,
-            self._format_work_status(task_status),
+    def _notification_key(
+        self,
+        operation: str,
+        chat_id: ConversationId,
+        message: str,
+        *,
+        message_id: MessageId | None = None,
+    ) -> str:
+        event_key = _CURRENT_EVENT_KEY.get()
+        task_id = _CURRENT_TASK_ID.get()
+        if event_key:
+            scope = f"inbox:{event_key}"
+        elif task_id is not None:
+            scope = f"task:{task_id}"
+        else:
+            scope = f"daemon:{self.daemon_epoch.generation}"
+        payload = json.dumps(
+            {
+                "operation": operation,
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "message": message,
+            },
+            sort_keys=True,
+            default=str,
         )
-        return True
+        digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:20]
+        return f"{scope}:{operation}:{digest}"
+
+    def _update_work_status(self, latest_update: str, *, status: str | None = None, pr_url: str = "") -> bool:
+        with self._notification_order_lock:
+            task_status = _CURRENT_WORK_STATUS.get()
+            if task_status is None:
+                return False
+            if task_status.status in {"completed", "failed", "cancelled", "regressed"}:
+                return True
+            if status:
+                task_status.status = status
+            task_status.latest_update = latest_update
+            if pr_url and pr_url not in task_status.prs:
+                task_status.prs.append(pr_url)
+            if normalize_message_id(task_status.message_id) is None:
+                return True
+            self._safe_edit_message(
+                task_status.chat_id,
+                task_status.message_id,
+                self._format_work_status(task_status),
+                notification_key=_task_status_notification_key(task_status),
+            )
+            return True
 
     def _safe_send_read_ack(self, chat_id: ConversationId, message_id: object) -> None:
         if not isinstance(message_id, (int, str)):
             return
         try:
-            self.client.send_read_ack(chat_id, message_id)
+            with daemon_epoch_guard(self.daemon_epoch, self.root):
+                self.client.send_read_ack(chat_id, message_id)
         except (OSError, ChatProviderError) as error:
             _record_system_event(
                 "chat_read_ack_failed",
@@ -1765,7 +1897,11 @@ class EnochApplication:
                 context=job.context,
             )
         )
-        message_id = self._safe_send_message_id(chat_id, message)
+        message_id = self._safe_send_message_id(
+            chat_id,
+            message,
+            notification_key=f"task:{job.id}:status",
+        )
         if message_id is not None:
             self._work_status_messages[job.id] = message_id
             record_task_status_message(job.id, message_id, self.root)
@@ -1854,7 +1990,11 @@ class EnochApplication:
                 context=job.context,
             )
         )
-        message_id = self._safe_send_message_id(job.chat_id, message)
+        message_id = self._safe_send_message_id(
+            job.chat_id,
+            message,
+            notification_key=f"task:{job.id}:status",
+        )
         if message_id is not None:
             self._work_status_messages[job.id] = message_id
             record_task_status_message(job.id, message_id, self.root)
@@ -1915,6 +2055,7 @@ class EnochApplication:
                     context=job.context,
                 )
             ),
+            notification_key=f"task:{job.id}:status",
         )
         if message_id is not None:
             self._work_status_messages[job.id] = message_id
@@ -2711,7 +2852,11 @@ class EnochApplication:
                 context=job.context,
             )
         )
-        message_id = self._safe_send_message_id(item.chat_id, message)
+        message_id = self._safe_send_message_id(
+            item.chat_id,
+            message,
+            notification_key=f"task:{job.id}:status",
+        )
         if message_id is not None:
             self._work_status_messages[job.id] = message_id
             record_task_status_message(job.id, message_id, self.root)
@@ -2755,7 +2900,11 @@ class EnochApplication:
                     context=job.context,
                 )
             )
-            message_id = self._safe_send_message_id(cron.chat_id, message)
+            message_id = self._safe_send_message_id(
+                cron.chat_id,
+                message,
+                notification_key=f"task:{job.id}:status",
+            )
             if message_id is not None:
                 self._work_status_messages[job.id] = message_id
                 record_task_status_message(job.id, message_id, self.root)
@@ -2817,7 +2966,11 @@ class EnochApplication:
                 candidate=proposal.top_candidate,
                 reason=wait_reason,
             )
-        self._safe_send_message(chat_id, "Scheduled evolve check\n\n" + _format_evolve_proposal(proposal))
+        self._safe_send_message(
+            chat_id,
+            "Scheduled evolve check\n\n" + _format_evolve_proposal(proposal),
+            notification_key=f"evolve-schedule:{claimed.schedule_claim_id}:report",
+        )
         acknowledge_evolve_schedule(
             claimed.schedule_claim_id,
             self.root,
@@ -2864,6 +3017,7 @@ class EnochApplication:
             message_id = self._safe_send_message_id(
                 job.chat_id,
                 self._format_work_status(status_message),
+                notification_key=f"task:{job.id}:status",
             )
             if message_id is not None:
                 created_status_message = True
@@ -2973,6 +3127,10 @@ class EnochApplication:
             _CURRENT_TASK_ID.reset(task_token)
             _CURRENT_TASK_WORKER_ID.reset(worker_token)
             self._task_cancellations.pop(job.id, None)
+            try:
+                require_current_daemon_epoch(self.daemon_epoch, self.root)
+            except StaleDaemonEpoch:
+                return
             if completed_status == "cancelled":
                 finished_job = cancel_running_task(
                     self.root,
@@ -3104,6 +3262,7 @@ class EnochApplication:
         self._safe_send_message(
             job.chat_id,
             self._format_task_final(summary_job, completed_status, reply),
+            notification_key=f"task:{job.id}:final",
         )
         self._record_turn(job.chat_id, f"{command} {job.text}", reply)
         if command == "/do":
@@ -3378,6 +3537,7 @@ def main(chat_provider_name: str = "") -> None:
         print(str(error))
         raise SystemExit(1) from error
     selected_channel = _chat_provider_name(chat_provider)
+    daemon_epoch = begin_daemon_epoch(root, provider=selected_channel)
     previous_shutdown_warning = _begin_lifecycle_run(root, provider=selected_channel)
     try:
         adopted = finalize_promoted_evolve_adoptions(root)
@@ -3400,6 +3560,7 @@ def main(chat_provider_name: str = "") -> None:
         runtime=runtime_provider,
         forge=forge_provider,
         profile=profile,
+        daemon_epoch=daemon_epoch,
     )
     _install_shutdown_handlers()
     provider_label = str(getattr(chat_provider, "name", "chat")).strip() or "chat"
@@ -3416,6 +3577,8 @@ def main(chat_provider_name: str = "") -> None:
             except (OSError, ChatProviderError) as error:
                 print(f"Enoch could not send startup notification: {error}")
         bot.run_forever()
+    except StaleDaemonEpoch as error:
+        print(f"\n{identity.name} stopped because a newer daemon took ownership: {error}")
     except ShutdownRequested as shutdown:
         _notify_shutdown(bot, shutdown.reason)
         print(f"\n{identity.name} is shutting down: {shutdown.reason}.")
@@ -4001,6 +4164,19 @@ def _record_system_event(
 
 def _summarize_for_log(text: str, limit: int = 2000) -> str:
     return summarize_for_log(text, limit)
+
+
+def _task_status_notification_key(status: WorkStatusMessage) -> str:
+    rendered = json.dumps(
+        {
+            "status": status.status,
+            "latest_update": status.latest_update,
+            "prs": status.prs,
+        },
+        sort_keys=True,
+    )
+    digest = hashlib.sha256(rendered.encode("utf-8")).hexdigest()[:20]
+    return f"task:{status.task_id}:status-edit:{digest}"
 
 
 def _format_doctor_result(result: ImmuneResult) -> str:

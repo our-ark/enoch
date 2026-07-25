@@ -177,6 +177,57 @@ def download_attachment(self, attachment, destination, *, max_bytes):
     ...
 ```
 
+### Durable notifications
+
+Core send and edit operations are written to a durable notification journal
+before the provider is invoked. Every logical notification has a stable
+idempotency key, and every daemon generation has a fencing epoch. An obsolete
+daemon cannot claim, send, edit, reconcile, or finalize notification state.
+
+All existing `ChatProvider` implementations remain compatible. A legacy
+provider receives at-least-once retries for failures returned before a receipt
+is recorded. If Enoch restarts with an ambiguous `in_flight` legacy delivery,
+she fails closed and does not resend it, because the provider cannot prove
+whether the external effect happened.
+
+Providers that can offer stronger recovery implement the optional, versioned
+`DurableNotificationProvider` contract:
+
+```python
+from enoch.providers import (
+    NotificationCapabilities,
+    NotificationReceipt,
+)
+
+
+class SlackProvider:
+    notification_capabilities = NotificationCapabilities(
+        idempotent_delivery=True,
+        reconciliation=True,
+    )
+
+    def deliver_notification(self, intent):
+        # Use intent.idempotency_key as the provider-native client request id.
+        ...
+        return NotificationReceipt(
+            idempotency_key=intent.idempotency_key,
+            status="delivered",
+            message_id="1712345.0001",
+            provider_reference="slack-request-42",
+        )
+
+    def reconcile_notification(self, intent):
+        # Return delivered, not_found, or unknown without creating an effect.
+        ...
+```
+
+`NotificationIntent` supports `send` and `edit`. `NotificationReceipt` reports
+`delivered`, `not_found`, or `unknown`. A provider may advertise idempotent
+delivery, reconciliation, both, or neither. After ambiguous success, Enoch
+reconciles first, then replays only when the provider can prove absence or
+guarantee idempotency. Transport-native request ids and lookup mechanisms stay
+inside the provider.
+
 The channel-neutral application lives in `src/enoch/app/`. Telegram's
 Bot API transport, Enoch config adapter, setup handler, and integration skill
 live in `libraries/telegram`. Core code receives only normalized `ChatEvent`

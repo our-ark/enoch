@@ -5,7 +5,7 @@ Run the complete suite with:
 ```bash
 python -m pip install --disable-pip-version-check --require-hashes \
   -r .github/requirements/test-build.txt
-python -m unittest discover -s tests
+python -m unittest discover -s tests -t .
 python -m unittest discover -s libraries/launchd/tests
 python -m unittest discover -s libraries/systemd/tests
 ```

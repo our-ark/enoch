@@ -14,6 +14,32 @@ Unexpected handler failures remain retryable for three deliveries. After the
 third failure, Enoch records and acknowledges the poison event and sends a
 bounded diagnostic response instead of repeatedly crashing the daemon.
 
+## Notification delivery
+
+Outbound sends and edits use an intent-first journal under
+`.enoch/channels/<provider>/notifications.json`. The journal records `pending`,
+`in_flight`, `delivered`, `retryable_failure`, and `terminal_failure` states,
+including attempts, provider receipts, and the daemon epoch that owns the
+claim.
+
+Starting a daemon creates a new monotonically increasing generation with a
+random fencing token. The epoch lock is held across each provider side effect
+and receipt commit, so a replacement daemon cannot become current midway
+through a delivery. Calls from an already stale daemon fail before reaching the
+provider.
+
+After restart, Enoch resumes `pending` and `retryable_failure` notifications
+and reconciles every `in_flight` notification. A provider with the optional
+durable-notification capability can look up the original idempotency key or
+replay it idempotently. A provider without either capability fails ambiguous
+work closed instead of risking a duplicate. Inbox replies, task status
+messages, terminal task reports, and scheduled evolve reports use stable
+logical keys across recovery.
+
+Terminal task status is monotonic: late progress callbacks cannot overwrite a
+completed, failed, cancelled, or regressed status. Repeating a terminal send
+returns the durable receipt for the original logical notification.
+
 ## Task publication
 
 Task results use `WorkOutcome`, separating status, failure code, retryability,

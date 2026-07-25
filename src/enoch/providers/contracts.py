@@ -78,6 +78,25 @@ except ImportError:  # provider-kit 0.1 compatibility during contract rollout
         normalize_runtime_result,
     )
 
+try:
+    from our_ark_provider_kit import (
+        DurableNotificationProvider,
+        NOTIFICATION_CONTRACT_VERSION,
+        NotificationCapabilities,
+        NotificationDeliveryError,
+        NotificationIntent,
+        NotificationReceipt,
+    )
+except ImportError:  # provider-kit compatibility during notification rollout
+    from enoch.providers._notification_compat import (
+        DurableNotificationProvider,
+        NOTIFICATION_CONTRACT_VERSION,
+        NotificationCapabilities,
+        NotificationDeliveryError,
+        NotificationIntent,
+        NotificationReceipt,
+    )
+
 __all__ = [
     "AgentIdentity",
     "AgentRuntime",
@@ -92,11 +111,17 @@ __all__ = [
     "ChatProviderError",
     "ConversationId",
     "Cursor",
+    "DurableNotificationProvider",
     "ForgeProvider",
     "ForgeProviderError",
     "EvolutionProvenance",
     "LocalPublishResult",
     "MessageId",
+    "NOTIFICATION_CONTRACT_VERSION",
+    "NotificationCapabilities",
+    "NotificationDeliveryError",
+    "NotificationIntent",
+    "NotificationReceipt",
     "PullRequestCloseResult",
     "PullRequestMergeCandidate",
     "PullRequestMergeResult",
