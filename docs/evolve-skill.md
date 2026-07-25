@@ -1,9 +1,11 @@
 # Evolve Skill Design
 
 Enoch's `evolve` skill is a governed self-evolution selection loop, not a
-generic background task runner. Enoch collects possible improvements from
-several sources, ranks them against her current direction, and chooses the best
-next small step.
+generic background task runner. Enoch collects raw possible improvements from
+several sources, deterministically pre-ranks a bounded pool, and asks the
+reasoning engine to recommend the best next small step semantically against her
+mission and current evolution theme. The fixed score is input ordering and an
+explicit fallback, not the normal recommendation.
 
 ## Purpose
 
@@ -44,9 +46,9 @@ Examples:
 - make inheritance safer and cleaner
 - reduce human coordination burden
 
-The theme acts as evolutionary pressure. It affects ranking but is not itself a
-candidate source. Without a theme, auto-evolve can drift into random
-optimization.
+The theme acts as evolutionary pressure. It guides semantic curation and
+deterministic pre-ranking but is not itself a candidate source. Without a
+theme, auto-evolve can drift into random optimization.
 
 ## Candidate Sources
 
@@ -149,25 +151,14 @@ status: candidate|running|done|failed|cancelled|regressed|reverted|forward-fixed
 
 ## Selection
 
-When Enoch evolves, she should choose one candidate as the next task. Selection should rank candidates rather than follow a fixed source order.
+The six source adapters discover raw candidates and preserve their provenance.
+They do not make the final recommendation. `/propose` deterministically
+pre-ranks and bounds the pool, then gives the reasoning engine the candidate
+fields, mission, theme, provenance, and privacy-cleaned completion evidence.
+The reasoning engine may recommend at most one existing candidate, suggest
+bounded new candidates, or propose removal classifications for human review.
 
-Suggested scoring:
-
-```text
-score(candidate) =
-  value_to_mission
-+ alignment_with_theme
-+ urgency_or_pain
-+ feasibility
-+ testability
-+ reversibility
-+ small_step_size
-- risk
-- scope_creep
-- requires_human_decision
-```
-
-The proposed candidate should usually be:
+The semantic recommendation should usually be:
 
 - aligned with the current theme
 - small enough to review
@@ -175,6 +166,11 @@ The proposed candidate should usually be:
 - reversible
 - low risk
 - clearly valuable to Enoch's mission
+
+If semantic curation is unavailable, times out, or returns invalid output,
+Enoch may use the highest safe deterministic pre-ranked candidate only as an
+explicitly labelled fallback. Neither an LLM recommendation nor a fallback
+changes candidate state: a human still approves execution or removal.
 
 ## Mode Behavior
 
@@ -187,19 +183,17 @@ The proposed candidate should usually be:
 ### co-evolve
 
 - collect candidates
-- rank candidates
-- show the top candidate and rationale
+- pre-rank a bounded candidate pool
+- ask the reasoning engine for a semantic recommendation and rationale
 - wait for the human to approve or redirect before running work
 
 ### auto-evolve
 
 - collect candidates
-- rank candidates
-- select one bounded candidate
-- queue or run the work
-- test the change
-- open a pull request for human review
-- stop if `/stop` is used
+- pre-rank a bounded candidate pool
+- schedule the same semantic proposal used by `/propose`
+- wait for explicit human approval before queueing or removing a candidate
+- never merge self-evolution work
 
 ## Guardrails
 
@@ -269,12 +263,13 @@ Candidate selection and control:
 
 `/feedback` shows the human feedback signals available to evolution. `/experience`
 shows candidates derived from Enoch's task history, recurring workflows, and
-successful skill work. `/propose` refreshes all six sources, ranks new and failed
-candidates, and presents the strongest actionable candidate without selecting or
-running it. Failed candidates remain available for `/evolve retry <id>`, which
+successful skill work. `/propose` refreshes all six sources, pre-ranks new and
+failed candidates into a bounded pool, and asks the reasoning engine for a
+semantic recommendation without selecting or running it. Failed candidates
+remain available for `/evolve retry <id>`, which
 creates a new linked task without rewriting the failed task's history. When no
 actionable candidate exists and a theme is set, `/propose` runs one bounded
-fallback brainstorm and ranks again. Automatic fallback attempts have a per-theme
+fallback brainstorm and curates again. Automatic fallback attempts have a per-theme
 24-hour cooldown; explicit `/evolve brainstorm` bypasses that cooldown. Scheduled
 co-evolve and auto-evolve checks use the same proposal selection, so running
 candidates are not proposed or queued again, failed candidates require an
@@ -283,4 +278,5 @@ brainstorm policy.
 
 ## Principle
 
-Auto-evolve is not "do whatever." It is candidate selection under a theme, with bounded execution, tests, and human review.
+Auto-evolve is not "do whatever." It is semantic recommendation under a theme,
+with bounded execution, tests, and human review.

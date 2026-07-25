@@ -25,6 +25,12 @@ Enoch collects exactly six semantic candidate sources:
 - **learning** from skills explicitly inspected with `/learn`, recorded in `.enoch/learning/peers.jsonl`; and
 - **brainstorming** from bounded, structured LLM ideas generated under the current mission and evolution theme.
 
+Each source contributes raw candidates to the pool; source discovery is not a
+recommendation. Only the semantic curation result from `/propose` is an LLM
+recommendation. Deterministic scores only pre-order and bound that curation
+input, with an explicitly labelled fallback when semantic curation is
+unavailable or invalid.
+
 The theme is semantic curation context and deterministic pre-ranking pressure, not a seventh source. `/evolve brainstorm` requires a non-empty theme, asks the reasoning engine for a small JSON list, validates the result, and persists only structured candidates in `.enoch/evolve_brainstorms.jsonl`.
 
 `/propose` refreshes all six sources, applies deterministic pre-ranking, and
