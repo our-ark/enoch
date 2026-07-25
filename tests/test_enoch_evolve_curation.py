@@ -397,7 +397,7 @@ class EnochEvolveCurationTests(unittest.TestCase):
         self.assertEqual(proposal.curation.status, "deterministic-fallback")
         self.assertIn("completion-evidence-unavailable", proposal.curation.fallback_reason)
 
-    def test_llm_recommends_existing_candidate_without_state_change(self) -> None:
+    def test_llm_recommendation_overrides_pre_rank_without_state_change(self) -> None:
         first = _candidate("backlog", 1, score=100)
         second = _candidate("learning", 2, score=1)
         with TemporaryDirectory() as temp:
@@ -411,6 +411,7 @@ class EnochEvolveCurationTests(unittest.TestCase):
             stored = load_evolve_candidates(root, include_inactive=True)
             queue = task_queue_status(root)
 
+        self.assertEqual(proposal.report.top_candidate.id, first.id)
         self.assertEqual(proposal.top_candidate.id, second.id)
         self.assertEqual(proposal.curation.status, "llm")
         self.assertTrue(all(item.status == "candidate" for item in stored))
