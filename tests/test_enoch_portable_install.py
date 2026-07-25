@@ -168,6 +168,12 @@ class EnochPortableInstallTests(unittest.TestCase):
         self.assertEqual(result["vcs_provider_version"], "0.0.1")
         self.assertEqual(result["profile"], "researcher")
         self.assertEqual(result["profile_version"], "0.0.1")
+        self.assertEqual(result["workflow_api_version"], 1)
+        self.assertEqual(
+            result["workflow_operations"],
+            ["recover", "enqueue", "claim", "finalize:completed"],
+        )
+        self.assertTrue(result["workflow_state_isolated"])
         self.assertEqual(result["profile_trigger"], "/research")
         self.assertEqual(result["profile_context_source"], "profile:researcher")
         self.assertIn("Queued portable research task #1", result["profile_command_reply"])
@@ -537,11 +543,34 @@ _INSTALLED_TASK_SCRIPT = textwrap.dedent(
     from enoch.identity import load_identity
     from enoch.profiles import load_profile
     from enoch.providers import ChatEvent, load_provider
-    from enoch.tasks.queue import begin_next_task, task_queue_status
+    from enoch.workflows import LocalWorkflowEngine
 
 
     root = Path(sys.argv[1])
     root.mkdir()
+
+    class InstalledWorkflow(LocalWorkflowEngine):
+        def __init__(self, root):
+            super().__init__(root)
+            self.operations = []
+
+        def enqueue(self, conversation_id, request, *, mode="queued", **options):
+            self.operations.append("enqueue")
+            return super().enqueue(
+                conversation_id, request, mode=mode, **options
+            )
+
+        def claim(self, task_id, worker_id, worker_pid):
+            self.operations.append("claim")
+            return super().claim(task_id, worker_id, worker_pid)
+
+        def finalize(self, task_id, status, **options):
+            self.operations.append(f"finalize:{status}")
+            return super().finalize(task_id, status, **options)
+
+        def recover(self):
+            self.operations.append("recover")
+            return super().recover()
 
     def git(*args):
         result = subprocess.run(
@@ -571,6 +600,7 @@ _INSTALLED_TASK_SCRIPT = textwrap.dedent(
     vcs = load_provider("vcs", root)
     forge = load_provider("forge", root)
     profile = load_profile(root)
+    workflow = InstalledWorkflow(root.parent / "workflow-state")
     app = EnochApplication(
         identity=load_identity(),
         root=root,
@@ -578,6 +608,7 @@ _INSTALLED_TASK_SCRIPT = textwrap.dedent(
         runtime=runtime,
         forge=forge,
         profile=profile,
+        workflow=workflow,
     )
     app.notify_startup()
     app.handle_event(
@@ -597,12 +628,12 @@ _INSTALLED_TASK_SCRIPT = textwrap.dedent(
             text="/research stable extension APIs",
         )
     )
-    queued = task_queue_status(root).pending[-1]
+    queued = workflow.inspect().pending[-1]
     profile_command_reply = chat.sent[-1][1]
-    running = begin_next_task(root)
+    running = workflow.start_next()
     assert running is not None and running.id == queued.id
     app._run_task_job(running)
-    completed = task_queue_status(root).history[-1]
+    completed = workflow.inspect().history[-1]
     branch_preserved = subprocess.run(
         ["git", "show-ref", "--verify", "--quiet", f"refs/heads/{completed.branch_name}"],
         cwd=root,
@@ -625,6 +656,12 @@ _INSTALLED_TASK_SCRIPT = textwrap.dedent(
         "vcs_provider_version": version("enoch-portable-vcs-provider"),
         "profile": profile.name,
         "profile_version": version("enoch-portable-researcher-profile"),
+        "workflow_api_version": workflow.api_version,
+        "workflow_operations": workflow.operations,
+        "workflow_state_isolated": (
+            workflow.root != root
+            and not (root / ".enoch" / "task_queue.json").exists()
+        ),
         "profile_trigger": completed.trigger,
         "profile_context_source": completed.context_source,
         "profile_command_reply": profile_command_reply,

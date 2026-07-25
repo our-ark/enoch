@@ -119,6 +119,11 @@ from enoch.vcs_tools import (
     ensure_clean_worktree,
     switch_branch,
 )
+from enoch.workflows import (
+    LocalWorkflowEngine,
+    WorkflowEngine,
+    validate_workflow_engine,
+)
 from enoch.formatting import (
     format_doctor_result,
     format_pr_result,
@@ -215,28 +220,10 @@ from enoch.profiles.contracts import extend_prompt
 from enoch.runtime import DEFAULT_BRANCH
 from enoch.tasks.queue import (
     TaskJob,
+    TaskQueueStatus,
     TaskAlreadyExists,
     TaskRetryError,
-    begin_direct_task,
-    begin_next_task,
-    cancel_task,
-    cancel_running_task,
-    claim_running_task,
-    complete_task,
-    enqueue_task,
-    enqueue_task_front,
-    fail_task,
-    pause_task,
-    regress_task,
-    recover_interrupted_task,
-    record_task_status_message,
-    resolve_regressed_task,
-    retry_failed_task,
-    retry_running_task,
-    resume_paused_tasks,
     task_result_has_pull_request,
-    task_queue_status,
-    task_worker_is_active,
 )
 from enoch.commands import (
     CoreCommand,
@@ -347,7 +334,6 @@ from enoch.app.task_workflow import (
     create_pull_request_for_current_task as _task_create_pull_request_for_current_task,
     evolution_provenance_for_job as _evolution_provenance_for_job,
     sandbox_description as _sandbox_description,
-    task_by_id as _task_by_id,
     work_reply_failed as _work_reply_failed,
 )
 
@@ -418,6 +404,7 @@ class EnochApplication:
         forge: ForgeProvider | None = None,
         profile: AgentProfile | None = None,
         daemon_epoch: DaemonEpoch | None = None,
+        workflow: WorkflowEngine | None = None,
     ) -> None:
         self.identity = identity
         self.root = root
@@ -434,6 +421,9 @@ class EnochApplication:
             self.daemon_epoch,
         )
         self._notification_order_lock = threading.RLock()
+        self.workflow = validate_workflow_engine(
+            workflow or LocalWorkflowEngine(root, epoch=self.daemon_epoch)
+        )
         self._forge_injected = forge is not None
         self.runtime = runtime or FunctionAgentRuntime(
             respond_fn=lambda *args, **kwargs: respond(*args, **kwargs),
@@ -502,11 +492,16 @@ class EnochApplication:
                 delete_branch=lambda *args, **kwargs: delete_branch(*args, **kwargs),
             ),
         )
-        recovered = _recover_running_task_from_direct_action_log(root)
+        recovered = _recover_running_task_from_direct_action_log(
+            root,
+            workflow=self.workflow,
+        )
         if recovered is None:
-            recovered = recover_interrupted_task(root)
+            recovered = self.workflow.recover()
         _cleanup_completed_task_worktree(recovered, root)
-        self._work_status_messages: dict[int, MessageId] = _load_task_status_messages(root)
+        self._work_status_messages: dict[int, MessageId] = _load_task_status_messages(
+            self.workflow
+        )
         self.notifications.recover()
         self._run_profile_hook("on_initialize")
 
@@ -566,9 +561,12 @@ class EnochApplication:
         require_current_daemon_epoch(self.daemon_epoch, self.root)
         self._run_profile_hook("before_run")
         try:
-            recovered = _recover_running_task_from_direct_action_log(self.root)
+            recovered = _recover_running_task_from_direct_action_log(
+                self.root,
+                workflow=self.workflow,
+            )
             if recovered is None:
-                recovered = recover_interrupted_task(self.root)
+                recovered = self.workflow.recover()
             _cleanup_completed_task_worktree(recovered, self.root)
             for event in self.client.receive(self.offset):
                 self.handle_event(event)
@@ -791,7 +789,10 @@ class EnochApplication:
             "learn": lambda: self._learn(chat_id, text),
             "do": lambda: self._do(chat_id, work_text),
             "task": lambda: self._task(chat_id, work_text),
-            "queue": lambda: _format_tasks_report(self.root),
+            "queue": lambda: _format_tasks_report(
+                self.root,
+                task_status=self.workflow.inspect(),
+            ),
             "stop": self._stop_running_job,
             "backlog": lambda: self._backlog(chat_id, work_text),
             "cron": lambda: self._cron(chat_id, work_text),
@@ -839,10 +840,9 @@ class EnochApplication:
         def queue(request: str, context: str) -> TaskJob:
             nonlocal enqueue_index
             enqueue_index += 1
-            return enqueue_task(
+            return self.workflow.enqueue(
                 event.conversation_id,
                 request,
-                self.root,
                 context=context,
                 context_source=f"profile:{self.profile.name}" if context else "",
                 source="task",
@@ -1087,7 +1087,7 @@ class EnochApplication:
             )
         if not self._action_allowed():
             return self._action_lock_message()
-        queue_status = task_queue_status(self.root)
+        queue_status = self.workflow.inspect()
         if queue_status.paused_count:
             return (
                 "Enoch has paused tasks. Restore agent runtime access and use "
@@ -1160,10 +1160,10 @@ class EnochApplication:
         context = context.strip()
         context_source = context_source.strip()
         try:
-            direct_task = begin_direct_task(
+            direct_task = self.workflow.enqueue(
                 chat_id,
                 request,
-                self.root,
+                mode="direct",
                 context=context,
                 context_source=context_source,
                 idempotency_key=_event_idempotency_key("direct"),
@@ -1175,7 +1175,7 @@ class EnochApplication:
                 f"and is {duplicate.job.status}."
             )
         except RuntimeError:
-            running = task_queue_status(self.root).running
+            running = self.workflow.inspect().running
             if running is not None:
                 return f"Enoch is already running task #{running.id}. Use /task <request> to queue this work."
             return "Enoch could not create a task id for this /do job."
@@ -1201,7 +1201,7 @@ class EnochApplication:
         )
         if message_id is not None:
             self._work_status_messages[direct_task.id] = message_id
-            record_task_status_message(direct_task.id, message_id, self.root)
+            self.workflow.record_status_message(direct_task.id, message_id)
         self._start_direct_work_worker(direct_task, session_key=session_key)
         if message_id is not None:
             return ""
@@ -1217,16 +1217,16 @@ class EnochApplication:
         trigger: str,
         session_key: str,
     ) -> str:
-        if task_queue_status(self.root).paused_count:
+        if self.workflow.inspect().paused_count:
             return (
                 "Enoch has paused tasks. Restore agent runtime access and use "
                 "/task resume <id|all> before starting more work."
             )
         try:
-            job = begin_direct_task(
+            job = self.workflow.enqueue(
                 chat_id,
                 request,
-                self.root,
+                mode="direct",
                 source=source,
                 initiated_by=initiated_by,
                 event_actor=initiated_by,
@@ -1244,7 +1244,7 @@ class EnochApplication:
         except (OSError, ValueError):
             return "Enoch could not create a tracked task for that work."
         worker_id = f"{os.getpid()}-{uuid4().hex}"
-        claimed = claim_running_task(job.id, worker_id, os.getpid(), self.root)
+        claimed = self.workflow.claim(job.id, worker_id, os.getpid())
         if claimed is None:
             return f"Enoch could not claim tracked task #{job.id}."
         job = claimed
@@ -1324,19 +1324,19 @@ class EnochApplication:
             _CURRENT_TASK_WORKER_ID.reset(worker_token)
             self._task_cancellations.pop(job.id, None)
             if completed_status == "cancelled":
-                finished_job = cancel_running_task(
-                    self.root,
+                finished_job = self.workflow.finalize(
+                    job.id,
+                    "cancelled",
                     result=reply,
                     event_actor="agent",
                     trigger=trigger,
-                    expected_task_id=job.id,
                     worker_id=worker_id,
                 )
             elif completed_status == "failed":
                 failure = failure or classify_task_failure(reply)
-                finished_job = fail_task(
+                finished_job = self.workflow.finalize(
                     job.id,
-                    self.root,
+                    "failed",
                     result=reply,
                     event_actor="system" if deadline.expired.is_set() else "agent",
                     trigger="task-timeout" if deadline.expired.is_set() else trigger,
@@ -1346,9 +1346,8 @@ class EnochApplication:
                     retryable=False,
                 )
             elif completed_status == "paused":
-                finished_job = pause_task(
+                finished_job = self.workflow.pause(
                     job.id,
-                    self.root,
                     result=reply,
                     event_actor="system",
                     trigger="codex-unavailable",
@@ -1363,15 +1362,15 @@ class EnochApplication:
                         reason=reply,
                     )
             else:
-                finished_job = complete_task(
+                finished_job = self.workflow.finalize(
                     job.id,
-                    self.root,
+                    "completed",
                     result=reply,
                     event_actor="agent",
                     trigger=trigger,
                     worker_id=worker_id,
                 )
-        authoritative_job = finished_job or _task_by_id(job.id, self.root)
+        authoritative_job = finished_job or self.workflow.find(job.id)
         if authoritative_job is None or authoritative_job.status != completed_status:
             return authoritative_job.result if authoritative_job is not None else reply
         self._apply_task_regression_signals(
@@ -1394,10 +1393,10 @@ class EnochApplication:
         context_source: str = "",
     ) -> str:
         try:
-            job = enqueue_task_front(
+            job = self.workflow.enqueue(
                 chat_id,
                 request,
-                self.root,
+                mode="front",
                 context=context,
                 context_source=context_source,
                 idempotency_key=_event_idempotency_key("direct-next"),
@@ -1424,7 +1423,7 @@ class EnochApplication:
         )
         if message_id is not None:
             self._work_status_messages[job.id] = message_id
-            record_task_status_message(job.id, message_id, self.root)
+            self.workflow.record_status_message(job.id, message_id)
             return ""
         return f"Queued task #{job.id} to run next after task #{running.id}."
 
@@ -1759,7 +1758,15 @@ class EnochApplication:
             profile_name=self._profile_status_name(),
             model_summary_fn=self.runtime.model_summary,
         )
-        return "\n\n".join([status, _task_status_message(self.root)])
+        return "\n\n".join(
+            [
+                status,
+                _task_status_message(
+                    self.root,
+                    task_status=self.workflow.inspect(),
+                ),
+            ]
+        )
 
     def _mission(self, text: str) -> str:
         reply = mission_command(text, self.identity, self.root)
@@ -1823,7 +1830,7 @@ class EnochApplication:
         if subcommand == "resume" and resume_target is None:
             return "Use /task resume <id|all> to continue paused tasks."
         if cancel_id is not None:
-            cancelled = cancel_task(cancel_id, self.root)
+            cancelled = self.workflow.cancel(cancel_id)
             if cancelled is None:
                 return f"Enoch could not cancel task #{cancel_id}. It may be running, completed, or missing."
             cancel_evolve_candidate_for_task(
@@ -1872,10 +1879,9 @@ class EnochApplication:
         if snapshot.clarification:
             return f"Enoch needs one clarification before queueing that task: {snapshot.clarification}"
         try:
-            job = enqueue_task(
+            job = self.workflow.enqueue(
                 chat_id,
                 argument,
-                self.root,
                 context=snapshot.context,
                 context_source=snapshot.source,
                 idempotency_key=_event_idempotency_key("task"),
@@ -1883,7 +1889,7 @@ class EnochApplication:
             )
         except (OSError, ValueError):
             return "Enoch could not queue that task."
-        status = task_queue_status(self.root)
+        status = self.workflow.inspect()
         position = status.pending_count
         message = self._format_work_status(
             WorkStatusMessage(
@@ -1904,12 +1910,12 @@ class EnochApplication:
         )
         if message_id is not None:
             self._work_status_messages[job.id] = message_id
-            record_task_status_message(job.id, message_id, self.root)
+            self.workflow.record_status_message(job.id, message_id)
             return ""
         return f"Queued task #{job.id}. Enoch will work on it in the background when idle."
 
     def _retry_task(self, task_id: int) -> str:
-        original = _task_by_id(task_id, self.root)
+        original = self.workflow.find(task_id)
         candidate = None
         proposal_id = ""
         if original is not None and original.candidate_id:
@@ -1934,9 +1940,8 @@ class EnochApplication:
                 if original is not None
                 else ""
             )
-            job = retry_failed_task(
+            job = self.workflow.retry_failed(
                 task_id,
-                self.root,
                 reconciled_result=reconciled_result,
             )
         except (OSError, ForgeProviderError, TaskRetryError) as error:
@@ -1957,7 +1962,7 @@ class EnochApplication:
                     theme=evolve_report(self.root).state.theme,
                 )
             except ValueError as error:
-                cancel_task(job.id, self.root)
+                self.workflow.cancel(job.id)
                 return f"Enoch could not retry task #{task_id}: {error}"
             self._record_evolve_event(
                 "queued",
@@ -1970,7 +1975,7 @@ class EnochApplication:
                 reason=f"retry-of-task-{task_id}",
                 proposal_id=proposal_id,
             )
-        position = task_queue_status(self.root).pending_count
+        position = self.workflow.inspect().pending_count
         message = self._format_work_status(
             WorkStatusMessage(
                 chat_id=job.chat_id,
@@ -1997,7 +2002,7 @@ class EnochApplication:
         )
         if message_id is not None:
             self._work_status_messages[job.id] = message_id
-            record_task_status_message(job.id, message_id, self.root)
+            self.workflow.record_status_message(job.id, message_id)
             return ""
         return f"Queued retry task #{job.id} for failed task #{task_id}."
 
@@ -2011,11 +2016,10 @@ class EnochApplication:
         reason: str,
     ) -> str:
         try:
-            enqueue = enqueue_task_front if source == "chat-task" else enqueue_task
-            job = enqueue(
+            job = self.workflow.enqueue(
                 chat_id,
                 request,
-                self.root,
+                mode="front" if source == "chat-task" else "queued",
                 source=source,
                 initiated_by="human",
                 event_actor="human",
@@ -2023,9 +2027,8 @@ class EnochApplication:
                 idempotency_key=_event_idempotency_key(f"paused:{trigger}"),
                 **self._profile_task_options(),
             )
-            paused = pause_task(
+            paused = self.workflow.pause(
                 job.id,
-                self.root,
                 result=_codex_pause_warning(job.id, reason),
                 event_actor="system",
                 trigger="codex-unavailable",
@@ -2059,7 +2062,7 @@ class EnochApplication:
         )
         if message_id is not None:
             self._work_status_messages[job.id] = message_id
-            record_task_status_message(job.id, message_id, self.root)
+            self.workflow.record_status_message(job.id, message_id)
             return ""
         return warning
 
@@ -2071,8 +2074,7 @@ class EnochApplication:
                 task_id = int(cleaned.lstrip("#"))
             except ValueError:
                 return "Use /task resume <id|all> to continue paused tasks."
-        resumed = resume_paused_tasks(
-            self.root,
+        resumed = self.workflow.resume(
             task_id=task_id,
             trigger=trigger,
         )
@@ -2130,13 +2132,12 @@ class EnochApplication:
         for signal in signals:
             if signal.task_id == current_task_id:
                 continue
-            task = _task_by_id(signal.task_id, self.root)
+            task = self.workflow.find(signal.task_id)
             if task is None:
                 continue
             if task.status == "completed":
-                task = regress_task(
+                task = self.workflow.regress(
                     signal.task_id,
-                    self.root,
                     result=signal.reason,
                     event_actor="agent",
                     trigger="agent-regression-signal",
@@ -2157,10 +2158,9 @@ class EnochApplication:
             related_task_id = signal.fix_task_id
             if signal.resolution == "forward-fixed" and related_task_id is None:
                 related_task_id = current_task_id
-            resolved = resolve_regressed_task(
+            resolved = self.workflow.resolve_regression(
                 signal.task_id,
                 signal.resolution,
-                self.root,
                 result=signal.reason,
                 event_actor="agent",
                 trigger="agent-regression-signal",
@@ -2181,14 +2181,18 @@ class EnochApplication:
             )
 
     def _stop_running_job(self) -> str:
-        running = task_queue_status(self.root).running
+        running = self.workflow.inspect().running
         if running is None:
             return "No running task to stop."
         cancellation_event = self._task_cancellations.get(running.id)
         if cancellation_event is not None:
             cancellation_event.set()
         result = "Stopped by /stop."
-        cancelled = cancel_running_task(self.root, result=result)
+        cancelled = self.workflow.cancel(
+            running.id,
+            result=result,
+            trigger="/stop",
+        )
         if cancelled is None:
             return "No running task to stop."
         message_id = self._work_status_messages.pop(cancelled.id, cancelled.status_message_id)
@@ -2524,10 +2528,9 @@ class EnochApplication:
             proposal_id=proposal_id,
         )
         try:
-            job = enqueue_task(
+            job = self.workflow.enqueue(
                 chat_id,
                 _evolve_task_request(candidate, state.theme),
-                self.root,
                 context=_evolve_task_context(candidate),
                 context_source="evolve-approve",
                 source=candidate.source,
@@ -2594,10 +2597,9 @@ class EnochApplication:
             proposal_id=proposal_id,
         )
         try:
-            job = enqueue_task(
+            job = self.workflow.enqueue(
                 chat_id,
                 _evolve_task_request(candidate, state.theme),
-                self.root,
                 context=_evolve_task_context(candidate),
                 context_source="evolve-retry",
                 source=candidate.source,
@@ -2783,7 +2785,7 @@ class EnochApplication:
             return
         if self._task_worker is not None and self._task_worker.is_alive():
             return
-        status = task_queue_status(self.root)
+        status = self.workflow.inspect()
         if status.running is not None or status.paused_count:
             return
         if status.pending_count == 0 and self._promote_next_backlog_if_idle() is None:
@@ -2797,19 +2799,19 @@ class EnochApplication:
 
     def _run_task_worker(self) -> None:
         while not self._stopping:
-            job = begin_next_task(self.root)
+            job = self.workflow.start_next()
             if job is None:
                 if self._promote_next_backlog_if_idle() is None:
                     return
-                job = begin_next_task(self.root)
+                job = self.workflow.start_next()
                 if job is None:
                     return
             self._run_task_job(job)
-            if task_queue_status(self.root).paused_count:
+            if self.workflow.inspect().paused_count:
                 return
 
     def _promote_next_backlog_if_idle(self) -> TaskJob | None:
-        status = task_queue_status(self.root)
+        status = self.workflow.inspect()
         if status.running is not None or status.pending_count > 0 or status.paused_count > 0:
             return None
         item = next_backlog_item(self.root)
@@ -2824,10 +2826,9 @@ class EnochApplication:
         return self._enqueue_backlog_item(item, event_actor="human", trigger="/backlog promote")
 
     def _enqueue_backlog_item(self, item: BacklogItem, *, event_actor: str, trigger: str) -> TaskJob:
-        job = enqueue_task(
+        job = self.workflow.enqueue(
             item.chat_id,
             item.text,
-            self.root,
             context=item.context,
             context_source=item.context_source,
             source="backlog",
@@ -2859,17 +2860,16 @@ class EnochApplication:
         )
         if message_id is not None:
             self._work_status_messages[job.id] = message_id
-            record_task_status_message(job.id, message_id, self.root)
+            self.workflow.record_status_message(job.id, message_id)
         return job
 
     def _enqueue_due_cron_jobs(self) -> tuple[TaskJob, ...]:
         jobs: list[TaskJob] = []
         for cron in claim_due_cron_jobs(self.root):
             try:
-                job = enqueue_task(
+                job = self.workflow.enqueue(
                     cron.chat_id,
                     cron.text,
-                    self.root,
                     context=cron.context,
                     context_source=f"cron:{cron.context_source}" if cron.context_source else "cron",
                     source="task",
@@ -2907,7 +2907,7 @@ class EnochApplication:
             )
             if message_id is not None:
                 self._work_status_messages[job.id] = message_id
-                record_task_status_message(job.id, message_id, self.root)
+                self.workflow.record_status_message(job.id, message_id)
         return tuple(jobs)
 
     def _run_due_evolve_schedule(self) -> TaskJob | None:
@@ -2996,7 +2996,7 @@ class EnochApplication:
         failure_prefix: str,
     ) -> None:
         worker_id = f"{os.getpid()}-{uuid4().hex}"
-        claimed = claim_running_task(job.id, worker_id, os.getpid(), self.root)
+        claimed = self.workflow.claim(job.id, worker_id, os.getpid())
         if claimed is None:
             return
         job = claimed
@@ -3022,7 +3022,7 @@ class EnochApplication:
             if message_id is not None:
                 created_status_message = True
                 self._work_status_messages[job.id] = message_id
-                record_task_status_message(job.id, message_id, self.root)
+                self.workflow.record_status_message(job.id, message_id)
         task_status = WorkStatusMessage(
             chat_id=job.chat_id,
             message_id=message_id or 0,
@@ -3132,12 +3132,12 @@ class EnochApplication:
             except StaleDaemonEpoch:
                 return
             if completed_status == "cancelled":
-                finished_job = cancel_running_task(
-                    self.root,
+                finished_job = self.workflow.finalize(
+                    job.id,
+                    "cancelled",
                     result=reply,
                     event_actor="system",
                     trigger="task-runner-cancelled",
-                    expected_task_id=job.id,
                     worker_id=worker_id,
                 )
                 if finished_job is not None:
@@ -3153,9 +3153,8 @@ class EnochApplication:
                 failure_trigger = "task-timeout" if deadline.expired.is_set() else "task-runner"
                 failure = failure or classify_task_failure(reply)
                 if failure.retryable and job.attempt < job.max_attempts:
-                    finished_job = retry_running_task(
+                    finished_job = self.workflow.retry_running(
                         job.id,
-                        self.root,
                         result=reply,
                         failure_code=failure.code,
                         failure_class=failure.failure_class,
@@ -3167,9 +3166,9 @@ class EnochApplication:
                     if finished_job is not None:
                         completed_status = "retrying"
                 if finished_job is None:
-                    finished_job = fail_task(
+                    finished_job = self.workflow.finalize(
                         job.id,
-                        self.root,
+                        "failed",
                         result=reply,
                         event_actor=failure_actor,
                         trigger=failure_trigger,
@@ -3187,9 +3186,8 @@ class EnochApplication:
                         reason=reply,
                     )
             elif completed_status == "paused":
-                finished_job = pause_task(
+                finished_job = self.workflow.pause(
                     job.id,
-                    self.root,
                     result=reply,
                     event_actor="system",
                     trigger="codex-unavailable",
@@ -3204,9 +3202,9 @@ class EnochApplication:
                         reason=reply,
                     )
             else:
-                finished_job = complete_task(
+                finished_job = self.workflow.finalize(
                     job.id,
-                    self.root,
+                    "completed",
                     result=reply,
                     worker_id=worker_id,
                 )
@@ -3218,7 +3216,7 @@ class EnochApplication:
                         trigger="task-runner",
                         reason=reply,
                     )
-        authoritative_job = finished_job or _task_by_id(job.id, self.root)
+        authoritative_job = finished_job or self.workflow.find(job.id)
         expected_status = "pending" if completed_status == "retrying" else completed_status
         if authoritative_job is None or authoritative_job.status != expected_status:
             return
@@ -3385,7 +3383,7 @@ class EnochApplication:
                 states = list_task_worktrees(self.root)
             except VcsError as error:
                 return f"Enoch could not list task worktrees: {error}"
-            return _format_task_worktrees(states, self.root)
+            return _format_task_worktrees(states, self.workflow.inspect())
 
         action = parts[0].lower()
         if action == "show" and len(parts) == 2:
@@ -3398,7 +3396,7 @@ class EnochApplication:
                 return f"Enoch could not inspect task #{task_id} worktree: {error}"
             if state is None:
                 return f"Task #{task_id} has no registered task worktree."
-            return _format_task_worktree(state, self.root)
+            return _format_task_worktree(state, self.workflow.inspect())
 
         cleanup = action == "cleanup" and len(parts) == 2
         discard = action == "discard" and len(parts) == 3 and parts[2].lower() == "force"
@@ -3415,7 +3413,7 @@ class EnochApplication:
             return f"Enoch could not inspect task #{task_id} worktree: {error}"
         if state is None:
             return f"Task #{task_id} has no registered task worktree."
-        active = _active_tasks_for_worktree(state, self.root)
+        active = _active_tasks_for_worktree(state, self.workflow.inspect())
         if active:
             labels = ", ".join(f"#{job.id} [{job.status}]" for job in active)
             return (
@@ -3484,6 +3482,11 @@ class EnochApplication:
         return result.message
 
     def _send_progress(self, chat_id: int, elapsed_seconds: int, sandbox: str) -> None:
+        task_id = _CURRENT_TASK_ID.get()
+        worker_id = _CURRENT_TASK_WORKER_ID.get()
+        if task_id is not None and worker_id:
+            if self.workflow.heartbeat(task_id, worker_id) is None:
+                raise RuntimeError(f"Task #{task_id} lost its workflow claim.")
         mode = _sandbox_description(sandbox)
         if self._update_work_status(f"Still working after {_format_elapsed(elapsed_seconds)}: {mode}."):
             return
@@ -3786,15 +3789,25 @@ def _reconciled_retry_result(
     return ""
 
 
-def _recover_running_task_from_direct_action_log(root: Path) -> TaskJob | None:
-    running = task_queue_status(root).running
-    if running is None or task_worker_is_active(running):
+def _recover_running_task_from_direct_action_log(
+    root: Path,
+    *,
+    workflow: WorkflowEngine,
+) -> TaskJob | None:
+    running = workflow.inspect().running
+    if running is None or workflow.worker_is_active(running):
         return None
     result = _latest_direct_action_result_for_task(running, root)
     if not result:
         return None
     if _work_reply_failed(result):
-        recovered = fail_task(running.id, root, result=result, event_actor="system", trigger="recovery")
+        recovered = workflow.finalize(
+            running.id,
+            "failed",
+            result=result,
+            event_actor="system",
+            trigger="recovery",
+        )
         if recovered is not None:
             fail_evolve_candidate_for_task(
                 recovered,
@@ -3805,9 +3818,9 @@ def _recover_running_task_from_direct_action_log(root: Path) -> TaskJob | None:
             )
         return recovered
     else:
-        recovered = complete_task(
+        recovered = workflow.finalize(
             running.id,
-            root,
+            "completed",
             result=result,
             event_actor="system",
             trigger="recovery",
@@ -3982,21 +3995,17 @@ def _task_worker_context(job: TaskJob) -> str:
     return "\n\n".join(part for part in parts if part)
 
 
-def _history_task(task_id: int, root: Path) -> TaskJob | None:
-    for job in reversed(task_queue_status(root).history):
-        if job.id == task_id:
-            return job
-    return None
-
-
-def _format_task_worktrees(states: tuple[TaskWorktreeState, ...], root: Path) -> str:
+def _format_task_worktrees(
+    states: tuple[TaskWorktreeState, ...],
+    status: TaskQueueStatus,
+) -> str:
     if not states:
         return "Task worktrees: none"
     lines = [f"Task worktrees ({len(states)}):"]
     for state in states:
         condition = "unknown" if state.inspection_error else ("clean" if state.clean else "dirty")
         branch = state.branch or "(unknown branch)"
-        linked = _tasks_for_worktree(state, root)
+        linked = _tasks_for_worktree(state, status)
         tasks = ", ".join(f"#{job.id} [{job.status}]" for job in linked) or "no recent task record"
         lines.extend(
             [
@@ -4008,9 +4017,12 @@ def _format_task_worktrees(states: tuple[TaskWorktreeState, ...], root: Path) ->
     return "\n".join(lines)
 
 
-def _format_task_worktree(state: TaskWorktreeState, root: Path) -> str:
+def _format_task_worktree(
+    state: TaskWorktreeState,
+    status: TaskQueueStatus,
+) -> str:
     condition = "unknown" if state.inspection_error else ("clean" if state.clean else "dirty")
-    linked = _tasks_for_worktree(state, root)
+    linked = _tasks_for_worktree(state, status)
     tasks = ", ".join(f"#{job.id} [{job.status}]" for job in linked) or "none in recent queue history"
     lines = [
         f"Task worktree #{state.task_id}",
@@ -4026,8 +4038,10 @@ def _format_task_worktree(state: TaskWorktreeState, root: Path) -> str:
     return "\n".join(lines)
 
 
-def _tasks_for_worktree(state: TaskWorktreeState, root: Path) -> tuple[TaskJob, ...]:
-    status = task_queue_status(root)
+def _tasks_for_worktree(
+    state: TaskWorktreeState,
+    status: TaskQueueStatus,
+) -> tuple[TaskJob, ...]:
     jobs = [*status.pending, *status.paused, *status.history]
     if status.running is not None:
         jobs.append(status.running)
@@ -4045,10 +4059,13 @@ def _tasks_for_worktree(state: TaskWorktreeState, root: Path) -> tuple[TaskJob, 
     return tuple(sorted(linked, key=lambda job: job.id))
 
 
-def _active_tasks_for_worktree(state: TaskWorktreeState, root: Path) -> tuple[TaskJob, ...]:
+def _active_tasks_for_worktree(
+    state: TaskWorktreeState,
+    status: TaskQueueStatus,
+) -> tuple[TaskJob, ...]:
     return tuple(
         job
-        for job in _tasks_for_worktree(state, root)
+        for job in _tasks_for_worktree(state, status)
         if job.status in {"pending", "running", "paused", "retrying"}
     )
 
@@ -4095,8 +4112,8 @@ def _create_pull_request_for_current_task(
     )
 
 
-def _load_task_status_messages(root: Path) -> dict[int, MessageId]:
-    status = task_queue_status(root)
+def _load_task_status_messages(workflow: WorkflowEngine) -> dict[int, MessageId]:
+    status = workflow.inspect()
     jobs = [*status.pending]
     if status.running is not None:
         jobs.append(status.running)

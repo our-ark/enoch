@@ -21,11 +21,15 @@ from enoch.evolution.events import EVOLVE_SOURCES, EvolveEvent, load_evolve_even
 from enoch.evolution.sources.experience import ExperienceRecord, load_experience_records
 from enoch.evolution.sources.feedback import FeedbackSignal, extract_feedback_signals
 from enoch.tasks.events import TASK_SOURCES
-from enoch.tasks.queue import TaskJob, task_queue_status
+from enoch.tasks.queue import TaskJob, TaskQueueStatus, task_queue_status
 
 
-def _task_status_message(root: Path) -> str:
-    status = task_queue_status(root)
+def _task_status_message(
+    root: Path,
+    *,
+    task_status: TaskQueueStatus | None = None,
+) -> str:
+    status = task_status or task_queue_status(root)
     backlog = backlog_status(root)
     cron = cron_status(root)
     lines = ["Tasks:"]
@@ -40,8 +44,12 @@ def _task_status_message(root: Path) -> str:
     return "\n".join(lines)
 
 
-def _format_tasks_report(root: Path) -> str:
-    status = task_queue_status(root)
+def _format_tasks_report(
+    root: Path,
+    *,
+    task_status: TaskQueueStatus | None = None,
+) -> str:
+    status = task_status or task_queue_status(root)
     backlog = backlog_status(root)
     cron = cron_status(root)
     lines = ["Tasks:"]

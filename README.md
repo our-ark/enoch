@@ -242,6 +242,12 @@ installed through the `our_ark.profiles` entry-point group; see
 `/config profile <name>` to select one for restart, and `/status` to confirm the
 profile currently running.
 
+Embedders can replace the task lifecycle implementation through the versioned
+`WorkflowEngine` API while preserving one queue owner. The default local engine
+provides enqueue, claim, heartbeat, cancellation, finalization, recovery, and
+inspection over Enoch's durable queue; see
+[`docs/workflows.md`](docs/workflows.md).
+
 Core package boundaries and dependency direction are documented in
 [`docs/architecture.md`](docs/architecture.md).
 Durable chat receipts, publication stages, scheduler claims, and corruption

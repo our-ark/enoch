@@ -20,7 +20,7 @@ from enoch.tasks.events import normalize_task_initiator, normalize_task_source, 
 from enoch.state import StateCorruptionError, file_transaction, load_json_object
 
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 DEFAULT_MAX_ATTEMPTS = 3
 PULL_REQUEST_URL_PATTERN = re.compile(r"https://[^\s]+/(?:pull|pulls|merge_requests)/\d+")
 
@@ -52,6 +52,7 @@ class TaskJob:
     source_task_id: int | None = None
     worker_id: str = ""
     worker_pid: int | None = None
+    worker_heartbeat_at: str = ""
     worktree_path: str = ""
     branch_name: str = ""
     attempt: int = 0
@@ -546,6 +547,7 @@ def retry_running_task(
             pr_urls=_merge_pr_urls(running.pr_urls, _pull_request_urls(result)),
             worker_id="",
             worker_pid=None,
+            worker_heartbeat_at="",
             next_attempt_at=retry_at,
             failure_code=failure_code.strip(),
             failure_class=failure_class.strip(),
@@ -600,10 +602,34 @@ def claim_running_task(
             running,
             worker_id=cleaned_worker_id,
             worker_pid=worker_pid,
+            worker_heartbeat_at=current_time(),
         )
         data["running"] = _job_to_dict(claimed)
         _write_queue(data, root)
         return claimed
+
+
+def heartbeat_task(
+    task_id: int,
+    worker_id: str,
+    root: Path | None = None,
+) -> TaskJob | None:
+    cleaned_worker_id = worker_id.strip()
+    if not cleaned_worker_id:
+        raise ValueError("A worker id is required.")
+    with _queue_transaction(root):
+        data = _load_queue(root)
+        running = _parse_job(data.get("running"))
+        if (
+            running is None
+            or running.id != task_id
+            or running.worker_id != cleaned_worker_id
+        ):
+            return None
+        updated = _replace_job(running, worker_heartbeat_at=current_time())
+        data["running"] = _job_to_dict(updated)
+        _write_queue(data, root)
+        return updated
 
 
 def record_task_worktree(
@@ -679,6 +705,7 @@ def pause_task(
             result=result or paused_job.result,
             worker_id="",
             worker_pid=None,
+            worker_heartbeat_at="",
         )
         paused = [job for job in _paused_jobs(data) if job.id != task_id]
         paused.append(paused_job)
@@ -725,6 +752,7 @@ def resume_paused_tasks(
                 completed_at="",
                 worker_id="",
                 worker_pid=None,
+                worker_heartbeat_at="",
             )
             for job in selected
         )
@@ -1036,6 +1064,7 @@ def _finish_running_task(
             pr_urls=_merge_pr_urls(running.pr_urls, _pull_request_urls(result)),
             worker_id="",
             worker_pid=None,
+            worker_heartbeat_at="",
             failure_code=failure_code.strip(),
             failure_class=failure_class.strip(),
             retryable=retryable,
@@ -1123,6 +1152,7 @@ def cancel_running_task(
             pr_urls=_merge_pr_urls(running.pr_urls, _pull_request_urls(result)),
             worker_id="",
             worker_pid=None,
+            worker_heartbeat_at="",
         )
         history = _history_jobs(data)
         history.append(cancelled)
@@ -1155,6 +1185,7 @@ def recover_interrupted_task(root: Path | None = None) -> TaskJob | None:
                 completed_at=current_time(),
                 worker_id="",
                 worker_pid=None,
+                worker_heartbeat_at="",
             )
             history = _history_jobs(data)
             history.append(completed)
@@ -1181,6 +1212,7 @@ def recover_interrupted_task(root: Path | None = None) -> TaskJob | None:
                 ),
                 worker_id="",
                 worker_pid=None,
+                worker_heartbeat_at="",
                 failure_code="worker_interrupted",
                 failure_class="transient",
                 retryable=False,
@@ -1206,6 +1238,7 @@ def recover_interrupted_task(root: Path | None = None) -> TaskJob | None:
             started_at="",
             worker_id="",
             worker_pid=None,
+            worker_heartbeat_at="",
             next_attempt_at=_retry_at(0),
             failure_code="worker_interrupted",
             failure_class="transient",
@@ -1405,6 +1438,7 @@ def _parse_job(raw: object) -> TaskJob | None:
     source_task_id = _positive_int(raw.get("source_task_id"))
     worker_id = str(raw.get("worker_id") or "").strip()
     worker_pid = _optional_int(raw.get("worker_pid"))
+    worker_heartbeat_at = str(raw.get("worker_heartbeat_at") or "").strip()
     worktree_path = str(raw.get("worktree_path") or "").strip()
     branch_name = str(raw.get("branch_name") or "").strip()
     attempt_default = 1 if status in {"running", "paused"} else 0
@@ -1463,6 +1497,7 @@ def _parse_job(raw: object) -> TaskJob | None:
         source_task_id=source_task_id,
         worker_id=worker_id,
         worker_pid=worker_pid,
+        worker_heartbeat_at=worker_heartbeat_at,
         worktree_path=worktree_path,
         branch_name=branch_name,
         attempt=attempt,
@@ -1517,6 +1552,7 @@ def _job_to_dict(job: TaskJob | None) -> dict:
         "source_task_id": job.source_task_id,
         "worker_id": job.worker_id,
         "worker_pid": job.worker_pid,
+        "worker_heartbeat_at": job.worker_heartbeat_at,
         "worktree_path": job.worktree_path,
         "branch_name": job.branch_name,
         "attempt": job.attempt,

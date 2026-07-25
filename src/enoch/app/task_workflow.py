@@ -74,10 +74,8 @@ from enoch.runtime import (
 from enoch.tasks.failures import classify_task_failure
 from enoch.tasks.queue import (
     TaskJob,
-    record_task_publish_state,
     record_task_result,
     record_task_runtime_result,
-    record_task_worktree,
     task_queue_status,
 )
 from enoch.tasks.worktree import (
@@ -94,6 +92,7 @@ from enoch.vcs_tools import (
     ensure_clean_worktree,
     switch_branch,
 )
+from enoch.workflows import WorkflowEngine
 
 
 @dataclass(frozen=True)
@@ -124,6 +123,7 @@ class TaskWorkflowHost(Protocol):
     root: Path
     runtime: AgentRuntime
     forge: ForgeProvider
+    workflow: WorkflowEngine
 
     def _raise_if_current_task_cancelled(self) -> None: ...
 
@@ -292,6 +292,7 @@ class TaskWorkflow:
                 runtime_result,
                 provider=app.runtime.name,
                 root=app.root,
+                workflow=app.workflow,
             )
             result = runtime_result.final_text
             app._raise_if_current_task_cancelled()
@@ -387,7 +388,7 @@ class TaskWorkflow:
         worker_id = CURRENT_TASK_WORKER_ID.get()
         if task_id is None or not worker_id:
             raise VcsError("Task worktree preparation requires an owned running task.")
-        job = task_by_id(task_id, app.root)
+        job = app.workflow.find(task_id)
         if job is None or job.status != "running" or job.worker_id != worker_id:
             raise VcsError(f"Task #{task_id} no longer owns its execution lease.")
         base = self.dependencies.task_branch_base(app.root)
@@ -401,12 +402,11 @@ class TaskWorkflow:
             existing_path=job.worktree_path,
             existing_branch=job.branch_name,
         )
-        recorded = record_task_worktree(
+        recorded = app.workflow.record_worktree(
             task_id,
             worker_id,
             worktree.path,
             worktree.branch,
-            app.root,
         )
         if recorded is None:
             raise VcsError(
@@ -497,11 +497,16 @@ class TaskWorkflow:
                 work_root,
                 app.root,
                 forge=app.forge,
+                workflow=app.workflow,
             )
             outputs.append(format_pr_result(pr))
             if pr.url:
                 app._update_work_status(pr_step_update(pr), pr_url=pr.url)
-                record_current_task_result("\n\n".join(outputs), app.root)
+                record_current_task_result(
+                    "\n\n".join(outputs),
+                    app.root,
+                    workflow=app.workflow,
+                )
             app._send_step_update(chat_id, pr_step_update(pr))
 
             app._send_step_update(
@@ -541,7 +546,7 @@ class TaskWorkflow:
         worker_id = CURRENT_TASK_WORKER_ID.get()
         if task_id is None or not worker_id:
             raise VcsError("Branch publishing requires an owned running task.")
-        job = task_by_id(task_id, app.root)
+        job = app.workflow.find(task_id)
         if job is None or job.status != "running" or job.worker_id != worker_id:
             raise VcsError(f"Task #{task_id} no longer owns its execution lease.")
         worktree = self.dependencies.prepare_existing_branch_worktree(
@@ -550,12 +555,11 @@ class TaskWorkflow:
             branch,
             existing_path=job.worktree_path,
         )
-        recorded = record_task_worktree(
+        recorded = app.workflow.record_worktree(
             task_id,
             worker_id,
             worktree.path,
             worktree.branch,
-            app.root,
         )
         if recorded is None:
             raise VcsError(
@@ -651,6 +655,7 @@ class TaskWorkflow:
                     publish_root,
                     app.root,
                     forge=app.forge,
+                    workflow=app.workflow,
                 )
                 outputs.append(format_pr_result(pr))
                 summaries.append(pr_summary(pr))
@@ -689,7 +694,11 @@ class TaskWorkflow:
                         published_remotely=pushed_remotely,
                     )
                     app._update_work_status(pr_step_update(pr), pr_url=pr_url)
-                    record_current_task_result("\n\n".join(outputs), app.root)
+                    record_current_task_result(
+                        "\n\n".join(outputs),
+                        app.root,
+                        workflow=app.workflow,
+                    )
                     stage = "pr_opened"
             elif pr_url:
                 outputs.append(f"Pull request already opened: {pr_url}")
@@ -792,10 +801,9 @@ class TaskWorkflow:
         worker_id = CURRENT_TASK_WORKER_ID.get()
         if task_id is None or not worker_id:
             return
-        recorded = record_task_publish_state(
+        recorded = app.workflow.record_publish_state(
             task_id,
             worker_id,
-            app.root,
             stage=stage,
             commit_sha=commit_sha,
             remote_branch=remote_branch,
@@ -963,23 +971,11 @@ def work_request_with_context(request: str, context: str) -> str:
     )
 
 
-def record_current_task_result(result: str, root: Path) -> None:
-    task_status = CURRENT_WORK_STATUS.get()
-    task_id = (
-        task_status.task_id
-        if task_status is not None and task_status.task_id is not None
-        else CURRENT_TASK_ID.get()
-    )
-    if task_id is None:
-        return
-    record_task_result(task_id, result, root)
-
-
-def record_current_task_runtime_result(
-    result: RuntimeResult,
-    *,
-    provider: str,
+def record_current_task_result(
+    result: str,
     root: Path,
+    *,
+    workflow: WorkflowEngine | None = None,
 ) -> None:
     task_status = CURRENT_WORK_STATUS.get()
     task_id = (
@@ -989,7 +985,31 @@ def record_current_task_runtime_result(
     )
     if task_id is None:
         return
-    record_task_runtime_result(task_id, result, root, provider=provider)
+    if workflow is not None:
+        workflow.record_result(task_id, result)
+    else:
+        record_task_result(task_id, result, root)
+
+
+def record_current_task_runtime_result(
+    result: RuntimeResult,
+    *,
+    provider: str,
+    root: Path,
+    workflow: WorkflowEngine | None = None,
+) -> None:
+    task_status = CURRENT_WORK_STATUS.get()
+    task_id = (
+        task_status.task_id
+        if task_status is not None and task_status.task_id is not None
+        else CURRENT_TASK_ID.get()
+    )
+    if task_id is None:
+        return
+    if workflow is not None:
+        workflow.record_runtime_result(task_id, result, provider=provider)
+    else:
+        record_task_runtime_result(task_id, result, root, provider=provider)
 
 
 def evolution_provenance_for_job(job: TaskJob) -> EvolutionProvenance | None:
@@ -1032,6 +1052,7 @@ def create_pull_request_for_current_task(
     state_root: Path | None = None,
     *,
     forge: ForgeProvider | None = None,
+    workflow: WorkflowEngine | None = None,
 ) -> PullRequestResult:
     forge = forge or FunctionForgeProvider(
         close_fn=close_pull_request,
@@ -1043,7 +1064,13 @@ def create_pull_request_for_current_task(
     )
     state_root = state_root or work_root
     task_id = CURRENT_TASK_ID.get()
-    job = task_by_id(task_id, state_root) if task_id is not None else None
+    job = None
+    if task_id is not None:
+        job = (
+            workflow.find(task_id)
+            if workflow is not None
+            else task_by_id(task_id, state_root)
+        )
     provenance = evolution_provenance_for_job(job) if job is not None else None
     if provenance is None:
         return forge.create_pull_request(root=work_root)

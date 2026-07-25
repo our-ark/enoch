@@ -1,7 +1,7 @@
 # Agent profiles
 
 Agent profiles extend Enoch's behavior without forking `enoch.app.core` or
-creating a second task queue. The version 1 profile API composes five bounded
+creating a second task queue. The version 2 profile API composes five bounded
 surfaces:
 
 - `CommandSpec` adds chat commands without replacing core commands.
@@ -149,3 +149,9 @@ The hermetic portable-install test builds a disposable profile distribution,
 discovers it through its installed entry point, executes its command, and
 verifies its context, workflow policy, presentation, queue behavior, and
 provenance records.
+
+Applications embedding Enoch may inject a versioned `WorkflowEngine` alongside
+the runtime provider. Profiles continue to enqueue through
+`CommandContext.enqueue_task()`, so they do not depend on the concrete engine.
+See [`workflows.md`](workflows.md) for the public lifecycle contract and fake
+engine example.
