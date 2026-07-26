@@ -1,5 +1,6 @@
 from pathlib import Path
 import json
+import re
 import sys
 from tempfile import TemporaryDirectory
 import unittest
@@ -7,6 +8,10 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
+
+_TELEGRAM_TOKEN_LITERAL = re.compile(
+    r"\b[1-9]\d{5,}:[A-Za-z0-9_-]{20,}\b"
+)
 
 from enoch.evolution.evidence import (
     load_evidence,
@@ -97,12 +102,10 @@ class EnochFeedbackEvidenceTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             save_evidence_batch_size("feedback", 1, root)
+            synthetic_token = "1234567890:" + ("A" * 35)
             log_conversation_turn(
                 chat_id=42,
-                message=(
-                    "bin/enoch setup token "
-                    "8937129711:AAFwQKwwfj6DtoiFlr6ypIr2kmiLxJQQkJM"
-                ),
+                message=f"bin/enoch setup token {synthetic_token}",
                 reply="Token saved.",
                 root=root,
             )
@@ -117,8 +120,41 @@ class EnochFeedbackEvidenceTests(unittest.TestCase):
 
         self.assertEqual(result.status, "failed")
         self.assertEqual(pending, 1)
-        self.assertNotIn("AAFwQKww", prompts[0])
+        self.assertNotIn(synthetic_token, prompts[0])
         self.assertIn("[redacted]", prompts[0])
+
+    def test_repository_contains_no_literal_telegram_bot_tokens(self) -> None:
+        roots = tuple(
+            path
+            for path in (
+                ROOT / ".github",
+                ROOT / "docs",
+                ROOT / "libraries",
+                ROOT / "src",
+                ROOT / "tests",
+            )
+            if path.exists()
+        )
+        files = [
+            path
+            for directory in roots
+            for path in directory.rglob("*")
+            if path.is_file() and "__pycache__" not in path.parts
+        ]
+        files.extend(
+            path
+            for path in ROOT.iterdir()
+            if path.is_file() and path.name != ".git"
+        )
+        leaks = [
+            path.relative_to(ROOT).as_posix()
+            for path in files
+            if _TELEGRAM_TOKEN_LITERAL.search(
+                path.read_text(encoding="utf-8", errors="ignore")
+            )
+        ]
+
+        self.assertEqual(leaks, [])
 
     def test_rejects_json_wrapped_in_prose(self) -> None:
         with TemporaryDirectory() as temp:
