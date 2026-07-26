@@ -29,7 +29,7 @@ and validation boundary.
 | `enoch.workflows` | Versioned queue lifecycle contract and fenced local engine |
 | `enoch.conformance` | Reusable provider, runtime, workflow, and profile contract tests |
 | `enoch.memory` | Durable memory paths, prompts, and storage |
-| `enoch.lineage` | Ancestor discovery, durable Codex assessments, explicit task linkage, and verified adoption |
+| `enoch.lineage` | Ancestor discovery, durable background Codex assessments, explicit task linkage, and verified adoption |
 | `enoch.skills` | Skill catalog code and packaged skill assets |
 
 Small, cohesive capabilities such as backlog and cron remain single top-level

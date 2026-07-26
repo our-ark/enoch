@@ -25,12 +25,14 @@ from enoch.lineage.core import (
     format_candidate,
     format_lineage,
     format_parent_inherit_report,
+    format_parent_inbox,
     load_current_agent_profile,
     load_inbox_candidates,
+    load_parent_inbox_candidates,
     mark_inbox_candidate,
+    refresh_lineage_inbox,
     resolve_lineage,
 )
-from enoch.lineage.assessment import refresh_and_assess_lineage_inbox
 from enoch.providers.contracts import AgentRuntime
 from enoch.providers.contracts import ConversationId
 from enoch.providers.registry import (
@@ -697,7 +699,7 @@ def inherit_command(
     *,
     prefix: str = "/",
     command_name: str = "inherit",
-    refresh_lineage_fn: RefreshLineageFn = refresh_and_assess_lineage_inbox,
+    refresh_lineage_fn: RefreshLineageFn = refresh_lineage_inbox,
 ) -> str:
     parts = text.split(maxsplit=2)
     subcommand = parts[1].lower() if len(parts) >= 2 else ""
@@ -706,6 +708,17 @@ def inherit_command(
         if not subcommand:
             report = refresh_lineage_fn(root, scope="parent")
             return format_parent_inherit_report(report)
+        if subcommand == "inbox":
+            return "\n".join(
+                [
+                    format_parent_inbox(load_parent_inbox_candidates(root)),
+                    "",
+                    "Next:",
+                    f"- {prefix}{command_name} inspect <change_id>",
+                    f"- {prefix}{command_name} <change_id>",
+                    f"- {prefix}{command_name} ignore <change_id>",
+                ]
+            )
         if subcommand == "inspect":
             if not argument:
                 return f"Use {prefix}{command_name} inspect <candidate>."
@@ -1001,7 +1014,7 @@ CORE_COMMANDS = (
         "inherit",
         "Inherit",
         "",
-        "scan and assess direct-parent changes",
+        "scan direct-parent changes and assess them in the background",
         lambda prefix: lineage_usage(prefix, command_name="inherit"),
     ),
     CoreCommand(

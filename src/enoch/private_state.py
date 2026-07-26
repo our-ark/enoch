@@ -156,6 +156,15 @@ STATE_FILE_SCHEMAS = (
         (("candidates", (list,)), ("latest_heads", (dict,))),
     ),
     StateFileSchema(
+        "lineage/assessment_queue.json",
+        1,
+        (("current", None), ("last", None)),
+        (
+            ("current", (dict, type(None))),
+            ("last", (dict, type(None))),
+        ),
+    ),
+    StateFileSchema(
         "pending_evolve_adoptions.json",
         1,
         (("adoptions", []),),

@@ -86,8 +86,8 @@ ADMIN_COMMANDS = (
     ),
     AdminCommand(
         "inherit",
-        "Scan and inspect direct-parent changes.",
-        "inherit [inspect <change_id>|ignore <change_id>]",
+        "Scan or inspect stored direct-parent changes.",
+        "inherit [inbox|inspect <change_id>|ignore <change_id>]",
         "_admin_inherit",
     ),
     AdminCommand(
