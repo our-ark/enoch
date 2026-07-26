@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from enoch.git_tools import GitError
+from enoch.formatting import format_doctor_result
 from enoch.immune import DoctorDiagnosis
 from enoch.operations.updater import run_update_doctor, update_from_authoritative
 
@@ -44,6 +45,7 @@ class EnochUpdaterTests(unittest.TestCase):
                     "output": "",
                     "category": "operational readiness",
                     "summary": "loaded from disk",
+                    "skipped": True,
                 }
             ],
         }
@@ -76,6 +78,11 @@ class EnochUpdaterTests(unittest.TestCase):
         self.assertEqual(result.command, "updated doctor")
         self.assertEqual(result.diagnosis.summary, "Updated doctor passed.")
         self.assertEqual(result.checks[0].summary, "loaded from disk")
+        self.assertTrue(result.checks[0].skipped)
+        self.assertIn(
+            "- updated runtime: skipped (loaded from disk)",
+            format_doctor_result(result),
+        )
 
     @patch("enoch.operations.updater.run_update_doctor")
     @patch(
