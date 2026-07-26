@@ -379,7 +379,7 @@ FAILED (failures=1)
         self.assertIn("broken import", diagnosis.suggested_action)
 
     @patch("enoch.immune.subprocess.run")
-    def test_build_backend_failure_reports_locked_install_command(
+    def test_build_backend_failure_reports_available_install_command(
         self,
         run: MagicMock,
     ) -> None:
@@ -395,7 +395,12 @@ FAILED (failures=1)
         self.assertFalse(check.passed)
         self.assertEqual(check.category, "environment readiness")
         self.assertIn("missing setuptools.build_meta", check.summary)
-        self.assertIn("--require-hashes -r .github/requirements/test-build.txt", check.output)
+        expected = (
+            "--require-hashes -r .github/requirements/test-build.txt"
+            if (ROOT / ".github" / "requirements" / "test-build.txt").is_file()
+            else "-m pip install setuptools"
+        )
+        self.assertIn(expected, check.output)
 
     @patch("enoch.immune.subprocess.run")
     def test_build_backend_rejects_version_below_project_requirement(
