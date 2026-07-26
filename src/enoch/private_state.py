@@ -150,6 +150,12 @@ STATE_FILE_SCHEMAS = (
         (("attempts", (dict,)),),
     ),
     StateFileSchema(
+        "lineage/inbox.json",
+        2,
+        (("candidates", []), ("latest_heads", {})),
+        (("candidates", (list,)), ("latest_heads", (dict,))),
+    ),
+    StateFileSchema(
         "pending_evolve_adoptions.json",
         1,
         (("adoptions", []),),

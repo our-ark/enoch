@@ -1,6 +1,6 @@
 name: inherit
 version: 0.1.0
-summary: Discover ancestor skills and candidate lineage changes for selective inheritance.
+summary: Discover ancestor skills; assess, inspect, and selectively adapt direct-parent changes.
 owner: Enoch
 status: active
 mode: lineage-awareness
@@ -15,8 +15,9 @@ permissions:
     read:
       - .agent/lineage.yaml
       - .agent/lineage_inbox.json
+      - .enoch/lineage/inbox.json
     write:
-      - .agent/lineage_inbox.json
+      - .enoch/lineage/inbox.json
   forge:
     read_repo: true
 validation:

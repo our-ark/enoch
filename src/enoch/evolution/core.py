@@ -43,7 +43,6 @@ from enoch.evolution.events import (
     record_evolve_event,
 )
 from enoch.learn import PeerLearningObservation, load_peer_learning_observations
-from enoch.lineage.core import LineageCandidate, load_parent_inbox_candidates
 from enoch.memory.paths import atomic_write, clean_text, now as current_time
 from enoch.paths import private_state_path
 from enoch.tasks.events import load_task_events
@@ -73,7 +72,6 @@ ACTIONABLE_CANDIDATE_STATUSES = {"candidate", "failed"}
 VISIBLE_CANDIDATE_STATUSES = {"candidate", "running", "failed"}
 AUTO_BRAINSTORM_COOLDOWN_SECONDS = 24 * 60 * 60
 FAILED_RETRY_SCORE_BONUS = 30
-RETIRED_CANDIDATE_SOURCES = {"backlog"}
 BrainstormFallback = Callable[[str], Iterable[object]]
 
 
@@ -644,7 +642,6 @@ def collect_evolve_candidates(
     theme: str = "",
 ) -> tuple[EvolveCandidate, ...]:
     candidates: list[EvolveCandidate] = []
-    candidates.extend(_inheritance_candidates(load_parent_inbox_candidates(root)))
     candidates.extend(_peer_learning_candidates(load_peer_learning_observations(root)))
     candidates.extend(_brainstorm_candidates(load_brainstorm_ideas(root, theme=theme)))
     return tuple(candidates)
@@ -783,8 +780,10 @@ def sync_evolve_candidates(root: Path | None = None, *, theme: str = "") -> tupl
 
 
 def _candidate_retirement_reason(candidate: EvolveCandidate) -> str:
-    if candidate.source in RETIRED_CANDIDATE_SOURCES:
+    if candidate.source == "backlog":
         return "backlog-is-not-evolution-evidence"
+    if candidate.source == "inheritance":
+        return "inheritance-now-uses-its-own-human-governed-workflow"
     if candidate.source in {"feedback", "experience"} and not candidate.evidence_ids:
         return "legacy-hardcoded-evidence-pathway-retired"
     return ""
@@ -1391,30 +1390,6 @@ def _provenance_actor(value: object, *, default: str) -> str:
     return actor if actor in {"human", "agent", "system"} else default
 
 
-def _inheritance_candidates(items: Iterable[LineageCandidate]) -> list[EvolveCandidate]:
-    relevance_score = {"high": 32, "medium": 22, "low": 8}
-    candidates = []
-    for item in items:
-        candidates.append(
-            EvolveCandidate(
-                id=f"inheritance-{item.id}",
-                source="inheritance",
-                title=item.title,
-                rationale=f"Direct-parent change from {item.repo}; relevance {item.relevance}. {item.reason}",
-                proposed_change=f"Inspect and adapt direct-parent change {item.id}.",
-                expected_benefit="Keeps Enoch aligned with useful parent improvements without blindly copying them.",
-                risk="Parent change may not apply cleanly to Enoch or may duplicate existing behavior.",
-                test_plan="Inspect changed files, adapt only relevant pieces, then run affected tests.",
-                initiated_by="agent",
-                evidence_source="inheritance",
-                signal_actor="agent",
-                candidate_actor="agent",
-                score=relevance_score.get(item.relevance, 8),
-            )
-        )
-    return candidates
-
-
 def _peer_learning_candidates(items: Iterable[PeerLearningObservation]) -> list[EvolveCandidate]:
     candidates = []
     for item in items:
@@ -1473,8 +1448,6 @@ def _score_candidate(candidate: EvolveCandidate, *, theme: str) -> EvolveCandida
     theme_words = {word for word in clean_text(theme).lower().split() if len(word) >= 4}
     if theme_words and any(word in text for word in theme_words):
         score += 20
-    if candidate.source == "inheritance":
-        score += 8
     if candidate.source == "experience":
         score += 12
     if candidate.source == "learning":

@@ -96,18 +96,19 @@ is currently no command that deletes evidence.
 
 ## Candidate pathways
 
-Enoch has five candidate sources:
+Enoch has four candidate sources:
 
 - `feedback`: synthesized from feedback evidence;
 - `experience`: synthesized from task-history evidence;
-- `inheritance`: applicable direct-parent changes from the lineage inbox;
 - `learning`: peer skill observations explicitly recorded through `/learn`;
 - `brainstorming`: bounded ideas generated under the mission and theme.
 
 Backlog is not a source. Active cron jobs, generic task failures, repeated
-successes, and learning artifacts do not become hardcoded candidates. Cron,
-recovery, backlog promotion, approval, and scheduling remain task triggers; a
-task they create can later be semantically scanned through experience.
+successes, inheritance changes, and learning artifacts do not become hardcoded
+candidates. Inheritance has its own assessed inbox and explicit `/inherit
+<change_id>` task workflow. Cron, recovery, backlog promotion, approval, and
+scheduling remain task triggers; a task they create can later be semantically
+scanned through experience.
 
 Candidate synthesis is a second fresh stateless reasoning invocation. It sees
 only unlinked evidence, mission, theme, and a bounded summary of existing
@@ -123,9 +124,9 @@ Candidate records preserve `evidence_ids` and original `evidence_refs`.
 Feedback/experience candidates from the retired hardcoded pathways are retained
 for audit but removed from the actionable pool when they lack evidence IDs.
 
-The other three pathways still create structured candidates directly:
-inheritance from the lineage inbox, learning from peer observations, and
-brainstorming from a dedicated bounded generation pass.
+The other two pathways still create structured candidates directly: learning
+from peer observations and brainstorming from a dedicated bounded generation
+pass.
 
 ## Recommendation
 

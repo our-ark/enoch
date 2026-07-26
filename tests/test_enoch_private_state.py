@@ -26,6 +26,27 @@ from enoch.private_state import (
 
 
 class EnochPrivateStateTests(unittest.TestCase):
+    def test_lineage_inbox_is_registered_private_state(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            inbox = root / ".enoch" / "lineage" / "inbox.json"
+            inbox.parent.mkdir(parents=True)
+            inbox.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 2,
+                        "candidates": [],
+                        "latest_heads": {},
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            plan = plan_private_state(root)
+
+        self.assertTrue(plan.valid)
+        self.assertEqual(plan.files_checked, 1)
+
     def test_empty_state_dry_run_is_read_only(self) -> None:
         with TemporaryDirectory() as directory:
             root = Path(directory)

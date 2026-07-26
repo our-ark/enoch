@@ -747,7 +747,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertNotIn("/thinking", client.sent[0][1])
         self.assertNotIn("/lineage", client.sent[0][1])
         self.assertIn("/ancestors - show ancestor chain and ancestor skills", client.sent[0][1])
-        self.assertIn("/inherit - show inheritable direct-parent changes", client.sent[0][1])
+        self.assertIn("/inherit - scan and assess direct-parent changes", client.sent[0][1])
         self.assertNotIn("/memory", client.sent[0][1])
         self.assertIn("/skills [agent-or-path] - show declared skills", client.sent[0][1])
         self.assertNotIn("/teach", client.sent[0][1])
@@ -1297,10 +1297,12 @@ class EnochTelegramTests(unittest.TestCase):
 
         reply = client.sent[0][1]
         self.assertIn("Inherit commands:", reply)
-        self.assertIn("/inherit - show inheritable direct-parent changes", reply)
-        self.assertIn("/inherit show - show inheritable direct-parent changes", reply)
-        self.assertIn("/inherit <change_id> - inherit one direct-parent change", reply)
-        self.assertIn("/inherit all - inherit all direct-parent changes", reply)
+        self.assertIn("/inherit - scan, assess, and show direct-parent changes", reply)
+        self.assertIn("/inherit inspect <change_id>", reply)
+        self.assertIn("/inherit <change_id> - adapt one change", reply)
+        self.assertIn("/inherit ignore <change_id> - dismiss a change", reply)
+        self.assertNotIn("/inherit show", reply)
+        self.assertNotIn("/inherit all", reply)
         self.assertNotIn("Enoch Telegram commands:", reply)
 
     def test_help_topic_shows_single_command_usage(self) -> None:
@@ -4296,22 +4298,38 @@ class EnochTelegramTests(unittest.TestCase):
         adopt.assert_called_once_with(42, "our-ark/enoch#32")
         self.assertEqual(client.sent[0][1], "adopted change")
 
-    def test_inherit_rejects_non_inheritable_parent_candidate(self) -> None:
+    def test_inherit_explicit_selection_overrides_not_applicable_assessment(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
             lineage = root / ".agent" / "lineage.yaml"
             lineage.parent.mkdir()
             lineage.write_text("parent:\n  name: Enoch\n  repo: our-ark/enoch\n", encoding="utf-8")
             candidate = _lineage_candidate()
-            candidate = candidate.__class__(**{**candidate.__dict__, "relevance": "low"})
+            candidate = replace(
+                candidate,
+                relevance="low",
+                applicability="not_applicable",
+                assessment_status="assessed",
+            )
             inbox = root / ".agent" / "lineage_inbox.json"
             inbox.write_text(json.dumps({"schema_version": 1, "candidates": [candidate.__dict__]}), encoding="utf-8")
             client = FakeTelegramClient(allowed_chat_id=42)
             bot = EnochApplication(load_identity(), root, client)
 
-            _handle_update(bot, _message_update(chat_id=42, text="/inherit our-ark/enoch#32"))
+            with patch.object(bot, "_respond_read_only_turn") as read_only:
+                _handle_update(
+                    bot,
+                    _message_update(chat_id=42, text="/inherit our-ark/enoch#32"),
+                )
+            queued = task_queue_status(root).pending[0]
+            stored = load_inbox_candidates(root, include_inactive=True)[0]
 
-        self.assertIn("could not find direct-parent change", client.sent[0][1])
+        read_only.assert_not_called()
+        self.assertIn("Queued task #1", client.sent[0][1])
+        self.assertEqual(queued.source, "inheritance")
+        self.assertEqual(queued.context_source, "lineage:our-ark/enoch#32")
+        self.assertEqual(stored.status, "linked")
+        self.assertEqual(stored.linked_task_id, queued.id)
 
     def test_unknown_ancestors_subcommand_returns_usage(self) -> None:
         with TemporaryDirectory() as temp:
@@ -5572,6 +5590,17 @@ def _lineage_candidate():
         confidence="high",
         reason="PR has an inheritance label.",
         body_excerpt="Adds /thinking.",
+        assessment_status="assessed",
+        applicability="applicable",
+        summary="Adds a reasoning-level command.",
+        behavioral_change="Users can configure reasoning effort.",
+        rationale="The behavior applies to Enoch's runtime configuration.",
+        proposed_adaptation="Adapt the provider-neutral configuration behavior.",
+        risks=("Provider support varies.",),
+        likely_files=("src/enoch/commands.py",),
+        suggested_tests=("Verify supported levels.",),
+        assessed_at="2026-07-26T00:00:00+00:00",
+        assessment_version=1,
     )
 
 

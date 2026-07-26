@@ -55,18 +55,14 @@ class EnochEvolveTests(unittest.TestCase):
         self.assertEqual(state.mode, "co-evolve")
         self.assertEqual(state.theme, "")
 
-    def test_pending_backlog_is_not_evolution_evidence(self) -> None:
+    def test_backlog_and_inheritance_are_not_evolution_evidence(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
             add_backlog_item(42, "improve Telegram work UX", root, priority="p0")
             _write_lineage_candidate(root, _lineage_candidate())
 
             candidates = collect_evolve_candidates(root)
-            ranked = rank_evolve_candidates(candidates, theme="Telegram UX")
-
-        self.assertEqual({candidate.source for candidate in candidates}, {"inheritance"})
-        self.assertEqual(ranked[0].source, "inheritance")
-        self.assertNotIn("backlog-1", {candidate.id for candidate in candidates})
+        self.assertEqual(candidates, ())
 
     def test_task_failures_are_pending_evidence_not_hardcoded_candidates(self) -> None:
         with TemporaryDirectory() as temp:
@@ -131,12 +127,11 @@ class EnochEvolveTests(unittest.TestCase):
 
         self.assertEqual(
             {candidate.source for candidate in candidates},
-            {"inheritance", "learning", "brainstorming"},
+            {"learning", "brainstorming"},
         )
         initiators = {candidate.source: candidate.initiated_by for candidate in candidates}
         self.assertEqual(set(initiators.values()), {"agent"})
         signals = {candidate.source: candidate.signal_actor for candidate in candidates}
-        self.assertEqual(signals["inheritance"], "agent")
         self.assertEqual(signals["learning"], "human")
         self.assertEqual(signals["brainstorming"], "agent")
         self.assertTrue(all(candidate.candidate_actor == "agent" for candidate in candidates))

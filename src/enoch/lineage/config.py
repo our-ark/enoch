@@ -6,59 +6,51 @@ from pathlib import Path
 from enoch.config import read_section
 
 
-DEFAULT_IMPORTANT_TITLE_WORDS = (
-    "bug",
-    "fix",
-    "security",
-    "doctor",
-    "restart",
-    "runtime",
-    "crash",
-    "rollback",
-    "token",
-    "permission",
-)
-DEFAULT_IMPORTANT_FILE_PREFIXES = (
-    "src/enoch/brain.py",
-    "src/enoch/config.py",
-    "src/enoch/operations/",
-    "src/enoch/providers/",
-    "src/enoch/immune.py",
-    "src/enoch/app/",
-    "src/enoch/tasks/",
-    "src/enoch/evolution/",
-)
+DEFAULT_ASSESSMENT_BATCH_SIZE = 10
+DEFAULT_MAX_DIFF_CHARS = 12_000
+DEFAULT_SCAN_LIMIT = 500
 
 
 @dataclass(frozen=True)
 class LineageSettings:
-    important_title_words: tuple[str, ...] = DEFAULT_IMPORTANT_TITLE_WORDS
-    important_file_prefixes: tuple[str, ...] = DEFAULT_IMPORTANT_FILE_PREFIXES
+    assessment_batch_size: int = DEFAULT_ASSESSMENT_BATCH_SIZE
+    max_diff_chars: int = DEFAULT_MAX_DIFF_CHARS
+    scan_limit: int = DEFAULT_SCAN_LIMIT
 
 
 def lineage_settings(root: Path | None = None) -> LineageSettings:
     section = read_section("lineage", root)
     return LineageSettings(
-        important_title_words=_csv_values(
-            section.get("important_title_words"),
-            DEFAULT_IMPORTANT_TITLE_WORDS,
-            lower=True,
+        assessment_batch_size=_bounded_int(
+            section.get("assessment_batch_size"),
+            DEFAULT_ASSESSMENT_BATCH_SIZE,
+            minimum=1,
+            maximum=20,
         ),
-        important_file_prefixes=_csv_values(
-            section.get("important_file_prefixes"),
-            DEFAULT_IMPORTANT_FILE_PREFIXES,
+        max_diff_chars=_bounded_int(
+            section.get("max_diff_chars"),
+            DEFAULT_MAX_DIFF_CHARS,
+            minimum=1_000,
+            maximum=50_000,
+        ),
+        scan_limit=_bounded_int(
+            section.get("scan_limit"),
+            DEFAULT_SCAN_LIMIT,
+            minimum=20,
+            maximum=5_000,
         ),
     )
 
 
-def _csv_values(value: str | None, default: tuple[str, ...], *, lower: bool = False) -> tuple[str, ...]:
-    if value is None:
+def _bounded_int(
+    value: str | None,
+    default: int,
+    *,
+    minimum: int,
+    maximum: int,
+) -> int:
+    try:
+        parsed = int(str(value or "").strip())
+    except ValueError:
         return default
-    items: list[str] = []
-    for raw_item in value.split(","):
-        item = raw_item.strip()
-        if lower:
-            item = item.lower()
-        if item and item not in items:
-            items.append(item)
-    return tuple(items) if items else default
+    return max(minimum, min(parsed, maximum))

@@ -20,6 +20,7 @@ from enoch.lineage.core import (
     LineageError,
     LineageInboxReport,
     LineageResolution,
+    STATUS_PENDING,
     find_parent_inbox_candidate,
     format_candidate,
     format_lineage,
@@ -27,9 +28,9 @@ from enoch.lineage.core import (
     load_current_agent_profile,
     load_inbox_candidates,
     mark_inbox_candidate,
-    refresh_lineage_inbox,
     resolve_lineage,
 )
+from enoch.lineage.assessment import refresh_and_assess_lineage_inbox
 from enoch.providers.contracts import AgentRuntime
 from enoch.providers.contracts import ConversationId
 from enoch.providers.registry import (
@@ -696,13 +697,13 @@ def inherit_command(
     *,
     prefix: str = "/",
     command_name: str = "inherit",
-    refresh_lineage_fn: RefreshLineageFn = refresh_lineage_inbox,
+    refresh_lineage_fn: RefreshLineageFn = refresh_and_assess_lineage_inbox,
 ) -> str:
     parts = text.split(maxsplit=2)
     subcommand = parts[1].lower() if len(parts) >= 2 else ""
     argument = parts[2].strip() if len(parts) >= 3 else ""
     try:
-        if not subcommand or subcommand in {"show", "changes", "inbox", "refresh"}:
+        if not subcommand:
             report = refresh_lineage_fn(root, scope="parent")
             return format_parent_inherit_report(report)
         if subcommand == "inspect":
@@ -718,8 +719,19 @@ def inherit_command(
         if subcommand == "ignore":
             if not argument:
                 return f"Use {prefix}{command_name} ignore <candidate>."
+            existing = find_parent_inbox_candidate(argument, root)
+            if existing is None:
+                return (
+                    f"Enoch could not find direct-parent change {argument}. "
+                    f"Run {prefix}{command_name} first."
+                )
+            if existing.status != STATUS_PENDING:
+                return (
+                    f"Direct-parent change {existing.id} is {existing.status} "
+                    "and cannot be dismissed."
+                )
             candidate = mark_inbox_candidate(argument, "ignored", root, note="Ignored by user command.")
-            return f"Ignored inheritable change {candidate.id}."
+            return f"Dismissed direct-parent change {candidate.id}."
     except LineageError as error:
         return f"Enoch could not complete inherit command: {error}"
     return lineage_usage(prefix, command_name=command_name)
@@ -989,7 +1001,7 @@ CORE_COMMANDS = (
         "inherit",
         "Inherit",
         "",
-        "show inheritable direct-parent changes",
+        "scan and assess direct-parent changes",
         lambda prefix: lineage_usage(prefix, command_name="inherit"),
     ),
     CoreCommand(

@@ -170,13 +170,20 @@ from enoch.learn import (
     record_peer_learning_observation,
 )
 from enoch.lineage.core import (
+    ASSESSMENT_ASSESSED,
     find_parent_inbox_candidate,
     LineageError,
-    lineage_adopt_prompt,
+    STATUS_ADOPTED,
+    STATUS_LINKED,
+    lineage_adaptation_request,
     lineage_candidate_context,
-    load_parent_inbox_candidates,
-    mark_inbox_candidate,
+    link_inbox_candidate,
     resolve_lineage,
+)
+from enoch.lineage.assessment import refresh_and_assess_lineage_inbox
+from enoch.lineage.lifecycle import (
+    lineage_context_source,
+    reconcile_lineage_adoptions,
 )
 from enoch.logs import log_conversation_turn, log_system_event, system_log_dirs
 from enoch.memory.paths import clean_text
@@ -3665,19 +3672,27 @@ class EnochApplication:
         )
 
     def _inherit(self, chat_id: int, text: str) -> str:
+        self._reconcile_lineage_adoptions()
         parts = text.split(maxsplit=2)
         subcommand = parts[1].lower() if len(parts) >= 2 else ""
         argument = parts[2].strip() if len(parts) >= 3 else ""
-        if subcommand == "all":
-            inherit_command("/inherit show", self.root, command_name="inherit")
-            candidates = load_parent_inbox_candidates(self.root)
-            if not candidates:
-                return "No pending direct-parent changes to inherit."
-            replies = [self._adopt_lineage_candidate(chat_id, candidate.id) for candidate in candidates]
-            return "\n\n".join(replies)
-        if subcommand and subcommand not in {"show", "changes", "inbox", "refresh", "inspect", "ignore"}:
+        if subcommand and subcommand not in {"inspect", "ignore"}:
             return self._adopt_lineage_candidate(chat_id, subcommand)
-        reply = inherit_command(text, self.root, command_name="inherit")
+        reply = inherit_command(
+            text,
+            self.root,
+            command_name="inherit",
+            refresh_lineage_fn=lambda root, scope: refresh_and_assess_lineage_inbox(
+                root,
+                scope=scope,
+                generator=lambda prompt: self._respond_isolated_evidence_turn(
+                    chat_id,
+                    prompt,
+                    phase="lineage-assessment",
+                ),
+                mission=self.identity.mission,
+            ),
+        )
         if subcommand == "inspect":
             candidate = find_parent_inbox_candidate(argument, self.root)
             if candidate is not None:
@@ -3690,48 +3705,80 @@ class EnochApplication:
         candidate = _find_lineage_adopt_candidate(candidate_id, self.root)
         if candidate is None:
             return f"Enoch could not find direct-parent change {candidate_id}. Run /inherit first."
-
-        reply = self._respond_read_only_turn(chat_id, lineage_adopt_prompt(candidate))
-        memory_result = extract_memory_requests(reply)
-        reply = memory_result.visible_reply
-        memory_note = self._save_memory_requests(memory_result.requests)
-        edit_request = extract_edit_request(reply)
-        if edit_request is None:
-            try:
-                marked = mark_inbox_candidate(
-                    candidate.id,
-                    "ignored",
-                    self.root,
-                    note=_clip_activity_text(reply),
+        if candidate.status == STATUS_ADOPTED:
+            return (
+                f"Direct-parent change {candidate.id} is already adopted"
+                + (
+                    f" at revision {candidate.adopted_revision}."
+                    if candidate.adopted_revision
+                    else "."
                 )
-                status_note = f"Marked ancestor change {marked.id} as skipped."
-            except LineageError as error:
-                status_note = f"Enoch could not update ancestor change status: {error}"
-            return "\n\n".join(part for part in [reply, memory_note, status_note] if part)
-
-        visible = edit_request.visible_reply
-        if not self._action_allowed():
-            return "\n\n".join(part for part in [visible, memory_note, self._action_lock_message()] if part)
-
-        edit_result = self._run_tracked_inline_work(
-            chat_id,
-            edit_request.request,
-            source="inheritance",
-            initiated_by="human",
-            trigger="/inherit",
-            session_key=self._session_key(chat_id),
-        )
-        try:
-            marked = mark_inbox_candidate(
-                candidate.id,
-                "adopted",
-                self.root,
-                note=_clip_activity_text(edit_result),
             )
-            status_note = f"Marked ancestor change {marked.id} as adopted."
+        if candidate.status == STATUS_LINKED:
+            return (
+                f"Direct-parent change {candidate.id} is already linked to "
+                f"task #{candidate.linked_task_id}."
+            )
+        if candidate.assessment_status != ASSESSMENT_ASSESSED:
+            return (
+                f"Direct-parent change {candidate.id} has not been assessed successfully. "
+                "Run /inherit to let Codex assess or retry it first."
+            )
+        if not self._action_allowed():
+            return self._action_lock_message()
+        try:
+            job = self.workflow.enqueue(
+                chat_id,
+                lineage_adaptation_request(candidate),
+                context=lineage_candidate_context(candidate),
+                context_source=lineage_context_source(candidate.id),
+                source="inheritance",
+                initiated_by="human",
+                event_actor="human",
+                trigger="/inherit",
+                idempotency_key=_event_idempotency_key(
+                    f"inherit:{candidate.id}"
+                ),
+                **self._profile_task_options(),
+            )
+        except (OSError, RuntimeError, ValueError):
+            return f"Enoch could not queue inheritance task for {candidate.id}."
+        try:
+            link_inbox_candidate(
+                candidate.id,
+                job.id,
+                self.root,
+            )
         except LineageError as error:
-            status_note = f"Enoch could not update ancestor change status: {error}"
-        return "\n\n".join(part for part in [visible, memory_note, edit_result, status_note] if part)
+            self.workflow.cancel(
+                job.id,
+                result=f"Could not link lineage change: {error}",
+                event_actor="system",
+                trigger="lineage-link-failed",
+            )
+            return f"Enoch could not link {candidate.id} to its task: {error}"
+        return (
+            f"Queued task #{job.id} to adapt direct-parent change {candidate.id} "
+            "through the standard worktree, validation, commit, push, and PR workflow."
+        )
+
+    def _reconcile_lineage_adoptions(self) -> None:
+        status = self.workflow.inspect()
+        tasks = tuple(
+            job
+            for job in (
+                status.running,
+                *status.pending,
+                *status.paused,
+                *status.history,
+            )
+            if job is not None
+        )
+        reconcile_lineage_adoptions(
+            self.root,
+            tasks,
+            review=self.review,
+        )
 
     def _doctor(self) -> str:
         return doctor_command(
@@ -3846,6 +3893,7 @@ class EnochApplication:
             )
         except (ReviewProviderError, CapabilityAuthorizationError) as error:
             return f"Enoch could not land that review: {error}"
+        self._reconcile_lineage_adoptions()
         return _format_review_land_result(result)
 
     def _update(self) -> str:

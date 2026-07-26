@@ -13,7 +13,7 @@ conversation turns                 task event histories
                            |
                 semantic candidate synthesis
                            |
-     inheritance ------ candidate pool ------ peer learning
+                         candidate pool ------ peer learning
                            |
                  bounded semantic curation
                            |
@@ -217,22 +217,21 @@ but the linkage append did not.
 Legacy feedback/experience candidates that lack evidence IDs remain auditable
 but are retired from the actionable pool.
 
-## The five candidate pathways
+## The four candidate pathways
 
-After this redesign, the candidate pool still has five source labels, but the
+After this redesign, the candidate pool has four source labels, but the
 sources do not all enter at the same stage:
 
 1. `feedback` — semantic evidence, then candidate synthesis.
 2. `experience` — semantic evidence, then candidate synthesis.
-3. `inheritance` — direct candidate adaptation from applicable direct-parent
-   lineage inbox changes.
-4. `learning` — direct candidates from peer observations explicitly recorded
+3. `learning` — direct candidates from peer observations explicitly recorded
    through `/learn`.
-5. `brainstorming` — direct bounded ideas generated under mission and theme.
+4. `brainstorming` — direct bounded ideas generated under mission and theme.
 
 The feedback and experience pathways now use the new evidence layer.
-Inheritance, learning, and brainstorming still use their earlier direct
-candidate adapters. Backlog has been removed entirely as a source.
+Learning and brainstorming still use direct candidate adapters. Backlog and
+inheritance have both been removed as sources. Inheritance now uses its own
+Codex-assessed inbox and explicit `/inherit <change_id>` task workflow.
 
 ## Candidate curation
 
