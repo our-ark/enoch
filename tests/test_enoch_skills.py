@@ -99,6 +99,14 @@ class EnochSkillsTests(unittest.TestCase):
         self.assertIn("contract: skill-library/v1", metadata)
         self.assertIn("implementation: procedural", metadata)
 
+    def test_work_skill_validation_uses_canonical_doctor(self) -> None:
+        metadata = (
+            ROOT / "src" / "enoch" / "skills" / "work" / "skill.yaml"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("validation:\n  command: bin/enoch doctor\n", metadata)
+        self.assertNotIn("unittest discover", metadata)
+
     def test_skills_command_can_inspect_explicit_local_agent_path(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             workspace = Path(directory)

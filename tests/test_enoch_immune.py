@@ -155,7 +155,7 @@ class EnochImmuneTests(unittest.TestCase):
         result = run_immune_system(ROOT)
 
         self.assertTrue(result.passed)
-        self.assertIn("-m unittest discover -s tests", result.command)
+        self.assertIn("-m unittest discover -s tests -t .", result.command)
         self.assertIn("import enoch.cli", result.command)
         self.assertIn("import enoch.providers", result.command)
         self.assertIn("import enoch.lineage", result.command)
