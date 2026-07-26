@@ -40,6 +40,21 @@ Terminal task status is monotonic: late progress callbacks cannot overwrite a
 completed, failed, cancelled, or regressed status. Repeating a terminal send
 returns the durable receipt for the original logical notification.
 
+## Daemon effect fencing
+
+The same daemon epoch governs task mutations and external effects. Bounded
+operations such as worktree mutation, commit, push, pull-request creation or
+merge, and durable local learning run under the epoch lock. An obsolete daemon
+is rejected before the provider is called; a replacement daemon waits for an
+already-authorized bounded operation to finish before taking ownership.
+
+Runtime invocations may last minutes, so they do not hold the takeover lock.
+Enoch monitors the active epoch while the runtime executes and sets the
+provider-standard cancellation event if ownership changes. On return, it
+revalidates the epoch. A stale worker therefore cannot persist runtime
+evidence, finalize the task, continue publication, or deliver its final
+notification.
+
 ## Task publication
 
 Task results use `WorkOutcome`, separating status, failure code, retryability,

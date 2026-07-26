@@ -13,6 +13,7 @@ and validation boundary.
 | Package | Responsibility |
 | --- | --- |
 | `enoch.app` | Provider-neutral event loop, command orchestration, parsing, and presentation |
+| `enoch.app.effects` | Daemon-epoch authorization for bounded provider effects and long runtime cancellation |
 | `enoch.app.inbox` | Durable chat receipts, redelivery suppression, and poison-event attempts |
 | `enoch.state` | Corruption-safe JSON loading, atomic writes, and interprocess transactions |
 | `enoch.tasks` | Task queue state, audit events, failure policy, configuration, and isolated worktrees |

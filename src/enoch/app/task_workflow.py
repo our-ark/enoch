@@ -7,6 +7,7 @@ import time
 from typing import Any, Callable, Protocol
 
 from enoch.app.activity import record_direct_action
+from enoch.app.effects import DaemonEffectFence
 from enoch.app.execution_context import (
     CURRENT_TASK_ID,
     CURRENT_TASK_WORKER_ID,
@@ -124,6 +125,7 @@ class TaskWorkflowHost(Protocol):
     runtime: AgentRuntime
     forge: ForgeProvider
     workflow: WorkflowEngine
+    effect_fence: DaemonEffectFence
 
     def _raise_if_current_task_cancelled(self) -> None: ...
 
@@ -260,33 +262,36 @@ class TaskWorkflow:
                 f"{task_worktree.branch} from the latest task base."
             )
             app._send_step_update(chat_id, "Working.")
-            runtime_result = invoke_runtime_action(
-                app.runtime,
-                app.identity,
-                app._profile_prompt(
-                    work_request_prompt(
-                        work_request_with_context(request, context),
-                        remote_review=bool(
-                            getattr(app.forge, "supports_remote_review", True)
+            runtime_execution = execution or RuntimeExecutionControl(
+                request_id=f"task:{CURRENT_TASK_ID.get() or 'inline'}",
+                session_key=session_key,
+                cancellation_event=app._current_task_cancellation_event(),
+                progress_callback=lambda progress: app._send_progress(
+                    chat_id,
+                    progress.elapsed_seconds,
+                    progress.sandbox,
+                ),
+            )
+            runtime_result = app.effect_fence.run_runtime(
+                lambda fenced_execution: invoke_runtime_action(
+                    app.runtime,
+                    app.identity,
+                    app._profile_prompt(
+                        work_request_prompt(
+                            work_request_with_context(request, context),
+                            remote_review=bool(
+                                getattr(app.forge, "supports_remote_review", True)
+                            ),
                         ),
+                        purpose="task",
+                        chat_id=chat_id,
                     ),
-                    purpose="task",
-                    chat_id=chat_id,
+                    cwd=work_root,
+                    sandbox=sandbox,
+                    execution=fenced_execution,
+                    state_root=app.root,
                 ),
-                cwd=work_root,
-                sandbox=sandbox,
-                execution=execution
-                or RuntimeExecutionControl(
-                    request_id=f"task:{CURRENT_TASK_ID.get() or 'inline'}",
-                    session_key=session_key,
-                    cancellation_event=app._current_task_cancellation_event(),
-                    progress_callback=lambda progress: app._send_progress(
-                        chat_id,
-                        progress.elapsed_seconds,
-                        progress.sandbox,
-                    ),
-                ),
-                state_root=app.root,
+                runtime_execution,
             )
             record_current_task_runtime_result(
                 runtime_result,
@@ -299,8 +304,11 @@ class TaskWorkflow:
             result = app._capture_task_regression_signals(result)
             memory_result = extract_memory_requests(result)
             result = memory_result.visible_reply
-            memory_note = app._save_memory_requests(memory_result.requests)
-            record_direct_action(request, result, app.root)
+            memory_note = app.effect_fence.run(
+                app._save_memory_requests,
+                memory_result.requests,
+            )
+            app.effect_fence.run(record_direct_action, request, result, app.root)
             try:
                 action_files = tuple(sorted(self.dependencies.changed_files(work_root)))
             except VcsError:
@@ -320,7 +328,8 @@ class TaskWorkflow:
         parts = [branch_note, result or "Enoch completed the requested work.", memory_note]
         if not action_files:
             try:
-                cleanup = self.dependencies.remove_task_worktree(
+                cleanup = app.effect_fence.run(
+                    self.dependencies.remove_task_worktree,
                     app.root,
                     task_worktree,
                     force_delete_branch=True,
@@ -392,7 +401,8 @@ class TaskWorkflow:
         if job is None or job.status != "running" or job.worker_id != worker_id:
             raise VcsError(f"Task #{task_id} no longer owns its execution lease.")
         base = self.dependencies.task_branch_base(app.root)
-        worktree = self.dependencies.prepare_task_worktree(
+        worktree = app.effect_fence.run(
+            self.dependencies.prepare_task_worktree,
             app.root,
             task_id,
             request,
@@ -417,16 +427,20 @@ class TaskWorkflow:
     def run_forge_maintenance(self, request: ForgeMaintenanceRequest) -> str:
         app = self.application
         app._update_work_status("Updating pull requests.")
-        results = [
-            app.forge.close_pull_request(
-                number,
-                root=app.root,
-                comment=duplicate_close_comment(request.keep_number)
-                if request.keep_number
-                else None,
+        results = []
+        for number in request.close_numbers:
+            results.append(
+                app.effect_fence.run(
+                    app.forge.close_pull_request,
+                    number,
+                    root=app.root,
+                    comment=(
+                        duplicate_close_comment(request.keep_number)
+                        if request.keep_number
+                        else None
+                    ),
+                )
             )
-            for number in request.close_numbers
-        ]
         return format_pr_close_results(results, request.keep_number)
 
     def run_existing_branch_publish_with_status(
@@ -481,7 +495,10 @@ class TaskWorkflow:
             self.dependencies.ensure_clean_worktree(work_root)
 
             app._send_step_update(chat_id, f"Handing off branch {branch}.")
-            pushed = self.dependencies.push_current_branch(root=work_root)
+            pushed = app.effect_fence.run(
+                self.dependencies.push_current_branch,
+                root=work_root,
+            )
             outputs.append(format_remote_publish_result(pushed))
             app._send_step_update(
                 chat_id,
@@ -493,7 +510,8 @@ class TaskWorkflow:
             )
 
             app._send_step_update(chat_id, "Preparing the review handoff.")
-            pr = create_pull_request_for_current_task(
+            pr = app.effect_fence.run(
+                create_pull_request_for_current_task,
                 work_root,
                 app.root,
                 forge=app.forge,
@@ -514,7 +532,8 @@ class TaskWorkflow:
                 "Cleaning up the isolated task worktree.",
             )
             outputs.append(
-                self.dependencies.remove_task_worktree(
+                app.effect_fence.run(
+                    self.dependencies.remove_task_worktree,
                     app.root,
                     task_worktree,
                     delete_local_branch=False,
@@ -549,7 +568,8 @@ class TaskWorkflow:
         job = app.workflow.find(task_id)
         if job is None or job.status != "running" or job.worker_id != worker_id:
             raise VcsError(f"Task #{task_id} no longer owns its execution lease.")
-        worktree = self.dependencies.prepare_existing_branch_worktree(
+        worktree = app.effect_fence.run(
+            self.dependencies.prepare_existing_branch_worktree,
             app.root,
             task_id,
             branch,
@@ -599,7 +619,8 @@ class TaskWorkflow:
         try:
             if stage not in {"committed", "pushed", "pr_opened"}:
                 app._send_step_update(chat_id, "Committing the change.")
-                commit = self.dependencies.prepare_local_publish(
+                commit = app.effect_fence.run(
+                    self.dependencies.prepare_local_publish,
                     self.dependencies.feature_title(request),
                     root=publish_root,
                     allowed_files=allowed_files,
@@ -627,7 +648,10 @@ class TaskWorkflow:
                     chat_id,
                     "Handing off the branch to the configured forge.",
                 )
-                pushed = self.dependencies.push_current_branch(root=publish_root)
+                pushed = app.effect_fence.run(
+                    self.dependencies.push_current_branch,
+                    root=publish_root,
+                )
                 remote_branch = pushed.branch
                 pushed_remotely = pushed.pushed
                 outputs.append(format_remote_publish_result(pushed))
@@ -651,7 +675,8 @@ class TaskWorkflow:
 
             if stage != "pr_opened":
                 app._send_step_update(chat_id, "Preparing the review handoff.")
-                pr = create_pull_request_for_current_task(
+                pr = app.effect_fence.run(
+                    create_pull_request_for_current_task,
                     publish_root,
                     app.root,
                     forge=app.forge,
@@ -709,7 +734,8 @@ class TaskWorkflow:
                     chat_id,
                     "Cleaning up the isolated task worktree.",
                 )
-                handoff = self.dependencies.remove_task_worktree(
+                handoff = app.effect_fence.run(
+                    self.dependencies.remove_task_worktree,
                     app.root,
                     task_worktree,
                     delete_local_branch=pushed_remotely,
@@ -720,7 +746,8 @@ class TaskWorkflow:
                     chat_id,
                     f"Returning local checkout to {resident_branch}.",
                 )
-                handoff = app._return_to_resident_after_handoff(
+                handoff = app.effect_fence.run(
+                    app._return_to_resident_after_handoff,
                     published_remotely=pushed_remotely,
                 )
             outputs.append(handoff)
@@ -766,7 +793,12 @@ class TaskWorkflow:
             if pr_url
             else f"committed edit to local branch: {request}"
         )
-        record_direct_action(action, "\n\n".join(summaries), app.root)
+        app.effect_fence.run(
+            record_direct_action,
+            action,
+            "\n\n".join(summaries),
+            app.root,
+        )
         reply = "\n\n".join(outputs)
         app._queue_session_sync(
             chat_id,

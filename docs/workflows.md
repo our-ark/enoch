@@ -73,6 +73,14 @@ are read-only. Implementations may use another storage backend, but must retain
 the single-running-task invariant, idempotent enqueue behavior, ownership
 checks, and explicit recovery semantics.
 
+Workflow state fencing is paired with `enoch.app.effects.DaemonEffectFence`.
+Bounded VCS, forge, notification, and private-state effects execute while
+holding the daemon epoch lock, so takeover and the effect have one atomic
+order. Long runtime calls do not hold that lock. An epoch monitor instead sets
+their standard cancellation event when a replacement daemon takes ownership,
+and the stale invocation cannot record a result, finalize its task, publish,
+or send a terminal notification.
+
 The core and portable-install suites run the application with an injected fake
 runtime and recording workflow implementation. This verifies profile command
 enqueueing, claim, execution, evidence recording, and terminal finalization

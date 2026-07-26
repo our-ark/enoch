@@ -107,6 +107,7 @@ from enoch.app.epoch import (
     daemon_epoch_guard,
     require_current_daemon_epoch,
 )
+from enoch.app.effects import DaemonEffectFence
 from enoch.app.notifications import (
     NotificationDeliveryService,
     NotificationResult,
@@ -414,6 +415,7 @@ class EnochApplication:
             root,
             provider=self.channel_name,
         )
+        self.effect_fence = DaemonEffectFence(root, self.daemon_epoch)
         self.notifications = NotificationDeliveryService(
             client,
             self.channel_name,
@@ -540,6 +542,7 @@ class EnochApplication:
             startup_context_note(memory_for_prompt(self.root)),
             runtime=self.runtime,
             session_key=self._session_key(chat_id),
+            effect_fence=self.effect_fence,
         )
         self._run_profile_hook("on_startup")
 
@@ -968,6 +971,25 @@ class EnochApplication:
         provider = _chat_provider_name(self.client)
         return f"{provider}:{chat_id}"
 
+    def _invoke_runtime_response(
+        self,
+        prompt: str,
+        *,
+        execution: RuntimeExecutionControl,
+        image_paths: tuple[Path, ...] = (),
+    ):
+        return self.effect_fence.run_runtime(
+            lambda fenced_execution: invoke_runtime_respond(
+                self.runtime,
+                self.identity,
+                prompt,
+                cwd=self.root,
+                image_paths=image_paths,
+                execution=fenced_execution,
+            ),
+            execution,
+        )
+
     def _respond_read_only_turn(
         self,
         chat_id: ConversationId,
@@ -977,15 +999,12 @@ class EnochApplication:
     ) -> str:
         resolved_session_key = session_key or self._session_key(chat_id)
         try:
-            return invoke_runtime_respond(
-                self.runtime,
-                self.identity,
+            return self._invoke_runtime_response(
                 self._profile_prompt(
                     read_only_turn_prompt(text),
                     purpose="conversation",
                     chat_id=chat_id,
                 ),
-                cwd=self.root,
                 execution=RuntimeExecutionControl(
                     request_id=f"conversation:{chat_id}",
                     session_key=resolved_session_key,
@@ -1007,15 +1026,12 @@ class EnochApplication:
                 self.root,
                 channel_name=self.channel_name,
             ) as image_path:
-                return invoke_runtime_respond(
-                    self.runtime,
-                    self.identity,
+                return self._invoke_runtime_response(
                     self._profile_prompt(
                         image_prompt(caption, self.channel_name),
                         purpose="image",
                         chat_id=chat_id,
                     ),
-                    cwd=self.root,
                     image_paths=(image_path,),
                     execution=RuntimeExecutionControl(
                         request_id=f"image:{chat_id}",
@@ -1052,6 +1068,7 @@ class EnochApplication:
                 note,
                 runtime=self.runtime,
                 session_key=self._session_key(chat_id),
+                effect_fence=self.effect_fence,
             )
 
     def _natural(self, chat_id: ConversationId, text: str) -> str:
@@ -1128,15 +1145,12 @@ class EnochApplication:
         request: str,
     ) -> TaskContextSnapshot:
         try:
-            reply = invoke_runtime_respond(
-                self.runtime,
-                self.identity,
+            reply = self._invoke_runtime_response(
                 self._profile_prompt(
                     _task_context_snapshot_prompt(request, provider=self.channel_name),
                     purpose="task-context",
                     chat_id=chat_id,
                 ),
-                cwd=self.root,
                 execution=RuntimeExecutionControl(
                     request_id=f"task-context:{chat_id}",
                     session_key=self._session_key(chat_id),
@@ -1373,7 +1387,8 @@ class EnochApplication:
         authoritative_job = finished_job or self.workflow.find(job.id)
         if authoritative_job is None or authoritative_job.status != completed_status:
             return authoritative_job.result if authoritative_job is not None else reply
-        self._apply_task_regression_signals(
+        self.effect_fence.run(
+            self._apply_task_regression_signals,
             regression_signals,
             current_task_id=job.id if completed_status == "completed" else None,
             allow_resolution=completed_status == "completed",
@@ -2798,17 +2813,20 @@ class EnochApplication:
         self._task_worker.start()
 
     def _run_task_worker(self) -> None:
-        while not self._stopping:
-            job = self.workflow.start_next()
-            if job is None:
-                if self._promote_next_backlog_if_idle() is None:
-                    return
+        try:
+            while not self._stopping:
                 job = self.workflow.start_next()
                 if job is None:
+                    if self._promote_next_backlog_if_idle() is None:
+                        return
+                    job = self.workflow.start_next()
+                    if job is None:
+                        return
+                self._run_task_job(job)
+                if self.workflow.inspect().paused_count:
                     return
-            self._run_task_job(job)
-            if self.workflow.inspect().paused_count:
-                return
+        except StaleDaemonEpoch:
+            return
 
     def _promote_next_backlog_if_idle(self) -> TaskJob | None:
         status = self.workflow.inspect()
@@ -3141,7 +3159,8 @@ class EnochApplication:
                     worker_id=worker_id,
                 )
                 if finished_job is not None:
-                    cancel_evolve_candidate_for_task(
+                    self.effect_fence.run(
+                        cancel_evolve_candidate_for_task,
                         finished_job,
                         self.root,
                         event_actor="human",
@@ -3178,7 +3197,8 @@ class EnochApplication:
                         retryable=False,
                     )
                 if finished_job is not None and completed_status == "failed":
-                    fail_evolve_candidate_for_task(
+                    self.effect_fence.run(
+                        fail_evolve_candidate_for_task,
                         finished_job,
                         self.root,
                         event_actor=failure_actor,
@@ -3194,7 +3214,8 @@ class EnochApplication:
                     worker_id=worker_id,
                 )
                 if finished_job is not None:
-                    pause_evolve_candidate_for_task(
+                    self.effect_fence.run(
+                        pause_evolve_candidate_for_task,
                         finished_job,
                         self.root,
                         event_actor="system",
@@ -3209,7 +3230,8 @@ class EnochApplication:
                     worker_id=worker_id,
                 )
                 if finished_job is not None:
-                    complete_evolve_candidate_for_task(
+                    self.effect_fence.run(
+                        complete_evolve_candidate_for_task,
                         finished_job,
                         self.root,
                         event_actor="agent",
@@ -3243,7 +3265,11 @@ class EnochApplication:
                 self._maybe_start_task_worker()
             return
         if completed_status == "completed":
-            _cleanup_completed_task_worktree(summary_job, self.root)
+            self.effect_fence.run(
+                _cleanup_completed_task_worktree,
+                summary_job,
+                self.root,
+            )
             self._record_automatic_learning(summary_job, command=command, result=reply)
         if task_status is not None:
             task_status.prs = list(summary_job.pr_urls)
@@ -3273,13 +3299,15 @@ class EnochApplication:
         return self._task_cancellations.get(task_id)
 
     def _raise_if_current_task_cancelled(self) -> None:
+        self.effect_fence.require_current()
         cancellation_event = self._current_task_cancellation_event()
         if cancellation_event is not None and cancellation_event.is_set():
             raise AgentRuntimeCancelled("Enoch cancelled the active task.")
 
     def _record_automatic_learning(self, job: TaskJob, *, command: str, result: str) -> None:
         try:
-            record_learning_artifact(
+            self.effect_fence.run(
+                record_learning_artifact,
                 self.identity,
                 request=job.text,
                 result=result,
@@ -3421,14 +3449,16 @@ class EnochApplication:
                 f"used by {labels}."
             )
         try:
-            result = remove_managed_task_worktree(
+            result = self.effect_fence.run(
+                remove_managed_task_worktree,
                 self.root,
                 task_id,
                 discard=discard,
             )
         except VcsError as error:
             return f"Enoch could not remove task #{task_id} worktree: {error}"
-        _record_system_event(
+        self.effect_fence.run(
+            _record_system_event,
             "task_worktree_discarded" if discard else "task_worktree_cleaned",
             self.root,
             details={
@@ -3462,7 +3492,11 @@ class EnochApplication:
                 f"{provider_label(self.channel_name)} conversation."
             )
         try:
-            result = self.forge.merge_pull_request(parts[1], self.root)
+            result = self.effect_fence.run(
+                self.forge.merge_pull_request,
+                parts[1],
+                self.root,
+            )
         except ForgeProviderError as error:
             return f"Enoch could not merge that pull request: {error}"
         return _format_pull_request_merge_result(result)
@@ -3470,7 +3504,7 @@ class EnochApplication:
     def _update(self) -> str:
         if not self._action_allowed():
             return self._action_lock_message()
-        result = update_from_authoritative(self.root)
+        result = self.effect_fence.run(update_from_authoritative, self.root)
         if result.direct_action_result:
             _record_direct_action(
                 "update from authoritative repository",
@@ -3517,13 +3551,14 @@ class EnochApplication:
 
     def _record_turn(self, chat_id: ConversationId, text: str, reply: str) -> None:
         try:
-            log_conversation_turn(
+            self.effect_fence.run(
+                log_conversation_turn,
                 chat_id=chat_id,
                 message=text,
                 reply=reply,
                 root=self.root,
             )
-            ensure_long_term_memory(self.root)
+            self.effect_fence.run(ensure_long_term_memory, self.root)
         except OSError:
             return
 
@@ -4128,6 +4163,7 @@ def _sync_session_activity(
     *,
     runtime: AgentRuntime | None = None,
     session_key: str = "",
+    effect_fence: DaemonEffectFence | None = None,
 ) -> None:
     runtime = runtime or FunctionAgentRuntime(
         respond_fn=respond,
@@ -4137,16 +4173,21 @@ def _sync_session_activity(
         reset_usage_fn=reset_token_usage,
     )
     try:
-        invoke_runtime_respond(
+        execution = RuntimeExecutionControl(
+            request_id=f"session-sync:{chat_id}",
+            session_key=session_key or f"chat:{chat_id}",
+        )
+        invoke = lambda control: invoke_runtime_respond(
             runtime,
             identity,
             note,
             cwd=root,
-            execution=RuntimeExecutionControl(
-                request_id=f"session-sync:{chat_id}",
-                session_key=session_key or f"chat:{chat_id}",
-            ),
+            execution=control,
         )
+        if effect_fence is None:
+            invoke(execution)
+        else:
+            effect_fence.run_runtime(invoke, execution)
     except (AgentRuntimeError, TypeError):
         return
 
