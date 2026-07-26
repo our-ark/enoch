@@ -21,7 +21,7 @@ from enoch.tasks.queue import TaskJob
 
 
 PROFILE_API_VERSION = 4
-PromptPurpose = Literal["conversation", "image", "task-context", "task"]
+PromptPurpose = Literal["conversation", "image", "task-context", "task", "evidence"]
 TaskEnqueuer = Callable[[str, str, TaskRequirements], TaskJob]
 
 

@@ -76,6 +76,7 @@ REMOVAL_CLASSIFICATIONS = {
     "not-actionable",
 }
 _EVIDENCE_REF_PATTERNS = (
+    re.compile(r"evidence:evidence-[0-9a-f]{16}$"),
     re.compile(r"task:[1-9]\d*$"),
     re.compile(r"pr:https://[A-Za-z0-9.-]+/[^\s]+/(?:pull|pulls|merge_requests)/\d+/?$"),
     re.compile(r"merge:[0-9a-fA-F]{7,64}$"),
@@ -93,6 +94,7 @@ class CandidateLike(Protocol):
     candidate_actor: str
     parent_candidate_id: str
     source_task_id: int | None
+    evidence_ids: tuple[str, ...]
     score: int
 
 
@@ -249,6 +251,16 @@ def record_evolve_event(
     if normalized_removal_classification and normalized_event != "removed":
         raise ValueError("Removal classification is only valid for removed events.")
     normalized_evidence_refs = _validated_evidence_refs(evidence_refs)
+    candidate_evidence_refs = _loaded_evidence_refs(
+        tuple(
+            f"evidence:{clean_text(str(evidence_id or ''))}"
+            for evidence_id in getattr(candidate, "evidence_ids", ())
+            if clean_text(str(evidence_id or ""))
+        )
+    )
+    normalized_evidence_refs = tuple(
+        dict.fromkeys((*normalized_evidence_refs, *candidate_evidence_refs))
+    )
     normalized_proposal_id = clean_text(proposal_id)
     if normalized_event == "proposed" and not normalized_proposal_id:
         normalized_proposal_id = f"proposal-{uuid4().hex}"

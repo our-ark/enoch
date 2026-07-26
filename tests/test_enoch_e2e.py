@@ -14,7 +14,11 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from enoch.evolution.core import collect_evolve_candidates, get_evolve_candidate
+from enoch.evolution.core import (
+    get_evolve_candidate,
+    synthesize_evolve_candidates_from_evidence,
+)
+from enoch.evolution.evidence import scan_evidence
 from enoch.identity import load_identity
 from enoch.immune import DoctorDiagnosis, ImmuneResult
 from enoch.logs import log_conversation_turn
@@ -187,7 +191,7 @@ class EnochEvolutionEndToEndTests(unittest.TestCase):
         self.assertIn("resumed", events)
         self.assertEqual(events[-1], "completed")
 
-    def test_failed_evolve_task_creates_experience_candidate_with_causal_provenance(
+    def test_failed_evolve_task_becomes_semantic_experience_candidate_with_causal_provenance(
         self,
     ) -> None:
         parent_id = self._add_feedback_candidate("Prevent a recurring worker failure")
@@ -197,7 +201,23 @@ class EnochEvolutionEndToEndTests(unittest.TestCase):
         failed = self._run_next_task()
         self.assertEqual(failed.status, "failed")
 
-        experience = get_evolve_candidate("task-1", self.instance)
+        scan = scan_evidence(
+            "experience",
+            self.instance,
+            force=True,
+            generator=lambda prompt: _experience_evidence_response(prompt, task_id=1),
+        )
+        self.assertEqual(scan.status, "completed")
+        created = synthesize_evolve_candidates_from_evidence(
+            self.instance,
+            mission="Evolve safely.",
+            generator=lambda _prompt: _candidate_response(
+                scan.evidence[0].id,
+                title="Prevent recurring worker failure",
+            ),
+        )
+        self.assertEqual(len(created), 1)
+        experience = created[0]
         self.assertEqual(experience.evidence_source, "experience")
         self.assertEqual(experience.signal_actor, "system")
         self.assertEqual(experience.candidate_actor, "agent")
@@ -205,14 +225,14 @@ class EnochEvolutionEndToEndTests(unittest.TestCase):
         self.assertEqual(experience.source_task_id, 1)
 
         self._set_codex_mode("success")
-        reply = self._command("/evolve approve task-1")
+        reply = self._command(f"/evolve approve {experience.id}")
         self.assertIn("queued task #2", reply)
         self.client.clear()
         completed = self._run_next_task()
         self.assertEqual(completed.status, "completed")
 
         body = _argument_value(self._latest_gh_call(), "--body")
-        self.assertIn("- Candidate: `task-1`", body)
+        self.assertIn(f"- Candidate: `{experience.id}`", body)
         self.assertIn("- Evidence source: experience", body)
         self.assertIn("- Signal actor: system", body)
         self.assertIn("- Candidate actor: agent", body)
@@ -344,11 +364,23 @@ class EnochEvolutionEndToEndTests(unittest.TestCase):
             reply="Understood.",
             root=self.instance,
         )
-        candidate_id = next(
-            candidate.id
-            for candidate in collect_evolve_candidates(self.instance)
-            if candidate.source == "feedback" and message in candidate.title
+        scan = scan_evidence(
+            "feedback",
+            self.instance,
+            force=True,
+            generator=lambda prompt: _feedback_evidence_response(prompt, message),
         )
+        self.assertEqual(scan.status, "completed")
+        created = synthesize_evolve_candidates_from_evidence(
+            self.instance,
+            mission="Evolve safely.",
+            generator=lambda _prompt: _candidate_response(
+                scan.evidence[0].id,
+                title=text,
+            ),
+        )
+        self.assertEqual(len(created), 1)
+        candidate_id = created[0].id
         self.assertEqual(get_evolve_candidate(candidate_id, self.instance).status, "candidate")
         return candidate_id
 
@@ -427,6 +459,58 @@ def _passing_doctor() -> ImmuneResult:
             suggested_action="No repair needed.",
         ),
         checks=[],
+    )
+
+
+def _feedback_evidence_response(prompt: str, message: str) -> str:
+    records = json.loads(prompt.split("Evidence input: ", 1)[1])
+    record = next(item for item in records if item["user_message"] == message)
+    return json.dumps(
+        [
+            {
+                "observation": message,
+                "evidence_type": "explicit feedback",
+                "affected_area": "Enoch workflow",
+                "desired_outcome": "The requested reliability improvement is observable.",
+                "confidence": 1.0,
+                "explicit": True,
+                "evidence_refs": [record["ref"]],
+            }
+        ]
+    )
+
+
+def _experience_evidence_response(prompt: str, *, task_id: int) -> str:
+    records = json.loads(prompt.split("Evidence input: ", 1)[1])
+    record = next(item for item in records if item["task_id"] == task_id)
+    return json.dumps(
+        [
+            {
+                "observation": "The evolve worker failed before producing reviewable work.",
+                "evidence_type": "worker failure",
+                "affected_area": "evolution task execution",
+                "desired_outcome": "The worker avoids this recurring failure.",
+                "confidence": 0.98,
+                "explicit": False,
+                "evidence_refs": [record["task_ref"]],
+            }
+        ]
+    )
+
+
+def _candidate_response(evidence_id: str, *, title: str) -> str:
+    return json.dumps(
+        [
+            {
+                "evidence_ids": [evidence_id],
+                "title": title,
+                "rationale": "The cited evidence supports a bounded reliability improvement.",
+                "proposed_change": "Add one focused reliability guardrail.",
+                "expected_benefit": "The observed workflow completes more reliably.",
+                "risk": "The guardrail may require maintenance.",
+                "test_plan": "Run the focused workflow test and doctor.",
+            }
+        ]
     )
 
 

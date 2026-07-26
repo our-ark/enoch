@@ -29,7 +29,16 @@ class CoreCommandRegistryTests(unittest.TestCase):
                 )
 
     def test_removed_aliases_and_stale_thinking_help_are_not_registered(self) -> None:
-        for name in ("tasks", "backlogs", "crons", "worktrees", "thinking"):
+        for name in (
+            "tasks",
+            "backlogs",
+            "crons",
+            "worktrees",
+            "thinking",
+            "feedback",
+            "experience",
+            "propose",
+        ):
             with self.subTest(command=name):
                 self.assertIsNone(core_command(name))
                 self.assertIn(
@@ -45,6 +54,17 @@ class CoreCommandRegistryTests(unittest.TestCase):
             overview,
         )
         self.assertIn("Example: /help worktree", overview)
+
+    def test_evolve_help_exposes_only_the_consolidated_surface(self) -> None:
+        usage = help_message("evolve")
+
+        self.assertIn("/evolve evidence [feedback|experience|all]", usage)
+        self.assertIn("/evolve scan [feedback|experience|all]", usage)
+        self.assertIn("/evolve candidates [all]", usage)
+        self.assertIn("/evolve propose", usage)
+        self.assertIn("/evolve config feedback-batch <1-100>", usage)
+        self.assertNotIn("/evolve list", usage)
+        self.assertNotIn("/evolve mode", usage)
 
 
 if __name__ == "__main__":

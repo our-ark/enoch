@@ -333,6 +333,10 @@ def recent_completion_evidence(
 def _prompt_candidate(candidate: Mapping[str, object]) -> dict[str, object]:
     provenance = candidate.get("provenance")
     provenance = provenance if isinstance(provenance, Mapping) else {}
+    evidence_ids = provenance.get("evidence_ids")
+    evidence_ids = evidence_ids if isinstance(evidence_ids, (list, tuple)) else ()
+    evidence_refs = provenance.get("evidence_refs")
+    evidence_refs = evidence_refs if isinstance(evidence_refs, (list, tuple)) else ()
     return {
         "id": _clip(clean_text(str(candidate.get("id") or "")), 200),
         "source": _clip(clean_text(str(candidate.get("source") or "")), 80),
@@ -355,6 +359,16 @@ def _prompt_candidate(candidate: Mapping[str, object]) -> dict[str, object]:
                 clean_text(str(provenance.get("evidence_source") or "")),
                 80,
             ),
+            "evidence_ids": [
+                _clip(clean_text(str(value or "")), 200)
+                for value in evidence_ids[:20]
+                if clean_text(str(value or ""))
+            ],
+            "evidence_refs": [
+                _clip(clean_text(str(value or "")), 300)
+                for value in evidence_refs[:64]
+                if clean_text(str(value or ""))
+            ],
             "signal_actor": _clip(
                 clean_text(str(provenance.get("signal_actor") or "")),
                 40,
