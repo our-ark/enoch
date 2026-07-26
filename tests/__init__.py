@@ -10,11 +10,13 @@ import atexit
 import os
 from pathlib import Path
 import shutil
+import sys
 import tempfile
 import unittest
 
 
 SOURCE_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(SOURCE_ROOT / "src"))
 STATE_HOME = Path(tempfile.mkdtemp(prefix="enoch-test-state-"))
 
 os.environ["ENOCH_STATE_REDIRECT_ROOT"] = str(SOURCE_ROOT)
