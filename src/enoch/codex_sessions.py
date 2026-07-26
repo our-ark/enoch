@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 
 from enoch.memory.paths import atomic_write, now as current_time
-from enoch.paths import enoch_home
+from enoch.paths import private_state_path
 from enoch.state import StateCorruptionError, file_transaction, load_json_object
 
 
@@ -24,7 +24,7 @@ class CodexSessionState:
 
 
 def codex_sessions_path(root: Path | None = None) -> Path:
-    return enoch_home(root) / "codex_sessions.json"
+    return private_state_path("codex_sessions.json", root)
 
 
 def load_codex_session(key: str, root: Path | None = None) -> CodexSessionState | None:

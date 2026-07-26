@@ -9,7 +9,7 @@ from typing import Callable
 
 from enoch.identity import Identity, identity_file_path, load_identity
 from enoch.memory.paths import clean_text, now as current_time
-from enoch.paths import enoch_home
+from enoch.paths import artifact_path, artifact_read_paths
 
 
 SCHEMA_VERSION = 1
@@ -35,7 +35,7 @@ class BrainstormIdea:
 
 
 def brainstorm_index_path(root: Path | None = None) -> Path:
-    return enoch_home(root) / "evolve_brainstorms.jsonl"
+    return artifact_path("evolve_brainstorms.jsonl", root)
 
 
 def generate_brainstorm_ideas(
@@ -101,16 +101,15 @@ def load_brainstorm_ideas(
     theme: str = "",
     limit: int = 20,
 ) -> tuple[BrainstormIdea, ...]:
-    path = brainstorm_index_path(root)
-    if not path.exists():
-        return ()
     wanted_theme = clean_text(theme).lower()
     ideas: list[BrainstormIdea] = []
     seen: set[str] = set()
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return ()
+    lines: list[str] = []
+    for path in artifact_read_paths("evolve_brainstorms.jsonl", root):
+        try:
+            lines.extend(path.read_text(encoding="utf-8").splitlines())
+        except OSError:
+            continue
     for line in reversed(lines):
         try:
             raw = json.loads(line)

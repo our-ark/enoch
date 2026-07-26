@@ -16,10 +16,11 @@ from enoch.providers.contracts import (
     ForgeProvider,
     TaskRequirements,
 )
+from enoch.storage import StorageLayout
 from enoch.tasks.queue import TaskJob
 
 
-PROFILE_API_VERSION = 3
+PROFILE_API_VERSION = 4
 PromptPurpose = Literal["conversation", "image", "task-context", "task"]
 TaskEnqueuer = Callable[[str, str, TaskRequirements], TaskJob]
 
@@ -32,6 +33,7 @@ class ProfileError(RuntimeError):
 class PromptContext:
     identity: Identity
     root: Path
+    storage: StorageLayout
     purpose: PromptPurpose
     conversation_id: ConversationId
     prompt: str
@@ -44,6 +46,7 @@ PromptContributor = Callable[[PromptContext], str]
 class CommandContext:
     identity: Identity
     root: Path
+    storage: StorageLayout
     conversation_id: ConversationId
     event: ChatEvent
     command: str
@@ -110,6 +113,7 @@ class CommandSpec:
 class LifecycleContext:
     identity: Identity
     root: Path
+    storage: StorageLayout
     chat: ChatProvider
     runtime: AgentRuntime
     forge: ForgeProvider

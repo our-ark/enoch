@@ -3,12 +3,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from enoch.paths import enoch_home
+from enoch.paths import private_state_path
 from enoch.state import atomic_write, file_transaction
 
 
 def config_path(root: Path | None = None) -> Path:
-    return enoch_home(root) / "config.yaml"
+    return private_state_path("config.yaml", root)
 
 
 def read_config(root: Path | None = None) -> dict[str, dict[str, str]]:

@@ -5,12 +5,12 @@ from pathlib import Path
 from typing import Any
 
 from enoch.memory.paths import atomic_write, now
-from enoch.paths import enoch_home
+from enoch.paths import private_state_path
 from enoch.state import load_json_object
 
 
 def last_codex_input_path(root: Path | None = None) -> Path:
-    return enoch_home(root) / "last_codex_input.json"
+    return private_state_path("last_codex_input.json", root)
 
 
 def record_last_codex_input(

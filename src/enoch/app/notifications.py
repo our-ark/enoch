@@ -7,7 +7,7 @@ from typing import Any
 
 from enoch.app.epoch import DaemonEpoch, daemon_epoch_guard
 from enoch.memory.paths import now as current_time
-from enoch.paths import enoch_home
+from enoch.paths import private_state_path
 from enoch.providers.contracts import (
     ChatProvider,
     ChatProviderError,
@@ -377,7 +377,7 @@ def notifications_path(provider: str, root: Path | None = None) -> Path:
         character if character.isalnum() or character in "._-" else "-"
         for character in provider.strip().lower()
     ).strip("-.") or "chat"
-    return enoch_home(root) / "channels" / safe / "notifications.json"
+    return private_state_path(Path("channels") / safe / "notifications.json", root)
 
 
 def notification_records(

@@ -19,7 +19,7 @@ permissions:
       - .enoch/task_queue.json
       - .enoch/backlog.json
       - .enoch/cron.json
-      - .enoch/learning
+      - .enoch/artifacts/learning
   chat:
     send_status_updates: true
 validation:

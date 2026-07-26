@@ -16,7 +16,7 @@ import tomllib
 from typing import Iterable, Iterator
 from uuid import uuid4
 
-from enoch.paths import enoch_home, repo_root
+from enoch.paths import private_state_path, repo_root
 
 
 MANIFEST_PATH = Path("genesis.toml")
@@ -143,7 +143,7 @@ def _ensure_installed(root: Path, dependencies: list[RuntimeDependency]) -> Path
             sort_keys=True,
         ).encode("utf-8")
     ).hexdigest()[:20]
-    parent = enoch_home(root) / "dependencies"
+    parent = private_state_path("dependencies", root)
     target = parent / fingerprint
     complete = target / ".complete"
     if complete.is_file():

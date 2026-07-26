@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from enoch.memory.paths import atomic_write, now as current_time
-from enoch.paths import enoch_home
+from enoch.paths import private_state_path
 from enoch.providers.contracts import ChatEvent, Cursor
 from enoch.state import StateCorruptionError, file_transaction, load_json_object
 
@@ -41,7 +41,7 @@ def inbox_path(provider: str, root: Path | None = None) -> Path:
         character if character.isalnum() or character in "._-" else "-"
         for character in provider.strip().lower()
     ).strip("-.") or "chat"
-    return enoch_home(root) / "channels" / safe_provider / "inbox.json"
+    return private_state_path(Path("channels") / safe_provider / "inbox.json", root)
 
 
 def event_key(provider: str, event: ChatEvent) -> str:

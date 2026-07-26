@@ -15,7 +15,7 @@ except ImportError:  # pragma: no cover - fcntl is unavailable on Windows.
 
 from enoch.identity import Identity
 from enoch.memory.paths import atomic_write, now as current_time
-from enoch.paths import enoch_home
+from enoch.paths import artifact_path, artifact_read_paths
 
 
 SCHEMA_VERSION = 1
@@ -41,11 +41,15 @@ class LearningArtifact:
 
 
 def learning_dir(root: Path | None = None) -> Path:
-    return enoch_home(root) / "learning"
+    return artifact_path("learning", root)
 
 
 def learning_index_path(root: Path | None = None) -> Path:
     return learning_dir(root) / "artifacts.jsonl"
+
+
+def learning_index_paths(root: Path | None = None) -> tuple[Path, ...]:
+    return artifact_read_paths(Path("learning") / "artifacts.jsonl", root)
 
 
 def learning_artifact_path(artifact_id: str, root: Path | None = None) -> Path:

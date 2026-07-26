@@ -9,7 +9,7 @@ from uuid import uuid4
 
 from enoch.evolution.events import load_evolve_events
 from enoch.memory.paths import clean_text, now as current_time
-from enoch.paths import enoch_home
+from enoch.paths import artifact_path, artifact_read_paths
 from enoch.tasks.events import TaskEvent, load_recent_task_outcomes
 
 
@@ -120,7 +120,7 @@ class SemanticCuration:
 
 
 def curation_index_path(root: Path | None = None) -> Path:
-    return enoch_home(root) / "evolve_curations.jsonl"
+    return artifact_path("evolve_curations.jsonl", root)
 
 
 def semantic_curation_prompt(
@@ -616,13 +616,14 @@ def _valid_evidence_refs(values: Iterable[object]) -> tuple[str, ...]:
 
 
 def load_curations(root: Path | None = None, *, limit: int = 100) -> tuple[SemanticCuration, ...]:
-    path = curation_index_path(root)
-    if not path.exists() or limit <= 0:
+    if limit <= 0:
         return ()
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return ()
+    lines: list[str] = []
+    for path in artifact_read_paths("evolve_curations.jsonl", root):
+        try:
+            lines.extend(path.read_text(encoding="utf-8").splitlines())
+        except OSError:
+            continue
     items: list[SemanticCuration] = []
     for line in reversed(lines):
         try:

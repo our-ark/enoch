@@ -101,7 +101,10 @@ class _EntryPoints(list):
 
 class EnochProfileTests(unittest.TestCase):
     def test_profile_command_can_queue_work_without_core_changes(self) -> None:
+        storage_layouts = []
+
         def research(context):
+            storage_layouts.append(context.storage)
             job = context.enqueue_task(
                 f"Research {context.argument}",
                 context="Use primary sources.",
@@ -150,6 +153,14 @@ class EnochProfileTests(unittest.TestCase):
             self.assertEqual(events[0].event_actor, "human")
             self.assertEqual(events[0].trigger, "/research")
             self.assertEqual(chat.sent[-1][1], "Queued research task #1.")
+            self.assertEqual(storage_layouts[0], app.storage)
+            self.assertEqual(
+                storage_layouts[0].artifact_path("profile-output.jsonl"),
+                root.resolve()
+                / ".enoch"
+                / "artifacts"
+                / "profile-output.jsonl",
+            )
 
             app.handle_event(_event("/help", message_id="message-help"))
             self.assertIn("Profile (researcher):", chat.sent[-1][1])

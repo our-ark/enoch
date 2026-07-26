@@ -171,9 +171,10 @@ from enoch.lineage.core import (
     mark_inbox_candidate,
     resolve_lineage,
 )
-from enoch.logs import log_conversation_turn, log_system_event, system_log_dir
+from enoch.logs import log_conversation_turn, log_system_event, system_log_dirs
 from enoch.memory.prompt import memory_for_prompt
 from enoch.memory.store import ensure_long_term_memory, remember_memory
+from enoch.paths import storage_layout
 from enoch.prompt_append import (
     TaskRegressionSignal,
     extract_edit_request,
@@ -416,6 +417,7 @@ class EnochApplication:
     ) -> None:
         self.identity = identity
         self.root = root
+        self.storage = storage_layout(root)
         self.client = client
         self.channel_name = _chat_provider_name(client)
         self.daemon_epoch = daemon_epoch or begin_daemon_epoch(
@@ -908,6 +910,7 @@ class EnochApplication:
         context = CommandContext(
             identity=self.identity,
             root=self.root,
+            storage=self.storage,
             conversation_id=event.conversation_id,
             event=event,
             command=command,
@@ -1002,6 +1005,7 @@ class EnochApplication:
                 PromptContext(
                     identity=self.identity,
                     root=self.root,
+                    storage=self.storage,
                     purpose=purpose,
                     conversation_id=chat_id,
                     prompt=prompt,
@@ -1028,6 +1032,7 @@ class EnochApplication:
                 LifecycleContext(
                     identity=self.identity,
                     root=self.root,
+                    storage=self.storage,
                     chat=self.client,
                     runtime=self.runtime,
                     forge=self.forge,
@@ -4034,7 +4039,11 @@ def _latest_direct_action_result_for_task(job: TaskJob, root: Path) -> str:
     expected_request = _summarize_for_log(job.text)
     latest_result = ""
     try:
-        paths = sorted(system_log_dir(root).glob("*.jsonl"))
+        paths = [
+            path
+            for directory in system_log_dirs(root)
+            for path in sorted(directory.glob("*.jsonl"))
+        ]
     except OSError:
         return ""
     for path in paths:

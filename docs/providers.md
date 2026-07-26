@@ -106,7 +106,7 @@ bin/enoch-daemon manifest
 
 On Linux, these commands use `systemctl --user` and logs come from the user
 journal. On macOS they use a LaunchAgent and file-backed logs under
-`.enoch/logs/daemon`. `/restart` and update adoption also delegate to the
+`.enoch/artifacts/logs/daemon`. `/restart` and update adoption also delegate to the
 selected service provider, so core code does not invoke either service manager.
 
 ## Third-party packages

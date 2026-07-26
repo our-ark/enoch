@@ -9,7 +9,7 @@ from typing import Callable, Iterable
 from uuid import uuid4
 
 from enoch.backlog import BacklogItem, backlog_status
-from enoch.automatic_learning import LearningArtifact, learning_index_path
+from enoch.automatic_learning import LearningArtifact, learning_index_paths
 from enoch.evolution.sources.brainstorming import (
     BrainstormIdea,
     brainstorm_idea,
@@ -40,7 +40,7 @@ from enoch.evolution.sources.feedback import FeedbackSignal, extract_feedback_si
 from enoch.learn import PeerLearningObservation, load_peer_learning_observations
 from enoch.lineage.core import LineageCandidate, load_parent_inbox_candidates
 from enoch.memory.paths import atomic_write, clean_text, now as current_time
-from enoch.paths import enoch_home
+from enoch.paths import private_state_path
 from enoch.tasks.queue import TaskJob, task_queue_status
 from enoch.state import StateCorruptionError, file_transaction, load_json_object
 
@@ -128,15 +128,15 @@ class EvolveProposal:
 
 
 def evolve_state_path(root: Path | None = None) -> Path:
-    return enoch_home(root) / "evolve.json"
+    return private_state_path("evolve.json", root)
 
 
 def evolve_candidates_path(root: Path | None = None) -> Path:
-    return enoch_home(root) / "evolve_candidates.json"
+    return private_state_path("evolve_candidates.json", root)
 
 
 def evolve_brainstorm_fallback_path(root: Path | None = None) -> Path:
-    return enoch_home(root) / "evolve_brainstorm_fallback.json"
+    return private_state_path("evolve_brainstorm_fallback.json", root)
 
 
 def load_evolve_state(root: Path | None = None) -> EvolveState:
@@ -1558,14 +1558,13 @@ def _brainstorm_candidates(items: Iterable[BrainstormIdea]) -> list[EvolveCandid
 
 
 def _load_learning_artifacts(root: Path | None = None, *, limit: int = 10) -> tuple[LearningArtifact, ...]:
-    path = learning_index_path(root)
-    if not path.exists():
-        return ()
     artifacts = []
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return ()
+    lines: list[str] = []
+    for path in learning_index_paths(root):
+        try:
+            lines.extend(path.read_text(encoding="utf-8").splitlines())
+        except OSError:
+            continue
     for line in reversed(lines):
         if not line.strip():
             continue

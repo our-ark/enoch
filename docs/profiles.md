@@ -112,14 +112,15 @@ profile change is activated only after restarting Enoch.
 embed Enoch can instead pass `profile=` directly to `EnochApplication` or use
 `register_profile()` for static registration.
 
-The current contract is `PROFILE_API_VERSION = 3`. A profile must declare that
+The current contract is `PROFILE_API_VERSION = 4`. A profile must declare that
 version (the default) and Enoch rejects unsupported versions at startup rather
 than guessing compatibility.
 
 ## Context boundaries
 
-Command handlers receive identity, repository root, normalized chat event,
-selected runtime and forge providers, and the command argument. The provided
+Command handlers receive identity, repository root, the immutable
+`StorageLayout`, normalized chat event, selected runtime and forge providers,
+and the command argument. The provided
 `enqueue_task()` method records the request as a human-created `task`, keeps the
 profile command as its trigger, and uses the existing queue lifecycle.
 
@@ -131,6 +132,11 @@ authorizer evaluates both declarations before provider execution.
 Prompt contributors receive an immutable context and return additional text.
 Enoch appends non-empty contributions under a `Profile context` section; the
 core safety and work prompts remain intact.
+
+Command, prompt, and lifecycle contexts all expose `context.storage`.
+Extensions should use `private_path()` for operational state and
+`artifact_path()` for retained outputs or evidence; they should not construct
+`.enoch` paths from `context.root`. See [`storage.md`](storage.md).
 
 ## Workflow and presentation boundaries
 

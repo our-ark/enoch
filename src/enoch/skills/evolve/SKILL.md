@@ -22,7 +22,7 @@ Enoch collects exactly six semantic candidate sources:
 - **feedback** extracted conservatively from local conversation logs, including corrections, preferences, complaints, and repeated requests;
 - **experience** from the durable task experience journal, failed tasks, recurring workflows, repeated successful user workflows, and successful skill-work artifacts;
 - **inheritance** from direct-parent changes in `.agent/lineage_inbox.json`;
-- **learning** from skills explicitly inspected with `/learn`, recorded in `.enoch/learning/peers.jsonl`; and
+- **learning** from skills explicitly inspected with `/learn`, recorded in `.enoch/artifacts/learning/peers.jsonl`; and
 - **brainstorming** from bounded, structured LLM ideas generated under the current mission and evolution theme.
 
 Each source contributes raw candidates to the pool; source discovery is not a
@@ -31,7 +31,7 @@ recommendation. Deterministic scores only pre-order and bound that curation
 input, with an explicitly labelled fallback when semantic curation is
 unavailable or invalid.
 
-The theme is semantic curation context and deterministic pre-ranking pressure, not a seventh source. `/evolve brainstorm` requires a non-empty theme, asks the reasoning engine for a small JSON list, validates the result, and persists only structured candidates in `.enoch/evolve_brainstorms.jsonl`.
+The theme is semantic curation context and deterministic pre-ranking pressure, not a seventh source. `/evolve brainstorm` requires a non-empty theme, asks the reasoning engine for a small JSON list, validates the result, and persists only structured candidates in `.enoch/artifacts/evolve_brainstorms.jsonl`.
 
 `/propose` refreshes all six sources, applies deterministic pre-ranking, and
 passes a bounded set of structured candidate fields and provenance to semantic
@@ -67,7 +67,7 @@ proposal flow uses semantic curation for both existing and newly suggested work.
 
 Candidates are persisted in `.enoch/evolve_candidates.json` so Enoch can remember whether a candidate is available, running, done, failed, cancelled, or removed. Normal candidate views retain failed candidates as retryable and hide done, cancelled, and removed candidates.
 
-Evolution decisions are appended to `.enoch/evolve_events.jsonl`. The funnel
+Evolution decisions are appended to `.enoch/artifacts/evolve_events.jsonl`. The funnel
 records checks, proposals, selections, queueing, terminal outcomes, skips, and
 human removals. Proposal events link `curation_id` and `recommendation_kind` to
 the separate curation journal and retain bounded evidence refs. Human removals
@@ -98,7 +98,7 @@ Scheduled co-evolve and auto-evolve checks use the same empty-candidate fallback
 and cooldown as `/propose`.
 
 Each top candidate returned by `/propose` or the evolve scheduler receives a
-unique `proposal_id` in `.enoch/evolve_events.jsonl`. Proposal dispositions are
+unique `proposal_id` in `.enoch/artifacts/evolve_events.jsonl`. Proposal dispositions are
 tracked independently as `selected`, `removed`, or `no-action`; an unresolved
 proposal remains pending, and a newer proposal closes the previous pending one
 as `no-action` with reason `superseded-by-new-proposal`. Queued task outcomes
@@ -115,7 +115,7 @@ the evidence as historical backfill. After `/update` passes doctor, Enoch stages
 eligible promotions and records `adopted` only when the restarted daemon confirms
 it is running the verified version.
 
-Every tracked task writes append-only lifecycle events to `.enoch/task_events.jsonl`.
+Every tracked task writes append-only lifecycle events to `.enoch/artifacts/task_events.jsonl`.
 Events include `created`, `queued`, `started`, `completed`, `failed`, `cancelled`,
 `paused`, `resumed`, `regressed`, `reverted`, and `forward-fixed`. Agent runtime access
 interruptions are recorded as `paused` and `/task resume` transitions without

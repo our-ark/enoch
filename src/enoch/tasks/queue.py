@@ -8,7 +8,7 @@ from pathlib import Path
 import re
 
 from enoch.memory.paths import atomic_write, now as current_time
-from enoch.paths import enoch_home
+from enoch.paths import private_state_path
 from enoch.providers.contracts import (
     ConversationId,
     MessageId,
@@ -100,7 +100,7 @@ class TaskAlreadyExists(RuntimeError):
 
 
 def task_queue_path(root: Path | None = None) -> Path:
-    return enoch_home(root) / "task_queue.json"
+    return private_state_path("task_queue.json", root)
 
 
 def enqueue_task(

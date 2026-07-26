@@ -5,20 +5,32 @@ import json
 from pathlib import Path
 from typing import Any
 
-from enoch.paths import enoch_home
+from enoch.paths import artifact_path, artifact_read_paths
 from enoch.providers.contracts import ConversationId
 
 
 def conversation_log_dir(root: Path | None = None) -> Path:
-    return enoch_home(root) / "logs" / "conversations"
+    return artifact_path(Path("logs") / "conversations", root)
 
 
 def system_log_dir(root: Path | None = None) -> Path:
-    return enoch_home(root) / "logs" / "system"
+    return artifact_path(Path("logs") / "system", root)
 
 
 def daemon_log_dir(root: Path | None = None) -> Path:
-    return enoch_home(root) / "logs" / "daemon"
+    return artifact_path(Path("logs") / "daemon", root)
+
+
+def conversation_log_dirs(root: Path | None = None) -> tuple[Path, ...]:
+    return artifact_read_paths(Path("logs") / "conversations", root)
+
+
+def system_log_dirs(root: Path | None = None) -> tuple[Path, ...]:
+    return artifact_read_paths(Path("logs") / "system", root)
+
+
+def daemon_log_dirs(root: Path | None = None) -> tuple[Path, ...]:
+    return artifact_read_paths(Path("logs") / "daemon", root)
 
 
 def conversation_log_path(root: Path | None = None, *, when: datetime | None = None) -> Path:

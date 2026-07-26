@@ -16,6 +16,7 @@ and validation boundary.
 | `enoch.app.effects` | Daemon-epoch authorization for bounded provider effects and long runtime cancellation |
 | `enoch.app.inbox` | Durable chat receipts, redelivery suppression, and poison-event attempts |
 | `enoch.state` | Corruption-safe JSON loading, atomic writes, and interprocess transactions |
+| `enoch.storage` | Versioned software-body, private-state, and artifact ownership boundaries |
 | `enoch.tasks` | Task queue state, audit events, failure policy, configuration, and isolated worktrees |
 | `enoch.evolution` | Evolution state, candidate collection and ranking, event history, and governed lifecycle |
 | `enoch.evolution.sources` | Feedback, experience, and brainstorming evidence adapters |
@@ -59,3 +60,8 @@ and lifecycle hooks or enqueue governed work, but they do not poll chat,
 execute tasks, recover queue state, or persist a parallel control plane. This
 keeps downstream product behavior composable while `enoch.app` remains the
 single application and workflow owner.
+
+All durable paths cross the storage boundary before they cross the filesystem.
+Versioned code uses the software-body namespace, queue/config/memory/provider
+state uses private state, and logs plus retained task/evolution/learning
+evidence use artifact storage. See [`storage.md`](storage.md).

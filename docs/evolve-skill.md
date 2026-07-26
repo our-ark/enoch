@@ -69,7 +69,7 @@ Feedback includes corrections, frustrations, repeated requests, UX complaints, a
 ### experience
 
 Enoch writes every tracked task transition to the append-only
-`.enoch/task_events.jsonl`. Events cover `created`, `queued`, `started`,
+`.enoch/artifacts/task_events.jsonl`. Events cover `created`, `queued`, `started`,
 `retrying`, `paused`, `resumed`, `completed`, `failed`, `cancelled`, `regressed`,
 `reverted`, and `forward-fixed`, including the request, result summary, context
 source, pull requests, and changed files. Legacy `.enoch/experience.jsonl`
@@ -100,7 +100,7 @@ Evolve-linked candidates and tasks add explicit provenance fields:
 statistics, but it does not stand in for these distinct evolve actors.
 
 Evolution decisions have a separate append-only journal at
-`.enoch/evolve_events.jsonl`. It records `checked`, `proposed`, `selected`,
+`.enoch/artifacts/evolve_events.jsonl`. It records `checked`, `proposed`, `selected`,
 `queued`, `completed`, `failed`, `cancelled`, `skipped`, `removed`, and
 `no-action` decision events, plus `promoted` and `adopted` governance events.
 Each event links candidate provenance, decision actor, trigger, mode, theme,

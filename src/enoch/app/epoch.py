@@ -9,7 +9,7 @@ from typing import Iterator
 from uuid import uuid4
 
 from enoch.memory.paths import now as current_time
-from enoch.paths import enoch_home
+from enoch.paths import private_state_path
 from enoch.state import StateCorruptionError, atomic_write, file_transaction, load_json_object
 
 
@@ -30,7 +30,7 @@ class DaemonEpoch:
 
 
 def daemon_epoch_path(root: Path | None = None) -> Path:
-    return enoch_home(root) / "daemon_epoch.json"
+    return private_state_path("daemon_epoch.json", root)
 
 
 def begin_daemon_epoch(

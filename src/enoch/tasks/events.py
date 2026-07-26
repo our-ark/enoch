@@ -14,7 +14,7 @@ except ImportError:  # pragma: no cover - fcntl is unavailable on Windows.
     fcntl = None
 
 from enoch.memory.paths import clean_text, now as current_time
-from enoch.paths import enoch_home
+from enoch.paths import artifact_path, artifact_read_paths
 
 
 SCHEMA_VERSION = 5
@@ -127,7 +127,7 @@ class TaskEvent:
 
 
 def task_event_path(root: Path | None = None) -> Path:
-    return enoch_home(root) / "task_events.jsonl"
+    return artifact_path("task_events.jsonl", root)
 
 
 def record_task_event(
@@ -209,13 +209,14 @@ def load_task_events(
     limit: int = 5000,
     task_id: int | None = None,
 ) -> tuple[TaskEvent, ...]:
-    path = task_event_path(root)
-    if not path.exists() or limit <= 0:
+    if limit <= 0:
         return ()
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return ()
+    lines: list[str] = []
+    for path in artifact_read_paths("task_events.jsonl", root):
+        try:
+            lines.extend(path.read_text(encoding="utf-8").splitlines())
+        except OSError:
+            continue
     events: list[TaskEvent] = []
     for line in reversed(lines):
         event = _event_from_line(line)

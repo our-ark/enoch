@@ -111,8 +111,10 @@ bin/enoch
 ```
 
 The launchers select a supported Python interpreter and keep runtime state,
-downloaded dependencies, credentials, memories, and logs under ignored local
-paths. Do not commit files from `.enoch/` or `.agent/instance.yaml`.
+downloaded dependencies, credentials, and memories under ignored private
+paths. Logs and retained task/evolution evidence use the separate
+`.enoch/artifacts/` namespace. Do not commit files from `.enoch/` or
+`.agent/instance.yaml`.
 
 ## Run
 
@@ -247,6 +249,10 @@ Embedders can replace the task lifecycle implementation through the versioned
 provides enqueue, claim, heartbeat, cancellation, finalization, recovery, and
 inspection over Enoch's durable queue; see
 [`docs/workflows.md`](docs/workflows.md).
+
+The versioned `StorageLayout` API keeps the software body, private operational
+state, and retained artifacts/evidence in explicit ownership areas. Profiles
+receive this layout directly; see [`docs/storage.md`](docs/storage.md).
 
 Core package boundaries and dependency direction are documented in
 [`docs/architecture.md`](docs/architecture.md).

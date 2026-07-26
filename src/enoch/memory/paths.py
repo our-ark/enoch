@@ -4,12 +4,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from enoch.paths import enoch_home
+from enoch.paths import private_state_path
 from enoch.state import atomic_write
 
 
 def memory_dir(root: Path | None = None) -> Path:
-    return enoch_home(root) / "memory"
+    return private_state_path("memory", root)
 
 
 def long_term_memory_path(root: Path | None = None) -> Path:

@@ -454,6 +454,22 @@ FAIL: test_wheel (tests.test_portable.PortableTests.test_wheel)
             self.assertIn("invalid JSON", check.output)
             self.assertEqual(state_file.read_text(encoding="utf-8"), '{"pending": [')
 
+    def test_state_storage_detects_and_preserves_corrupt_artifact_journal(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            journal = root / ".enoch" / "artifacts" / "task_events.jsonl"
+            journal.parent.mkdir(parents=True)
+            journal.write_text('{"task_id": 1}\n{"task_id":', encoding="utf-8")
+
+            check = _memory_storage_check(root)
+
+            self.assertFalse(check.passed)
+            self.assertIn("invalid JSON", check.output)
+            self.assertEqual(
+                journal.read_text(encoding="utf-8"),
+                '{"task_id": 1}\n{"task_id":',
+            )
+
     @patch("enoch.brain.resolve_codex_executable")
     @patch("enoch.immune.subprocess.run")
     def test_codex_runtime_check_verifies_login(

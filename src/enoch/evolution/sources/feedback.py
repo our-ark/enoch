@@ -8,7 +8,7 @@ from pathlib import Path
 import re
 from typing import Iterable
 
-from enoch.logs import conversation_log_dir
+from enoch.logs import conversation_log_dirs
 from enoch.memory.paths import clean_text
 
 
@@ -71,22 +71,20 @@ def extract_feedback_signals(
 
 
 def _conversation_records(root: Path | None) -> Iterable[dict[str, object]]:
-    directory = conversation_log_dir(root)
-    if not directory.exists():
-        return ()
     records: list[dict[str, object]] = []
-    for path in sorted(directory.glob("*.jsonl")):
-        try:
-            lines = path.read_text(encoding="utf-8").splitlines()
-        except OSError:
-            continue
-        for line in lines:
+    for directory in conversation_log_dirs(root):
+        for path in sorted(directory.glob("*.jsonl")):
             try:
-                raw = json.loads(line)
-            except json.JSONDecodeError:
+                lines = path.read_text(encoding="utf-8").splitlines()
+            except OSError:
                 continue
-            if isinstance(raw, dict):
-                records.append(raw)
+            for line in lines:
+                try:
+                    raw = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(raw, dict):
+                    records.append(raw)
     return records
 
 

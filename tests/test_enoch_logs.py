@@ -20,7 +20,15 @@ class EnochLogsTests(unittest.TestCase):
 
             path = log_conversation_turn(chat_id=42, message="hello", reply="hi", root=root)
 
-            self.assertEqual(path, root.resolve() / ".enoch" / "logs" / "conversations" / _today_name())
+            self.assertEqual(
+                path,
+                root.resolve()
+                / ".enoch"
+                / "artifacts"
+                / "logs"
+                / "conversations"
+                / _today_name(),
+            )
             records = _read_jsonl(path)
             self.assertEqual(records[0]["channel"], "chat")
             self.assertEqual(records[0]["chat_id"], 42)
@@ -33,7 +41,15 @@ class EnochLogsTests(unittest.TestCase):
 
             path = log_system_event("startup", status="ok", details={"pid": 123}, root=root)
 
-            self.assertEqual(path, root.resolve() / ".enoch" / "logs" / "system" / _today_name())
+            self.assertEqual(
+                path,
+                root.resolve()
+                / ".enoch"
+                / "artifacts"
+                / "logs"
+                / "system"
+                / _today_name(),
+            )
             records = _read_jsonl(path)
             self.assertEqual(records[0]["event"], "startup")
             self.assertEqual(records[0]["status"], "ok")
@@ -44,11 +60,15 @@ class EnochLogsTests(unittest.TestCase):
 
         self.assertEqual(
             conversation_log_path(ROOT, when=when),
-            enoch_home(ROOT) / "logs" / "conversations" / "2026-06-19.jsonl",
+            enoch_home(ROOT)
+            / "artifacts"
+            / "logs"
+            / "conversations"
+            / "2026-06-19.jsonl",
         )
         self.assertEqual(
             system_log_path(ROOT, when=when),
-            enoch_home(ROOT) / "logs" / "system" / "2026-06-19.jsonl",
+            enoch_home(ROOT) / "artifacts" / "logs" / "system" / "2026-06-19.jsonl",
         )
 
 

@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from enoch.memory.paths import clean_text
-from enoch.paths import enoch_home
+from enoch.paths import artifact_path, artifact_read_paths
 from enoch.tasks.events import TaskEvent, load_task_events, record_task_event
 
 if TYPE_CHECKING:
@@ -53,7 +53,7 @@ class ExperienceRecord:
 
 
 def experience_path(root: Path | None = None) -> Path:
-    return enoch_home(root) / "experience.jsonl"
+    return artifact_path("experience.jsonl", root)
 
 
 def record_task_experience(
@@ -175,13 +175,12 @@ def _records_from_events(events: tuple[TaskEvent, ...]) -> tuple[ExperienceRecor
 
 
 def _load_legacy_records(root: Path | None) -> tuple[ExperienceRecord, ...]:
-    path = experience_path(root)
-    if not path.exists():
-        return ()
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return ()
+    lines: list[str] = []
+    for path in artifact_read_paths("experience.jsonl", root):
+        try:
+            lines.extend(path.read_text(encoding="utf-8").splitlines())
+        except OSError:
+            continue
     records: list[ExperienceRecord] = []
     seen: set[int] = set()
     for line in reversed(lines):

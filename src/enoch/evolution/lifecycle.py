@@ -13,7 +13,7 @@ from enoch.evolution.events import (
 )
 from enoch.vcs_tools import VcsError, revision_is_ancestor
 from enoch.memory.paths import atomic_write
-from enoch.paths import enoch_home
+from enoch.paths import private_state_path
 from enoch.state import StateCorruptionError, load_json_object
 from enoch.providers.contracts import (
     ForgeProvider,
@@ -65,7 +65,7 @@ class PendingAdoption:
 
 
 def pending_adoption_path(root: Path | None = None) -> Path:
-    return enoch_home(root) / "pending_evolve_adoptions.json"
+    return private_state_path("pending_evolve_adoptions.json", root)
 
 
 def reconcile_evolve_candidate(

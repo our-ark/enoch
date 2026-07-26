@@ -10,7 +10,7 @@ import sys
 import tomllib
 from pathlib import Path
 
-from enoch.paths import enoch_home, repo_root
+from enoch.paths import enoch_home, repo_root, storage_layout
 from enoch.providers.contracts import (
     AgentRuntimeError,
     ForgeProviderError,
@@ -501,18 +501,24 @@ def _git_worktree_check(root: Path, timeout: float) -> DoctorCheckResult:
 
 
 def _memory_storage_check(root: Path) -> DoctorCheckResult:
+    layout = storage_layout(root)
     home = enoch_home(root)
     path = home / ".doctor_write_check"
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("ok\n", encoding="utf-8")
         path.unlink(missing_ok=True)
-        state_files = _validate_state_files(home)
+        artifact_check = layout.artifact_path(".doctor_write_check")
+        artifact_check.parent.mkdir(parents=True, exist_ok=True)
+        artifact_check.write_text("ok\n", encoding="utf-8")
+        artifact_check.unlink(missing_ok=True)
+        state_files = _validate_state_files(home, exclude=(layout.artifacts,))
+        artifact_files = _validate_state_files(layout.artifacts)
     except (OSError, StateCorruptionError) as error:
         return DoctorCheckResult(
             name="state storage",
             passed=False,
-            command=f"validate {home}",
+            command=f"validate {home} and {layout.artifacts}",
             output=str(error),
             category="operational readiness",
             summary="unreadable or not writable",
@@ -520,23 +526,39 @@ def _memory_storage_check(root: Path) -> DoctorCheckResult:
     return DoctorCheckResult(
         name="state storage",
         passed=True,
-        command=f"validate {home}",
+        command=f"validate {home} and {layout.artifacts}",
         output="",
         category="operational readiness",
-        summary=f"{home} writable; {state_files} state file(s) readable",
+        summary=(
+            f"{home} and {layout.artifacts} writable; "
+            f"{state_files} private state file(s) and "
+            f"{artifact_files} artifact journal(s) readable"
+        ),
     )
 
 
-def _validate_state_files(home: Path) -> int:
+def _validate_state_files(home: Path, *, exclude: tuple[Path, ...] = ()) -> int:
     count = 0
     for path in sorted(home.rglob("*.json")):
+        if any(_path_is_within(path, boundary) for boundary in exclude):
+            continue
         data = load_json_object(path)
         _validate_state_object_shape(path, data)
         count += 1
     for path in sorted(home.rglob("*.jsonl")):
+        if any(_path_is_within(path, boundary) for boundary in exclude):
+            continue
         _validate_json_lines(path)
         count += 1
     return count
+
+
+def _path_is_within(path: Path, boundary: Path) -> bool:
+    try:
+        path.resolve().relative_to(boundary.resolve())
+    except ValueError:
+        return False
+    return True
 
 
 def _validate_state_object_shape(path: Path, data: dict[str, object]) -> None:

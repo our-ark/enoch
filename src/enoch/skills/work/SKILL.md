@@ -22,7 +22,7 @@ Worker state is local runtime state under `.enoch/`:
 - `.enoch/task_queue.json`
 - `.enoch/backlog.json`
 - `.enoch/cron.json`
-- `.enoch/learning/`
+- `.enoch/artifacts/learning/`
 
 Do not treat every successful job as inheritable. Enoch records an inheritable learning artifact only when completed work changes a skill package under `src/<agent>/skills/<skill-name>/`.
 

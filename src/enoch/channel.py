@@ -10,7 +10,7 @@ import time
 from typing import Any, Iterator, Sequence
 
 from enoch.identity import Identity
-from enoch.paths import enoch_home
+from enoch.paths import private_state_path
 from enoch.providers.contracts import Attachment, ChatProvider, Cursor
 from enoch.operations.update_tools import current_repository_revision, repository_sync_summary
 from enoch.state import StateCorruptionError, atomic_write, load_json_object
@@ -60,7 +60,7 @@ def save_channel_cursor(name: str, cursor: Cursor, root: Path | None = None) -> 
 
 def channel_cursor_path(name: str, root: Path | None = None) -> Path:
     safe_name = _safe_provider_name(name)
-    return enoch_home(root) / "channels" / safe_name / "cursor.json"
+    return private_state_path(Path("channels") / safe_name / "cursor.json", root)
 
 
 def begin_channel_lifecycle(name: str, root: Path | None = None) -> str:
@@ -114,7 +114,7 @@ def save_channel_lifecycle(
 
 def channel_lifecycle_path(name: str, root: Path | None = None) -> Path:
     safe_name = _safe_provider_name(name)
-    return enoch_home(root) / "channels" / safe_name / "lifecycle.json"
+    return private_state_path(Path("channels") / safe_name / "lifecycle.json", root)
 
 
 def startup_message(
@@ -176,9 +176,12 @@ def temporary_image_attachment(
     if attachment.size > MAX_IMAGE_BYTES:
         raise ChannelAttachmentError("Image attachment is too large.")
     suffix = _attachment_suffix(attachment)
-    directory = enoch_home(root) / "channels" / (
-        _safe_provider_name(channel_name) if channel_name else provider_name(provider)
-    ) / "images"
+    directory = private_state_path(
+        Path("channels")
+        / (_safe_provider_name(channel_name) if channel_name else provider_name(provider))
+        / "images",
+        root,
+    )
     directory.mkdir(parents=True, exist_ok=True)
     os.chmod(directory, 0o700)
     descriptor, raw_path = tempfile.mkstemp(prefix="image-", suffix=suffix, dir=directory)

@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 
 from enoch.memory.paths import atomic_write, now as current_time
-from enoch.paths import enoch_home
+from enoch.paths import private_state_path
 from enoch.providers.contracts import ConversationId, normalize_conversation_id
 from enoch.state import StateCorruptionError, file_transaction, load_json_object
 
@@ -39,7 +39,7 @@ class BacklogStatus:
 
 
 def backlog_path(root: Path | None = None) -> Path:
-    return enoch_home(root) / "backlog.json"
+    return private_state_path("backlog.json", root)
 
 
 def add_backlog_item(

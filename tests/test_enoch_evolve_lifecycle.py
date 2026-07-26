@@ -188,7 +188,7 @@ class EnochEvolveLifecycleTests(unittest.TestCase):
             events = load_evolve_events(root, candidate_id=candidate_id)
             raw_events = [
                 json.loads(line)
-                for line in (root / ".enoch" / "evolve_events.jsonl")
+                for line in (root / ".enoch" / "artifacts" / "evolve_events.jsonl")
                 .read_text(encoding="utf-8")
                 .splitlines()
             ]

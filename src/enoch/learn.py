@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Callable
 
 from enoch.memory.paths import clean_text, now as current_time
-from enoch.paths import enoch_home
+from enoch.paths import artifact_path, artifact_read_paths
 from enoch.lineage.core import lineage_file, parse_lineage_parent
 from enoch.skills import AgentSkills, SkillsError, _parse_simple_yaml, _published_text, load_agent_skills
 
@@ -46,7 +46,7 @@ class PeerLearningObservation:
 
 
 def peer_learning_path(root: Path | None = None) -> Path:
-    return enoch_home(root) / "learning" / "peers.jsonl"
+    return artifact_path(Path("learning") / "peers.jsonl", root)
 
 
 def record_peer_learning_observation(
@@ -76,15 +76,14 @@ def load_peer_learning_observations(
     *,
     limit: int = 20,
 ) -> tuple[PeerLearningObservation, ...]:
-    path = peer_learning_path(root)
-    if not path.exists():
-        return ()
     observations: list[PeerLearningObservation] = []
     seen: set[str] = set()
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return ()
+    lines: list[str] = []
+    for path in artifact_read_paths(Path("learning") / "peers.jsonl", root):
+        try:
+            lines.extend(path.read_text(encoding="utf-8").splitlines())
+        except OSError:
+            continue
     for line in reversed(lines):
         try:
             raw = json.loads(line)
