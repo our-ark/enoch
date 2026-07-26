@@ -23,4 +23,4 @@ permissions:
   chat:
     send_status_updates: true
 validation:
-  command: python3 -m unittest discover -s tests
+  command: bin/enoch doctor
