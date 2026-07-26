@@ -5,6 +5,8 @@ type: software
 authors:
   - family-names: Zhao
     given-names: Gary
+  - family-names: Zhao
+    given-names: Roy
 version: 0.2.1
 date-released: 2026-07-23
 license: Apache-2.0
