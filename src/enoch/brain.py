@@ -4,6 +4,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -46,7 +47,8 @@ DEFAULT_CODEX_PATHS = [
     "/Applications/ChatGPT.app/Contents/Resources/codex",
     "/Applications/Codex.app/Contents/Resources/codex",
 ]
-REASONING_EFFORTS = {"low", "medium", "high"}
+REASONING_EFFORTS = ("low", "medium", "high", "xhigh", "max", "ultra")
+_REASONING_EFFORT_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 ProgressCallback = Callable[[int, str], None]
 
 
@@ -67,6 +69,7 @@ class CodexModelOption:
     slug: str
     display_name: str
     description: str = ""
+    supported_reasoning_efforts: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -225,14 +228,51 @@ def codex_model_options(root: Path | None = None) -> tuple[CodexModelOption, ...
         if not slug or slug in seen:
             continue
         seen.add(slug)
+        supported_reasoning_efforts = []
+        raw_reasoning_levels = raw.get("supported_reasoning_levels")
+        if isinstance(raw_reasoning_levels, list):
+            for raw_level in raw_reasoning_levels:
+                if not isinstance(raw_level, dict):
+                    continue
+                effort = str(raw_level.get("effort") or "").strip().lower()
+                if (
+                    _REASONING_EFFORT_PATTERN.fullmatch(effort)
+                    and effort not in supported_reasoning_efforts
+                ):
+                    supported_reasoning_efforts.append(effort)
         options.append(
             CodexModelOption(
                 slug=slug,
                 display_name=str(raw.get("display_name") or slug).strip() or slug,
                 description=str(raw.get("description") or "").strip(),
+                supported_reasoning_efforts=tuple(supported_reasoning_efforts),
             )
         )
     return tuple(options)
+
+
+def codex_reasoning_efforts(root: Path | None = None) -> tuple[str, ...]:
+    options = codex_model_options(root)
+    configured_model = _configured_model(root)
+    if not configured_model:
+        configured_model = _read_codex_config(_codex_config_path()).get("model", "")
+    if configured_model:
+        current = next(
+            (option for option in options if option.slug == configured_model),
+            None,
+        )
+        if current is not None and current.supported_reasoning_efforts:
+            return current.supported_reasoning_efforts
+        return REASONING_EFFORTS
+    first_supported = next(
+        (
+            option.supported_reasoning_efforts
+            for option in options
+            if option.supported_reasoning_efforts
+        ),
+        (),
+    )
+    return first_supported or REASONING_EFFORTS
 
 
 def _codex_config_path() -> Path:
@@ -825,7 +865,7 @@ def _enoch_reasoning_effort(root: Path | None = None) -> str:
     if root is None:
         return ""
     value = read_section("codex", root).get("reasoning_effort", "").strip().lower()
-    return value if value in REASONING_EFFORTS else ""
+    return value if _REASONING_EFFORT_PATTERN.fullmatch(value) else ""
 
 
 def _run_with_progress(

@@ -154,6 +154,13 @@ class EnochBrainTests(unittest.TestCase):
                         "slug": "gpt-5.6-sol",
                         "display_name": "GPT-5.6-Sol",
                         "description": "Latest frontier model.",
+                        "supported_reasoning_levels": [
+                            {"effort": "low"},
+                            {"effort": "high"},
+                            {"effort": "xhigh"},
+                            {"effort": "max"},
+                            {"effort": "ultra"},
+                        ],
                         "visibility": "list",
                     },
                     {
@@ -174,6 +181,13 @@ class EnochBrainTests(unittest.TestCase):
                     slug="gpt-5.6-sol",
                     display_name="GPT-5.6-Sol",
                     description="Latest frontier model.",
+                    supported_reasoning_efforts=(
+                        "low",
+                        "high",
+                        "xhigh",
+                        "max",
+                        "ultra",
+                    ),
                 ),
             ),
         )
@@ -181,6 +195,43 @@ class EnochBrainTests(unittest.TestCase):
             run.call_args.args[0],
             ["/usr/local/bin/codex", "debug", "models", "--bundled"],
         )
+
+    @patch("enoch.brain.codex_model_options")
+    def test_codex_reasoning_efforts_follow_configured_model(
+        self,
+        model_options: MagicMock,
+    ) -> None:
+        model_options.return_value = (
+            brain.CodexModelOption(
+                slug="gpt-5.6-sol",
+                display_name="GPT-5.6-Sol",
+                supported_reasoning_efforts=(
+                    "low",
+                    "medium",
+                    "high",
+                    "xhigh",
+                    "max",
+                    "ultra",
+                ),
+            ),
+            brain.CodexModelOption(
+                slug="gpt-5.5",
+                display_name="GPT-5.5",
+                supported_reasoning_efforts=("low", "medium", "high", "xhigh"),
+            ),
+        )
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            config = root / ".enoch" / "config.yaml"
+            config.parent.mkdir()
+            config.write_text(
+                "\n".join(["codex:", "  model: gpt-5.5"]),
+                encoding="utf-8",
+            )
+
+            efforts = brain.codex_reasoning_efforts(root)
+
+        self.assertEqual(efforts, ("low", "medium", "high", "xhigh"))
 
     def test_model_summary_reports_enoch_model_override(self) -> None:
         with TemporaryDirectory() as temp, TemporaryDirectory() as codex_home:
@@ -322,13 +373,13 @@ class EnochBrainTests(unittest.TestCase):
             root = Path(temp)
             config = root / ".enoch" / "config.yaml"
             config.parent.mkdir()
-            config.write_text("\n".join(["codex:", "  reasoning_effort: medium"]), encoding="utf-8")
+            config.write_text("\n".join(["codex:", "  reasoning_effort: xhigh"]), encoding="utf-8")
 
             respond(load_identity(), "Hello", cwd=root)
 
         args = run.call_args.args[0]
         self.assertIn("-c", args)
-        self.assertIn('model_reasoning_effort="medium"', args)
+        self.assertIn('model_reasoning_effort="xhigh"', args)
 
     @patch("enoch.brain.shutil.which", return_value="/usr/local/bin/codex")
     @patch("enoch.brain.subprocess.run")
