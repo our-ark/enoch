@@ -201,6 +201,9 @@ from enoch.providers.contracts import (
     ForgeProvider,
     ForgeProviderError,
     MessageId,
+    RepositoryProvider,
+    RepositoryProviderError,
+    ReviewProvider,
     RuntimeExecutionControl,
     normalize_message_id,
 )
@@ -211,6 +214,7 @@ from enoch.providers.authorization import (
     CompositeAuthorizationPolicy,
 )
 from enoch.providers.forge import FunctionForgeProvider
+from enoch.providers import as_repository_provider, as_review_provider
 from enoch.providers.registry import ProviderError, load_provider
 from enoch.providers.runtime import (
     FunctionAgentRuntime,
@@ -412,6 +416,8 @@ class EnochApplication:
         *,
         runtime: AgentRuntime | None = None,
         forge: ForgeProvider | None = None,
+        repository: RepositoryProvider | None = None,
+        review: ReviewProvider | None = None,
         profile: AgentProfile | None = None,
         daemon_epoch: DaemonEpoch | None = None,
         workflow: WorkflowEngine | None = None,
@@ -436,6 +442,9 @@ class EnochApplication:
             reset_usage_fn=lambda: reset_token_usage(),
             reasoning_efforts_fn=lambda root=None: codex_reasoning_efforts(root),
         )
+        selected_forge = forge
+        if selected_forge is None and review is None:
+            selected_forge = load_provider("forge", root)
         self.forge = forge or FunctionForgeProvider(
             close_fn=lambda *args, **kwargs: close_pull_request(*args, **kwargs),
             create_fn=lambda **kwargs: create_pull_request(**kwargs),
@@ -444,6 +453,8 @@ class EnochApplication:
             list_fn=lambda *args, **kwargs: list_open_pull_requests(*args, **kwargs),
             merge_fn=lambda *args, **kwargs: merge_pull_request(*args, **kwargs),
         )
+        self.repository = repository or as_repository_provider(load_provider("vcs", root))
+        self.review = review or as_review_provider(selected_forge)
         self.profile = profile or AgentProfile(name="enoch")
         policies = tuple(
             policy
@@ -488,15 +499,6 @@ class EnochApplication:
                     *args,
                     **kwargs,
                 ),
-                changed_files=lambda *args, **kwargs: changed_files(*args, **kwargs),
-                task_branch_base=lambda *args, **kwargs: _task_branch_base(
-                    *args,
-                    **kwargs,
-                ),
-                prepare_task_worktree=lambda *args, **kwargs: prepare_task_worktree(
-                    *args,
-                    **kwargs,
-                ),
                 prepare_existing_branch_worktree=lambda *args, **kwargs: (
                     prepare_existing_branch_worktree(*args, **kwargs)
                 ),
@@ -505,10 +507,6 @@ class EnochApplication:
                     **kwargs,
                 ),
                 ensure_clean_worktree=lambda *args, **kwargs: ensure_clean_worktree(
-                    *args,
-                    **kwargs,
-                ),
-                prepare_local_publish=lambda *args, **kwargs: prepare_local_publish(
                     *args,
                     **kwargs,
                 ),
@@ -541,7 +539,9 @@ class EnochApplication:
         if kind == "runtime":
             return self.runtime
         if kind == "forge":
-            return self.forge
+            return self.review
+        if kind == "vcs":
+            return self.repository
         return load_provider(kind, self.root)
 
     def run_forever(self) -> None:
@@ -1717,8 +1717,11 @@ class EnochApplication:
 
     def _authoritative_branch_name(self) -> str:
         try:
-            return _authoritative_branch_name(self.root) or DEFAULT_BRANCH
-        except VcsError:
+            return (
+                self.repository.authoritative_base(self.root).name
+                or DEFAULT_BRANCH
+            )
+        except (RepositoryProviderError, VcsError):
             return DEFAULT_BRANCH
 
     def _send_step_update(self, chat_id: ConversationId | None, message: str) -> None:
@@ -3202,7 +3205,13 @@ class EnochApplication:
         regression_signals: tuple[TaskRegressionSignal, ...] = ()
         try:
             self._authorize_task(job)
-            if job.publish_stage in {"committed", "pushed", "pr_opened"}:
+            if job.publish_stage in {
+                "committed",
+                "pushed",
+                "pr_opened",
+                "captured",
+                "review_published",
+            }:
                 outcome = self._resume_task_publish(job)
             elif task_result_has_pull_request(job.result):
                 reply = job.result

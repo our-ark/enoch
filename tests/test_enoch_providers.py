@@ -1,3 +1,4 @@
+from dataclasses import replace
 from pathlib import Path
 import sys
 import threading
@@ -13,7 +14,12 @@ from enoch.commands import config_command
 from enoch.config import read_section
 from enoch.git_tools import run_git
 from enoch.identity import load_identity
-from enoch.immune import _git_worktree_check, _runtime_provider_check
+from enoch.immune import (
+    DoctorDiagnosis,
+    ImmuneResult,
+    _git_worktree_check,
+    _runtime_provider_check,
+)
 from enoch.operations.update_tools import task_branch_base
 from enoch.operations.updater import update_from_authoritative
 from enoch.providers import (
@@ -35,6 +41,7 @@ from enoch.providers import (
     RuntimeResult,
     RuntimeSideEffect,
     RuntimeUsage,
+    WorkspaceRequest,
     available_providers,
     as_repository_provider,
     load_provider,
@@ -50,9 +57,19 @@ from enoch.providers.runtime import (
     invoke_runtime_action,
     invoke_runtime_respond,
 )
+from our_ark_provider_kit import (
+    BranchlessRepositoryFixture,
+    IndependentReviewFixture,
+)
+from enoch.providers.authorization import DEFAULT_TASK_REQUIREMENTS
 from enoch.providers import registry as provider_registry
 from enoch.app.core import EnochApplication
-from enoch.tasks.queue import enqueue_task, record_task_status_message, task_queue_status
+from enoch.tasks.queue import (
+    TaskJob,
+    enqueue_task,
+    record_task_status_message,
+    task_queue_status,
+)
 from enoch.tasks.worktree import TaskWorktree
 
 
@@ -321,6 +338,138 @@ class _EntryPoints(list):
 
 
 class EnochProviderTests(unittest.TestCase):
+    def test_queued_task_uses_branchless_repository_and_independent_review(self) -> None:
+        repository = BranchlessRepositoryFixture()
+        review = IndependentReviewFixture()
+
+        class BranchlessRuntime(_Runtime):
+            def __init__(self) -> None:
+                super().__init__()
+                self.workspaces = []
+
+            def act_in_session(self, identity, message, **kwargs):
+                self.workspaces.append(kwargs["cwd"])
+                repository.mark_changed("PORTABLE_RESULT.md")
+                return "Created a portable result."
+
+        runtime = BranchlessRuntime()
+        doctor = ImmuneResult(
+            passed=True,
+            command="portable-doctor",
+            output="OK",
+            diagnosis=DoctorDiagnosis(
+                summary="Portable checks passed.",
+                failing_tests=[],
+                likely_files=[],
+                suggested_action="No repair needed.",
+            ),
+            checks=[],
+        )
+        with TemporaryDirectory() as temp, patch(
+            "enoch.app.core.run_immune_system",
+            return_value=doctor,
+        ):
+            root = Path(temp)
+            register_provider(
+                "vcs",
+                "branchless-task",
+                lambda _root=None: repository,
+                replace=True,
+            )
+            register_provider(
+                "forge",
+                "independent-review",
+                lambda _root=None: review,
+                replace=True,
+            )
+            config = root / ".enoch" / "config.yaml"
+            config.parent.mkdir()
+            config.write_text(
+                "providers:\n"
+                "  vcs: branchless-task\n"
+                "  forge: independent-review\n",
+                encoding="utf-8",
+            )
+            app = EnochApplication(
+                load_identity(),
+                root,
+                _Chat(),
+                runtime=runtime,
+            )
+            queued = app.workflow.enqueue(
+                "room-1",
+                "create a portable result",
+                required_capabilities=DEFAULT_TASK_REQUIREMENTS.capabilities,
+            )
+            running = app.workflow.start_next()
+            assert running is not None
+
+            app._run_task_job(running)
+
+            completed = app.workflow.inspect().history[-1]
+
+        self.assertEqual(completed.id, queued.id)
+        self.assertEqual(completed.status, "completed")
+        self.assertEqual(completed.publish_stage, "review_published")
+        self.assertEqual(completed.commit_sha, "r1")
+        self.assertFalse(repository.repository_features.named_branches)
+        self.assertFalse(repository.repository_features.staging_index)
+        self.assertEqual(repository.workspaces, {})
+        self.assertEqual(len(review.reviews), 1)
+        published = next(iter(review.reviews.values()))
+        self.assertEqual(published.versions[-1].revision.id, "r1")
+        self.assertNotEqual(published.identity.id, "r1")
+        self.assertEqual(completed.pr_url, published.identity.url)
+        self.assertEqual(runtime.workspaces, [Path(completed.worktree_path)])
+        self.assertIn("Repository change captured.", completed.result)
+        self.assertIn(f"Review {published.identity.id}", completed.result)
+
+    def test_queued_task_rejects_missing_workspace_feature_before_effects(self) -> None:
+        repository = BranchlessRepositoryFixture()
+        repository.repository_features = replace(
+            repository.repository_features,
+            isolated_workspaces=False,
+        )
+        review = IndependentReviewFixture()
+
+        class CountingRuntime(_Runtime):
+            def __init__(self) -> None:
+                super().__init__()
+                self.action_calls = 0
+
+            def act_in_session(self, identity, message, **kwargs):
+                self.action_calls += 1
+                return super().act_in_session(identity, message, **kwargs)
+
+        runtime = CountingRuntime()
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            app = EnochApplication(
+                load_identity(),
+                root,
+                _Chat(),
+                runtime=runtime,
+                repository=repository,
+                review=review,
+            )
+            app.workflow.enqueue(
+                "room-1",
+                "create a portable result",
+                required_capabilities=DEFAULT_TASK_REQUIREMENTS.capabilities,
+            )
+            running = app.workflow.start_next()
+            assert running is not None
+
+            app._run_task_job(running)
+
+            completed = app.workflow.inspect().history[-1]
+
+        self.assertEqual(completed.status, "failed")
+        self.assertIn("isolated_workspaces", completed.result)
+        self.assertEqual(repository.operation_count, 0)
+        self.assertEqual(review.operation_count, 0)
+        self.assertEqual(runtime.action_calls, 0)
+
     def test_git_provider_adapts_to_semantic_repository_contract(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
@@ -699,119 +848,200 @@ class EnochProviderTests(unittest.TestCase):
         self.assertEqual(vcs.calls, [])
         self.assertIn("updated to trunk", result.direct_action_result)
 
-    def test_local_forge_handoff_preserves_unpushed_task_branch(self) -> None:
+    def test_local_review_handoff_completes_without_remote_url(self) -> None:
+        class LocalReview(IndependentReviewFixture):
+            supports_remote_review = False
+
+            def publish_review(self, request, root=None):
+                published = super().publish_review(request, root)
+                local = replace(
+                    published,
+                    identity=replace(published.identity, url=""),
+                    state="recorded",
+                )
+                self.reviews[local.identity.id] = local
+                return local
+
+        repository = BranchlessRepositoryFixture()
+        review_provider = LocalReview()
         doctor = MagicMock(passed=True)
-        committed = LocalPublishResult(
-            branch="change/portable",
-            commit_message="Portable change",
-            changed_files=["README.md"],
-            diff="README.md changed",
-            doctor=doctor,
-            commit_sha="revision-1",
-        )
-        remote = RemotePublishResult(
-            branch="change/portable",
-            remote="local",
-            pushed=False,
-            ahead_count=0,
-            compare_url=None,
-        )
-        review = PullRequestResult(
-            branch="change/portable",
-            title="Portable change",
-            body="",
-            created=False,
-            url=None,
-            fallback_url=None,
-            note="No forge provider is configured.",
-        )
         with TemporaryDirectory() as temp:
             root = Path(temp)
-            app = EnochApplication(load_identity(), root, _Chat(), runtime=_Runtime())
-            app.forge = MagicMock()
-            app.forge.supports_remote_review = False
-            app.forge.create_pull_request.return_value = review
-            workspace = TaskWorktree(1, root / "task-1", "change/portable", True)
-            with patch("enoch.app.core.feature_title", return_value="Portable change"), patch(
-                "enoch.app.core.prepare_local_publish",
-                return_value=committed,
-            ), patch(
-                "enoch.app.core.push_current_branch",
-                return_value=remote,
-            ), patch(
-                "enoch.app.core.remove_task_worktree",
-                return_value="Removed workspace and kept branch.",
-            ) as remove:
-                result = app._publish_feature_pr(
-                    "room-1",
-                    "Portable change",
-                    ("README.md",),
-                    work_root=workspace.path,
-                    task_worktree=workspace,
-                )
+            semantic_workspace = repository.create_repository_workspace(
+                WorkspaceRequest(
+                    path=root / "task-1",
+                    base_revision=repository.authoritative_base(root).revision,
+                    workspace_id="workspace-1",
+                ),
+                root,
+            )
+            workspace = TaskWorktree(
+                1,
+                semantic_workspace.path,
+                semantic_workspace.id,
+                True,
+                semantic_workspace,
+            )
+            repository.mark_changed("README.md")
+            app = EnochApplication(
+                load_identity(),
+                root,
+                _Chat(),
+                runtime=_Runtime(),
+                repository=repository,
+                review=review_provider,
+            )
+            result = app._publish_feature_pr(
+                "room-1",
+                "Portable change",
+                ("README.md",),
+                work_root=workspace.path,
+                task_worktree=workspace,
+                validation_result=doctor,
+            )
 
-        remove.assert_called_once_with(
-            root,
-            workspace,
-            delete_local_branch=False,
-            force_delete_branch=False,
-        )
-        self.assertIn("kept this branch locally", result.message)
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(result.pr_url, "")
+        self.assertEqual(repository.workspaces, {})
+        self.assertIn("Status: recorded", result.message)
 
-    def test_remote_pr_creation_failure_is_retryable_and_preserves_worktree(self) -> None:
+    def test_remote_review_failure_is_retryable_and_preserves_workspace(self) -> None:
+        class IncompleteReview(IndependentReviewFixture):
+            supports_remote_review = True
+
+            def publish_review(self, request, root=None):
+                published = super().publish_review(request, root)
+                incomplete = replace(published, state="unpublished")
+                self.reviews[incomplete.identity.id] = incomplete
+                return incomplete
+
+        repository = BranchlessRepositoryFixture()
+        review_provider = IncompleteReview()
         doctor = MagicMock(passed=True)
-        committed = LocalPublishResult(
-            branch="change/retry-pr",
-            commit_message="Retry PR",
-            changed_files=["README.md"],
-            diff="README.md | 1 +",
-            doctor=doctor,
-            commit_sha="revision-2",
-        )
-        remote = RemotePublishResult(
-            branch="change/retry-pr",
-            remote="origin",
-            pushed=True,
-            ahead_count=1,
-            compare_url="https://github.com/our-ark/enoch/compare/change/retry-pr",
-        )
-        review = PullRequestResult(
-            branch="change/retry-pr",
-            title="Retry PR",
-            body="",
-            created=False,
-            url=None,
-            fallback_url=remote.compare_url,
-            note="temporary API failure",
-        )
         with TemporaryDirectory() as temp:
             root = Path(temp)
-            app = EnochApplication(load_identity(), root, _Chat(), runtime=_Runtime())
-            app.forge = MagicMock(supports_remote_review=True)
-            app.forge.create_pull_request.return_value = review
-            workspace = TaskWorktree(2, root / "task-2", remote.branch, True)
-            with patch(
-                "enoch.app.core.prepare_local_publish",
-                return_value=committed,
-            ), patch(
-                "enoch.app.core.push_current_branch",
-                return_value=remote,
-            ), patch("enoch.app.core.remove_task_worktree") as remove:
-                result = app._publish_feature_pr(
-                    "room-1",
-                    "Retry PR",
-                    ("README.md",),
-                    work_root=workspace.path,
-                    task_worktree=workspace,
-                    validation_result=doctor,
-                )
+            semantic_workspace = repository.create_repository_workspace(
+                WorkspaceRequest(
+                    path=root / "task-2",
+                    base_revision=repository.authoritative_base(root).revision,
+                    workspace_id="workspace-2",
+                ),
+                root,
+            )
+            workspace = TaskWorktree(
+                2,
+                semantic_workspace.path,
+                semantic_workspace.id,
+                True,
+                semantic_workspace,
+            )
+            repository.mark_changed("README.md")
+            app = EnochApplication(
+                load_identity(),
+                root,
+                _Chat(),
+                runtime=_Runtime(),
+                repository=repository,
+                review=review_provider,
+            )
+            result = app._publish_feature_pr(
+                "room-1",
+                "Retry review",
+                ("README.md",),
+                work_root=workspace.path,
+                task_worktree=workspace,
+                validation_result=doctor,
+            )
 
         self.assertEqual(result.status, "publish_incomplete")
-        self.assertEqual(result.code, "pr_creation_failed")
+        self.assertEqual(result.code, "review_publication_failed")
         self.assertTrue(result.retryable)
-        self.assertEqual(result.commit_sha, "revision-2")
-        self.assertEqual(result.remote_branch, "change/retry-pr")
-        remove.assert_not_called()
+        self.assertEqual(result.commit_sha, "r1")
+        self.assertEqual(result.remote_branch, "workspace-2")
+        self.assertIn("workspace-2", repository.workspaces)
+
+    def test_review_retry_reuses_captured_revision(self) -> None:
+        class FlakyReview(IndependentReviewFixture):
+            supports_remote_review = True
+
+            def __init__(self) -> None:
+                super().__init__()
+                self.fail_next = True
+
+            def publish_review(self, request, root=None):
+                published = super().publish_review(request, root)
+                if not self.fail_next:
+                    return published
+                self.fail_next = False
+                incomplete = replace(published, state="unpublished")
+                self.reviews[incomplete.identity.id] = incomplete
+                return incomplete
+
+        repository = BranchlessRepositoryFixture()
+        review_provider = FlakyReview()
+        doctor = MagicMock(passed=True)
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            semantic_workspace = repository.create_repository_workspace(
+                WorkspaceRequest(
+                    path=root / "task-3",
+                    base_revision=repository.authoritative_base(root).revision,
+                    workspace_id="workspace-3",
+                ),
+                root,
+            )
+            workspace = TaskWorktree(
+                3,
+                semantic_workspace.path,
+                semantic_workspace.id,
+                True,
+                semantic_workspace,
+            )
+            repository.mark_changed("README.md")
+            app = EnochApplication(
+                load_identity(),
+                root,
+                _Chat(),
+                runtime=_Runtime(),
+                repository=repository,
+                review=review_provider,
+            )
+
+            first = app._publish_feature_pr(
+                "room-1",
+                "Retry review",
+                ("README.md",),
+                work_root=workspace.path,
+                task_worktree=workspace,
+                validation_result=doctor,
+            )
+            captured_revision_count = len(repository.revisions)
+            resumed = app._publish_feature_pr(
+                "room-1",
+                "Retry review",
+                (),
+                work_root=workspace.path,
+                task_worktree=workspace,
+                validation_result=doctor,
+                resume_job=TaskJob(
+                    id=3,
+                    chat_id="room-1",
+                    text="Retry review",
+                    created_at="2026-07-25T00:00:00+00:00",
+                    worktree_path=str(workspace.path),
+                    branch_name=workspace.branch,
+                    publish_stage="captured",
+                    commit_sha=first.commit_sha,
+                    remote_branch=first.remote_branch,
+                ),
+            )
+
+        self.assertEqual(first.status, "publish_incomplete")
+        self.assertEqual(resumed.status, "completed")
+        self.assertEqual(resumed.commit_sha, "r1")
+        self.assertEqual(len(repository.revisions), captured_revision_count)
+        self.assertEqual(repository.workspaces, {})
+        self.assertEqual(review_provider.operation_count, 2)
 
     def test_config_lists_and_selects_installed_providers(self) -> None:
         register_provider("runtime", "test-runtime", lambda _root=None: _Runtime(), replace=True)

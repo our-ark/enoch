@@ -65,7 +65,7 @@ class CapabilityAuthorizationTests(unittest.TestCase):
         profile = AgentProfile(
             name="local-reviewer",
             authorization=CapabilityPolicy(
-                denied_capabilities=("forge.publish",),
+                denied_capabilities=("forge.review",),
                 reason="This profile keeps repository work local.",
             ),
         )

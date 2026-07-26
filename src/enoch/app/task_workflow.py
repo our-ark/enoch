@@ -23,16 +23,12 @@ from enoch.config import read_section
 from enoch.formatting import (
     format_doctor_result,
     format_pr_result,
-    format_publish_result,
     format_remote_publish_result,
     pr_step_update,
     pr_summary,
-    publish_summary,
-    remote_publish_summary,
 )
 from enoch.immune import ImmuneResult, run_immune_system
 from enoch.identity import Identity
-from enoch.operations.update_tools import task_branch_base
 from enoch.prompt_append import (
     extract_memory_requests,
     repository_handoff_note,
@@ -51,8 +47,19 @@ from enoch.providers.contracts import (
     MessageId,
     PullRequestCloseResult,
     PullRequestResult,
+    ChangeCaptureRequest,
+    ChangeCaptureResult,
+    RepositoryProvider,
+    RepositoryProviderError,
+    RepositoryRevision,
+    ReviewProvider,
+    ReviewProviderError,
+    ReviewRecord,
+    ReviewSubmission,
     RuntimeExecutionControl,
     RuntimeResult,
+    UnsupportedProviderFeature,
+    require_repository_features,
 )
 from enoch.providers.forge import (
     FunctionForgeProvider,
@@ -63,7 +70,6 @@ from enoch.providers.forge import (
     inspect_pull_request_merge,
     list_open_pull_requests,
     merge_pull_request,
-    prepare_local_publish,
     push_current_branch,
 )
 from enoch.providers.authorization import CapabilityAuthorizationError
@@ -83,7 +89,8 @@ from enoch.tasks.queue import (
 from enoch.tasks.worktree import (
     TaskWorktree,
     prepare_existing_branch_worktree,
-    prepare_task_worktree,
+    prepare_repository_task_workspace,
+    remove_repository_task_workspace,
     remove_task_worktree,
 )
 from enoch.vcs_tools import (
@@ -102,15 +109,17 @@ class TaskWorkflowDependencies:
     """Version-control and validation effects supplied by the application shell."""
 
     run_immune_system: Callable[..., Any] = run_immune_system
-    changed_files: Callable[..., Any] = changed_files
-    task_branch_base: Callable[..., Any] = task_branch_base
-    prepare_task_worktree: Callable[..., Any] = prepare_task_worktree
+    prepare_repository_task_workspace: Callable[..., Any] = (
+        prepare_repository_task_workspace
+    )
     prepare_existing_branch_worktree: Callable[..., Any] = (
         prepare_existing_branch_worktree
     )
     remove_task_worktree: Callable[..., Any] = remove_task_worktree
+    remove_repository_task_workspace: Callable[..., Any] = (
+        remove_repository_task_workspace
+    )
     ensure_clean_worktree: Callable[..., Any] = ensure_clean_worktree
-    prepare_local_publish: Callable[..., Any] = prepare_local_publish
     push_current_branch: Callable[..., Any] = push_current_branch
     feature_title: Callable[..., Any] = feature_title
     current_branch: Callable[..., Any] = current_branch
@@ -125,6 +134,8 @@ class TaskWorkflowHost(Protocol):
     root: Path
     runtime: AgentRuntime
     forge: ForgeProvider
+    repository: RepositoryProvider
+    review: ReviewProvider
     workflow: WorkflowEngine
     effect_fence: DaemonEffectFence
 
@@ -254,13 +265,14 @@ class TaskWorkflow:
             return WorkOutcome.completed(reply)
 
         try:
+            self.preflight_portable_task()
             sandbox = action_sandbox(app.root)
-            app._send_step_update(chat_id, "Preparing an isolated task worktree.")
+            app._send_step_update(chat_id, "Preparing an isolated task workspace.")
             task_worktree = app._prepare_task_worktree(request)
             work_root = task_worktree.path
             branch_note = (
-                f"Enoch prepared isolated worktree {work_root} on branch "
-                f"{task_worktree.branch} from the latest task base."
+                f"Enoch prepared isolated workspace {task_worktree.branch} at "
+                f"{work_root} from the latest authoritative revision."
             )
             app._send_step_update(chat_id, "Working.")
             runtime_execution = execution or RuntimeExecutionControl(
@@ -283,7 +295,7 @@ class TaskWorkflow:
                         work_request_prompt(
                             work_request_with_context(request, context),
                             remote_review=bool(
-                                getattr(app.forge, "supports_remote_review", True)
+                                getattr(app.review, "supports_remote_review", True)
                             ),
                         ),
                         purpose="task",
@@ -313,10 +325,8 @@ class TaskWorkflow:
                 memory_result.requests,
             )
             app.effect_fence.run(record_direct_action, request, result, app.root)
-            try:
-                action_files = tuple(sorted(self.dependencies.changed_files(work_root)))
-            except VcsError:
-                action_files = ()
+            action_state = app.repository.inspect_working_copy(work_root)
+            action_files = tuple(sorted(action_state.changed_paths))
         except (AgentRuntimeCancelled, AgentRuntimeTimedOut, AgentRuntimeAccessUnavailable):
             raise
         except (
@@ -324,6 +334,9 @@ class TaskWorkflow:
             CapabilityAuthorizationError,
             TypeError,
             VcsError,
+            RepositoryProviderError,
+            ReviewProviderError,
+            UnsupportedProviderFeature,
             OSError,
         ) as error:
             message = f"Enoch could not complete the requested work yet: {error}"
@@ -339,18 +352,19 @@ class TaskWorkflow:
         if not action_files:
             try:
                 cleanup = app.effect_fence.run_authorized(
-                    "vcs.remove-worktree",
-                    ("vcs.write",),
-                    self.dependencies.remove_task_worktree,
+                    "vcs.remove-workspace",
+                    ("vcs.workspace",),
+                    self.dependencies.remove_repository_task_workspace,
+                    app.repository,
                     app.root,
                     task_worktree,
                     task_id=CURRENT_TASK_ID.get(),
-                    force_delete_branch=True,
+                    force=True,
                 )
                 parts.append("No files changed.")
                 parts.append(cleanup)
-            except VcsError as error:
-                parts.append(f"Enoch could not clean up the task worktree: {error}")
+            except (RepositoryProviderError, VcsError) as error:
+                parts.append(f"Enoch could not clean up the task workspace: {error}")
             return WorkOutcome.completed(
                 "\n\n".join(part for part in parts if part),
                 completed_stages=("edited",),
@@ -370,8 +384,8 @@ class TaskWorkflow:
         )
         if not doctor.passed:
             parts.append(
-                f"I did not open a PR because doctor failed. Task worktree {work_root} "
-                "was preserved for inspection."
+                f"I did not publish a review because doctor failed. Task workspace "
+                f"{work_root} was preserved for inspection."
             )
             return WorkOutcome.failure(
                 "\n\n".join(part for part in parts if part),
@@ -404,6 +418,26 @@ class TaskWorkflow:
             ),
         )
 
+    def preflight_portable_task(self) -> None:
+        app = self.application
+        require_repository_features(
+            app.repository,
+            "isolated_workspaces",
+            "immutable_revisions",
+        )
+        app.effect_fence.authorize(
+            "task.portable-workflow",
+            (
+                "runtime.execute",
+                "vcs.inspect",
+                "vcs.authoritative",
+                "vcs.workspace",
+                "vcs.capture",
+                "forge.review",
+            ),
+            task_id=CURRENT_TASK_ID.get(),
+        )
+
     def prepare_task_worktree(self, request: str) -> TaskWorktree:
         app = self.application
         task_id = CURRENT_TASK_ID.get()
@@ -413,20 +447,19 @@ class TaskWorkflow:
         job = app.workflow.find(task_id)
         if job is None or job.status != "running" or job.worker_id != worker_id:
             raise VcsError(f"Task #{task_id} no longer owns its execution lease.")
-        base = self.dependencies.task_branch_base(app.root)
         worktree = app.effect_fence.run_authorized(
-            "vcs.prepare-worktree",
-            ("vcs.write",),
-            self.dependencies.prepare_task_worktree,
+            "vcs.prepare-workspace",
+            ("vcs.authoritative", "vcs.workspace"),
+            self.dependencies.prepare_repository_task_workspace,
+            app.repository,
             app.root,
             task_id,
             request,
             task_id=task_id,
-            start_point=base,
             resident_branch=app._resident_branch_name(),
             created_at=job.created_at,
             existing_path=job.worktree_path,
-            existing_branch=job.branch_name,
+            existing_workspace_id=job.branch_name,
         )
         recorded = app.workflow.record_worktree(
             task_id,
@@ -637,156 +670,201 @@ class TaskWorkflow:
         publish_root = work_root or app.root
         outputs: list[str] = []
         summaries: list[str] = []
-        stage = resume_job.publish_stage if resume_job is not None else ""
-        commit_sha = resume_job.commit_sha if resume_job is not None else ""
-        remote_branch = resume_job.remote_branch if resume_job is not None else ""
-        pr_url = resume_job.pr_url if resume_job is not None else ""
-        pushed_remotely = (
-            resume_job.published_remotely if resume_job is not None else False
+        stage = portable_publish_stage(
+            resume_job.publish_stage if resume_job is not None else ""
         )
+        revision_id = resume_job.commit_sha if resume_job is not None else ""
+        workspace_id = resume_job.remote_branch if resume_job is not None else ""
+        review_url = resume_job.pr_url if resume_job is not None else ""
+        review_published = stage == "review_published"
         completed_stages = [
             candidate
-            for candidate in ("committed", "pushed", "pr_opened")
+            for candidate in ("captured", "review_published")
             if candidate == stage
-            or (stage == "pushed" and candidate == "committed")
-            or (stage == "pr_opened" and candidate in {"committed", "pushed"})
+            or (stage == "review_published" and candidate == "captured")
         ]
+        captured_revision: RepositoryRevision | None = None
         try:
-            if stage not in {"committed", "pushed", "pr_opened"}:
-                app._send_step_update(chat_id, "Committing the change.")
-                commit = app.effect_fence.run_authorized(
-                    "forge.prepare-local-publish",
-                    ("forge.publish", "vcs.write"),
-                    self.dependencies.prepare_local_publish,
-                    self.dependencies.feature_title(request),
+            if stage != "captured" and stage != "review_published":
+                app._send_step_update(chat_id, "Capturing the validated change.")
+                state = app.repository.inspect_working_copy(publish_root)
+                changed = tuple(state.changed_paths)
+                allowed = frozenset(path for path in allowed_files if path)
+                unexpected = tuple(path for path in changed if path not in allowed)
+                if unexpected:
+                    raise RepositoryProviderError(
+                        "Refusing to capture unexpected files: "
+                        + ", ".join(unexpected[:8])
+                    )
+                if not changed:
+                    raise RepositoryProviderError("No working-copy changes to capture.")
+                capture = app.effect_fence.run_authorized(
+                    "vcs.capture-change",
+                    ("vcs.capture",),
+                    app.repository.capture_change,
+                    ChangeCaptureRequest(
+                        message=self.dependencies.feature_title(request),
+                        paths=changed,
+                        metadata={"task_id": CURRENT_TASK_ID.get()},
+                    ),
                     task_id=CURRENT_TASK_ID.get(),
                     root=publish_root,
-                    allowed_files=allowed_files,
-                    validation_result=validation_result,
                 )
-                commit_sha = commit.commit_sha
-                remote_branch = commit.branch
-                outputs.append(format_publish_result(commit))
-                summaries.append(publish_summary(commit))
-                completed_stages.append("committed")
+                captured_revision = capture.revision
+                revision_id = capture.revision.id
+                workspace_id = (
+                    task_worktree.repository_workspace.id
+                    if task_worktree is not None
+                    and task_worktree.repository_workspace is not None
+                    else (task_worktree.branch if task_worktree is not None else "")
+                )
+                capture_message = format_change_capture(capture)
+                outputs.append(capture_message)
+                summaries.append(capture_message)
+                completed_stages.append("captured")
                 app._record_current_publish_stage(
-                    "committed",
-                    commit_sha=commit_sha,
-                    remote_branch=remote_branch,
+                    "captured",
+                    commit_sha=revision_id,
+                    remote_branch=workspace_id,
                 )
-                app._send_step_update(chat_id, f"Committed {commit.commit_sha}.")
-                stage = "committed"
+                require_captured_working_copy(
+                    app.repository,
+                    captured_revision,
+                    publish_root,
+                )
+                app._send_step_update(
+                    chat_id,
+                    f"Captured revision {capture.revision.display}.",
+                )
+                stage = "captured"
             else:
                 outputs.append(
-                    f"Resuming publish workflow after commit {commit_sha or 'unknown'}."
+                    "Resuming review publication after captured revision "
+                    f"{revision_id or 'unknown'}."
+                )
+                captured_revision = app.repository.resolve_repository_revision(
+                    revision_id,
+                    publish_root,
+                )
+                if captured_revision is None:
+                    raise RepositoryProviderError(
+                        f"Captured revision {revision_id!r} is no longer available."
+                    )
+                require_captured_working_copy(
+                    app.repository,
+                    captured_revision,
+                    publish_root,
                 )
 
-            if stage not in {"pushed", "pr_opened"}:
-                app._send_step_update(
-                    chat_id,
-                    "Handing off the branch to the configured forge.",
+            if not review_published:
+                assert captured_revision is not None
+                app._send_step_update(chat_id, "Preparing the review handoff.")
+                workspace = (
+                    task_worktree.repository_workspace
+                    if task_worktree is not None
+                    else None
                 )
-                pushed = app.effect_fence.run_authorized(
-                    "forge.publish-branch",
-                    ("forge.publish",),
-                    self.dependencies.push_current_branch,
+                base_revision = (
+                    workspace.base_revision
+                    if workspace is not None
+                    else app.repository.authoritative_base(publish_root).revision
+                )
+                current_job = task_by_id(
+                    CURRENT_TASK_ID.get() or 0,
+                    app.root,
+                    workflow=app.workflow,
+                )
+                provenance = (
+                    evolution_provenance_for_job(current_job)
+                    if current_job is not None
+                    else None
+                )
+                review = app.effect_fence.run_authorized(
+                    "forge.publish-review",
+                    ("forge.review",),
+                    app.review.publish_review,
+                    ReviewSubmission(
+                        title=self.dependencies.feature_title(request),
+                        body="",
+                        revision=captured_revision,
+                        base_revision=base_revision,
+                        evidence=review_evidence(validation_result),
+                        metadata={
+                            "base_name": app._authoritative_branch_name(),
+                            "workspace_id": workspace_id,
+                            "task_id": CURRENT_TASK_ID.get(),
+                            "evolution_provenance": provenance,
+                        },
+                    ),
                     task_id=CURRENT_TASK_ID.get(),
                     root=publish_root,
                 )
-                remote_branch = pushed.branch
-                pushed_remotely = pushed.pushed
-                outputs.append(format_remote_publish_result(pushed))
-                summaries.append(remote_publish_summary(pushed))
-                completed_stages.append("pushed")
-                app._record_current_publish_stage(
-                    "pushed",
-                    commit_sha=commit_sha,
-                    remote_branch=remote_branch,
-                    published_remotely=pushed_remotely,
-                )
+                review_message = format_review_record(review)
+                outputs.append(review_message)
+                summaries.append(review_message)
                 app._send_step_update(
                     chat_id,
-                    (
-                        f"Pushed branch {pushed.branch}."
-                        if pushed.pushed
-                        else f"Kept branch {pushed.branch} locally."
-                    ),
+                    review_step_update(review),
                 )
-                stage = "pushed"
-
-            if stage != "pr_opened":
-                app._send_step_update(chat_id, "Preparing the review handoff.")
-                pr = app.effect_fence.run_authorized(
-                    "forge.create-pull-request",
-                    ("forge.publish",),
-                    create_pull_request_for_current_task,
-                    publish_root,
-                    app.root,
-                    task_id=CURRENT_TASK_ID.get(),
-                    forge=app.forge,
-                    workflow=app.workflow,
-                )
-                outputs.append(format_pr_result(pr))
-                summaries.append(pr_summary(pr))
-                app._send_step_update(chat_id, pr_step_update(pr))
-                if bool(getattr(app.forge, "supports_remote_review", True)) and (
-                    not pr.created or not pr.url
+                review_url = review.identity.url
+                if bool(
+                    getattr(app.review, "supports_remote_review", True)
+                ) and (
+                    not review_url or review.state not in {"open", "published"}
                 ):
-                    detail = (
-                        pr.note
-                        or pr.fallback_url
-                        or "the forge did not return a PR URL"
-                    )
                     failure = (
-                        "Enoch pushed the task branch but could not open its pull request. "
-                        f"The worktree and branch were preserved for retry. {detail}"
+                        "Enoch captured the change but the review provider did not "
+                        "return a review URL. The workspace was preserved for retry."
                     )
                     app._send_step_update(chat_id, failure)
                     return WorkOutcome.failure(
                         "\n\n".join([*outputs, failure]),
                         status="publish_incomplete",
-                        code="pr_creation_failed",
+                        code="review_publication_failed",
                         failure_class="transient",
                         retryable=True,
                         completed_stages=tuple(dict.fromkeys(completed_stages)),
-                        commit_sha=commit_sha,
-                        remote_branch=remote_branch,
+                        commit_sha=revision_id,
+                        remote_branch=workspace_id,
                     )
-                pr_url = pr.url or ""
-                if pr_url:
-                    completed_stages.append("pr_opened")
-                    app._record_current_publish_stage(
-                        "pr_opened",
-                        commit_sha=commit_sha,
-                        remote_branch=remote_branch,
-                        pr_url=pr_url,
-                        published_remotely=pushed_remotely,
+                completed_stages.append("review_published")
+                app._record_current_publish_stage(
+                    "review_published",
+                    commit_sha=revision_id,
+                    remote_branch=workspace_id,
+                    pr_url=review_url,
+                    published_remotely=bool(review_url),
+                )
+                if review_url:
+                    app._update_work_status(
+                        review_step_update(review),
+                        pr_url=review_url,
                     )
-                    app._update_work_status(pr_step_update(pr), pr_url=pr_url)
                     record_current_task_result(
                         "\n\n".join(outputs),
                         app.root,
                         workflow=app.workflow,
                     )
-                    stage = "pr_opened"
-            elif pr_url:
-                outputs.append(f"Pull request already opened: {pr_url}")
+                review_published = True
+                stage = "review_published"
+            elif review_url:
+                outputs.append(f"Review already published: {review_url}")
 
             resident_branch = app._resident_branch_name()
             if task_worktree is not None:
                 app._send_step_update(
                     chat_id,
-                    "Cleaning up the isolated task worktree.",
+                    "Cleaning up the isolated task workspace.",
                 )
                 handoff = app.effect_fence.run_authorized(
-                    "vcs.remove-worktree",
-                    ("vcs.write",),
-                    self.dependencies.remove_task_worktree,
+                    "vcs.remove-workspace",
+                    ("vcs.workspace",),
+                    self.dependencies.remove_repository_task_workspace,
+                    app.repository,
                     app.root,
                     task_worktree,
                     task_id=CURRENT_TASK_ID.get(),
-                    delete_local_branch=pushed_remotely,
-                    force_delete_branch=pushed_remotely,
+                    force=bool(review_url),
                 )
             else:
                 app._send_step_update(
@@ -798,7 +876,7 @@ class TaskWorkflow:
                     ("vcs.write",),
                     app._return_to_resident_after_handoff,
                     task_id=CURRENT_TASK_ID.get(),
-                    published_remotely=pushed_remotely,
+                    published_remotely=bool(review_url),
                 )
             outputs.append(handoff)
             summaries.append(handoff)
@@ -806,12 +884,12 @@ class TaskWorkflow:
                 chat_id,
                 f"Resident checkout remains on {resident_branch}.",
             )
-            if pr_url:
+            if review_url:
                 app._queue_session_sync(
                     chat_id,
                     repository_handoff_note(
-                        remote_branch,
-                        pr_url,
+                        workspace_id,
+                        review_url,
                         resident_branch,
                         app._authoritative_branch_name(),
                     ),
@@ -819,9 +897,12 @@ class TaskWorkflow:
         except (
             VcsError,
             ForgeProviderError,
+            RepositoryProviderError,
+            ReviewProviderError,
+            UnsupportedProviderFeature,
             CapabilityAuthorizationError,
         ) as error:
-            failure = f"Enoch could not publish this edit as a pull request: {error}"
+            failure = f"Enoch could not publish this edit for review: {error}"
             app._send_step_update(chat_id, failure)
             classified = classify_task_failure(failure)
             publish_started = bool(completed_stages)
@@ -838,14 +919,14 @@ class TaskWorkflow:
                 ),
                 retryable=publish_started or classified.retryable,
                 completed_stages=tuple(dict.fromkeys(completed_stages)),
-                commit_sha=commit_sha,
-                remote_branch=remote_branch,
+                commit_sha=revision_id,
+                remote_branch=workspace_id,
             )
 
         action = (
-            f"published edit as pull request: {request}"
-            if pr_url
-            else f"committed edit to local branch: {request}"
+            f"published edit for review: {request}"
+            if review_url
+            else f"captured edit in the repository: {request}"
         )
         app.effect_fence.run(
             record_direct_action,
@@ -868,9 +949,9 @@ class TaskWorkflow:
         return WorkOutcome.completed(
             reply,
             completed_stages=tuple(dict.fromkeys(completed_stages)),
-            commit_sha=commit_sha,
-            remote_branch=remote_branch,
-            pr_url=pr_url,
+            commit_sha=revision_id,
+            remote_branch=workspace_id,
+            pr_url=review_url,
         )
 
     def record_current_publish_stage(
@@ -1166,12 +1247,88 @@ def create_pull_request_for_current_task(
     )
 
 
-def task_by_id(task_id: int, root: Path) -> TaskJob | None:
-    status = task_queue_status(root)
+def task_by_id(
+    task_id: int,
+    root: Path,
+    *,
+    workflow: WorkflowEngine | None = None,
+) -> TaskJob | None:
+    status = workflow.inspect() if workflow is not None else task_queue_status(root)
     jobs = [*status.pending, *status.paused, *status.history]
     if status.running is not None:
         jobs.append(status.running)
     return next((job for job in jobs if job.id == task_id), None)
+
+
+def portable_publish_stage(stage: str) -> str:
+    normalized = stage.strip().lower()
+    if normalized in {"committed", "pushed", "captured"}:
+        return "captured"
+    if normalized in {"pr_opened", "review_published"}:
+        return "review_published"
+    return normalized
+
+
+def format_change_capture(result: ChangeCaptureResult) -> str:
+    return "\n".join(
+        [
+            "Repository change captured.",
+            f"Revision: {result.revision.display}",
+            "Changed files:",
+            *(f"- {path}" for path in result.changed_paths),
+        ]
+    )
+
+
+def require_captured_working_copy(
+    repository: RepositoryProvider,
+    revision: RepositoryRevision,
+    root: Path,
+) -> None:
+    state = repository.inspect_working_copy(root)
+    if state.revision.id != revision.id:
+        raise RepositoryProviderError(
+            "The working copy did not remain on captured revision "
+            f"{revision.display}."
+        )
+    if not state.clean:
+        raise RepositoryProviderError(
+            "The working copy remained dirty after capturing revision "
+            f"{revision.display}."
+        )
+
+
+def review_evidence(validation_result: ImmuneResult | None) -> tuple[str, ...]:
+    if validation_result is None:
+        return ()
+    status = "passed" if validation_result.passed else "failed"
+    summary = str(
+        getattr(getattr(validation_result, "diagnosis", None), "summary", "") or ""
+    ).strip()
+    evidence = f"doctor:{status}"
+    if summary:
+        evidence = f"{evidence} ({summary})"
+    return (evidence,)
+
+
+def format_review_record(review: ReviewRecord) -> str:
+    lines = [
+        f"Review {review.identity.id}",
+        f"Status: {review.state}",
+        f"Title: {review.title}",
+        f"Revision: {review.versions[-1].revision.display}",
+    ]
+    if review.identity.url:
+        lines.append(f"URL: {review.identity.url}")
+    return "\n".join(lines)
+
+
+def review_step_update(review: ReviewRecord) -> str:
+    if review.identity.url and review.state in {"open", "published"}:
+        return f"Review ready: {review.identity.url}"
+    if review.identity.url:
+        return f"Review handoff incomplete: {review.identity.url}"
+    return f"Review recorded as {review.state}."
 
 
 def duplicate_close_comment(keep_number: int | None) -> str:

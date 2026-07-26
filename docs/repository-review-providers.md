@@ -10,6 +10,23 @@ a review identity and a branch identity.
 The original `VersionControlProvider` and `ForgeProvider` remain supported
 during migration.
 
+Ordinary queued tasks now use the semantic contracts end to end:
+
+```text
+authoritative revision
+  -> isolated repository workspace
+  -> runtime edit
+  -> validation
+  -> captured revision
+  -> published review
+  -> workspace cleanup
+```
+
+The task workflow does not stage files, create or inspect a named branch, push
+a branch, parse a pull-request result, or require a review id to match a
+revision or workspace id. Git and GitHub preserve those implementation details
+inside their compatibility adapters.
+
 ## Repository contract
 
 `RepositoryProvider` operates on opaque `RepositoryRevision` values and typed
@@ -116,14 +133,27 @@ method returns an abbreviated Git hash.
 `as_review_provider` similarly wraps `ForgeProvider` in
 `LegacyForgeReviewAdapter`. Pull-request numbers, branch discovery, and legacy
 result shapes remain private to the adapter; callers use typed review requests
-and opaque identities.
+and opaque identities. For a legacy remote forge, the adapter publishes the
+captured revision before creating its pull request.
 
 These adapters provide coexistence, not reverse emulation. A branchless
 repository is not forced to implement the old branch API, and a review service
 without pull requests is not forced to manufacture PR fields. Core task,
-publication, update, and evolution flows will move to the semantic contracts
-incrementally; until a flow migrates, its registry-selected provider must still
-satisfy the original protocol.
+publication, update, and evolution flows move to the semantic contracts
+incrementally. Ordinary queued task execution and publication have migrated.
+Existing-branch maintenance, `/pr`, update, and evolution
+promotion/adoption still use legacy surfaces and therefore require the
+corresponding legacy operations.
+
+The provider registry accepts either `RepositoryProvider` or
+`VersionControlProvider` for `vcs`, and either `ReviewProvider` or
+`ForgeProvider` for `forge`. This lets a branchless repository and an
+independent review service load from normal provider entry points and instance
+configuration without implementing compatibility methods they do not support.
+
+Queued tasks preflight `isolated_workspaces` and `immutable_revisions`, then
+authorize `vcs.inspect`, `vcs.authoritative`, `vcs.workspace`, `vcs.capture`,
+and `forge.review` before creating a workspace or invoking the runtime.
 
 ## Conformance
 
@@ -134,4 +164,7 @@ version updates, close, and landing behavior.
 
 Both reference fixtures run these suites in provider-kit CI. Git's repository
 adapter and GitHub's review adapter also have integration tests, preserving
-existing behavior while the application migrates.
+existing behavior while the application migrates. Enoch's application suite
+also loads both fixtures through the provider registry and executes a complete
+queued task without a Git repository, staging index, named branch, or
+pull-request identity.

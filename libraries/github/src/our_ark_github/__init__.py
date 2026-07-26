@@ -9,12 +9,28 @@ import subprocess
 from typing import Any
 
 from our_ark_github import workflow
-from our_ark_provider_kit import ForgeProviderError, ProviderHealth, agent_context
+from our_ark_provider_kit import (
+    ForgeProviderError,
+    ProviderCapabilities,
+    ProviderHealth,
+    agent_context,
+)
 
 
 class GithubForgeProvider:
     name = "github"
     provider_kind = "forge"
+    capabilities = ProviderCapabilities(
+        provider_kind="forge",
+        capabilities=frozenset(
+            {
+                "forge.read",
+                "forge.publish",
+                "forge.maintain",
+                "forge.merge",
+            }
+        ),
+    )
 
     def __init__(self, gh: str | None = None, root: Path | None = None) -> None:
         self.gh = gh or shutil.which("gh")
@@ -28,6 +44,9 @@ class GithubForgeProvider:
 
     def push_current_branch(self, **kwargs):
         return workflow.push_current_branch(**kwargs)
+
+    def publish_revision_for_review(self, **kwargs):
+        return workflow.publish_revision_for_review(**kwargs)
 
     def close_pull_request(self, number: int, *, root=None, comment=None):
         return workflow.close_pull_request(number, root=root, comment=comment)

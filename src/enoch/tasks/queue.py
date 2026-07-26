@@ -960,7 +960,14 @@ def record_task_publish_state(
     pr_url: str = "",
     published_remotely: bool | None = None,
 ) -> TaskJob | None:
-    allowed_stages = {"validated", "committed", "pushed", "pr_opened"}
+    allowed_stages = {
+        "validated",
+        "committed",
+        "pushed",
+        "pr_opened",
+        "captured",
+        "review_published",
+    }
     if stage not in allowed_stages:
         raise ValueError(f"Unknown publish stage {stage!r}.")
     with _queue_transaction(root):

@@ -5,6 +5,13 @@ from hashlib import sha256
 from pathlib import Path
 import re
 
+from enoch.providers.contracts import (
+    RepositoryProvider,
+    RepositoryProviderError,
+    RepositoryWorkspace,
+    WorkspaceRequest,
+    require_repository_features,
+)
 from enoch.vcs_tools import (
     VcsError,
     branch_exists,
@@ -23,6 +30,7 @@ class TaskWorktree:
     path: Path
     branch: str
     created: bool
+    repository_workspace: RepositoryWorkspace | None = None
 
 
 @dataclass(frozen=True)
@@ -167,6 +175,103 @@ def prepare_task_worktree(
         create_branch=not exists,
     )
     return TaskWorktree(task_id=task_id, path=path, branch=branch, created=True)
+
+
+def prepare_repository_task_workspace(
+    repository: RepositoryProvider,
+    control_root: Path,
+    task_id: int,
+    request: str,
+    *,
+    resident_branch: str = "",
+    created_at: str = "",
+    existing_path: str = "",
+    existing_workspace_id: str = "",
+) -> TaskWorktree:
+    """Prepare one task workspace without assuming branches or a staging index."""
+
+    require_repository_features(
+        repository,
+        "isolated_workspaces",
+        "immutable_revisions",
+    )
+    path = (
+        Path(existing_path).expanduser().resolve()
+        if existing_path
+        else task_worktree_path(control_root, task_id)
+    )
+    registered = {
+        workspace.path.resolve(): workspace
+        for workspace in repository.list_repository_workspaces(control_root)
+    }
+    if existing := registered.get(path):
+        if existing_workspace_id and existing.id != existing_workspace_id:
+            raise RepositoryProviderError(
+                f"Task #{task_id} workspace is {existing.id}, "
+                f"expected {existing_workspace_id}."
+            )
+        return TaskWorktree(
+            task_id=task_id,
+            path=existing.path,
+            branch=existing.id,
+            created=False,
+            repository_workspace=existing,
+        )
+    if path.exists() and any(path.iterdir()):
+        raise RepositoryProviderError(
+            f"Task #{task_id} workspace path is not empty: {path}"
+        )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    base = repository.authoritative_base(control_root, refresh=True)
+    workspace_id = existing_workspace_id or task_branch_name(
+        task_id,
+        request,
+        resident_branch=resident_branch,
+        created_at=created_at,
+    )
+    workspace = repository.create_repository_workspace(
+        WorkspaceRequest(
+            path=path,
+            base_revision=base.revision,
+            workspace_id=workspace_id,
+            metadata={"authoritative_base": base.name},
+        ),
+        control_root,
+    )
+    return TaskWorktree(
+        task_id=task_id,
+        path=workspace.path,
+        branch=workspace.id,
+        created=True,
+        repository_workspace=workspace,
+    )
+
+
+def remove_repository_task_workspace(
+    repository: RepositoryProvider,
+    control_root: Path,
+    worktree: TaskWorktree,
+    *,
+    force: bool = False,
+) -> str:
+    workspace = worktree.repository_workspace
+    if workspace is None:
+        workspace = next(
+            (
+                candidate
+                for candidate in repository.list_repository_workspaces(control_root)
+                if candidate.path.resolve() == worktree.path.resolve()
+            ),
+            None,
+        )
+    if workspace is None:
+        return f"Task #{worktree.task_id} workspace was already removed."
+    repository.remove_repository_workspace(
+        workspace,
+        control_root,
+        force=force,
+    )
+    return f"Removed task #{worktree.task_id} workspace {workspace.id}."
 
 
 def prepare_existing_branch_worktree(

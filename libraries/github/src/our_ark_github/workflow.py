@@ -160,6 +160,44 @@ def push_current_branch(
     )
 
 
+def publish_revision_for_review(
+    root: Path | None = None,
+    remote: str = DEFAULT_REMOTE,
+    base_branch: str = DEFAULT_BRANCH,
+) -> RemotePublishResult:
+    """Publish HEAD once, while allowing an idempotent review retry."""
+
+    try:
+        return push_current_branch(
+            root=root,
+            remote=remote,
+            base_branch=base_branch,
+        )
+    except PublishError as error:
+        if "has no local commits ahead" not in str(error):
+            raise
+        branch = current_branch(root)
+        local_revision = _git_or_raise(
+            ["rev-parse", "HEAD"],
+            root,
+            "Could not inspect the local review revision.",
+        )
+        remote_revision = _git_or_raise(
+            ["rev-parse", f"{remote}/{branch}"],
+            root,
+            f"Could not inspect {remote}/{branch}.",
+        )
+        if local_revision != remote_revision:
+            raise
+        return RemotePublishResult(
+            branch=branch,
+            remote=remote,
+            pushed=False,
+            ahead_count=0,
+            compare_url=_compare_url(remote, base_branch, branch, root),
+        )
+
+
 def create_pull_request(
     title: str | None = None,
     body: str | None = None,

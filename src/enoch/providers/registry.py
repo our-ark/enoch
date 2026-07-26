@@ -11,6 +11,8 @@ from enoch.providers.contracts import (
     AgentRuntime,
     ChatProvider,
     ForgeProvider,
+    RepositoryProvider,
+    ReviewProvider,
     ServiceProvider,
     VersionControlProvider,
 )
@@ -33,12 +35,12 @@ _REGISTERED: dict[tuple[ProviderKind, str], ProviderFactory] = {}
 _DEFAULTS: dict[ProviderKind, str] = {}
 _SETUP_HANDLERS: dict[tuple[ProviderKind, str], ProviderSetup] = {}
 _LOADED_PLUGIN_MODULES: set[str] = set()
-_PROVIDER_CONTRACTS = {
-    "chat": ChatProvider,
-    "runtime": AgentRuntime,
-    "vcs": VersionControlProvider,
-    "forge": ForgeProvider,
-    "service": ServiceProvider,
+_PROVIDER_CONTRACTS: dict[str, tuple[type, ...]] = {
+    "chat": (ChatProvider,),
+    "runtime": (AgentRuntime,),
+    "vcs": (RepositoryProvider, VersionControlProvider),
+    "forge": (ReviewProvider, ForgeProvider),
+    "service": (ServiceProvider,),
 }
 
 
@@ -140,12 +142,17 @@ def load_provider(
         raise ProviderError(
             f"Provider {kind}.{selected} returned provider_kind={actual_kind or 'missing'}."
         )
-    contract = _PROVIDER_CONTRACTS[kind]
-    if not isinstance(provider, contract):
-        missing = _missing_contract_members(provider, contract)
-        detail = f" Missing: {', '.join(missing)}." if missing else ""
+    contracts = _PROVIDER_CONTRACTS[kind]
+    if not isinstance(provider, contracts):
+        missing_groups = tuple(
+            _missing_contract_members(provider, contract)
+            for contract in contracts
+        )
+        best_missing = min(missing_groups, key=len, default=())
+        detail = f" Missing: {', '.join(best_missing)}." if best_missing else ""
+        names = " or ".join(contract.__name__ for contract in contracts)
         raise ProviderError(
-            f"Provider {kind}.{selected} does not satisfy {contract.__name__}.{detail}"
+            f"Provider {kind}.{selected} does not satisfy {names}.{detail}"
         )
     return provider
 

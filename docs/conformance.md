@@ -107,3 +107,9 @@ The included `BranchlessRepositoryFixture` and `IndependentReviewFixture`
 prove that the portable contracts do not require staging, branches, or
 pull-request identities. See
 [`repository-review-providers.md`](repository-review-providers.md).
+
+The core application suite also registers those fixtures as the selected
+`vcs` and `forge` providers, executes a queued task, captures an immutable
+revision, publishes an independently identified review, and removes the
+workspace. This integration test catches workflow assumptions that protocol
+conformance alone cannot detect.

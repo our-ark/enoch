@@ -60,9 +60,9 @@ class EnochTaskQueueTests(unittest.TestCase):
                 running.id,
                 "worker-one",
                 root,
-                stage="pr_opened",
+                stage="review_published",
                 commit_sha="d58edcc",
-                pr_url="https://github.com/our-ark/enoch/pull/19",
+                pr_url="https://reviews.example/change-19",
                 published_remotely=True,
             )
             complete_task(
@@ -90,7 +90,7 @@ class EnochTaskQueueTests(unittest.TestCase):
 
         self.assertEqual([event.task_id for event in outcomes], [first.id, second.id])
         self.assertEqual([event.event for event in outcomes], ["regressed", "completed"])
-        self.assertEqual(published_event.publish_stage, "pr_opened")
+        self.assertEqual(published_event.publish_stage, "review_published")
         self.assertEqual(published_event.commit_sha, "d58edcc")
         self.assertEqual(
             published_event.changed_files,

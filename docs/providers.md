@@ -8,8 +8,8 @@ core agent into a new environment:
 | --- | --- | --- |
 | `chat` | `telegram` | Receive normalized chat events and deliver messages |
 | `runtime` | `codex` | Answer, edit, resume sessions, report models, and cancel work |
-| `vcs` | `git` | Run local version-control operations |
-| `forge` | local fallback; `github` reference | Retain local branches or create, inspect, list, close, and merge pull requests |
+| `vcs` | `git` | Manage repository revisions, working copies, and isolated workspaces |
+| `forge` | local fallback; `github` reference | Publish and govern review units; retain local changes when remote review is unavailable |
 | `service` | `launchd` / `systemd` | Install, control, inspect, and restart the agent process |
 
 The active providers are configured in the private instance file
@@ -121,6 +121,12 @@ A provider package registers factories with Python package entry points:
 "service.container" = "enoch_container:create_provider"
 ```
 
+The `vcs` entry point may return either the semantic `RepositoryProvider` or
+the legacy `VersionControlProvider`. The `forge` entry point may similarly
+return `ReviewProvider` or legacy `ForgeProvider`. New integrations should
+prefer the semantic contracts; adapters keep Git- and pull-request-shaped
+providers compatible during migration.
+
 Factories may accept the Enoch repository root and return an implementation of
 the corresponding protocol from `enoch.providers`:
 
@@ -209,6 +215,11 @@ The versioned semantic repository and review contracts add granular
 Their typed requests, optional feature discovery, compatibility adapters, and
 branchless fixtures are documented in
 [`repository-review-providers.md`](repository-review-providers.md).
+
+Ordinary queued tasks require `runtime.execute`, `vcs.inspect`,
+`vcs.authoritative`, `vcs.workspace`, `vcs.capture`, and `forge.review`.
+Enoch verifies those grants and the required repository features before
+creating the task workspace or invoking the runtime.
 
 Providers that predate this contract receive the complete legacy capability set
 for their provider kind, preserving installation compatibility. Once a

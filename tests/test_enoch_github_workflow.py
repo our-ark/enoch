@@ -22,6 +22,7 @@ from our_ark_github.workflow import (
     merge_pull_request,
     parse_pull_request_target,
     prepare_local_publish,
+    publish_revision_for_review,
     push_current_branch,
 )
 from enoch.immune import DoctorDiagnosis
@@ -181,6 +182,39 @@ class EnochGithubWorkflowTests(unittest.TestCase):
 
         with self.assertRaisesRegex(PublishError, "no local commits ahead"):
             push_current_branch(root=ROOT)
+
+    @patch(
+        "our_ark_github.workflow._compare_url",
+        return_value="https://github.com/our-ark/enoch/compare/main...feature/enoch",
+    )
+    @patch(
+        "our_ark_github.workflow._git_or_raise",
+        side_effect=["revision-1", "revision-1"],
+    )
+    @patch("our_ark_github.workflow.current_branch", return_value="feature/enoch")
+    @patch(
+        "our_ark_github.workflow.push_current_branch",
+        side_effect=PublishError(
+            "feature/enoch has no local commits ahead of origin/feature/enoch."
+        ),
+    )
+    def test_review_publish_retry_accepts_revision_already_on_remote(
+        self,
+        push: MagicMock,
+        _current_branch: MagicMock,
+        inspect_revision: MagicMock,
+        _compare_url: MagicMock,
+    ) -> None:
+        result = publish_revision_for_review(root=ROOT)
+
+        push.assert_called_once_with(
+            root=ROOT,
+            remote="origin",
+            base_branch="main",
+        )
+        self.assertFalse(result.pushed)
+        self.assertEqual(result.branch, "feature/enoch")
+        self.assertEqual(inspect_revision.call_count, 2)
 
     @patch("our_ark_github.workflow.ensure_clean_worktree")
     @patch("our_ark_github.workflow.run_git")

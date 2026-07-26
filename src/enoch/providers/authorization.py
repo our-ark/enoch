@@ -37,8 +37,15 @@ DEFAULT_PROVIDER_CAPABILITIES = {
 }
 
 DEFAULT_TASK_REQUIREMENTS = TaskRequirements(
-    capabilities=("runtime.execute", "vcs.write", "forge.publish"),
-    reason="Execute, validate, and publish a tracked repository task.",
+    capabilities=(
+        "runtime.execute",
+        "vcs.inspect",
+        "vcs.authoritative",
+        "vcs.workspace",
+        "vcs.capture",
+        "forge.review",
+    ),
+    reason="Execute, validate, capture, and review a tracked repository task.",
 )
 
 

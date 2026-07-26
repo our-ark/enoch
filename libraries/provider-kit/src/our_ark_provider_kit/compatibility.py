@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from our_ark_provider_kit.contracts import (
     AuthoritativeBase,
@@ -58,6 +58,10 @@ class LegacyVersionControlRepositoryAdapter:
     def __init__(self, provider: Any) -> None:
         self.legacy = provider
         self.name = str(getattr(provider, "name", "legacy-vcs")).strip() or "legacy-vcs"
+        self.capabilities = _combined_capabilities(
+            self.capabilities,
+            getattr(provider, "capabilities", None),
+        )
 
     def inspect_working_copy(
         self,
@@ -140,15 +144,20 @@ class LegacyVersionControlRepositoryAdapter:
         root: Path | None = None,
     ) -> tuple[RepositoryWorkspace, ...]:
         revision = self._revision(self.legacy.current_revision(root))
-        return tuple(
-            RepositoryWorkspace(
-                id=path.name or str(path),
-                path=path,
-                base_revision=revision,
-                current_revision=revision,
+        workspaces = []
+        for path in self.legacy.workspace_paths(root):
+            current_id = str(self.legacy.current_revision(path)).strip()
+            current = self._revision(current_id or revision.id)
+            branch = str(self.legacy.current_branch(path)).strip()
+            workspaces.append(
+                RepositoryWorkspace(
+                    id=branch or path.name or str(path),
+                    path=path,
+                    base_revision=current,
+                    current_revision=current,
+                )
             )
-            for path in self.legacy.workspace_paths(root)
-        )
+        return tuple(workspaces)
 
     def create_repository_workspace(
         self,
@@ -156,12 +165,13 @@ class LegacyVersionControlRepositoryAdapter:
         root: Path | None = None,
     ) -> RepositoryWorkspace:
         workspace_id = request.workspace_id or f"workspace-{request.path.name}"
+        exists = bool(self.legacy.branch_exists(workspace_id, root))
         self.legacy.create_workspace(
             request.path,
             workspace_id,
             root,
-            start_point=request.base_revision.id,
-            create_branch=True,
+            start_point="" if exists else request.base_revision.id,
+            create_branch=not exists,
         )
         current_id = str(self.legacy.current_revision(request.path)).strip()
         current = self._revision(current_id or request.base_revision.id)
@@ -179,10 +189,17 @@ class LegacyVersionControlRepositoryAdapter:
         *,
         force: bool = False,
     ) -> None:
+        branch = workspace.id if self.repository_features.named_branches else ""
         if force:
             self.legacy.remove_workspace(workspace.path, root, force=True)
         else:
             self.legacy.remove_workspace(workspace.path, root)
+        if (
+            force
+            and branch
+            and bool(self.legacy.branch_exists(branch, root))
+        ):
+            self.legacy.delete_branch(branch, root, force=True)
 
     @staticmethod
     def _revision(value: object, *, display: str = "") -> RepositoryRevision:
@@ -214,9 +231,22 @@ class LegacyForgeReviewAdapter:
         mutable_versions=True,
     )
 
-    def __init__(self, provider: Any) -> None:
+    def __init__(
+        self,
+        provider: Any,
+        *,
+        publish_revision: Callable[[Path | None], Any] | None = None,
+    ) -> None:
         self.legacy = provider
         self.name = str(getattr(provider, "name", "legacy-forge")).strip() or "legacy-forge"
+        self.capabilities = _combined_capabilities(
+            self.capabilities,
+            getattr(provider, "capabilities", None),
+        )
+        self.supports_remote_review = bool(
+            getattr(provider, "supports_remote_review", True)
+        )
+        self._publish_revision = publish_revision
 
     def publish_review(
         self,
@@ -225,6 +255,17 @@ class LegacyForgeReviewAdapter:
     ) -> ReviewRecord:
         if request.dependencies:
             require_review_features(self, "stacked-changes")
+        publish_revision = getattr(
+            self.legacy,
+            "publish_revision_for_review",
+            None,
+        )
+        if not callable(publish_revision):
+            publish_revision = getattr(self.legacy, "push_current_branch", None)
+        if callable(publish_revision):
+            publish_revision(root=root)
+        elif self._publish_revision is not None:
+            self._publish_revision(root)
         options = {
             "title": request.title,
             "body": request.body,
@@ -234,6 +275,9 @@ class LegacyForgeReviewAdapter:
         base_name = str(request.metadata.get("base_name") or "").strip()
         if base_name:
             options["base_branch"] = base_name
+        provenance = request.metadata.get("evolution_provenance")
+        if provenance is not None:
+            options["evolution_provenance"] = provenance
         result = self.legacy.create_pull_request(**options)
         url = str(getattr(result, "url", "") or getattr(result, "fallback_url", "") or "").strip()
         review_id = url or str(request.metadata.get("legacy_reference") or "").strip()
@@ -401,7 +445,37 @@ def as_repository_provider(provider: Any) -> RepositoryProvider:
     return LegacyVersionControlRepositoryAdapter(provider)
 
 
-def as_review_provider(provider: Any) -> ReviewProvider:
+def as_review_provider(
+    provider: Any,
+    *,
+    publish_revision: Callable[[Path | None], Any] | None = None,
+) -> ReviewProvider:
     if isinstance(provider, ReviewProvider):
         return provider
-    return LegacyForgeReviewAdapter(provider)
+    return LegacyForgeReviewAdapter(
+        provider,
+        publish_revision=publish_revision,
+    )
+
+
+def _combined_capabilities(
+    semantic: ProviderCapabilities,
+    legacy: object,
+) -> ProviderCapabilities:
+    if callable(legacy):
+        legacy = legacy()
+    if isinstance(legacy, ProviderCapabilities):
+        if legacy.provider_kind != semantic.provider_kind:
+            raise ValueError(
+                f"Cannot adapt {legacy.provider_kind} capabilities as "
+                f"{semantic.provider_kind}."
+            )
+        declared = legacy.capabilities
+    elif legacy is None:
+        declared = frozenset()
+    else:
+        declared = frozenset(str(item) for item in legacy)
+    return ProviderCapabilities(
+        provider_kind=semantic.provider_kind,
+        capabilities=frozenset((*semantic.capabilities, *declared)),
+    )

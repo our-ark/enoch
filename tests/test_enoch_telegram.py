@@ -34,6 +34,11 @@ from enoch.evolution.core import (
 from enoch.evolution.sources.experience import load_experience_records, record_task_experience
 from enoch.evolution.events import load_evolve_events
 from enoch.git_tools import GitError
+from our_ark_provider_kit import (
+    BranchlessRepositoryFixture,
+    IndependentReviewFixture,
+    WorkspaceRequest,
+)
 from our_ark_github.workflow import (
     LocalPublishResult,
     PublishError,
@@ -4678,24 +4683,27 @@ class EnochTelegramTests(unittest.TestCase):
             context="Use the earlier README scope decision.",
             source="chat-snapshot",
         )
+        repository = BranchlessRepositoryFixture()
+        review = IndependentReviewFixture()
+        act_in_session.side_effect = lambda *_args, **_kwargs: (
+            repository.mark_changed("README.md") or "Updated README."
+        )
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochApplication(load_identity(), root, client)
+            bot = EnochApplication(
+                load_identity(),
+                root,
+                client,
+                repository=repository,
+                review=review,
+            )
 
             started, start_worker = self._capture_direct_work_worker(bot)
-            with patch(
-                "enoch.app.core.prepare_task_worktree",
-                return_value=TaskWorktree(1, root, "enoch/readme", True),
-            ) as prepare_task_worktree:
-                with patch(
-                    "enoch.app.core.remove_task_worktree",
-                    return_value="Removed task #1 worktree.",
-                ):
-                    with start_worker:
-                        _handle_update(bot, _message_update(chat_id=42, text="/do Update README directly."))
-                    self.assertEqual(len(started), 1)
-                    bot._run_direct_task_job(started[0][0], session_key=started[0][1])
+            with start_worker:
+                _handle_update(bot, _message_update(chat_id=42, text="/do Update README directly."))
+            self.assertEqual(len(started), 1)
+            bot._run_direct_task_job(started[0][0], session_key=started[0][1])
             status = task_queue_status(root)
             events = load_task_events(root, task_id=1)
 
@@ -4706,11 +4714,12 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("Conversation context snapshot:", act_in_session.call_args.args[1])
         self.assertIn("Use the earlier README scope decision.", act_in_session.call_args.args[1])
         self.assertNotIn("Edit phase:", act_in_session.call_args.args[1])
-        prepare_local_publish.assert_called_once()
-        push_current_branch.assert_called_once_with(root=root)
-        create_pull_request.assert_called_once_with(root=root)
-        task_branch_base.assert_called_once_with(root)
-        prepare_task_worktree.assert_called_once()
+        prepare_local_publish.assert_not_called()
+        push_current_branch.assert_not_called()
+        create_pull_request.assert_not_called()
+        task_branch_base.assert_not_called()
+        self.assertEqual(repository.workspaces, {})
+        self.assertEqual(len(review.reviews), 1)
         self.assertEqual(len(client.sent), 2)
         self.assertIn("Task #1", client.sent[0][1])
         self.assertIn("Use the earlier README scope decision.", client.sent[0][1])
@@ -4721,7 +4730,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual([event.event for event in events], ["created", "started", "completed"])
         self.assertEqual([event.event_actor for event in events], ["human", "system", "agent"])
         self.assertEqual(status.history[-1].context, "Use the earlier README scope decision.")
-        self.assertIn("https://github.com/our-ark/enoch/pull/2", status.history[-1].result)
+        self.assertIn("https://reviews.invalid/review-1", status.history[-1].result)
 
     @patch("enoch.app.core.run_immune_system")
     @patch("enoch.app.core.changed_files", return_value=["README.md"])
@@ -4736,10 +4745,22 @@ class EnochTelegramTests(unittest.TestCase):
         run_immune_system: MagicMock,
     ) -> None:
         run_immune_system.return_value = _doctor_result()
+        repository = BranchlessRepositoryFixture()
+        review = IndependentReviewFixture()
+        _act_in_session.side_effect = lambda *_args, **_kwargs: (
+            repository.mark_changed("README.md")
+            or "The preserved README edit already satisfies the request."
+        )
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochApplication(load_identity(), root, client)
+            bot = EnochApplication(
+                load_identity(),
+                root,
+                client,
+                repository=repository,
+                review=review,
+            )
             task_worktree = TaskWorktree(
                 1,
                 root,
@@ -5068,10 +5089,34 @@ class EnochTelegramTests(unittest.TestCase):
             url="https://github.com/our-ark/enoch/pull/2",
             fallback_url="https://github.com/our-ark/enoch/compare/main...enoch/readme?expand=1",
         )
+        repository = BranchlessRepositoryFixture()
+        review = IndependentReviewFixture()
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochApplication(load_identity(), root, client)
+            semantic_workspace = repository.create_repository_workspace(
+                WorkspaceRequest(
+                    path=root / "task-1",
+                    base_revision=repository.authoritative_base(root).revision,
+                    workspace_id="workspace-1",
+                ),
+                root,
+            )
+            task_worktree = TaskWorktree(
+                1,
+                semantic_workspace.path,
+                semantic_workspace.id,
+                True,
+                semantic_workspace,
+            )
+            repository.mark_changed("README.md")
+            bot = EnochApplication(
+                load_identity(),
+                root,
+                client,
+                repository=repository,
+                review=review,
+            )
             bot._resident_branch = "agent/enoch-gary"
             _handle_update(bot, _message_update(chat_id=42, text="/task Update README directly."))
             job = begin_next_task(root)
@@ -5086,15 +5131,25 @@ class EnochTelegramTests(unittest.TestCase):
             )
             token = _CURRENT_WORK_STATUS.set(status_message)
             try:
-                bot._publish_feature_pr(42, job.text, ("README.md",))
+                bot._publish_feature_pr(
+                    42,
+                    job.text,
+                    ("README.md",),
+                    work_root=task_worktree.path,
+                    task_worktree=task_worktree,
+                    validation_result=_doctor_result(),
+                )
             finally:
                 _CURRENT_WORK_STATUS.reset(token)
             status = task_queue_status(root)
 
         self.assertIsNotNone(status.running)
-        _switch_branch.assert_called_once_with("agent/enoch-gary", root)
-        self.assertIn("https://github.com/our-ark/enoch/pull/2", status.running.result)
-        self.assertIn("Enoch opened a pull request.", status.running.result)
+        _switch_branch.assert_not_called()
+        self.assertIn("https://reviews.invalid/review-1", status.running.result)
+        self.assertIn("Review review-1", status.running.result)
+        prepare_local_publish.assert_not_called()
+        push_current_branch.assert_not_called()
+        create_pull_request.assert_not_called()
 
     @patch("enoch.app.core.close_pull_request")
     @patch("enoch.app.core.ensure_long_term_memory")
