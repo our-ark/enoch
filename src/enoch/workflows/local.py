@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from contextlib import nullcontext
 from pathlib import Path
-from typing import Any
 
 from enoch.app.epoch import DaemonEpoch, daemon_epoch_guard
 from enoch.providers.contracts import ConversationId, MessageId, RuntimeResult
@@ -58,7 +57,24 @@ class LocalWorkflowEngine:
         request: str,
         *,
         mode: EnqueueMode = "queued",
-        **options: Any,
+        context: str = "",
+        context_source: str = "",
+        source: str = "",
+        initiated_by: str = "human",
+        event_actor: str = "human",
+        trigger: str = "",
+        candidate_id: str = "",
+        parent_task_id: int | None = None,
+        evidence_source: str = "",
+        signal_actor: str = "",
+        candidate_actor: str = "",
+        approval_actor: str = "",
+        parent_candidate_id: str = "",
+        source_task_id: int | None = None,
+        max_attempts: int = 3,
+        timeout_seconds: int | None = None,
+        required_capabilities: tuple[str, ...] = (),
+        idempotency_key: str = "",
     ) -> TaskJob:
         function = {
             "queued": enqueue_task,
@@ -67,8 +83,36 @@ class LocalWorkflowEngine:
         }.get(mode)
         if function is None:
             raise ValueError(f"Unknown workflow enqueue mode {mode!r}.")
+        resolved_source = source or (
+            "task" if mode == "queued" else "chat-task"
+        )
+        resolved_trigger = trigger or (
+            "/task" if mode == "queued" else "/do"
+        )
         with self._mutation():
-            return function(conversation_id, request, self.root, **options)
+            return function(
+                conversation_id,
+                request,
+                self.root,
+                context=context,
+                context_source=context_source,
+                source=resolved_source,
+                initiated_by=initiated_by,
+                event_actor=event_actor,
+                trigger=resolved_trigger,
+                candidate_id=candidate_id,
+                parent_task_id=parent_task_id,
+                evidence_source=evidence_source,
+                signal_actor=signal_actor,
+                candidate_actor=candidate_actor,
+                approval_actor=approval_actor,
+                parent_candidate_id=parent_candidate_id,
+                source_task_id=source_task_id,
+                max_attempts=max_attempts,
+                timeout_seconds=timeout_seconds,
+                required_capabilities=required_capabilities,
+                idempotency_key=idempotency_key,
+            )
 
     def start_next(self) -> TaskJob | None:
         with self._mutation():
@@ -185,38 +229,118 @@ class LocalWorkflowEngine:
             None,
         )
 
-    def retry_running(self, task_id: int, **options: Any) -> TaskJob | None:
+    def retry_running(
+        self,
+        task_id: int,
+        *,
+        result: str,
+        failure_code: str,
+        failure_class: str,
+        worker_id: str = "",
+        delay_seconds: int = 0,
+        event_actor: str = "agent",
+        trigger: str = "task-runner",
+    ) -> TaskJob | None:
         with self._mutation():
-            return retry_running_task(task_id, self.root, **options)
+            return retry_running_task(
+                task_id,
+                self.root,
+                result,
+                failure_code=failure_code,
+                failure_class=failure_class,
+                worker_id=worker_id,
+                delay_seconds=delay_seconds,
+                event_actor=event_actor,
+                trigger=trigger,
+            )
 
-    def retry_failed(self, task_id: int, **options: Any) -> TaskJob:
+    def retry_failed(
+        self,
+        task_id: int,
+        *,
+        reconciled_result: str = "",
+        event_actor: str = "human",
+        trigger: str = "/task retry",
+    ) -> TaskJob:
         with self._mutation():
-            return retry_failed_task(task_id, self.root, **options)
+            return retry_failed_task(
+                task_id,
+                self.root,
+                reconciled_result=reconciled_result,
+                event_actor=event_actor,
+                trigger=trigger,
+            )
 
-    def pause(self, task_id: int, **options: Any) -> TaskJob | None:
+    def pause(
+        self,
+        task_id: int,
+        *,
+        result: str = "",
+        event_actor: str = "system",
+        trigger: str = "runtime-unavailable",
+        worker_id: str = "",
+    ) -> TaskJob | None:
         with self._mutation():
-            return pause_task(task_id, self.root, **options)
+            return pause_task(
+                task_id,
+                self.root,
+                result,
+                event_actor=event_actor,
+                trigger=trigger,
+                worker_id=worker_id,
+            )
 
-    def resume(self, **options: Any) -> tuple[TaskJob, ...]:
+    def resume(
+        self,
+        *,
+        task_id: int | None = None,
+        event_actor: str = "human",
+        trigger: str = "/task resume",
+    ) -> tuple[TaskJob, ...]:
         with self._mutation():
-            return resume_paused_tasks(self.root, **options)
+            return resume_paused_tasks(
+                self.root,
+                task_id=task_id,
+                event_actor=event_actor,
+                trigger=trigger,
+            )
 
-    def regress(self, task_id: int, **options: Any) -> TaskJob | None:
+    def regress(
+        self,
+        task_id: int,
+        *,
+        result: str = "",
+        event_actor: str = "agent",
+        trigger: str = "agent-regression-signal",
+    ) -> TaskJob | None:
         with self._mutation():
-            return regress_task(task_id, self.root, **options)
+            return regress_task(
+                task_id,
+                self.root,
+                result,
+                event_actor=event_actor,
+                trigger=trigger,
+            )
 
     def resolve_regression(
         self,
         task_id: int,
         resolution: str,
-        **options: Any,
+        *,
+        result: str = "",
+        event_actor: str = "agent",
+        trigger: str = "agent-regression-signal",
+        related_task_id: int | None = None,
     ) -> TaskJob | None:
         with self._mutation():
             return resolve_regressed_task(
                 task_id,
                 resolution,
                 self.root,
-                **options,
+                result,
+                event_actor=event_actor,
+                trigger=trigger,
+                related_task_id=related_task_id,
             )
 
     def record_status_message(self, task_id: int, message_id: MessageId) -> None:
@@ -277,7 +401,12 @@ class LocalWorkflowEngine:
         self,
         task_id: int,
         worker_id: str,
-        **state: Any,
+        *,
+        stage: str,
+        commit_sha: str = "",
+        remote_branch: str = "",
+        pr_url: str = "",
+        published_remotely: bool | None = None,
     ) -> TaskJob | None:
         """Compatibility adapter for workflow API v1 callers."""
 
@@ -285,15 +414,11 @@ class LocalWorkflowEngine:
             task_id,
             worker_id,
             TaskPublicationState(
-                stage=str(state.get("stage") or ""),
-                revision_id=str(state.get("commit_sha") or ""),
-                workspace_id=str(state.get("remote_branch") or ""),
-                review_url=str(state.get("pr_url") or ""),
-                review_published=(
-                    bool(state["published_remotely"])
-                    if state.get("published_remotely") is not None
-                    else None
-                ),
+                stage=stage,
+                revision_id=commit_sha,
+                workspace_id=remote_branch,
+                review_url=pr_url,
+                review_published=published_remotely,
             ),
         )
 

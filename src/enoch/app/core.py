@@ -210,7 +210,10 @@ from enoch.providers.contracts import (
     MessageId,
     RepositoryProvider,
     RepositoryProviderError,
+    ReviewIdentity,
+    ReviewLandRequest,
     ReviewProvider,
+    ReviewProviderError,
     RuntimeExecutionControl,
     normalize_message_id,
 )
@@ -220,7 +223,6 @@ from enoch.providers.authorization import (
     CapabilityAuthorizer,
     CompositeAuthorizationPolicy,
 )
-from enoch.providers.forge import FunctionForgeProvider
 from enoch.providers import as_repository_provider, as_review_provider
 from enoch.providers.registry import ProviderError, load_provider
 from enoch.providers.runtime import (
@@ -272,7 +274,7 @@ from enoch.tasks.worktree import (
     TaskWorktree,
     TaskWorktreeState,
     list_task_worktrees,
-    prepare_existing_branch_worktree,
+    prepare_existing_revision_workspace,
     prepare_task_worktree,
     remove_managed_task_worktree,
     remove_task_worktree,
@@ -324,9 +326,9 @@ from enoch.app.presentation import (
     evolve_usage as _evolve_usage,
     final_task_status_update as _final_task_status_update,
     format_elapsed as _format_elapsed,
-    format_open_pull_requests as _format_open_pull_requests,
-    format_pull_request as _format_pull_request,
-    format_pull_request_merge_result as _format_pull_request_merge_result,
+    format_open_reviews as _format_open_reviews,
+    format_review as _format_review,
+    format_review_land_result as _format_review_land_result,
     format_task_final_message as _format_task_final_message,
     format_work_status_message as _format_work_status_message,
 )
@@ -352,7 +354,6 @@ from enoch.app.task_workflow import (
     action_sandbox as _action_sandbox,
     activity_sync_note as _activity_sync_note,
     coerce_work_outcome as _coerce_work_outcome,
-    create_pull_request_for_current_task as _task_create_pull_request_for_current_task,
     evolution_provenance_for_job as _evolution_provenance_for_job,
     sandbox_description as _sandbox_description,
     work_reply_failed as _work_reply_failed,
@@ -440,7 +441,6 @@ class EnochApplication:
             root,
             provider=self.channel_name,
         )
-        self._forge_injected = forge is not None
         self.runtime = runtime or FunctionAgentRuntime(
             respond_fn=lambda *args, **kwargs: respond(*args, **kwargs),
             act_in_session_fn=lambda *args, **kwargs: act_in_session(*args, **kwargs),
@@ -452,14 +452,6 @@ class EnochApplication:
         selected_forge = forge
         if selected_forge is None and review is None:
             selected_forge = load_provider("forge", root)
-        self.forge = forge or FunctionForgeProvider(
-            close_fn=lambda *args, **kwargs: close_pull_request(*args, **kwargs),
-            create_fn=lambda **kwargs: create_pull_request(**kwargs),
-            inspect_fn=lambda *args, **kwargs: inspect_pull_request(*args, **kwargs),
-            inspect_merge_fn=lambda *args, **kwargs: inspect_pull_request_merge(*args, **kwargs),
-            list_fn=lambda *args, **kwargs: list_open_pull_requests(*args, **kwargs),
-            merge_fn=lambda *args, **kwargs: merge_pull_request(*args, **kwargs),
-        )
         self.repository = repository or as_repository_provider(load_provider("vcs", root))
         self.review = review or as_review_provider(selected_forge)
         self.profile = profile or AgentProfile(name="enoch")
@@ -506,18 +498,10 @@ class EnochApplication:
                     *args,
                     **kwargs,
                 ),
-                prepare_existing_branch_worktree=lambda *args, **kwargs: (
-                    prepare_existing_branch_worktree(*args, **kwargs)
-                ),
-                remove_task_worktree=lambda *args, **kwargs: remove_task_worktree(
-                    *args,
-                    **kwargs,
+                prepare_existing_revision_workspace=lambda *args, **kwargs: (
+                    prepare_existing_revision_workspace(*args, **kwargs)
                 ),
                 ensure_clean_worktree=lambda *args, **kwargs: ensure_clean_worktree(
-                    *args,
-                    **kwargs,
-                ),
-                push_current_branch=lambda *args, **kwargs: push_current_branch(
                     *args,
                     **kwargs,
                 ),
@@ -923,7 +907,8 @@ class EnochApplication:
             command=command,
             argument=argument,
             runtime=self.runtime,
-            forge=self.forge,
+            repository=self.repository,
+            review=self.review,
             _enqueue=queue,
         )
         try:
@@ -1042,7 +1027,8 @@ class EnochApplication:
                     storage=self.storage,
                     chat=self.client,
                     runtime=self.runtime,
-                    forge=self.forge,
+                    repository=self.repository,
+                    review=self.review,
                 )
             )
         except Exception as error:
@@ -1497,7 +1483,7 @@ class EnochApplication:
                     job.id,
                     result=reply,
                     event_actor="system",
-                    trigger="codex-unavailable",
+                    trigger="runtime-unavailable",
                     worker_id=worker_id,
                 )
                 if finished_job is not None:
@@ -1505,7 +1491,7 @@ class EnochApplication:
                         finished_job,
                         self.root,
                         event_actor="system",
-                        trigger="codex-unavailable",
+                        trigger="runtime-unavailable",
                         reason=reply,
                     )
             else:
@@ -2100,7 +2086,7 @@ class EnochApplication:
             proposal_id = latest_open_proposal_id(candidate.id, self.root)
         try:
             reconciled_result = (
-                _reconciled_retry_result(original, self.root, forge=self.forge)
+                _reconciled_retry_result(original, self.root, review=self.review)
                 if original is not None
                 else ""
             )
@@ -2108,7 +2094,7 @@ class EnochApplication:
                 task_id,
                 reconciled_result=reconciled_result,
             )
-        except (OSError, ForgeProviderError, TaskRetryError) as error:
+        except (OSError, ReviewProviderError, TaskRetryError) as error:
             return f"Enoch could not retry task #{task_id}: {error}"
         if candidate is not None:
             self._record_evolve_event(
@@ -2195,7 +2181,7 @@ class EnochApplication:
                 job.id,
                 result=_codex_pause_warning(job.id, reason),
                 event_actor="system",
-                trigger="codex-unavailable",
+                trigger="runtime-unavailable",
             )
         except (OSError, ValueError):
             return "Enoch could not preserve that task while agent runtime access is unavailable."
@@ -2588,18 +2574,15 @@ class EnochApplication:
                     "of a completed candidate."
                 )
             try:
-                reconcile_kwargs: dict[str, object] = {
-                    "recording_mode": recording_mode,
-                }
-                if self._forge_injected:
-                    reconcile_kwargs["forge"] = self.forge
                 result = self.effect_fence.run_authorized(
                     "evolve.reconcile",
-                    ("forge.read", "vcs.write"),
+                    ("forge.inspect", "vcs.authoritative", "vcs.ancestry"),
                     reconcile_evolve_candidate,
                     reconcile_parts[0],
                     self.root,
-                    **reconcile_kwargs,
+                    recording_mode=recording_mode,
+                    repository=self.repository,
+                    review=self.review,
                 )
             except (EvolveLifecycleError, CapabilityAuthorizationError) as error:
                 return f"Enoch could not reconcile evolution promotion: {error}"
@@ -3418,7 +3401,10 @@ class EnochApplication:
         regression_signals: tuple[TaskRegressionSignal, ...] = ()
         try:
             self._authorize_task(job)
-            if job.publish_stage in {
+            if job.result and job.review_urls:
+                reply = job.result
+                outcome = WorkOutcome.completed(reply)
+            elif job.publish_stage in {
                 "committed",
                 "pushed",
                 "pr_opened",
@@ -3560,7 +3546,7 @@ class EnochApplication:
                     job.id,
                     result=reply,
                     event_actor="system",
-                    trigger="codex-unavailable",
+                    trigger="runtime-unavailable",
                     worker_id=worker_id,
                 )
                 if finished_job is not None:
@@ -3569,7 +3555,7 @@ class EnochApplication:
                         finished_job,
                         self.root,
                         event_actor="system",
-                        trigger="codex-unavailable",
+                        trigger="runtime-unavailable",
                         reason=reply,
                     )
             else:
@@ -3827,37 +3813,40 @@ class EnochApplication:
         parts = argument.split()
         if not parts or (len(parts) == 1 and parts[0].lower() == "list"):
             try:
-                self.authorization.require("forge.list", ("forge.read",))
-                pull_requests = self.forge.list_open_pull_requests(self.root)
-            except (ForgeProviderError, CapabilityAuthorizationError) as error:
-                return f"Enoch could not list open pull requests: {error}"
-            return _format_open_pull_requests(pull_requests)
+                self.authorization.require("forge.list", ("forge.inspect",))
+                reviews = self.review.list_open_reviews(self.root)
+            except (ReviewProviderError, CapabilityAuthorizationError) as error:
+                return f"Enoch could not list open reviews: {error}"
+            return _format_open_reviews(reviews)
         if len(parts) == 2 and parts[0].lower() == "show":
             try:
-                self.authorization.require("forge.inspect", ("forge.read",))
-                pull_request = self.forge.inspect_pull_request(parts[1], self.root)
-            except (ForgeProviderError, CapabilityAuthorizationError) as error:
-                return f"Enoch could not inspect that pull request: {error}"
-            return _format_pull_request(pull_request)
+                self.authorization.require("forge.inspect", ("forge.inspect",))
+                review = self.review.inspect_review(
+                    _review_identity(parts[1]),
+                    self.root,
+                )
+            except (ReviewProviderError, CapabilityAuthorizationError) as error:
+                return f"Enoch could not inspect that review: {error}"
+            return _format_review(review)
         if len(parts) != 2 or parts[0].lower() != "merge":
             return pr_usage()
         allowed_chat_id = _allowed_conversation_id(self.client)
         if allowed_chat_id is None or allowed_chat_id != chat_id:
             return (
-                "Enoch will only merge a pull request from her locked "
+                "Enoch will only land a review from her locked "
                 f"{provider_label(self.channel_name)} conversation."
             )
         try:
             result = self.effect_fence.run_authorized(
-                "forge.merge",
-                ("forge.merge",),
-                self.forge.merge_pull_request,
-                parts[1],
-                self.root,
+                "forge.land",
+                ("forge.land",),
+                self.review.land_review,
+                ReviewLandRequest(_review_identity(parts[1])),
+                root=self.root,
             )
-        except (ForgeProviderError, CapabilityAuthorizationError) as error:
-            return f"Enoch could not merge that pull request: {error}"
-        return _format_pull_request_merge_result(result)
+        except (ReviewProviderError, CapabilityAuthorizationError) as error:
+            return f"Enoch could not land that review: {error}"
+        return _format_review_land_result(result)
 
     def _update(self) -> str:
         if not self._action_allowed():
@@ -3865,9 +3854,10 @@ class EnochApplication:
         try:
             result = self.effect_fence.run_authorized(
                 "vcs.update",
-                ("vcs.write",),
+                ("vcs.inspect", "vcs.authoritative", "vcs.ancestry", "vcs.restore"),
                 update_from_authoritative,
                 self.root,
+                repository=self.repository,
             )
         except CapabilityAuthorizationError as error:
             return str(error)
@@ -4151,50 +4141,52 @@ def _replied_message_text(message: dict[str, Any]) -> str:
     return ""
 
 
+def _review_identity(reference: str) -> ReviewIdentity:
+    value = reference.strip()
+    return ReviewIdentity(
+        id=value,
+        url=value if "://" in value else "",
+    )
+
+
 def _reconciled_retry_result(
     job: TaskJob,
     root: Path,
     *,
-    forge: ForgeProvider | None = None,
+    review: ReviewProvider,
 ) -> str:
-    forge = forge or FunctionForgeProvider(
-        close_fn=close_pull_request,
-        create_fn=create_pull_request,
-        inspect_fn=inspect_pull_request,
-        inspect_merge_fn=inspect_pull_request_merge,
-        list_fn=list_open_pull_requests,
-        merge_fn=merge_pull_request,
-    )
-    candidates = []
     logged_result = _latest_direct_action_result_for_task(job, root)
-    if logged_result:
-        candidates.append(logged_result)
-    if job.result and job.result not in candidates:
-        candidates.append(job.result)
-    for result in candidates:
-        urls = re.findall(
-            r"https://[^\s]+/(?:pull|pulls|merge_requests)/\d+",
-            result,
+    prior_result = logged_result or job.result
+    identities = []
+    if job.review_id:
+        identities.append(
+            ReviewIdentity(
+                id=job.review_id,
+                url=job.review_url,
+            )
         )
-        for url in urls:
-            pull_request = forge.inspect_pull_request(url, root)
-            if (
-                pull_request.state == "OPEN"
-                or pull_request.state == "MERGED"
-                or pull_request.merged_at
-            ):
-                return result
-    if job.workspace_id:
+    for url in job.review_urls:
+        if not any(candidate.url == url for candidate in identities):
+            identities.append(ReviewIdentity(id=url, url=url))
+    for identity in identities:
+        record = review.inspect_review(identity, root)
+        if record.state in {"open", "published", "landed"}:
+            return prior_result or (
+                f"Reconciled existing review {record.identity.id}: "
+                f"{record.identity.url or record.identity.id}"
+            )
+    if job.revision_id:
         matching = [
-            pull_request
-            for pull_request in forge.list_open_pull_requests(root)
-            if pull_request.head_branch == job.workspace_id
+            record
+            for record in review.list_open_reviews(root)
+            if record.versions[-1].revision.id == job.revision_id
         ]
         if matching:
-            pull_request = matching[0]
+            record = matching[0]
             return (
-                f"Reconciled existing PR #{pull_request.number} for task "
-                f"workspace {job.workspace_id}: {pull_request.url}"
+                f"Reconciled existing review {record.identity.id} for task "
+                f"revision {job.revision_id}: "
+                f"{record.identity.url or record.identity.id}"
             )
     return ""
 
@@ -4503,30 +4495,6 @@ def _codex_pause_warning(task_id: int, reason: str) -> str:
             reason.strip() or "Agent runtime access is unavailable.",
             f"When agent runtime access is available again, use /task resume {task_id}.",
         ]
-    )
-
-
-def _create_pull_request_for_current_task(
-    work_root: Path,
-    state_root: Path | None = None,
-    *,
-    forge: ForgeProvider | None = None,
-) -> PullRequestResult:
-    forge = forge or FunctionForgeProvider(
-        close_fn=lambda *args, **kwargs: close_pull_request(*args, **kwargs),
-        create_fn=lambda **kwargs: create_pull_request(**kwargs),
-        inspect_fn=lambda *args, **kwargs: inspect_pull_request(*args, **kwargs),
-        inspect_merge_fn=lambda *args, **kwargs: inspect_pull_request_merge(
-            *args,
-            **kwargs,
-        ),
-        list_fn=lambda *args, **kwargs: list_open_pull_requests(*args, **kwargs),
-        merge_fn=lambda *args, **kwargs: merge_pull_request(*args, **kwargs),
-    )
-    return _task_create_pull_request_for_current_task(
-        work_root,
-        state_root,
-        forge=forge,
     )
 
 

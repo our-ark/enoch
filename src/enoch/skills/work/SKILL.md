@@ -33,7 +33,7 @@ When work is queued:
 1. Preserve the request and any conversation context snapshot.
 2. Keep task execution non-blocking for the active chat conversation.
 3. Update one chat status message with queued, running, paused, completed,
-   failed, elapsed time, latest update, and PR URLs.
+   failed, elapsed time, latest update, and review URLs.
 4. Run queued work through the same authorized repository workflow as foreground `/do` work.
 5. Promote backlog items only when the task queue is idle.
 6. Claim due cron jobs atomically before enqueueing them, so one due event creates one task.
@@ -51,9 +51,9 @@ When work is queued:
 9. `/task retry <id>` retries only a failed task by creating a new task with a
    new id and `parent_task_id`; never rewrite the original failure. Preserve the
    request, context, source, provenance, and any recoverable task
-   worktree/branch. Before new execution, reconcile recorded and logged PR
-   results with the configured forge; reuse a validated open or merged PR instead of
-   duplicating work. If a retry fails, retry that latest failed task so the
+   workspace/revision. Before new execution, reconcile recorded review
+   identities with the configured review provider; reuse a validated open or
+   landed review instead of duplicating work. If a retry fails, retry that latest failed task so the
    causal chain remains linear.
 10. Give each running task a worker lease. Recovery must not requeue a task while
     its owner process is alive, and only the lease owner may publish a terminal

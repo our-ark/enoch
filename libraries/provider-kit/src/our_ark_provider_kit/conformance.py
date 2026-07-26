@@ -303,10 +303,21 @@ class ReviewProviderConformanceMixin:
                 ReviewLandRequest(landed_target.identity),
                 root,
             )
+            inspected_landed = provider.inspect_review(
+                landed_target.identity,
+                root,
+            )
 
         self.assertEqual(closed.state, "closed")
         self.assertEqual(landed.status, "landed")
         self.assertEqual(landed.revision.id, "land-change")
+        self.assertTrue(landed.landed_at)
+        self.assertEqual(inspected_landed.state, "landed")
+        self.assertEqual(
+            inspected_landed.landed_revision.id,
+            "land-change",
+        )
+        self.assertEqual(inspected_landed.landed_at, landed.landed_at)
 
 
 class _ConformanceIdentity:

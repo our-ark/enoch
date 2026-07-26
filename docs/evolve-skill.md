@@ -260,17 +260,20 @@ to `.enoch/artifacts/evolve_events.jsonl`.
 ## Work, promotion, and adoption
 
 `/evolve approve <id>` queues a normal isolated task with candidate and evidence
-provenance. The task then follows Enoch's standard worktree, validation, commit,
-push, and PR workflow.
+provenance. The task then follows Enoch's standard workspace, validation,
+revision capture, and review-publication workflow.
 
 Task completion means the worker finished and, when configured, published
-reviewable work. It does not prove that the PR was merged or that the resident
-daemon runs it.
+reviewable work. It does not prove that the review was landed or that the
+resident daemon runs it.
 
-`/evolve reconcile <id>` verifies a human merge and authoritative-branch
-containment before recording `promoted`. The `backfill` form marks historical
-reconstruction explicitly. After `/update`, doctor, restart, and version
-confirmation, the change can be recorded as `adopted`.
+`/evolve reconcile <id>` verifies human-approved review landing and confirms
+that its immutable revision is contained by the refreshed authoritative
+revision before recording `promoted`. The event stores `review_id`,
+`review_urls`, `revision_id`, `authoritative_revision_id`, and
+`authoritative_name`; schema-6 Git/PR fields remain readable. The `backfill`
+form marks historical reconstruction explicitly. After `/update`, doctor,
+restart, and version confirmation, the change can be recorded as `adopted`.
 
 ## Command surface
 

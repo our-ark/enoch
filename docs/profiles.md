@@ -1,7 +1,7 @@
 # Agent profiles
 
 Agent profiles extend Enoch's behavior without forking `enoch.app.core` or
-creating a second task queue. The version 2 profile API composes five bounded
+creating a second task queue. The version 5 profile API composes five bounded
 surfaces:
 
 - `CommandSpec` adds chat commands without replacing core commands.
@@ -112,15 +112,16 @@ profile change is activated only after restarting Enoch.
 embed Enoch can instead pass `profile=` directly to `EnochApplication` or use
 `register_profile()` for static registration.
 
-The current contract is `PROFILE_API_VERSION = 4`. A profile must declare that
+The current contract is `PROFILE_API_VERSION = 5`. A profile must declare that
 version (the default) and Enoch rejects unsupported versions at startup rather
 than guessing compatibility.
 
 ## Context boundaries
 
 Command handlers receive identity, repository root, the immutable
-`StorageLayout`, normalized chat event, selected runtime and forge providers,
-and the command argument. The provided
+`StorageLayout`, normalized chat event, selected runtime, semantic repository,
+and semantic review providers, and the command argument. Lifecycle hooks
+receive the same provider-neutral repository and review boundaries. The provided
 `enqueue_task()` method records the request as a human-created `task`, keeps the
 profile command as its trigger, and uses the existing queue lifecycle.
 
@@ -152,7 +153,7 @@ and system work remain available. This is a workflow constraint, not an
 authorization system.
 
 `CapabilityPolicy` is a deny-only profile boundary. For example, a profile may
-deny `forge.publish` and `forge.merge` to keep all work local:
+deny landing authority while still allowing review publication:
 
 ```python
 from enoch.profiles import AgentProfile, CapabilityPolicy
@@ -161,7 +162,7 @@ from enoch.profiles import AgentProfile, CapabilityPolicy
 profile = AgentProfile(
     name="local-researcher",
     authorization=CapabilityPolicy(
-        denied_capabilities=("forge.publish", "forge.merge"),
+        denied_capabilities=("forge.land",),
     ),
 )
 ```

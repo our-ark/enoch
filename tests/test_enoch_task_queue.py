@@ -597,7 +597,7 @@ class EnochTaskQueueTests(unittest.TestCase):
         self.assertEqual(status.history, ())
         self.assertEqual(events[-1].event, "paused")
         self.assertEqual(events[-1].event_actor, "system")
-        self.assertEqual(events[-1].trigger, "codex-unavailable")
+        self.assertEqual(events[-1].trigger, "runtime-unavailable")
 
     def test_resume_moves_paused_tasks_to_front_with_same_ids(self) -> None:
         with TemporaryDirectory() as temp:

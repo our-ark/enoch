@@ -116,23 +116,28 @@ def extract_task_regression_signals(reply: str) -> TaskRegressionSignals:
 
 
 def repository_handoff_note(
-    branch: str,
-    pr_url: str,
-    resident_branch: str = "main",
-    authoritative_branch: str = "main",
+    workspace_id: str,
+    review_url: str,
+    resident_workspace: str = "main",
+    authoritative_name: str = "main",
 ) -> str:
     return "\n".join(
         [
             "Repository state update:",
-            f"Your last edits were committed to `{branch}` and opened as `{pr_url}`.",
-            f"Local checkout is back on resident branch `{resident_branch}`.",
+            (
+                f"Your last edits were captured from workspace `{workspace_id}` "
+                f"and published for review as `{review_url}`."
+            ),
+            f"The resident workspace is `{resident_workspace}`.",
             "",
-            "Do not assume the PR was merged.",
-            f"Do not assume `{resident_branch}` contains those changes.",
+            "Do not assume the review was landed.",
+            f"Do not assume `{resident_workspace}` contains those changes.",
             "Inspect current local state before repository-dependent work.",
-            f"Treat the current repository state and authoritative branch `{authoritative_branch}` "
-            "as source of truth "
-            "unless asked to continue/update that PR.",
+            (
+                f"Treat the current repository state and authoritative target "
+                f"`{authoritative_name}` as source of truth unless asked to "
+                "continue or update that review."
+            ),
         ]
     )
 

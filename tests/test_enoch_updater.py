@@ -10,10 +10,13 @@ from unittest.mock import MagicMock, patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from enoch.git_tools import GitError
 from enoch.formatting import format_doctor_result
 from enoch.immune import DoctorDiagnosis
 from enoch.operations.updater import run_update_doctor, update_from_authoritative
+from our_ark_provider_kit import (
+    BranchlessRepositoryFixture,
+    RepositoryRevision,
+)
 
 
 class EnochUpdaterTests(unittest.TestCase):
@@ -85,65 +88,43 @@ class EnochUpdaterTests(unittest.TestCase):
         )
 
     @patch("enoch.operations.updater.run_update_doctor")
-    @patch(
-        "enoch.operations.updater.update_repository",
-        return_value=(
-            "Fast-forward\n"
-            " src/enoch/operations/updater.py | 2 +-\n"
-            " 1 file changed, 1 insertion(+), 1 deletion(-)"
-        ),
-    )
-    @patch("enoch.operations.updater.current_repository_revision", side_effect=["1111111111111111111111111111111111111111", "2222222222222222222222222222222222222222"])
-    @patch("enoch.operations.updater.current_branch", return_value="main")
-    @patch("enoch.operations.updater.refresh_repository")
-    @patch("enoch.operations.updater.ensure_clean_worktree")
-    def test_update_pulls_runs_doctor_and_requests_restart(
+    def test_update_activates_authoritative_revision_and_requests_restart(
         self,
-        ensure_clean_worktree: MagicMock,
-        refresh_repository: MagicMock,
-        current_branch: MagicMock,
-        _current_repository_revision: MagicMock,
-        update_repository: MagicMock,
         run_update_doctor: MagicMock,
     ) -> None:
+        repository = _repository_with_update()
         run_update_doctor.return_value = _doctor_result()
 
-        result = update_from_authoritative(ROOT)
+        result = update_from_authoritative(ROOT, repository=repository)
 
-        ensure_clean_worktree.assert_called_once_with(ROOT)
-        refresh_repository.assert_called_once_with(ROOT)
-        current_branch.assert_called_once_with(ROOT)
-        update_repository.assert_called_once_with(ROOT)
         run_update_doctor.assert_called_once_with(ROOT)
+        self.assertEqual(repository.current.id, "r1")
         self.assertTrue(result.restart_required)
-        self.assertIn("Enoch updated to latest main and doctor passed.", result.message)
+        self.assertIn(
+            "Enoch updated to latest authoritative and doctor passed.",
+            result.message,
+        )
         self.assertIn("Restarting now.", result.message)
-        self.assertNotIn("Fast-forward", result.message)
-        self.assertNotIn("1 file changed", result.message)
-        self.assertIn("Fast-forward", result.direct_action_result)
-        self.assertIn("Restarting into 2222222.", result.direct_action_result)
+        self.assertIn("Updated repository from r0 to r1", result.direct_action_result)
+        self.assertIn("Restarting into r1.", result.direct_action_result)
+        self.assertEqual(result.previous_revision_id, "r0")
+        self.assertEqual(result.revision_id, "r1")
 
     @patch("enoch.operations.updater.run_update_doctor")
-    @patch("enoch.operations.updater.update_repository", return_value="Already up to date.")
-    @patch("enoch.operations.updater.current_repository_revision", side_effect=["1111111111111111111111111111111111111111", "1111111111111111111111111111111111111111"])
-    @patch("enoch.operations.updater.current_branch", return_value="main")
-    @patch("enoch.operations.updater.refresh_repository")
-    @patch("enoch.operations.updater.ensure_clean_worktree")
     def test_update_does_not_restart_when_already_up_to_date(
         self,
-        _ensure_clean_worktree: MagicMock,
-        _refresh_repository: MagicMock,
-        _current_branch: MagicMock,
-        _current_repository_revision: MagicMock,
-        _update_repository: MagicMock,
         run_update_doctor: MagicMock,
     ) -> None:
-        result = update_from_authoritative(ROOT)
+        repository = BranchlessRepositoryFixture()
+        result = update_from_authoritative(ROOT, repository=repository)
 
         run_update_doctor.assert_not_called()
         self.assertFalse(result.restart_required)
         self.assertEqual(result.message, "Enoch is already up to date.")
-        self.assertEqual(result.direct_action_result, "Already up to date.")
+        self.assertEqual(
+            result.direct_action_result,
+            "Already at authoritative revision r0.",
+        )
 
     @patch(
         "enoch.operations.updater.stage_promoted_evolve_adoptions",
@@ -154,37 +135,23 @@ class EnochUpdaterTests(unittest.TestCase):
         return_value=(MagicMock(),),
     )
     @patch("enoch.operations.updater.run_update_doctor")
-    @patch("enoch.operations.updater.update_repository", return_value="Already up to date.")
-    @patch(
-        "enoch.operations.updater.current_repository_revision",
-        side_effect=[
-            "1111111111111111111111111111111111111111",
-            "1111111111111111111111111111111111111111",
-        ],
-    )
-    @patch("enoch.operations.updater.current_branch", return_value="main")
-    @patch("enoch.operations.updater.refresh_repository")
-    @patch("enoch.operations.updater.ensure_clean_worktree")
     def test_update_verifies_pending_adoption_even_when_code_is_current(
         self,
-        _ensure_clean_worktree: MagicMock,
-        _refresh_repository: MagicMock,
-        _current_branch: MagicMock,
-        _current_repository_revision: MagicMock,
-        _update_repository: MagicMock,
         run_update_doctor: MagicMock,
         _pending_adoption: MagicMock,
         stage_adoptions: MagicMock,
     ) -> None:
+        repository = BranchlessRepositoryFixture()
         run_update_doctor.return_value = _doctor_result()
 
-        result = update_from_authoritative(ROOT)
+        result = update_from_authoritative(ROOT, repository=repository)
 
         run_update_doctor.assert_called_once_with(ROOT)
         stage_adoptions.assert_called_once_with(
             ROOT,
-            "1111111111111111111111111111111111111111",
+            "r0",
             health_check="passed",
+            repository=repository,
         )
         self.assertTrue(result.restart_required)
         self.assertIn("adoption checks passed", result.message)
@@ -199,22 +166,13 @@ class EnochUpdaterTests(unittest.TestCase):
         },
     )
     @patch("enoch.operations.updater.run_update_doctor")
-    @patch("enoch.operations.updater.update_repository", return_value="Already up to date.")
-    @patch("enoch.operations.updater.current_repository_revision", side_effect=["1111111111111111111111111111111111111111", "1111111111111111111111111111111111111111"])
-    @patch("enoch.operations.updater.current_branch", return_value="main")
-    @patch("enoch.operations.updater.refresh_repository")
-    @patch("enoch.operations.updater.ensure_clean_worktree")
     def test_update_warns_when_running_commit_is_stale_but_disk_is_current(
         self,
-        _ensure_clean_worktree: MagicMock,
-        _refresh_repository: MagicMock,
-        _current_branch: MagicMock,
-        _current_repository_revision: MagicMock,
-        _update_repository: MagicMock,
         run_update_doctor: MagicMock,
         _load_lifecycle_state: MagicMock,
     ) -> None:
-        result = update_from_authoritative(ROOT)
+        repository = BranchlessRepositoryFixture()
+        result = update_from_authoritative(ROOT, repository=repository)
 
         run_update_doctor.assert_not_called()
         self.assertFalse(result.restart_required)
@@ -231,42 +189,25 @@ class EnochUpdaterTests(unittest.TestCase):
             "started_head": "0000000000000000000000000000000000000000",
         },
     )
-    @patch("enoch.operations.updater.update_repository", return_value="Already up to date.")
-    @patch("enoch.operations.updater.current_repository_revision", side_effect=["1111111111111111111111111111111111111111", "1111111111111111111111111111111111111111"])
-    @patch("enoch.operations.updater.current_branch", return_value="main")
-    @patch("enoch.operations.updater.refresh_repository")
-    @patch("enoch.operations.updater.ensure_clean_worktree")
     def test_update_ignores_lifecycle_for_other_process(
         self,
-        _ensure_clean_worktree: MagicMock,
-        _refresh_repository: MagicMock,
-        _current_branch: MagicMock,
-        _current_repository_revision: MagicMock,
-        _update_repository: MagicMock,
         _load_lifecycle_state: MagicMock,
     ) -> None:
-        result = update_from_authoritative(ROOT)
+        repository = BranchlessRepositoryFixture()
+        result = update_from_authoritative(ROOT, repository=repository)
 
         self.assertNotIn("Run /restart", result.message)
-        self.assertEqual(result.direct_action_result, "Already up to date.")
+        self.assertEqual(
+            result.direct_action_result,
+            "Already at authoritative revision r0.",
+        )
 
     @patch("enoch.operations.updater.run_update_doctor")
-    @patch("enoch.operations.updater.restore_repository_revision")
-    @patch("enoch.operations.updater.update_repository", return_value="Updating 1111111..2222222")
-    @patch("enoch.operations.updater.current_repository_revision", side_effect=["1111111111111111111111111111111111111111", "2222222222222222222222222222222222222222"])
-    @patch("enoch.operations.updater.current_branch", return_value="main")
-    @patch("enoch.operations.updater.refresh_repository")
-    @patch("enoch.operations.updater.ensure_clean_worktree")
     def test_update_rolls_back_when_doctor_fails(
         self,
-        _ensure_clean_worktree: MagicMock,
-        _refresh_repository: MagicMock,
-        _current_branch: MagicMock,
-        _current_repository_revision: MagicMock,
-        _update_repository: MagicMock,
-        restore_repository_revision: MagicMock,
         run_update_doctor: MagicMock,
     ) -> None:
+        repository = _repository_with_update()
         doctor = _doctor_result()
         doctor.passed = False
         doctor.diagnosis = DoctorDiagnosis(
@@ -277,64 +218,38 @@ class EnochUpdaterTests(unittest.TestCase):
         )
         run_update_doctor.return_value = doctor
 
-        result = update_from_authoritative(ROOT)
+        result = update_from_authoritative(ROOT, repository=repository)
 
-        restore_repository_revision.assert_called_once_with("1111111111111111111111111111111111111111", ROOT)
+        self.assertEqual(repository.current.id, "r0")
         self.assertFalse(result.restart_required)
         self.assertIn("doctor failed", result.message)
-        self.assertIn("Rolled back to 1111111.", result.message)
+        self.assertIn("Rolled back to r0.", result.message)
         self.assertEqual(result.direct_action_result, "")
 
-    @patch("enoch.operations.updater.current_revision_on_authoritative", return_value=True)
-    @patch("enoch.operations.updater.update_repository", return_value="Already up to date.")
-    @patch("enoch.operations.updater.current_repository_revision", side_effect=["1111111111111111111111111111111111111111", "1111111111111111111111111111111111111111"])
-    @patch("enoch.operations.updater.current_branch", return_value="enoch/old-merged-branch")
-    @patch("enoch.operations.updater.refresh_repository")
-    @patch("enoch.operations.updater.ensure_clean_worktree")
-    def test_update_fast_forwards_merged_branch_without_switching_to_main(
-        self,
-        _ensure_clean_worktree: MagicMock,
-        _refresh_repository: MagicMock,
-        _current_branch: MagicMock,
-        _current_repository_revision: MagicMock,
-        update_repository: MagicMock,
-        head_merged: MagicMock,
-    ) -> None:
-        result = update_from_authoritative(ROOT)
+    def test_update_refuses_revision_outside_authoritative_history(self) -> None:
+        repository = _repository_with_update()
+        divergent = RepositoryRevision("side")
+        repository.revisions[divergent.id] = divergent
+        repository.current = divergent
 
-        head_merged.assert_called_once_with(ROOT)
-        update_repository.assert_called_once_with(ROOT)
-        self.assertIn("Enoch is already up to date.", result.message)
-
-    @patch("enoch.operations.updater.current_revision_on_authoritative", return_value=False)
-    @patch("enoch.operations.updater.current_branch", return_value="enoch/unmerged-work")
-    @patch("enoch.operations.updater.refresh_repository")
-    @patch("enoch.operations.updater.ensure_clean_worktree")
-    def test_update_refuses_unmerged_feature_branch(
-        self,
-        _ensure_clean_worktree: MagicMock,
-        _refresh_repository: MagicMock,
-        _current_branch: MagicMock,
-        _head_merged: MagicMock,
-    ) -> None:
-        result = update_from_authoritative(ROOT)
+        result = update_from_authoritative(ROOT, repository=repository)
 
         self.assertIn(
-            "has commits that are not merged into the authoritative main branch",
+            "is not in the history of authoritative revision r1",
             result.message,
         )
 
-    @patch("enoch.operations.updater.refresh_repository")
-    @patch("enoch.operations.updater.ensure_clean_worktree", side_effect=GitError("dirty"))
-    def test_update_refuses_dirty_worktree(
-        self,
-        _ensure_clean_worktree: MagicMock,
-        refresh_repository: MagicMock,
-    ) -> None:
-        result = update_from_authoritative(ROOT)
+    def test_update_refuses_dirty_working_copy(self) -> None:
+        repository = BranchlessRepositoryFixture()
+        repository.mark_changed("src/enoch/app/core.py")
 
-        refresh_repository.assert_not_called()
-        self.assertEqual(result.message, "Enoch could not update: dirty")
+        result = update_from_authoritative(ROOT, repository=repository)
+
+        self.assertEqual(
+            result.message,
+            "Enoch could not update: working copy has uncommitted changes: "
+            "src/enoch/app/core.py",
+        )
 
 
 def _doctor_result() -> MagicMock:
@@ -349,6 +264,15 @@ def _doctor_result() -> MagicMock:
             suggested_action="No repair needed.",
         ),
     )
+
+
+def _repository_with_update() -> BranchlessRepositoryFixture:
+    repository = BranchlessRepositoryFixture()
+    revision = RepositoryRevision("r1", display="authoritative update")
+    repository.revisions[revision.id] = revision
+    repository.parents[revision.id] = repository.current.id
+    repository.authoritative = revision
+    return repository
 
 
 if __name__ == "__main__":

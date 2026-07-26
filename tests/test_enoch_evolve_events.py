@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 import sys
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -279,9 +280,11 @@ class EnochEvolveEventTests(unittest.TestCase):
                     event_actor="system",
                     trigger="/evolve reconcile",
                     candidate=_candidate(),
-                    pr_url="https://github.com/our-ark/enoch/pull/12",
-                    merge_commit="7207317",
-                    authoritative_branch="main",
+                    review_id="review-12",
+                    review_urls=("https://reviews.example/review-12",),
+                    revision_id="7207317",
+                    authoritative_revision_id="8207317",
+                    authoritative_name="main",
                     promoted_at="2026-07-18T18:30:00Z",
                 )
             with self.assertRaisesRegex(ValueError, "passed health check"):
@@ -294,6 +297,44 @@ class EnochEvolveEventTests(unittest.TestCase):
                     version="7207317",
                     health_check="failed",
                 )
+
+    def test_schema_six_promotion_replays_into_semantic_review_fields(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            path = evolve_event_path(root)
+            path.parent.mkdir(parents=True)
+            path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 6,
+                        "id": "evolve-event-legacy",
+                        "event": "promoted",
+                        "timestamp": "2026-07-18T18:31:00Z",
+                        "event_actor": "human",
+                        "trigger": "/evolve reconcile",
+                        "candidate_id": "feedback-legacy",
+                        "source": "feedback",
+                        "candidate_initiated_by": "human",
+                        "pr_url": "https://github.com/our-ark/enoch/pull/12",
+                        "merge_commit": "7207317abc",
+                        "authoritative_branch": "main",
+                        "promoted_at": "2026-07-18T18:30:00Z",
+                        "verified_at": "2026-07-18T18:31:00Z",
+                        "recording_mode": "realtime",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            event = load_evolve_events(root)[0]
+
+        self.assertEqual(event.review_id, "https://github.com/our-ark/enoch/pull/12")
+        self.assertEqual(event.review_urls, (event.review_id,))
+        self.assertEqual(event.revision_id, "7207317abc")
+        self.assertEqual(event.authoritative_name, "main")
+        self.assertEqual(event.pr_url, event.review_id)
+        self.assertEqual(event.merge_commit, event.revision_id)
 
 
 def _candidate() -> EvolveCandidate:

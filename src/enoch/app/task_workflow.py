@@ -4,7 +4,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 import threading
 import time
-from typing import Any, Callable, Protocol
+from typing import Callable, Protocol
 
 from enoch.app.activity import record_direct_action
 from enoch.app.effects import DaemonEffectFence
@@ -20,13 +20,7 @@ from enoch.app.parsing import (
 )
 from enoch.app.presentation import clip_activity_text
 from enoch.config import read_section
-from enoch.formatting import (
-    format_doctor_result,
-    format_pr_result,
-    format_remote_publish_result,
-    pr_step_update,
-    pr_summary,
-)
+from enoch.formatting import format_doctor_result
 from enoch.immune import ImmuneResult, run_immune_system
 from enoch.identity import Identity
 from enoch.prompt_append import (
@@ -42,16 +36,15 @@ from enoch.providers.contracts import (
     AgentRuntimeTimedOut,
     ConversationId,
     EvolutionProvenance,
-    ForgeProvider,
     ForgeProviderError,
     MessageId,
-    PullRequestCloseResult,
-    PullRequestResult,
     ChangeCaptureRequest,
     ChangeCaptureResult,
     RepositoryProvider,
     RepositoryProviderError,
     RepositoryRevision,
+    ReviewCloseRequest,
+    ReviewIdentity,
     ReviewProvider,
     ReviewProviderError,
     ReviewRecord,
@@ -61,17 +54,7 @@ from enoch.providers.contracts import (
     UnsupportedProviderFeature,
     require_repository_features,
 )
-from enoch.providers.forge import (
-    FunctionForgeProvider,
-    close_pull_request,
-    create_pull_request,
-    feature_title,
-    inspect_pull_request,
-    inspect_pull_request_merge,
-    list_open_pull_requests,
-    merge_pull_request,
-    push_current_branch,
-)
+from enoch.providers.forge import feature_title
 from enoch.providers.authorization import CapabilityAuthorizationError
 from enoch.providers.runtime import invoke_runtime_action
 from enoch.runtime import (
@@ -89,10 +72,9 @@ from enoch.tasks.queue import (
 )
 from enoch.tasks.worktree import (
     TaskWorktree,
-    prepare_existing_branch_worktree,
+    prepare_existing_revision_workspace,
     prepare_repository_task_workspace,
     remove_repository_task_workspace,
-    remove_task_worktree,
 )
 from enoch.vcs_tools import (
     VcsError,
@@ -105,27 +87,83 @@ from enoch.vcs_tools import (
 from enoch.workflows import WorkflowEngine
 
 
+class ImmuneRunner(Protocol):
+    def __call__(
+        self,
+        root: Path | None = None,
+        *,
+        state_root: Path | None = None,
+    ) -> ImmuneResult: ...
+
+
+class RepositoryWorkspacePreparer(Protocol):
+    def __call__(
+        self,
+        repository: RepositoryProvider,
+        control_root: Path,
+        task_id: int,
+        request: str,
+        *,
+        resident_branch: str = "",
+        created_at: str = "",
+        existing_path: str = "",
+        existing_workspace_id: str = "",
+    ) -> TaskWorktree: ...
+
+
+class ExistingRevisionWorkspacePreparer(Protocol):
+    def __call__(
+        self,
+        repository: RepositoryProvider,
+        control_root: Path,
+        task_id: int,
+        reference: str,
+        *,
+        existing_path: str = "",
+        existing_workspace_id: str = "",
+    ) -> TaskWorktree: ...
+
+
+class RepositoryWorkspaceRemover(Protocol):
+    def __call__(
+        self,
+        repository: RepositoryProvider,
+        control_root: Path,
+        worktree: TaskWorktree,
+        *,
+        force: bool = False,
+    ) -> str: ...
+
+
+class BranchDeleter(Protocol):
+    def __call__(
+        self,
+        branch: str,
+        root: Path | None = None,
+        *,
+        force: bool = False,
+    ) -> None: ...
+
+
 @dataclass(frozen=True)
 class TaskWorkflowDependencies:
     """Version-control and validation effects supplied by the application shell."""
 
-    run_immune_system: Callable[..., Any] = run_immune_system
-    prepare_repository_task_workspace: Callable[..., Any] = (
+    run_immune_system: ImmuneRunner = run_immune_system
+    prepare_repository_task_workspace: RepositoryWorkspacePreparer = (
         prepare_repository_task_workspace
     )
-    prepare_existing_branch_worktree: Callable[..., Any] = (
-        prepare_existing_branch_worktree
+    prepare_existing_revision_workspace: ExistingRevisionWorkspacePreparer = (
+        prepare_existing_revision_workspace
     )
-    remove_task_worktree: Callable[..., Any] = remove_task_worktree
-    remove_repository_task_workspace: Callable[..., Any] = (
+    remove_repository_task_workspace: RepositoryWorkspaceRemover = (
         remove_repository_task_workspace
     )
-    ensure_clean_worktree: Callable[..., Any] = ensure_clean_worktree
-    push_current_branch: Callable[..., Any] = push_current_branch
-    feature_title: Callable[..., Any] = feature_title
-    current_branch: Callable[..., Any] = current_branch
-    switch_branch: Callable[..., Any] = switch_branch
-    delete_branch: Callable[..., Any] = delete_branch
+    ensure_clean_worktree: Callable[[Path | None], None] = ensure_clean_worktree
+    feature_title: Callable[[str], str] = feature_title
+    current_branch: Callable[[Path | None], str] = current_branch
+    switch_branch: Callable[[str, Path | None], None] = switch_branch
+    delete_branch: BranchDeleter = delete_branch
 
 
 class TaskWorkflowHost(Protocol):
@@ -134,7 +172,6 @@ class TaskWorkflowHost(Protocol):
     identity: Identity
     root: Path
     runtime: AgentRuntime
-    forge: ForgeProvider
     repository: RepositoryProvider
     review: ReviewProvider
     workflow: WorkflowEngine
@@ -489,25 +526,27 @@ class TaskWorkflow:
 
     def run_forge_maintenance(self, request: ForgeMaintenanceRequest) -> str:
         app = self.application
-        app._update_work_status("Updating pull requests.")
+        app._update_work_status("Updating reviews.")
         results = []
         for number in request.close_numbers:
             results.append(
                 app.effect_fence.run_authorized(
-                    "forge.maintain",
-                    ("forge.maintain",),
-                    app.forge.close_pull_request,
-                    number,
+                    "forge.close-review",
+                    ("forge.close",),
+                    app.review.close_review,
+                    ReviewCloseRequest(
+                        review=ReviewIdentity(id=str(number)),
+                        note=(
+                            duplicate_close_comment(request.keep_number)
+                            if request.keep_number
+                            else duplicate_close_comment(None)
+                        ),
+                    ),
                     task_id=CURRENT_TASK_ID.get(),
                     root=app.root,
-                    comment=(
-                        duplicate_close_comment(request.keep_number)
-                        if request.keep_number
-                        else None
-                    ),
                 )
             )
-        return format_pr_close_results(results, request.keep_number)
+        return format_review_close_results(results, request.keep_number)
 
     def run_existing_branch_publish_with_status(
         self,
@@ -549,91 +588,139 @@ class TaskWorkflow:
 
     def publish_existing_branch(self, chat_id: int, branch: str) -> str:
         app = self.application
+        require_repository_features(
+            app.repository,
+            "isolated_workspaces",
+            "immutable_revisions",
+        )
+        app.effect_fence.authorize(
+            "task.publish-existing-reference",
+            (
+                "vcs.inspect",
+                "vcs.resolve",
+                "vcs.authoritative",
+                "vcs.workspace",
+                "forge.review",
+            ),
+            task_id=CURRENT_TASK_ID.get(),
+        )
         resident_branch = app._resident_branch_name()
         outputs: list[str] = []
         try:
             app._send_step_update(
                 chat_id,
-                f"Preparing an isolated worktree for {branch}.",
+                f"Preparing an isolated workspace for {branch}.",
             )
             task_worktree = app._prepare_existing_branch_task_worktree(branch)
             work_root = task_worktree.path
-            self.dependencies.ensure_clean_worktree(work_root)
+            state = app.repository.inspect_working_copy(work_root)
+            if not state.clean:
+                raise RepositoryProviderError(
+                    f"Repository reference {branch!r} has uncommitted changes."
+                )
+            workspace = task_worktree.repository_workspace
+            revision = (
+                workspace.current_revision
+                if workspace is not None
+                else state.revision
+            )
+            base = app.repository.authoritative_base(app.root, refresh=True)
 
-            app._send_step_update(chat_id, f"Handing off branch {branch}.")
-            pushed = app.effect_fence.run_authorized(
-                "forge.publish-branch",
-                ("forge.publish",),
-                self.dependencies.push_current_branch,
+            app._send_step_update(chat_id, "Preparing the review handoff.")
+            current_job = task_by_id(
+                CURRENT_TASK_ID.get() or 0,
+                app.root,
+                workflow=app.workflow,
+            )
+            provenance = (
+                evolution_provenance_for_job(current_job)
+                if current_job is not None
+                else None
+            )
+            review = app.effect_fence.run_authorized(
+                "forge.publish-review",
+                ("forge.review",),
+                app.review.publish_review,
+                ReviewSubmission(
+                    title=self.dependencies.feature_title(
+                        f"Publish repository reference {branch}"
+                    ),
+                    body="",
+                    revision=revision,
+                    base_revision=base.revision,
+                    metadata={
+                        "base_name": base.name,
+                        "source_reference": branch,
+                        "workspace_id": task_worktree.workspace_id,
+                        "task_id": CURRENT_TASK_ID.get(),
+                        "evolution_provenance": provenance,
+                    },
+                ),
                 task_id=CURRENT_TASK_ID.get(),
                 root=work_root,
             )
-            outputs.append(format_remote_publish_result(pushed))
-            app._send_step_update(
-                chat_id,
-                (
-                    f"Pushed branch {pushed.branch}."
-                    if pushed.pushed
-                    else f"Kept branch {pushed.branch} locally."
-                ),
+            outputs.append(format_review_record(review))
+            app._record_current_publish_stage(
+                "review_published",
+                revision_id=revision.id,
+                workspace_id=task_worktree.workspace_id,
+                review_id=review.identity.id,
+                review_url=review.identity.url,
+                review_published=True,
             )
-
-            app._send_step_update(chat_id, "Preparing the review handoff.")
-            pr = app.effect_fence.run_authorized(
-                "forge.create-pull-request",
-                ("forge.publish",),
-                create_pull_request_for_current_task,
-                work_root,
-                app.root,
-                task_id=CURRENT_TASK_ID.get(),
-                forge=app.forge,
-                workflow=app.workflow,
-            )
-            outputs.append(format_pr_result(pr))
-            if pr.url:
-                app._update_work_status(pr_step_update(pr), review_url=pr.url)
+            if review.identity.url:
+                app._update_work_status(
+                    review_step_update(review),
+                    review_url=review.identity.url,
+                )
                 record_current_task_result(
                     "\n\n".join(outputs),
                     app.root,
                     workflow=app.workflow,
                 )
-            app._send_step_update(chat_id, pr_step_update(pr))
+            app._send_step_update(chat_id, review_step_update(review))
 
             app._send_step_update(
                 chat_id,
-                "Cleaning up the isolated task worktree.",
+                "Cleaning up the isolated task workspace.",
             )
             outputs.append(
                 app.effect_fence.run_authorized(
-                    "vcs.remove-worktree",
-                    ("vcs.write",),
-                    self.dependencies.remove_task_worktree,
+                    "vcs.remove-workspace",
+                    ("vcs.workspace",),
+                    self.dependencies.remove_repository_task_workspace,
+                    app.repository,
                     app.root,
                     task_worktree,
                     task_id=CURRENT_TASK_ID.get(),
-                    delete_local_branch=False,
+                    force=False,
                 )
             )
             app._send_step_update(
                 chat_id,
                 f"Resident checkout remains on {resident_branch}.",
             )
-            if pr.url:
+            if review.identity.url:
                 app._queue_session_sync(
                     chat_id,
                     repository_handoff_note(
-                        pr.branch,
-                        pr.url,
+                        task_worktree.workspace_id,
+                        review.identity.url,
                         resident_branch,
-                        app._authoritative_branch_name(),
+                        base.name,
                     ),
                 )
         except (
             VcsError,
             ForgeProviderError,
+            RepositoryProviderError,
+            ReviewProviderError,
+            UnsupportedProviderFeature,
             CapabilityAuthorizationError,
         ) as error:
-            failure = f"Enoch could not publish existing branch {branch}: {error}"
+            failure = (
+                f"Enoch could not publish repository reference {branch}: {error}"
+            )
             app._send_step_update(chat_id, failure)
             return "\n\n".join([*outputs, failure]) if outputs else failure
         return "\n\n".join(outputs)
@@ -648,14 +735,16 @@ class TaskWorkflow:
         if job is None or job.status != "running" or job.worker_id != worker_id:
             raise VcsError(f"Task #{task_id} no longer owns its execution lease.")
         worktree = app.effect_fence.run_authorized(
-            "vcs.prepare-worktree",
-            ("vcs.write",),
-            self.dependencies.prepare_existing_branch_worktree,
+            "vcs.prepare-workspace",
+            ("vcs.resolve", "vcs.workspace"),
+            self.dependencies.prepare_existing_revision_workspace,
+            app.repository,
             app.root,
             task_id,
             branch,
             task_id=task_id,
             existing_path=job.workspace_path,
+            existing_workspace_id=job.workspace_id,
         )
         recorded = app.workflow.record_workspace(
             task_id,
@@ -1097,7 +1186,7 @@ def delete_local_branch_if_enabled(
     root: Path,
     *,
     protected_branch: str = "",
-    delete_branch_fn: Callable[..., Any] = delete_branch,
+    delete_branch_fn: BranchDeleter = delete_branch,
 ) -> str:
     if not cleanup_local_branches(root):
         return ""
@@ -1242,39 +1331,6 @@ def legacy_task_approval_actor(job: TaskJob) -> str:
     return job.initiated_by
 
 
-def create_pull_request_for_current_task(
-    work_root: Path,
-    state_root: Path | None = None,
-    *,
-    forge: ForgeProvider | None = None,
-    workflow: WorkflowEngine | None = None,
-) -> PullRequestResult:
-    forge = forge or FunctionForgeProvider(
-        close_fn=close_pull_request,
-        create_fn=create_pull_request,
-        inspect_fn=inspect_pull_request,
-        inspect_merge_fn=inspect_pull_request_merge,
-        list_fn=list_open_pull_requests,
-        merge_fn=merge_pull_request,
-    )
-    state_root = state_root or work_root
-    task_id = CURRENT_TASK_ID.get()
-    job = None
-    if task_id is not None:
-        job = (
-            workflow.find(task_id)
-            if workflow is not None
-            else task_by_id(task_id, state_root)
-        )
-    provenance = evolution_provenance_for_job(job) if job is not None else None
-    if provenance is None:
-        return forge.create_pull_request(root=work_root)
-    return forge.create_pull_request(
-        root=work_root,
-        evolution_provenance=provenance,
-    )
-
-
 def task_by_id(
     task_id: int,
     root: Path,
@@ -1361,39 +1417,39 @@ def review_step_update(review: ReviewRecord) -> str:
 
 def duplicate_close_comment(keep_number: int | None) -> str:
     if keep_number is None:
-        return "Closing this pull request from a Enoch maintenance job."
+        return "Closing this review from an Enoch maintenance task."
     return (
-        f"Closing as a duplicate of #{keep_number}. Keeping #{keep_number} "
-        "as the canonical PR for this change."
+        f"Closing as a duplicate of review #{keep_number}. Keeping review "
+        f"#{keep_number} as the canonical review for this change."
     )
 
 
-def format_pr_close_results(
-    results: list[PullRequestCloseResult],
+def format_review_close_results(
+    results: list[ReviewRecord],
     keep_number: int | None,
 ) -> str:
     if not results:
         return (
-            "Enoch could not close any pull requests: "
-            "no duplicate PR numbers were found."
+            "Enoch could not close any reviews: "
+            "no duplicate review references were found."
         )
-    lines = ["Enoch updated pull requests."]
+    lines = ["Enoch updated reviews."]
     if keep_number is not None:
-        lines.append(f"Kept PR: #{keep_number}")
-    lines.append("Closed PRs:")
+        lines.append(f"Kept review: #{keep_number}")
+    lines.append("Closed reviews:")
     failed = False
     for result in results:
-        if result.closed:
-            target = result.url or f"#{result.number}"
-            lines.append(f"- #{result.number}: closed ({target})")
+        target = result.identity.url or result.identity.id
+        if result.state == "closed":
+            lines.append(f"- {result.identity.id}: closed ({target})")
         else:
             failed = True
             lines.append(
-                f"- #{result.number}: failed ({result.note or 'unknown error'})"
+                f"- {result.identity.id}: state is {result.state} ({target})"
             )
     if failed:
         return (
-            "Enoch could not complete every pull request update.\n\n"
+            "Enoch could not complete every review update.\n\n"
             + "\n".join(lines)
         )
     return "\n".join(lines)

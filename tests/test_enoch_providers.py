@@ -215,6 +215,7 @@ class _SemanticVcs(_Vcs):
 
     def restore_revision(self, revision, root=None):
         self.restored = revision
+        self.updated = revision == "revision-2"
 
     def changed_files(self, root=None):
         return ["README.md"]
@@ -860,7 +861,10 @@ class EnochProviderTests(unittest.TestCase):
         self.assertTrue(vcs.refreshed)
         self.assertTrue(vcs.updated)
         self.assertEqual(vcs.calls, [])
-        self.assertIn("updated to trunk", result.direct_action_result)
+        self.assertIn(
+            "Updated repository from revision-1 to revision-2 using trunk.",
+            result.direct_action_result,
+        )
 
     def test_local_review_handoff_completes_without_remote_url(self) -> None:
         class LocalReview(IndependentReviewFixture):

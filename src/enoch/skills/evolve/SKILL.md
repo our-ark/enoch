@@ -8,7 +8,7 @@ task runner:
 
 ```text
 records -> evidence -> candidate -> recommendation -> human approval
-        -> isolated task -> pull request -> promotion -> adoption
+        -> isolated task -> review -> promotion -> adoption
 ```
 
 Backlog entries are ordinary deferred work and are never evolution evidence by
@@ -153,8 +153,8 @@ Candidate status and body adoption are separate:
 - `failed`: available for an explicit human retry.
 - `removed`, `cancelled`, `regressed`, `reverted`, or `forward-fixed`: retained
   lifecycle state.
-- `promoted`: a human merged the PR and Enoch verified the revision on the
-  trusted authoritative branch.
+- `promoted`: a human landed the review and Enoch verified its revision in the
+  trusted authoritative history.
 - `adopted`: an update passed doctor, restarted, and confirmed a version that
   contains the promotion.
 

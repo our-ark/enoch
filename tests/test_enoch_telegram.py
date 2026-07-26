@@ -1,4 +1,5 @@
 from pathlib import Path
+from dataclasses import replace
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -8,7 +9,7 @@ import threading
 import time
 import unittest
 from tempfile import TemporaryDirectory
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -39,14 +40,15 @@ from enoch.git_tools import GitError
 from our_ark_provider_kit import (
     BranchlessRepositoryFixture,
     IndependentReviewFixture,
+    RepositoryRevision,
+    ReviewIdentity,
+    ReviewProviderError,
+    ReviewSubmission,
     WorkspaceRequest,
 )
 from our_ark_github.workflow import (
     LocalPublishResult,
-    PublishError,
     PullRequestMergeCandidate,
-    PullRequestCloseResult,
-    PullRequestMergeResult,
     PullRequestResult,
     PullRequestTarget,
     RemotePublishResult,
@@ -71,11 +73,14 @@ from enoch.providers.runtime import FunctionAgentRuntime
 from enoch.providers import AgentRuntimeTimedOut
 from enoch.tasks.queue import (
     TaskJob,
+    TaskPublicationState,
     begin_next_task,
+    claim_running_task,
     complete_task,
     enqueue_task,
     fail_task,
     pause_task,
+    record_task_publication,
     record_task_result,
     task_queue_path,
     task_queue_status,
@@ -825,71 +830,73 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("/config runtime <provider> <setting> [value]", reply)
         self.assertNotIn("Enoch Telegram commands:", reply)
 
-    @patch("enoch.app.core.merge_pull_request")
-    def test_pr_merge_requires_explicit_target(self, merge: MagicMock) -> None:
+    def test_pr_merge_requires_explicit_target(self) -> None:
+        review = IndependentReviewFixture()
         client = FakeTelegramClient(allowed_chat_id=42)
-        bot = EnochApplication(load_identity(), ROOT, client)
+        bot = EnochApplication(load_identity(), ROOT, client, review=review)
 
         _handle_update(bot, _message_update(chat_id=42, text="/pr merge"))
 
-        self.assertIn("/pr merge <PR number or PR URL>", client.sent[0][1])
-        merge.assert_not_called()
+        self.assertIn("/pr merge <review id or URL>", client.sent[0][1])
+        self.assertEqual(review.operation_count, 0)
 
-    @patch("enoch.app.core.merge_pull_request")
-    def test_pr_merge_is_ignored_from_unauthorized_chat(self, merge: MagicMock) -> None:
+    def test_pr_merge_is_ignored_from_unauthorized_chat(self) -> None:
+        review = IndependentReviewFixture()
         client = FakeTelegramClient(allowed_chat_id=42)
-        bot = EnochApplication(load_identity(), ROOT, client)
+        bot = EnochApplication(load_identity(), ROOT, client, review=review)
 
-        _handle_update(bot, _message_update(chat_id=99, text="/pr merge 12"))
+        _handle_update(bot, _message_update(chat_id=99, text="/pr merge review-1"))
 
         self.assertEqual(client.sent, [])
-        merge.assert_not_called()
+        self.assertEqual(review.operation_count, 0)
 
-    @patch("enoch.app.core.merge_pull_request")
-    def test_pr_merge_requires_configured_chat_lock(self, merge: MagicMock) -> None:
+    def test_pr_merge_requires_configured_chat_lock(self) -> None:
+        review = IndependentReviewFixture()
         client = FakeTelegramClient()
-        bot = EnochApplication(load_identity(), ROOT, client)
+        bot = EnochApplication(load_identity(), ROOT, client, review=review)
 
-        _handle_update(bot, _message_update(chat_id=42, text="/pr merge 12"))
+        _handle_update(bot, _message_update(chat_id=42, text="/pr merge review-1"))
 
         self.assertIn("locked Telegram conversation", client.sent[0][1])
-        merge.assert_not_called()
+        self.assertEqual(review.operation_count, 0)
 
-    @patch("enoch.app.core.merge_pull_request")
-    def test_pr_merge_reports_success_for_exact_target(self, merge: MagicMock) -> None:
-        merge.return_value = PullRequestMergeResult(
-            number=12,
-            url="https://github.com/our-ark/enoch/pull/12",
-            method="merge",
-            merge_commit="def456",
-            message="Pull Request successfully merged",
+    def test_pr_merge_reports_success_for_exact_target(self) -> None:
+        review = IndependentReviewFixture()
+        published = review.publish_review(
+            ReviewSubmission(
+                title="Governed change",
+                body="",
+                revision=RepositoryRevision("def456"),
+            )
         )
         client = FakeTelegramClient(allowed_chat_id=42)
-        bot = EnochApplication(load_identity(), ROOT, client)
+        bot = EnochApplication(load_identity(), ROOT, client, review=review)
 
         _handle_update(bot,
             _message_update(
                 chat_id=42,
-                text="/pr merge https://github.com/our-ark/enoch/pull/12",
+                text=f"/pr merge {published.identity.id}",
             )
         )
 
-        merge.assert_called_once_with("https://github.com/our-ark/enoch/pull/12", ROOT)
-        self.assertIn("Merged PR #12.", client.sent[0][1])
-        self.assertIn("https://github.com/our-ark/enoch/pull/12", client.sent[0][1])
-        self.assertIn("Merge commit: def456", client.sent[0][1])
+        self.assertEqual(review.reviews[published.identity.id].state, "landed")
+        self.assertIn("Review review-1: landed.", client.sent[0][1])
+        self.assertIn("https://reviews.invalid/review-1", client.sent[0][1])
+        self.assertIn("Revision: def456", client.sent[0][1])
 
-    @patch("enoch.app.core.merge_pull_request", side_effect=PublishError("PR #12 is a draft."))
-    def test_pr_merge_reports_github_workflow_error(self, merge: MagicMock) -> None:
+    def test_pr_merge_reports_review_provider_error(self) -> None:
+        review = IndependentReviewFixture()
+        review.land_review = MagicMock(
+            side_effect=ReviewProviderError("Review review-1 is a draft.")
+        )
         client = FakeTelegramClient(allowed_chat_id=42)
-        bot = EnochApplication(load_identity(), ROOT, client)
+        bot = EnochApplication(load_identity(), ROOT, client, review=review)
 
-        _handle_update(bot, _message_update(chat_id=42, text="/pr merge 12"))
+        _handle_update(bot, _message_update(chat_id=42, text="/pr merge review-1"))
 
-        merge.assert_called_once_with("12", ROOT)
         self.assertEqual(
             client.sent[0][1],
-            "Enoch could not merge that pull request: PR #12 is a draft.",
+            "Enoch could not land that review: Review review-1 is a draft.",
         )
 
     def test_help_resume_reports_removed_command(self) -> None:
@@ -909,13 +916,13 @@ class EnochTelegramTests(unittest.TestCase):
         _handle_update(bot, _message_update(update_id=2, chat_id=42, text="/help pr"))
 
         self.assertIn(
-            "/pr - list and manage pull requests",
+            "/pr - list and manage code reviews",
             client.sent[0][1],
         )
         self.assertNotIn("/pr merge", client.sent[0][1])
-        self.assertIn("/pr - list open pull requests", client.sent[1][1])
-        self.assertIn("/pr show <PR number or PR URL>", client.sent[1][1])
-        self.assertIn("/pr merge <PR number or PR URL>", client.sent[1][1])
+        self.assertIn("/pr - list open reviews", client.sent[1][1])
+        self.assertIn("/pr show <review id or URL>", client.sent[1][1])
+        self.assertIn("/pr merge <review id or URL>", client.sent[1][1])
         self.assertIn("will not infer one", client.sent[1][1])
 
     def test_help_lists_worktree_commands(self) -> None:
@@ -1065,72 +1072,68 @@ class EnochTelegramTests(unittest.TestCase):
         remove_managed_task_worktree.assert_called_once_with(ROOT, 7, discard=True)
         self.assertEqual(client.sent[1][1], "Removed task #7 worktree.")
 
-    @patch("enoch.app.core.list_open_pull_requests")
-    def test_pr_lists_open_pull_requests(
-        self,
-        list_open_pull_requests: MagicMock,
-    ) -> None:
-        list_open_pull_requests.return_value = (
-            _pull_request_info(
-                number=13,
-                title="Add PR commands",
-                head_branch="feature/pr-commands",
-            ),
-            _pull_request_info(
-                number=12,
+    def test_pr_lists_open_reviews(self) -> None:
+        review = IndependentReviewFixture()
+        review.publish_review(
+            ReviewSubmission(
+                title="Add review commands",
+                body="",
+                revision=RepositoryRevision("revision-13"),
+            )
+        )
+        review.publish_review(
+            ReviewSubmission(
                 title="Document config precedence",
-                is_draft=True,
-                mergeable="UNKNOWN",
-                merge_state_status="BLOCKED",
+                body="",
+                revision=RepositoryRevision("revision-12"),
+                draft=True,
+            )
+        )
+        client = FakeTelegramClient(allowed_chat_id=42)
+        bot = EnochApplication(load_identity(), ROOT, client, review=review)
+
+        _handle_update(bot, _message_update(chat_id=42, text="/pr"))
+
+        reply = client.sent[0][1]
+        self.assertIn("Open reviews (2):", reply)
+        self.assertIn("review-1 [ready] Add review commands", reply)
+        self.assertIn("Revision: revision-13", reply)
+        self.assertIn("review-2 [draft] Document config precedence", reply)
+
+    def test_pr_reports_when_no_reviews_are_open(self) -> None:
+        review = IndependentReviewFixture()
+        client = FakeTelegramClient(allowed_chat_id=42)
+        bot = EnochApplication(load_identity(), ROOT, client, review=review)
+
+        _handle_update(bot, _message_update(chat_id=42, text="/pr"))
+
+        self.assertEqual(client.sent[0][1], "Open reviews: none.")
+
+    def test_pr_show_reports_provider_neutral_detail(self) -> None:
+        review = IndependentReviewFixture()
+        published = review.publish_review(
+            ReviewSubmission(
+                title="Add review commands",
+                body="",
+                revision=RepositoryRevision("revision-13"),
+            )
+        )
+        client = FakeTelegramClient(allowed_chat_id=42)
+        bot = EnochApplication(load_identity(), ROOT, client, review=review)
+
+        _handle_update(
+            bot,
+            _message_update(
+                chat_id=42,
+                text=f"/pr show {published.identity.id}",
             ),
         )
-        client = FakeTelegramClient(allowed_chat_id=42)
-        bot = EnochApplication(load_identity(), ROOT, client)
 
-        _handle_update(bot, _message_update(chat_id=42, text="/pr"))
-
-        list_open_pull_requests.assert_called_once_with(ROOT)
         reply = client.sent[0][1]
-        self.assertIn("Open pull requests (2):", reply)
-        self.assertIn("#13 [ready] Add PR commands", reply)
-        self.assertIn("main <- feature/pr-commands", reply)
-        self.assertIn("#12 [draft] Document config precedence", reply)
-
-    @patch("enoch.app.core.list_open_pull_requests", return_value=())
-    def test_pr_reports_when_no_pull_requests_are_open(
-        self,
-        list_open_pull_requests: MagicMock,
-    ) -> None:
-        client = FakeTelegramClient(allowed_chat_id=42)
-        bot = EnochApplication(load_identity(), ROOT, client)
-
-        _handle_update(bot, _message_update(chat_id=42, text="/pr"))
-
-        list_open_pull_requests.assert_called_once_with(ROOT)
-        self.assertEqual(client.sent[0][1], "Open pull requests: none.")
-
-    @patch("enoch.app.core.inspect_pull_request")
-    def test_pr_show_reports_read_only_detail(
-        self,
-        inspect_pull_request: MagicMock,
-    ) -> None:
-        inspect_pull_request.return_value = _pull_request_info(
-            number=13,
-            title="Add PR commands",
-            head_branch="feature/pr-commands",
-            author="enoch",
-        )
-        client = FakeTelegramClient(allowed_chat_id=42)
-        bot = EnochApplication(load_identity(), ROOT, client)
-
-        _handle_update(bot, _message_update(chat_id=42, text="/pr show 13"))
-
-        inspect_pull_request.assert_called_once_with("13", ROOT)
-        reply = client.sent[0][1]
-        self.assertIn("Pull request #13", reply)
+        self.assertIn("Review review-1", reply)
         self.assertIn("Status: ready", reply)
-        self.assertIn("Branch: main <- feature/pr-commands", reply)
-        self.assertIn("Author: enoch", reply)
+        self.assertIn("Current revision: revision-13", reply)
+        self.assertIn("https://reviews.invalid/review-1", reply)
 
     def test_config_shows_sets_and_resets_task_timeout(self) -> None:
         with TemporaryDirectory() as temp:
@@ -1605,87 +1608,111 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual([event.event for event in events], ["created", "queued"])
         self.assertIn("#2 [pending] retry transient work (retry of #1)", tasks_report)
 
-    def test_task_retry_reconciles_existing_pr_before_execution(self) -> None:
+    def test_task_retry_reconciles_existing_review_before_execution(self) -> None:
+        repository = BranchlessRepositoryFixture()
+        review = IndependentReviewFixture()
+        revision = RepositoryRevision("revision-13")
+        repository.revisions[revision.id] = revision
+        published = review.publish_review(
+            ReviewSubmission(
+                title="Add review command",
+                body="",
+                revision=revision,
+            )
+        )
         with TemporaryDirectory() as temp:
             root = Path(temp)
-            original = enqueue_task(42, "publish the PR command", root)
+            original = enqueue_task(42, "publish the review command", root)
             begin_next_task(root)
+            claim_running_task(original.id, "worker-one", 1, root)
+            record_task_publication(
+                original.id,
+                "worker-one",
+                TaskPublicationState(
+                    stage="review_published",
+                    revision_id=revision.id,
+                    workspace_id="workspace-13",
+                    review_id=published.identity.id,
+                    review_url=published.identity.url,
+                    review_published=True,
+                ),
+                root,
+            )
             fail_task(
                 original.id,
                 root,
                 result="Worker state was lost before completion.",
+                worker_id="worker-one",
             )
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochApplication(load_identity(), root, client)
+            bot = EnochApplication(
+                load_identity(),
+                root,
+                client,
+                repository=repository,
+                review=review,
+            )
             existing_result = (
                 "Implemented and published ready for review: "
-                "https://github.com/our-ark/enoch/pull/13"
+                f"{published.identity.url}"
             )
 
             with patch(
                 "enoch.app.core._latest_direct_action_result_for_task",
                 return_value=existing_result,
             ):
-                with patch(
-                    "enoch.app.core.inspect_pull_request",
-                    return_value=_pull_request_info(
-                        number=13,
-                        title="Add PR command",
-                    ),
-                ) as inspect:
-                    with patch.object(bot, "_maybe_start_task_worker"):
-                        _handle_update(bot,
-                            _message_update(chat_id=42, text="/task retry 1")
-                        )
+                with patch.object(bot, "_maybe_start_task_worker"):
+                    _handle_update(bot,
+                        _message_update(chat_id=42, text="/task retry 1")
+                    )
             retry = task_queue_status(root).pending[0]
             running = begin_next_task(root)
             with patch.object(bot, "_run_direct_work") as run_direct_work:
                 bot._run_task_job(running)
             status = task_queue_status(root)
 
-        inspect.assert_called_once_with(
-            "https://github.com/our-ark/enoch/pull/13",
-            root,
-        )
         self.assertEqual(retry.parent_task_id, original.id)
         self.assertEqual(
-            retry.pr_urls,
-            ("https://github.com/our-ark/enoch/pull/13",),
+            retry.review_urls,
+            (published.identity.url,),
         )
         self.assertEqual(retry.result, existing_result)
         run_direct_work.assert_not_called()
         self.assertEqual(status.history[-1].status, "completed")
-        self.assertEqual(status.history[-1].pr_urls, retry.pr_urls)
+        self.assertEqual(status.history[-1].review_urls, retry.review_urls)
 
-    def test_task_retry_reconciles_pr_from_preserved_branch(self) -> None:
+    def test_task_retry_reconciles_review_from_preserved_revision(self) -> None:
+        review = IndependentReviewFixture()
+        revision = RepositoryRevision("revision-14")
+        published = review.publish_review(
+            ReviewSubmission(
+                title="Add review command",
+                body="",
+                revision=revision,
+            )
+        )
         job = TaskJob(
             id=7,
             chat_id=42,
-            text="publish PR command",
+            text="publish review command",
             created_at="2026-07-18T21:10:00+00:00",
             started_at="2026-07-18T21:10:01+00:00",
             status="failed",
-            workspace_id="feature/pr-command",
-        )
-        pull_request = _pull_request_info(
-            number=14,
-            title="Add PR command",
-            head_branch="feature/pr-command",
+            revision_id=revision.id,
         )
 
         with patch(
             "enoch.app.core._latest_direct_action_result_for_task",
             return_value="",
         ):
-            with patch(
-                "enoch.app.core.list_open_pull_requests",
-                return_value=(pull_request,),
-            ) as list_pull_requests:
-                result = telegram._reconciled_retry_result(job, ROOT)
+            result = telegram._reconciled_retry_result(
+                job,
+                ROOT,
+                review=review,
+            )
 
-        list_pull_requests.assert_called_once_with(ROOT)
-        self.assertIn("Reconciled existing PR #14", result)
-        self.assertIn(pull_request.url, result)
+        self.assertIn(f"Reconciled existing review {published.identity.id}", result)
+        self.assertIn(published.identity.url, result)
 
     def test_task_retry_restores_linked_evolve_candidate(self) -> None:
         with TemporaryDirectory() as temp:
@@ -2075,7 +2102,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual(paused_status.paused[0].id, job.id)
         self.assertEqual(paused_status.paused[0].status, "paused")
         self.assertEqual(paused_events[-1].event, "paused")
-        self.assertEqual(paused_events[-1].trigger, "codex-unavailable")
+        self.assertEqual(paused_events[-1].trigger, "runtime-unavailable")
         self.assertIn("Status: paused", client.edited[-2][2])
         self.assertIn(f"use /task resume {job.id}", client.sent[-2][1].lower())
         self.assertEqual(resumed_status.paused, ())
@@ -2450,6 +2477,8 @@ class EnochTelegramTests(unittest.TestCase):
             "feedback-c3ed71fd1d2d",
             root,
             recording_mode="backfill",
+            repository=ANY,
+            review=ANY,
         )
         self.assertEqual(client.sent[0][1], "Recorded governed promotion.")
 
@@ -2837,11 +2866,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual(events[-1].candidate_actor, "agent")
         self.assertEqual(events[-1].approval_actor, "human")
 
-    @patch("enoch.app.core.create_pull_request")
-    def test_evolve_pr_helper_passes_current_task_provenance(
-        self,
-        create_pull_request: MagicMock,
-    ) -> None:
+    def test_evolve_review_helper_builds_current_task_provenance(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
             original = enqueue_task(
@@ -2859,13 +2884,9 @@ class EnochTelegramTests(unittest.TestCase):
                 candidate_id="feedback-c3ed71fd1d2d",
                 parent_task_id=original.id,
             )
-            token = telegram._CURRENT_TASK_ID.set(retry.id)
-            try:
-                telegram._create_pull_request_for_current_task(root)
-            finally:
-                telegram._CURRENT_TASK_ID.reset(token)
+            provenance = telegram._evolution_provenance_for_job(retry)
 
-        provenance = create_pull_request.call_args.kwargs["evolution_provenance"]
+        assert provenance is not None
         self.assertEqual(provenance.candidate_id, "feedback-c3ed71fd1d2d")
         self.assertEqual(provenance.evidence_source, "feedback")
         self.assertEqual(provenance.signal_actor, "human")
@@ -3926,11 +3947,6 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual(status.history[-1].status, "failed")
         self.assertEqual(status.history[-1].result, result)
 
-    @patch("enoch.app.core.create_pull_request")
-    @patch("enoch.app.core.push_current_branch")
-    @patch("enoch.app.core.switch_branch")
-    @patch("enoch.app.core.ensure_clean_worktree")
-    @patch("enoch.app.core.current_branch", return_value="agent/enoch-gary")
     @patch("enoch.app.core.act_in_session")
     @patch("enoch.app.core.respond")
     @patch("enoch.app.core.ensure_long_term_memory")
@@ -3941,27 +3957,13 @@ class EnochTelegramTests(unittest.TestCase):
         _update_memory: MagicMock,
         respond: MagicMock,
         act_in_session: MagicMock,
-        _current_branch: MagicMock,
-        _ensure_clean_worktree: MagicMock,
-        _switch_branch: MagicMock,
-        push_current_branch: MagicMock,
-        create_pull_request: MagicMock,
     ) -> None:
-        push_current_branch.return_value = RemotePublishResult(
-            branch="enoch/existing",
-            remote="origin",
-            pushed=True,
-            ahead_count=1,
-            compare_url="https://github.com/our-ark/enoch/compare/main...enoch/existing?expand=1",
-        )
-        create_pull_request.return_value = PullRequestResult(
-            branch="enoch/existing",
-            title="Existing work",
-            body="body",
-            created=True,
-            url="https://github.com/our-ark/enoch/pull/3",
-            fallback_url="https://github.com/our-ark/enoch/compare/main...enoch/existing?expand=1",
-        )
+        repository = BranchlessRepositoryFixture()
+        revision = RepositoryRevision("revision-existing")
+        repository.revisions[revision.id] = revision
+        repository.revisions["enoch/existing"] = revision
+        repository.parents[revision.id] = repository.authoritative.id
+        review = IndependentReviewFixture()
         with TemporaryDirectory() as temp:
             root = Path(temp)
             metadata = root / ".agent" / "instance.yaml"
@@ -3971,7 +3973,13 @@ class EnochTelegramTests(unittest.TestCase):
                 encoding="utf-8",
             )
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochApplication(load_identity(), root, client)
+            bot = EnochApplication(
+                load_identity(),
+                root,
+                client,
+                repository=repository,
+                review=review,
+            )
             _handle_update(bot,
                 _message_update(
                     chat_id=42,
@@ -3981,22 +3989,15 @@ class EnochTelegramTests(unittest.TestCase):
             job = begin_next_task(root)
             assert job is not None
 
-            with patch(
-                "enoch.app.core.prepare_existing_branch_worktree",
-                return_value=TaskWorktree(job.id, root, "enoch/existing", True),
-            ):
-                with patch(
-                    "enoch.app.core.remove_task_worktree",
-                    return_value="Removed task worktree.",
-                ):
-                    bot._run_task_job(job)
+            bot._run_task_job(job)
 
         respond.assert_not_called()
         act_in_session.assert_not_called()
-        push_current_branch.assert_called_once_with(root=root)
-        create_pull_request.assert_called_once_with(root=root)
+        self.assertEqual(len(review.reviews), 1)
+        published = next(iter(review.reviews.values()))
+        self.assertEqual(published.versions[-1].revision.id, revision.id)
         self.assertIn("Status: completed", client.edited[-1][2])
-        self.assertIn("https://github.com/our-ark/enoch/pull/3", client.edited[-1][2])
+        self.assertIn(published.identity.url, client.edited[-1][2])
         log_conversation_turn.assert_called()
 
     @patch("enoch.app.core.skills_command", return_value="Lucy skills:")
@@ -4411,7 +4412,10 @@ class EnochTelegramTests(unittest.TestCase):
 
         _handle_update(bot, _message_update(chat_id=42, text="/update"))
 
-        update_from_authoritative.assert_called_once_with(ROOT)
+        update_from_authoritative.assert_called_once_with(
+            ROOT,
+            repository=ANY,
+        )
         schedule_restart.assert_called_once_with(ROOT)
         self.assertIn("Enoch pulled latest main and doctor passed.", client.sent[0][1])
         self.assertIn("Restarting now.", client.sent[0][1])
@@ -4431,7 +4435,10 @@ class EnochTelegramTests(unittest.TestCase):
 
         _handle_update(bot, _message_update(chat_id=42, text="/update"))
 
-        update_from_authoritative.assert_called_once_with(ROOT)
+        update_from_authoritative.assert_called_once_with(
+            ROOT,
+            repository=ANY,
+        )
         schedule_restart.assert_not_called()
         self.assertIn("Enoch is already up to date.", client.sent[0][1])
 
@@ -4533,11 +4540,6 @@ class EnochTelegramTests(unittest.TestCase):
         prepare_local_publish.assert_not_called()
         self.assertIn("I can talk that through first.", client.sent[0][1])
 
-    @patch("enoch.app.core.create_pull_request")
-    @patch("enoch.app.core.push_current_branch")
-    @patch("enoch.app.core.switch_branch")
-    @patch("enoch.app.core.ensure_clean_worktree")
-    @patch("enoch.app.core.current_branch", return_value="agent/enoch-gary")
     @patch("enoch.app.core.act_in_session")
     @patch("enoch.app.core.respond")
     @patch("enoch.app.core.ensure_long_term_memory")
@@ -4548,27 +4550,13 @@ class EnochTelegramTests(unittest.TestCase):
         _update_memory: MagicMock,
         respond: MagicMock,
         act_in_session: MagicMock,
-        current_branch: MagicMock,
-        ensure_clean_worktree: MagicMock,
-        switch_branch: MagicMock,
-        push_current_branch: MagicMock,
-        create_pull_request: MagicMock,
     ) -> None:
-        push_current_branch.return_value = RemotePublishResult(
-            branch="enoch/existing",
-            remote="origin",
-            pushed=True,
-            ahead_count=1,
-            compare_url="https://github.com/our-ark/enoch/compare/main...enoch/existing?expand=1",
-        )
-        create_pull_request.return_value = PullRequestResult(
-            branch="enoch/existing",
-            title="Existing work",
-            body="body",
-            created=True,
-            url="https://github.com/our-ark/enoch/pull/3",
-            fallback_url="https://github.com/our-ark/enoch/compare/main...enoch/existing?expand=1",
-        )
+        repository = BranchlessRepositoryFixture()
+        revision = RepositoryRevision("revision-existing")
+        repository.revisions[revision.id] = revision
+        repository.revisions["enoch/existing"] = revision
+        repository.parents[revision.id] = repository.authoritative.id
+        review = IndependentReviewFixture()
         with TemporaryDirectory() as temp:
             root = Path(temp)
             metadata = root / ".agent" / "instance.yaml"
@@ -4578,38 +4566,34 @@ class EnochTelegramTests(unittest.TestCase):
                 encoding="utf-8",
             )
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochApplication(load_identity(), root, client)
+            bot = EnochApplication(
+                load_identity(),
+                root,
+                client,
+                repository=repository,
+                review=review,
+            )
 
             started, start_worker = self._capture_direct_work_worker(bot)
-            with patch(
-                "enoch.app.core.prepare_existing_branch_worktree",
-                return_value=TaskWorktree(1, root, "enoch/existing", True),
-            ):
-                with patch(
-                    "enoch.app.core.remove_task_worktree",
-                    return_value="Removed task worktree.",
-                ):
-                    with start_worker:
-                        _handle_update(bot,
-                            _message_update(
-                                chat_id=42,
-                                text="/do publish existing local branch `enoch/existing` as a PR against `main`",
-                            )
-                        )
-                    self.assertEqual(len(started), 1)
-                    bot._run_direct_task_job(started[0][0], session_key=started[0][1])
+            with start_worker:
+                _handle_update(bot,
+                    _message_update(
+                        chat_id=42,
+                        text="/do publish existing local branch `enoch/existing` as a PR against `main`",
+                    )
+                )
+            self.assertEqual(len(started), 1)
+            bot._run_direct_task_job(started[0][0], session_key=started[0][1])
 
         respond.assert_not_called()
         act_in_session.assert_not_called()
-        ensure_clean_worktree.assert_called_once_with(root)
-        current_branch.assert_not_called()
-        switch_branch.assert_not_called()
-        push_current_branch.assert_called_once_with(root=root)
-        create_pull_request.assert_called_once_with(root=root)
+        self.assertEqual(len(review.reviews), 1)
+        published = next(iter(review.reviews.values()))
+        self.assertEqual(published.versions[-1].revision.id, revision.id)
         self.assertEqual(len(client.sent), 2)
         self.assertIn("Task #1", client.sent[0][1])
         self.assertIn("Status: completed", client.edited[-1][2])
-        self.assertIn("https://github.com/our-ark/enoch/pull/3", client.edited[-1][2])
+        self.assertIn(published.identity.url, client.edited[-1][2])
 
     @patch("enoch.app.core.create_pull_request")
     @patch("enoch.app.core.push_current_branch")
@@ -5140,23 +5124,32 @@ class EnochTelegramTests(unittest.TestCase):
         push_current_branch.assert_not_called()
         create_pull_request.assert_not_called()
 
-    @patch("enoch.app.core.close_pull_request")
     @patch("enoch.app.core.ensure_long_term_memory")
     @patch("enoch.app.core.log_conversation_turn")
-    def test_do_closes_duplicate_pull_requests(
+    def test_do_closes_duplicate_reviews(
         self,
         _log_conversation_turn: MagicMock,
         _update_memory: MagicMock,
-        close_pull_request: MagicMock,
     ) -> None:
-        close_pull_request.side_effect = [
-            PullRequestCloseResult(number=2, closed=True, url="https://github.com/our-ark/enoch/pull/2"),
-            PullRequestCloseResult(number=3, closed=True, url="https://github.com/our-ark/enoch/pull/3"),
-        ]
+        review = IndependentReviewFixture()
+        for number in (2, 3):
+            created = review.publish_review(
+                ReviewSubmission(
+                    title=f"Review {number}",
+                    body="",
+                    revision=RepositoryRevision(f"revision-{number}"),
+                )
+            )
+            review.reviews.pop(created.identity.id)
+            identity = ReviewIdentity(
+                id=str(number),
+                url=f"https://reviews.invalid/{number}",
+            )
+            review.reviews[identity.id] = replace(created, identity=identity)
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochApplication(load_identity(), root, client)
+            bot = EnochApplication(load_identity(), root, client, review=review)
 
             started, start_worker = self._capture_direct_work_worker(bot)
             with start_worker:
@@ -5164,15 +5157,13 @@ class EnochTelegramTests(unittest.TestCase):
             self.assertEqual(len(started), 1)
             bot._run_direct_task_job(started[0][0], session_key=started[0][1])
 
-        self.assertEqual(close_pull_request.call_count, 2)
-        self.assertEqual(close_pull_request.call_args_list[0].args[0], 2)
-        self.assertIn("duplicate of #1", close_pull_request.call_args_list[0].kwargs["comment"])
-        self.assertEqual(close_pull_request.call_args_list[1].args[0], 3)
+        self.assertEqual(review.reviews["2"].state, "closed")
+        self.assertEqual(review.reviews["3"].state, "closed")
         self.assertIn("Status: completed", client.edited[-1][2])
         self.assertIn("Latest update: Completed. Final summary sent below.", client.edited[-1][2])
-        self.assertIn("Kept PR: #1", client.sent[-1][1])
-        self.assertIn("#2: closed", client.sent[-1][1])
-        self.assertIn("#3: closed", client.sent[-1][1])
+        self.assertIn("Kept review: #1", client.sent[-1][1])
+        self.assertIn("2: closed", client.sent[-1][1])
+        self.assertIn("3: closed", client.sent[-1][1])
 
     def test_client_splits_long_messages(self) -> None:
         config = TelegramConfig(token="token", poll_timeout=1)

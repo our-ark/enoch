@@ -111,7 +111,7 @@ class EnochPromptAppendTests(unittest.TestCase):
         self.assertEqual(result.visible_reply, "I could not identify the task.")
         self.assertEqual(result.signals, ())
 
-    def test_repository_handoff_note_warns_not_to_assume_merge(self) -> None:
+    def test_repository_handoff_note_warns_not_to_assume_landing(self) -> None:
         note = repository_handoff_note(
             "enoch/turn-readme",
             "https://github.com/our-ark/enoch/pull/1",
@@ -120,9 +120,9 @@ class EnochPromptAppendTests(unittest.TestCase):
         )
 
         self.assertIn("enoch/turn-readme", note)
-        self.assertIn("Do not assume the PR was merged.", note)
-        self.assertIn("Local checkout is back on resident branch `agent/enoch-gary`.", note)
-        self.assertIn("authoritative branch `trunk`", note)
+        self.assertIn("Do not assume the review was landed.", note)
+        self.assertIn("The resident workspace is `agent/enoch-gary`.", note)
+        self.assertIn("authoritative target `trunk`", note)
 
 
 if __name__ == "__main__":

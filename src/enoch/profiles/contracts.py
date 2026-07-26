@@ -13,14 +13,15 @@ from enoch.providers.contracts import (
     ChatEvent,
     ChatProvider,
     ConversationId,
-    ForgeProvider,
+    RepositoryProvider,
+    ReviewProvider,
     TaskRequirements,
 )
 from enoch.storage import StorageLayout
 from enoch.tasks.queue import TaskJob
 
 
-PROFILE_API_VERSION = 4
+PROFILE_API_VERSION = 5
 PromptPurpose = Literal["conversation", "image", "task-context", "task", "evidence"]
 TaskEnqueuer = Callable[[str, str, TaskRequirements], TaskJob]
 
@@ -52,7 +53,8 @@ class CommandContext:
     command: str
     argument: str
     runtime: AgentRuntime
-    forge: ForgeProvider
+    repository: RepositoryProvider
+    review: ReviewProvider
     _enqueue: TaskEnqueuer = field(repr=False)
 
     def enqueue_task(
@@ -116,7 +118,8 @@ class LifecycleContext:
     storage: StorageLayout
     chat: ChatProvider
     runtime: AgentRuntime
-    forge: ForgeProvider
+    repository: RepositoryProvider
+    review: ReviewProvider
 
 
 LifecycleHook = Callable[[LifecycleContext], None]

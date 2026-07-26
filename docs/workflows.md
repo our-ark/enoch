@@ -2,7 +2,7 @@
 
 `enoch.workflows.WorkflowEngine` is the versioned public boundary for Enoch's
 single-owner task lifecycle. The current contract is
-`WORKFLOW_API_VERSION = 2`.
+`WORKFLOW_API_VERSION = 3`.
 
 The engine owns:
 
@@ -71,6 +71,14 @@ migration window. Workflow API v1 implementations must deliberately adopt the
 v2 methods before injection; `LocalWorkflowEngine` retains v1 method adapters
 for direct callers.
 
+Version 3 replaces open-ended `Any` / `**options` mutation calls with explicit,
+typed arguments for enqueue, retry, pause, resume, regression, and resolution.
+This keeps provider and lifecycle evidence visible to alternate workflow
+implementations and makes unsupported call shapes fail at the API boundary.
+The local engine still exposes the bounded v1 publication adapters for stored
+state migration, but injected engines implement only the current typed
+protocol.
+
 Task-event schema 7 records the same opaque `workspace_id`, `revision_id`, and
 `review_id` values with `review_urls` at every lifecycle transition. Event
 readers continue to accept earlier schemas, including Git-shaped
@@ -88,11 +96,12 @@ atomically moves one due task into the running slot, and `claim()` binds that
 task to a worker identity and process. `heartbeat()` refreshes the durable
 claim. `finalize()` accepts only `completed`, `failed`, or `cancelled`.
 
-Every core repository task records `runtime.execute`, `vcs.write`, and
-`forge.publish` requirements when it is queued. Profiles may add requirements
-but cannot remove these core guarantees. Requirements survive pause, restart,
-recovery, and retry, and authorization denial is a permanent, non-retryable
-task failure recorded before the runtime or repository provider is invoked.
+Every core repository task records `runtime.execute`, `vcs.inspect`,
+`vcs.authoritative`, `vcs.workspace`, `vcs.capture`, and `forge.review`
+requirements when it is queued. Profiles may add requirements but cannot remove
+these core guarantees. Requirements survive pause, restart, recovery, and
+retry, and authorization denial is a permanent, non-retryable task failure
+recorded before the runtime or repository provider is invoked.
 
 The default engine uses worker identity checks on owned mutations and daemon
 epoch fencing around every state-changing operation. `inspect()` and `find()`

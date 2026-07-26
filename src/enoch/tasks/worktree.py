@@ -261,6 +261,71 @@ def prepare_repository_task_workspace(
     )
 
 
+def prepare_existing_revision_workspace(
+    repository: RepositoryProvider,
+    control_root: Path,
+    task_id: int,
+    reference: str,
+    *,
+    existing_path: str = "",
+    existing_workspace_id: str = "",
+) -> TaskWorktree:
+    require_repository_features(repository, "isolated_workspaces", "immutable_revisions")
+    revision = repository.resolve_repository_revision(reference, control_root)
+    if revision is None:
+        raise RepositoryProviderError(
+            f"Repository reference {reference!r} does not resolve to a revision."
+        )
+    path = (
+        Path(existing_path).expanduser().resolve()
+        if existing_path
+        else task_worktree_path(control_root, task_id)
+    )
+    registered = {
+        workspace.path.resolve(): workspace
+        for workspace in repository.list_repository_workspaces(control_root)
+    }
+    if existing := registered.get(path):
+        if existing_workspace_id and existing.id != existing_workspace_id:
+            raise RepositoryProviderError(
+                f"Task #{task_id} workspace is {existing.id}, "
+                f"expected {existing_workspace_id}."
+            )
+        if existing.current_revision.id != revision.id:
+            raise RepositoryProviderError(
+                f"Task #{task_id} workspace is at revision "
+                f"{existing.current_revision.id}, expected {revision.id}."
+            )
+        return TaskWorktree(
+            task_id=task_id,
+            path=existing.path,
+            workspace_id=existing.id,
+            created=False,
+            repository_workspace=existing,
+        )
+    if path.exists() and any(path.iterdir()):
+        raise RepositoryProviderError(
+            f"Task #{task_id} workspace path is not empty: {path}"
+        )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    workspace = repository.create_repository_workspace(
+        WorkspaceRequest(
+            path=path,
+            base_revision=revision,
+            workspace_id=existing_workspace_id or reference,
+            metadata={"source_reference": reference},
+        ),
+        control_root,
+    )
+    return TaskWorktree(
+        task_id=task_id,
+        path=workspace.path,
+        workspace_id=workspace.id,
+        created=True,
+        repository_workspace=workspace,
+    )
+
+
 def remove_repository_task_workspace(
     repository: RepositoryProvider,
     control_root: Path,

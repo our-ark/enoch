@@ -3,86 +3,98 @@ from __future__ import annotations
 import time
 
 from enoch.app.models import WorkStatusMessage
-from enoch.providers.contracts import PullRequestMergeCandidate, PullRequestMergeResult
+from enoch.providers.contracts import (
+    ReviewLandResult,
+    ReviewRecord,
+)
 from enoch.tasks.queue import TaskJob
 
 
-def format_pull_request_merge_result(result: PullRequestMergeResult) -> str:
-    commit = result.merge_commit or "reported by the forge"
+def format_review_land_result(result: ReviewLandResult) -> str:
+    revision = (
+        result.revision.display
+        if result.revision is not None
+        else "reported by the review provider"
+    )
     return "\n".join(
         [
-            f"Merged PR #{result.number}.",
-            f"URL: {result.url}",
-            f"Method: {result.method}",
-            f"Merge commit: {commit}",
-            f"Forge result: {result.message}",
+            f"Review {result.review.id}: {result.status}.",
+            f"Revision: {revision}",
+            f"Review result: {result.message or 'No additional detail.'}",
+            *(
+                [f"URL: {result.review.url}"]
+                if result.review.url
+                else []
+            ),
         ]
     )
 
 
-def format_open_pull_requests(
-    pull_requests: tuple[PullRequestMergeCandidate, ...],
+def format_open_reviews(
+    reviews: tuple[ReviewRecord, ...],
 ) -> str:
-    if not pull_requests:
-        return "Open pull requests: none."
-    lines = [f"Open pull requests ({len(pull_requests)}):"]
-    for pull_request in pull_requests:
+    if not reviews:
+        return "Open reviews: none."
+    lines = [f"Open reviews ({len(reviews)}):"]
+    for review in reviews:
         lines.extend(
             [
                 "",
-                f"#{pull_request.number} [{pull_request_readiness(pull_request)}] "
-                f"{pull_request.title or 'Untitled pull request'}",
-                pull_request_branch_line(pull_request),
-                pull_request.url,
+                f"{review.identity.id} [{review_readiness(review)}] "
+                f"{review.title or 'Untitled review'}",
+                f"Revision: {review.versions[-1].revision.display}",
+                review.identity.url,
             ]
         )
-    return "\n".join(lines)
+    return "\n".join(line for line in lines if line)
 
 
-def format_pull_request(pull_request: PullRequestMergeCandidate) -> str:
+def format_review(review: ReviewRecord) -> str:
     lines = [
-        f"Pull request #{pull_request.number}",
-        f"Title: {pull_request.title or 'Untitled pull request'}",
-        f"Status: {pull_request_readiness(pull_request)}",
-        f"State: {pull_request.state.lower() or 'unknown'}",
-        (
-            "Merge: "
-            f"{pull_request.mergeable.lower() or 'unknown'} / "
-            f"{pull_request.merge_state_status.lower() or 'unknown'}"
-        ),
-        f"Branch: {pull_request_branch_line(pull_request)}",
+        f"Review {review.identity.id}",
+        f"Title: {review.title or 'Untitled review'}",
+        f"Status: {review_readiness(review)}",
+        f"State: {review.state or 'unknown'}",
+        f"Current revision: {review.versions[-1].revision.display}",
     ]
-    if pull_request.author:
-        lines.append(f"Author: {pull_request.author}")
-    if pull_request.updated_at:
-        lines.append(f"Updated: {pull_request.updated_at}")
-    lines.append(f"URL: {pull_request.url}")
+    if review.landed_revision is not None:
+        lines.append(f"Landed revision: {review.landed_revision.display}")
+    if review.landed_at:
+        lines.append(f"Landed at: {review.landed_at}")
+    if review.dependencies:
+        lines.append(
+            "Depends on: "
+            + ", ".join(item.id for item in review.dependencies)
+        )
+    if review.signals:
+        lines.append(
+            "Signals: "
+            + ", ".join(
+                f"{signal.name}={signal.status}"
+                for signal in review.signals
+            )
+        )
+    if review.identity.url:
+        lines.append(f"URL: {review.identity.url}")
     return "\n".join(lines)
 
 
-def pull_request_readiness(pull_request: PullRequestMergeCandidate) -> str:
-    if pull_request.state == "MERGED" or pull_request.merged_at:
-        return "merged"
-    if pull_request.state == "CLOSED":
+def review_readiness(review: ReviewRecord) -> str:
+    if review.state == "landed" or review.landed_revision is not None:
+        return "landed"
+    if review.state == "closed":
         return "closed"
-    if pull_request.is_draft:
+    if review.draft:
         return "draft"
-    if pull_request.mergeable == "CONFLICTING":
-        return "conflicts"
-    if (
-        pull_request.mergeable == "MERGEABLE"
-        and pull_request.merge_state_status in {"CLEAN", "UNSTABLE"}
-    ):
-        return "ready"
-    if pull_request.merge_state_status in {"BLOCKED", "DIRTY", "BEHIND"}:
+    blocked = {
+        "blocked",
+        "conflicting",
+        "failed",
+        "rejected",
+    }
+    if any(signal.status in blocked for signal in review.signals):
         return "blocked"
-    return "checking"
-
-
-def pull_request_branch_line(pull_request: PullRequestMergeCandidate) -> str:
-    base = pull_request.base_branch or "unknown"
-    head = pull_request.head_branch or "unknown"
-    return f"{base} <- {head}"
+    return "ready" if review.state in {"open", "published"} else review.state
 
 
 def format_elapsed(elapsed_seconds: int) -> str:

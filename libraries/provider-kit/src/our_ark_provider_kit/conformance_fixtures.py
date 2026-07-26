@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import datetime, timezone
 from pathlib import Path
 
 from our_ark_provider_kit.contracts import (
@@ -301,11 +302,19 @@ class IndependentReviewFixture:
         del root
         current = self.inspect_review(request.review)
         self.operation_count += 1
-        landed = replace(current, state="landed")
+        landed_at = datetime.now(timezone.utc).isoformat()
+        revision = current.versions[-1].revision
+        landed = replace(
+            current,
+            state="landed",
+            landed_revision=revision,
+            landed_at=landed_at,
+        )
         self.reviews[current.identity.id] = landed
         return ReviewLandResult(
             review=current.identity,
             status="landed",
-            revision=current.versions[-1].revision,
+            revision=revision,
+            landed_at=landed_at,
             message=f"Landed with {request.strategy}.",
         )

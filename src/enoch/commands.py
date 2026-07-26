@@ -792,11 +792,11 @@ def _normalize_help_topic(topic: str) -> str:
 def pr_usage(prefix: str = "/") -> str:
     return "\n".join(
         [
-            "Pull request commands:",
-            f"{prefix}pr - list open pull requests in the current repository",
-            f"{prefix}pr show <PR number or PR URL> - inspect one pull request",
-            f"{prefix}pr merge <PR number or PR URL> - inspect and merge exactly that PR",
-            "A merge target is required; Enoch will not infer one from the current branch or conversation.",
+            "Review commands:",
+            f"{prefix}pr - list open reviews in the current repository",
+            f"{prefix}pr show <review id or URL> - inspect one review",
+            f"{prefix}pr merge <review id or URL> - land exactly that review",
+            "A review target is required; Enoch will not infer one from the current workspace or conversation.",
         ]
     )
 
@@ -1036,7 +1036,7 @@ CORE_COMMANDS = (
         "pr",
         "System",
         "",
-        "list and manage pull requests",
+        "list and manage code reviews",
         pr_usage,
     ),
     CoreCommand(

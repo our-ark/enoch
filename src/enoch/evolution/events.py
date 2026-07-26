@@ -18,7 +18,7 @@ from enoch.memory.paths import clean_text, now as current_time
 from enoch.paths import artifact_path, artifact_read_paths
 
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 EVOLVE_EVENT_TYPES = {
     "checked",
     "proposed",
@@ -135,9 +135,11 @@ class EvolveEvent:
     reason: str = ""
     removal_classification: str = ""
     evidence_refs: tuple[str, ...] = ()
-    pr_url: str = ""
-    merge_commit: str = ""
-    authoritative_branch: str = ""
+    review_id: str = ""
+    review_urls: tuple[str, ...] = ()
+    revision_id: str = ""
+    authoritative_revision_id: str = ""
+    authoritative_name: str = ""
     promoted_at: str = ""
     verified_at: str = ""
     version: str = ""
@@ -150,6 +152,18 @@ class EvolveEvent:
     runtime_event_types: tuple[str, ...] = ()
     runtime_output_refs: tuple[str, ...] = ()
     runtime_side_effects: tuple[str, ...] = ()
+
+    @property
+    def pr_url(self) -> str:
+        return self.review_urls[-1] if self.review_urls else ""
+
+    @property
+    def merge_commit(self) -> str:
+        return self.revision_id
+
+    @property
+    def authoritative_branch(self) -> str:
+        return self.authoritative_name
 
 
 def evolve_event_path(root: Path | None = None) -> Path:
@@ -174,9 +188,11 @@ def record_evolve_event(
     proposal_id: str = "",
     curation_id: str = "",
     recommendation_kind: str = "",
-    pr_url: str = "",
-    merge_commit: str = "",
-    authoritative_branch: str = "",
+    review_id: str = "",
+    review_urls: tuple[str, ...] = (),
+    revision_id: str = "",
+    authoritative_revision_id: str = "",
+    authoritative_name: str = "",
     promoted_at: str = "",
     verified_at: str = "",
     version: str = "",
@@ -273,9 +289,11 @@ def record_evolve_event(
     ):
         raise ValueError(f"Evolve event {normalized_event} requires a task id.")
     normalized_recording_mode = clean_text(recording_mode).lower()
-    normalized_pr_url = clean_text(pr_url)
-    normalized_merge_commit = clean_text(merge_commit)
-    normalized_authoritative_branch = clean_text(authoritative_branch)
+    normalized_review_id = clean_text(review_id)
+    normalized_review_urls = _string_tuple(review_urls)
+    normalized_revision_id = clean_text(revision_id)
+    normalized_authoritative_revision_id = clean_text(authoritative_revision_id)
+    normalized_authoritative_name = clean_text(authoritative_name)
     normalized_promoted_at = clean_text(promoted_at)
     normalized_verified_at = clean_text(verified_at)
     normalized_version = clean_text(version)
@@ -290,15 +308,15 @@ def record_evolve_event(
             raise ValueError("Promoted evolution events require a human actor.")
         if not all(
             [
-                normalized_pr_url,
-                normalized_merge_commit,
-                normalized_authoritative_branch,
+                normalized_review_id,
+                normalized_revision_id,
+                normalized_authoritative_revision_id,
                 normalized_promoted_at,
             ]
         ):
             raise ValueError(
-                "Promoted evolution events require PR URL, merge commit, "
-                "authoritative branch, and promoted time."
+                "Promoted evolution events require review, landed revision, "
+                "authoritative revision, and promoted time."
             )
     if normalized_event == "adopted":
         if not normalized_version or normalized_health_check != "passed":
@@ -331,9 +349,11 @@ def record_evolve_event(
         reason=_clip(clean_text(reason)),
         removal_classification=normalized_removal_classification,
         evidence_refs=normalized_evidence_refs,
-        pr_url=normalized_pr_url,
-        merge_commit=normalized_merge_commit,
-        authoritative_branch=normalized_authoritative_branch,
+        review_id=normalized_review_id,
+        review_urls=normalized_review_urls,
+        revision_id=normalized_revision_id,
+        authoritative_revision_id=normalized_authoritative_revision_id,
+        authoritative_name=normalized_authoritative_name,
         promoted_at=normalized_promoted_at,
         verified_at=normalized_verified_at,
         version=normalized_version,
@@ -543,11 +563,29 @@ def _event_from_line(line: str) -> EvolveEvent | None:
     recording_mode = clean_text(str(raw.get("recording_mode") or "")).lower()
     if event in {"promoted", "adopted"} and recording_mode not in RECORDING_MODES:
         return None
+    schema_version = _int(raw.get("schema_version"))
+    review_id = clean_text(
+        str(raw.get("review_id") or raw.get("pr_url") or "")
+    )
+    review_urls = _string_tuple(raw.get("review_urls"))
+    legacy_pr_url = clean_text(str(raw.get("pr_url") or ""))
+    if legacy_pr_url and legacy_pr_url not in review_urls:
+        review_urls = (*review_urls, legacy_pr_url)
+    revision_id = clean_text(
+        str(raw.get("revision_id") or raw.get("merge_commit") or "")
+    )
+    authoritative_revision_id = clean_text(
+        str(raw.get("authoritative_revision_id") or "")
+    )
+    authoritative_name = clean_text(
+        str(raw.get("authoritative_name") or raw.get("authoritative_branch") or "")
+    )
     if event == "promoted" and (
         actor != "human"
-        or not clean_text(str(raw.get("pr_url") or ""))
-        or not clean_text(str(raw.get("merge_commit") or ""))
-        or not clean_text(str(raw.get("authoritative_branch") or ""))
+        or not review_id
+        or not revision_id
+        or (schema_version >= 7 and not authoritative_revision_id)
+        or (schema_version < 7 and not authoritative_name)
         or not clean_text(str(raw.get("promoted_at") or ""))
         or not clean_text(str(raw.get("verified_at") or ""))
     ):
@@ -594,11 +632,11 @@ def _event_from_line(line: str) -> EvolveEvent | None:
             raw.get("removal_classification")
         ),
         evidence_refs=_loaded_evidence_refs(raw.get("evidence_refs")),
-        pr_url=clean_text(str(raw.get("pr_url") or "")),
-        merge_commit=clean_text(str(raw.get("merge_commit") or "")),
-        authoritative_branch=clean_text(
-            str(raw.get("authoritative_branch") or "")
-        ),
+        review_id=review_id,
+        review_urls=review_urls,
+        revision_id=revision_id,
+        authoritative_revision_id=authoritative_revision_id,
+        authoritative_name=authoritative_name,
         promoted_at=clean_text(str(raw.get("promoted_at") or "")),
         verified_at=clean_text(str(raw.get("verified_at") or "")),
         version=clean_text(str(raw.get("version") or "")),

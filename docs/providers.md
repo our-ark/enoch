@@ -412,16 +412,14 @@ implement `configure(args, root, prefix="/")` for
 `config_section`, `model_summary()`, and `model_options()`. Core task and resume
 messages refer to agent runtime access rather than a particular implementation.
 
-VCS providers implement repository semantics rather than parsing Git command
-arguments: current and switched branches, clean-state and diff inspection,
-staging and commit, task base selection, and isolated workspace
-creation/removal. Governed evolution additionally uses authoritative branch
-discovery and refresh, revision resolution and ancestry, repository update and
-rollback. Providers may also expose a sync summary for startup diagnostics.
-`run(args, root)` remains a compatibility escape
-hatch implemented by the built-in Git provider, not a required provider
-contract. Enoch's update and evolution lifecycle do not depend on either
-optional capability.
+Repository providers expose working-copy inspection, immutable revision
+resolution and ancestry, authoritative-base discovery and refresh, change
+capture, restore, and isolated workspace lifecycle. Named branches and staging
+indexes are optional implementation features used by the Git compatibility
+adapter. Providers may also expose a sync summary for startup diagnostics.
+`run(args, root)` remains a compatibility escape hatch implemented by the
+built-in Git provider, not a required provider contract. Enoch's task, update,
+and evolution lifecycles do not depend on that optional capability.
 
 ## Provider-owned setup
 
@@ -439,7 +437,9 @@ contract before returning it. Missing methods or properties produce an
 immediate `ProviderError` naming the incomplete provider and missing members,
 instead of failing later in a task.
 
-Forge providers own task publication, pull-request management, evolution
-promotion, lineage discovery, and published skill reads. A replacement forge
-implements the PR contract plus `read_text` and the lineage methods used by
-`LineageProvider`.
+Review providers own typed review publication, inspection, closure, and
+authorized landing. Task retry, `/pr`, and evolution promotion use opaque
+review identities and verified landed revisions. Legacy forge providers are
+adapted behind that contract. Published skill reads and lineage discovery are
+separate compatibility capabilities until their own provider boundary is
+introduced.

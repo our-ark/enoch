@@ -539,12 +539,16 @@ def _format_evolve_event(event: EvolveEvent) -> list[str]:
         details.append(f"retry of task-{event.retry_of_task_id}")
     if event.mode:
         details.append(f"mode {event.mode}")
-    if event.pr_url:
-        details.append(f"PR {event.pr_url}")
-    if event.merge_commit:
-        details.append(f"merge {event.merge_commit[:12]}")
-    if event.authoritative_branch:
-        details.append(f"authoritative {event.authoritative_branch}")
+    if event.review_id:
+        details.append(f"review {event.review_id}")
+    if event.revision_id:
+        details.append(f"landed {event.revision_id[:12]}")
+    if event.authoritative_revision_id:
+        details.append(
+            f"authoritative revision {event.authoritative_revision_id[:12]}"
+        )
+    if event.authoritative_name:
+        details.append(f"authoritative target {event.authoritative_name}")
     if event.version:
         details.append(f"version {event.version[:12]}")
     if event.health_check:

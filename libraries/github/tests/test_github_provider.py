@@ -20,9 +20,12 @@ from our_ark_github import OUR_ARK_PROVIDERS, GithubForgeProvider
 from our_ark_provider_kit import (
     ForgeProvider,
     ProviderContractConformanceMixin,
+    PullRequestMergeResult,
+    PullRequestMergeStatus,
     PullRequestResult,
     RepositoryRevision,
     ReviewIdentity,
+    ReviewLandRequest,
     ReviewProvider,
     ReviewSubmission,
     UnsupportedProviderFeature,
@@ -95,6 +98,48 @@ class GithubProviderTests(ProviderContractConformanceMixin, unittest.TestCase):
 
         publish.assert_not_called()
         create.assert_not_called()
+
+    def test_github_adapter_returns_verified_review_landing_evidence(self) -> None:
+        provider = GithubForgeProvider(gh="/usr/local/bin/gh")
+        review_provider = as_review_provider(provider)
+        identity = ReviewIdentity(
+            id="https://github.com/our-ark/enoch/pull/42",
+            url="https://github.com/our-ark/enoch/pull/42",
+        )
+        merged_at = "2026-07-18T18:30:00Z"
+        status = PullRequestMergeStatus(
+            reference=identity.id,
+            url=identity.url,
+            state="MERGED",
+            base_branch="main",
+            merge_commit="revision-42",
+            merged_at=merged_at,
+            number=42,
+            head_sha="head-42",
+        )
+        merged = PullRequestMergeResult(
+            number=42,
+            url=identity.url,
+            method="merge",
+            merge_commit="revision-42",
+            message="Merged.",
+        )
+
+        with patch.object(provider, "merge_pull_request", return_value=merged):
+            with patch.object(
+                provider,
+                "inspect_pull_request_merge",
+                return_value=status,
+            ):
+                result = review_provider.land_review(ReviewLandRequest(identity))
+                record = review_provider.inspect_review(identity)
+
+        self.assertEqual(result.status, "landed")
+        self.assertEqual(result.revision, RepositoryRevision("revision-42"))
+        self.assertEqual(result.landed_at, merged_at)
+        self.assertEqual(record.state, "landed")
+        self.assertEqual(record.landed_revision, result.revision)
+        self.assertEqual(record.landed_at, merged_at)
 
     @patch("our_ark_github.subprocess.run")
     def test_reads_published_text_through_forge_contract(self, run) -> None:

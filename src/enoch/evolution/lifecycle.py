@@ -11,27 +11,24 @@ from enoch.evolution.events import (
     load_evolve_events,
     record_evolve_event,
 )
-from enoch.vcs_tools import VcsError, revision_is_ancestor
 from enoch.memory.paths import atomic_write
 from enoch.paths import private_state_path
 from enoch.state import StateCorruptionError, load_json_object
 from enoch.providers.contracts import (
-    ForgeProvider,
-    ForgeProviderError,
-    PullRequestMergeStatus,
+    RepositoryProvider,
+    RepositoryProviderError,
+    RepositoryRevision,
+    ReviewIdentity,
+    ReviewProvider,
+    ReviewProviderError,
+    ReviewRecord,
 )
+from enoch.providers import as_repository_provider, as_review_provider
 from enoch.providers.registry import load_provider
-from enoch.providers.forge import inspect_pull_request_merge
 from enoch.tasks.events import TaskEvent, load_task_events
-from enoch.operations.update_tools import (
-    authoritative_branch_name,
-    current_repository_revision,
-    refresh_repository,
-    revision_on_authoritative,
-)
 
 
-PENDING_ADOPTION_SCHEMA_VERSION = 1
+PENDING_ADOPTION_SCHEMA_VERSION = 2
 RECORDING_MODES = {"realtime", "backfill"}
 
 
@@ -42,22 +39,38 @@ class EvolveLifecycleError(RuntimeError):
 @dataclass(frozen=True)
 class EvolutionReconcileResult:
     candidate_id: str
-    pr_url: str
-    merge_commit: str
-    authoritative_branch: str
+    review_id: str
+    review_urls: tuple[str, ...]
+    revision_id: str
+    authoritative_revision_id: str
+    authoritative_name: str
     promoted_at: str
     recording_mode: str
     event: EvolveEvent
     already_recorded: bool = False
+
+    @property
+    def pr_url(self) -> str:
+        return self.review_urls[-1] if self.review_urls else ""
+
+    @property
+    def merge_commit(self) -> str:
+        return self.revision_id
+
+    @property
+    def authoritative_branch(self) -> str:
+        return self.authoritative_name
 
 
 @dataclass(frozen=True)
 class PendingAdoption:
     candidate_id: str
     task_id: int | None
-    pr_url: str
-    merge_commit: str
-    authoritative_branch: str
+    review_id: str
+    review_urls: tuple[str, ...]
+    revision_id: str
+    authoritative_revision_id: str
+    authoritative_name: str
     promoted_at: str
     version: str
     health_check: str
@@ -73,7 +86,8 @@ def reconcile_evolve_candidate(
     root: Path,
     *,
     recording_mode: str = "realtime",
-    forge: ForgeProvider | None = None,
+    repository: RepositoryProvider | None = None,
+    review: ReviewProvider | None = None,
 ) -> EvolutionReconcileResult:
     mode = _recording_mode(recording_mode)
     try:
@@ -84,35 +98,43 @@ def reconcile_evolve_candidate(
         raise EvolveLifecycleError(
             f"Evolve candidate {candidate.id} must be done before promotion reconciliation."
         )
-    task_event = _completed_task_with_pr(candidate.id, root)
+    task_event = _completed_task_with_review(candidate.id, root)
     if task_event is None:
         raise EvolveLifecycleError(
-            f"Evolve candidate {candidate.id} has no completed task with a pull request."
+            f"Evolve candidate {candidate.id} has no completed task with a published review."
         )
-    pr_url = task_event.pr_urls[-1]
+    repository = repository or as_repository_provider(load_provider("vcs", root))
+    review = review or as_review_provider(load_provider("forge", root))
+    review_url = task_event.review_urls[-1] if task_event.review_urls else ""
+    review_identity = ReviewIdentity(
+        id=task_event.review_id or review_url,
+        url=review_url,
+        metadata={"revision_id": task_event.revision_id},
+    )
     try:
-        pull_request = (
-            forge.inspect_pull_request_merge(pr_url, root)
-            if forge is not None
-            else inspect_pull_request_merge(pr_url, root)
-        )
-    except ForgeProviderError as error:
-        raise EvolveLifecycleError(f"Could not inspect {pr_url}: {error}") from error
-    authoritative = authoritative_branch_name(root)
-    _validate_merged_pull_request(pull_request, authoritative)
-    try:
-        refresh_repository(root)
-    except VcsError as error:
+        review_record = review.inspect_review(review_identity, root)
+        _validate_landed_review(review_record)
+        authoritative = repository.authoritative_base(root, refresh=True)
+    except (ReviewProviderError, RepositoryProviderError) as error:
         raise EvolveLifecycleError(
-            f"Could not refresh authoritative branch {authoritative}: {error}"
+            f"Could not verify review {review_identity.id}: {error}"
         ) from error
-    if not revision_on_authoritative(pull_request.merge_commit, root):
+    assert review_record.landed_revision is not None
+    if not repository.repository_is_ancestor(
+        review_record.landed_revision,
+        authoritative.revision,
+        root,
+    ):
         raise EvolveLifecycleError(
-            f"PR merge revision {pull_request.merge_commit} is not on trusted "
-            f"authoritative branch {authoritative}."
+            f"Landed revision {review_record.landed_revision.id} is not on trusted "
+            f"authoritative revision {authoritative.revision.id}."
         )
 
-    existing = _promoted_event(candidate.id, pull_request.merge_commit, root)
+    existing = _promoted_event(
+        candidate.id,
+        review_record.landed_revision.id,
+        root,
+    )
     if existing is not None:
         return _result_from_event(existing, already_recorded=True)
 
@@ -131,10 +153,16 @@ def reconcile_evolve_candidate(
             candidate_id=candidate.id,
             task_id=task_event.task_id,
         ),
-        pr_url=pull_request.url,
-        merge_commit=pull_request.merge_commit,
-        authoritative_branch=pull_request.base_branch,
-        promoted_at=pull_request.merged_at,
+        review_id=review_record.identity.id,
+        review_urls=tuple(
+            url
+            for url in (review_record.identity.url, *task_event.review_urls)
+            if url
+        ),
+        revision_id=review_record.landed_revision.id,
+        authoritative_revision_id=authoritative.revision.id,
+        authoritative_name=authoritative.name,
+        promoted_at=review_record.landed_at,
         recording_mode=mode,
     )
     return _result_from_event(event)
@@ -145,9 +173,10 @@ def format_reconcile_result(result: EvolutionReconcileResult) -> str:
     return "\n".join(
         [
             f"Evolve candidate {result.candidate_id} {action}.",
-            f"PR: {result.pr_url}",
-            f"Merge commit: {result.merge_commit}",
-            f"Authoritative branch: {result.authoritative_branch}",
+            f"Review: {result.review_id}",
+            f"Landed revision: {result.revision_id}",
+            f"Authoritative revision: {result.authoritative_revision_id}",
+            f"Authoritative target: {result.authoritative_name or 'unnamed'}",
             f"Promoted at: {result.promoted_at}",
             f"Recording mode: {result.recording_mode}",
             "Adoption remains pending until the instance updates and passes health checks.",
@@ -155,21 +184,31 @@ def format_reconcile_result(result: EvolutionReconcileResult) -> str:
     )
 
 
-def promotions_pending_adoption(root: Path, version: str) -> tuple[EvolveEvent, ...]:
+def promotions_pending_adoption(
+    root: Path,
+    version: str,
+    *,
+    repository: RepositoryProvider | None = None,
+) -> tuple[EvolveEvent, ...]:
+    repository = repository or as_repository_provider(load_provider("vcs", root))
     events = load_evolve_events(root)
     adopted = {
-        (event.candidate_id, event.merge_commit)
+        (event.candidate_id, event.revision_id)
         for event in events
-        if event.event == "adopted" and event.merge_commit
+        if event.event == "adopted" and event.revision_id
     }
     pending: dict[tuple[str, str], EvolveEvent] = {}
     for event in events:
-        key = (event.candidate_id, event.merge_commit)
+        key = (event.candidate_id, event.revision_id)
         if (
             event.event == "promoted"
-            and event.merge_commit
+            and event.revision_id
             and key not in adopted
-            and _is_ancestor(event.merge_commit, version, root)
+            and repository.repository_is_ancestor(
+                RepositoryRevision(event.revision_id),
+                RepositoryRevision(version),
+                root,
+            )
         ):
             pending[key] = event
     return tuple(pending.values())
@@ -180,23 +219,29 @@ def stage_promoted_evolve_adoptions(
     version: str,
     *,
     health_check: str,
+    repository: RepositoryProvider | None = None,
 ) -> tuple[PendingAdoption, ...]:
     if health_check.strip().lower() != "passed":
         return ()
-    default_branch = authoritative_branch_name(root)
     pending = tuple(
         PendingAdoption(
             candidate_id=event.candidate_id,
             task_id=event.task_id,
-            pr_url=event.pr_url,
-            merge_commit=event.merge_commit,
-            authoritative_branch=event.authoritative_branch or default_branch,
+            review_id=event.review_id,
+            review_urls=event.review_urls,
+            revision_id=event.revision_id,
+            authoritative_revision_id=event.authoritative_revision_id,
+            authoritative_name=event.authoritative_name,
             promoted_at=event.promoted_at,
             version=version,
             health_check="passed",
             recording_mode=event.recording_mode or "realtime",
         )
-        for event in promotions_pending_adoption(root, version)
+        for event in promotions_pending_adoption(
+            root,
+            version,
+            repository=repository,
+        )
     )
     if not pending:
         return ()
@@ -219,18 +264,23 @@ def finalize_promoted_evolve_adoptions(
     root: Path,
     *,
     running_version: str = "",
+    repository: RepositoryProvider | None = None,
 ) -> tuple[EvolveEvent, ...]:
     pending = _load_pending_adoptions(root)
     if not pending:
         return ()
-    version = running_version.strip() or current_repository_revision(root)
+    repository = repository or as_repository_provider(load_provider("vcs", root))
+    version = (
+        running_version.strip()
+        or repository.inspect_working_copy(root).revision.id
+    )
     completed: list[EvolveEvent] = []
     remaining: list[PendingAdoption] = []
     for item in pending:
         if item.version != version or item.health_check != "passed":
             remaining.append(item)
             continue
-        existing = _adopted_event(item.candidate_id, item.merge_commit, root)
+        existing = _adopted_event(item.candidate_id, item.revision_id, root)
         if existing is not None:
             continue
         try:
@@ -254,9 +304,11 @@ def finalize_promoted_evolve_adoptions(
                     candidate_id=item.candidate_id,
                     task_id=item.task_id,
                 ),
-                pr_url=item.pr_url,
-                merge_commit=item.merge_commit,
-                authoritative_branch=item.authoritative_branch,
+                review_id=item.review_id,
+                review_urls=item.review_urls,
+                revision_id=item.revision_id,
+                authoritative_revision_id=item.authoritative_revision_id,
+                authoritative_name=item.authoritative_name,
                 promoted_at=item.promoted_at,
                 version=item.version,
                 health_check=item.health_check,
@@ -267,7 +319,7 @@ def finalize_promoted_evolve_adoptions(
     return tuple(completed)
 
 
-def _completed_task_with_pr(
+def _completed_task_with_review(
     candidate_id: str,
     root: Path,
 ) -> TaskEvent | None:
@@ -276,38 +328,32 @@ def _completed_task_with_pr(
         for event in load_task_events(root)
         if event.candidate_id == candidate_id
         and event.event == "completed"
-        and event.pr_urls
+        and (event.review_id or event.review_urls)
     ]
     return max(matches, key=lambda event: (event.task_id, event.occurred_at), default=None)
 
 
-def _validate_merged_pull_request(
-    status: PullRequestMergeStatus,
-    authoritative: str,
-) -> None:
-    if status.state != "MERGED":
-        raise EvolveLifecycleError(f"Pull request {status.url} is not merged.")
-    if status.base_branch != authoritative:
+def _validate_landed_review(record: ReviewRecord) -> None:
+    if record.state != "landed":
         raise EvolveLifecycleError(
-            f"Pull request {status.url} targets {status.base_branch}, "
-            f"not authoritative {authoritative}."
+            f"Review {record.identity.id} is not landed."
         )
-    if not status.merge_commit or not status.merged_at:
+    if record.landed_revision is None or not record.landed_at:
         raise EvolveLifecycleError(
-            f"Pull request {status.url} is missing merge commit evidence."
+            f"Review {record.identity.id} is missing landed revision evidence."
         )
 
 
 def _promoted_event(
     candidate_id: str,
-    merge_commit: str,
+    revision_id: str,
     root: Path,
 ) -> EvolveEvent | None:
     return next(
         (
             event
             for event in reversed(load_evolve_events(root, candidate_id=candidate_id))
-            if event.event == "promoted" and event.merge_commit == merge_commit
+            if event.event == "promoted" and event.revision_id == revision_id
         ),
         None,
     )
@@ -315,14 +361,14 @@ def _promoted_event(
 
 def _adopted_event(
     candidate_id: str,
-    merge_commit: str,
+    revision_id: str,
     root: Path,
 ) -> EvolveEvent | None:
     return next(
         (
             event
             for event in reversed(load_evolve_events(root, candidate_id=candidate_id))
-            if event.event == "adopted" and event.merge_commit == merge_commit
+            if event.event == "adopted" and event.revision_id == revision_id
         ),
         None,
     )
@@ -335,9 +381,11 @@ def _result_from_event(
 ) -> EvolutionReconcileResult:
     return EvolutionReconcileResult(
         candidate_id=event.candidate_id,
-        pr_url=event.pr_url,
-        merge_commit=event.merge_commit,
-        authoritative_branch=event.authoritative_branch,
+        review_id=event.review_id,
+        review_urls=event.review_urls,
+        revision_id=event.revision_id,
+        authoritative_revision_id=event.authoritative_revision_id,
+        authoritative_name=event.authoritative_name,
         promoted_at=event.promoted_at,
         recording_mode=event.recording_mode,
         event=event,
@@ -352,10 +400,6 @@ def _recording_mode(value: str) -> str:
     return normalized
 
 
-def _is_ancestor(revision: str, descendant: str, root: Path) -> bool:
-    return revision_is_ancestor(revision, descendant, root)
-
-
 def _load_pending_adoptions(root: Path) -> tuple[PendingAdoption, ...]:
     path = pending_adoption_path(root)
     data = load_json_object(path)
@@ -365,23 +409,47 @@ def _load_pending_adoptions(root: Path) -> tuple[PendingAdoption, ...]:
     if not isinstance(raw_items, list):
         raise StateCorruptionError(path, "expected adoptions to be a list")
     items = []
-    default_branch = authoritative_branch_name(root)
     for raw in raw_items:
         if not isinstance(raw, dict):
             continue
         candidate_id = str(raw.get("candidate_id") or "").strip()
-        merge_commit = str(raw.get("merge_commit") or "").strip()
+        revision_id = str(
+            raw.get("revision_id") or raw.get("merge_commit") or ""
+        ).strip()
         version = str(raw.get("version") or "").strip()
-        if not candidate_id or not merge_commit or not version:
+        if not candidate_id or not revision_id or not version:
             continue
+        review_url = str(raw.get("pr_url") or "").strip()
+        raw_review_urls = raw.get("review_urls")
+        review_urls = (
+            tuple(
+                dict.fromkeys(
+                    str(item).strip()
+                    for item in raw_review_urls
+                    if str(item).strip()
+                )
+            )
+            if isinstance(raw_review_urls, list)
+            else ()
+        )
+        if review_url and review_url not in review_urls:
+            review_urls = (*review_urls, review_url)
         items.append(
             PendingAdoption(
                 candidate_id=candidate_id,
                 task_id=_positive_int(raw.get("task_id")),
-                pr_url=str(raw.get("pr_url") or "").strip(),
-                merge_commit=merge_commit,
-                authoritative_branch=str(
-                    raw.get("authoritative_branch") or default_branch
+                review_id=str(
+                    raw.get("review_id") or review_url
+                ).strip(),
+                review_urls=review_urls,
+                revision_id=revision_id,
+                authoritative_revision_id=str(
+                    raw.get("authoritative_revision_id") or ""
+                ).strip(),
+                authoritative_name=str(
+                    raw.get("authoritative_name")
+                    or raw.get("authoritative_branch")
+                    or ""
                 ).strip(),
                 promoted_at=str(raw.get("promoted_at") or "").strip(),
                 version=version,

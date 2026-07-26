@@ -145,11 +145,16 @@ captured revision before creating its pull request.
 These adapters provide coexistence, not reverse emulation. A branchless
 repository is not forced to implement the old branch API, and a review service
 without pull requests is not forced to manufacture PR fields. Core task,
-publication, update, and evolution flows move to the semantic contracts
-incrementally. Ordinary queued task execution and publication have migrated.
-Existing-branch maintenance, `/pr`, update, and evolution
-promotion/adoption still use legacy surfaces and therefore require the
-corresponding legacy operations.
+publication, existing-reference handoff, retry reconciliation, `/pr`, update,
+and evolution promotion/adoption flows now use the semantic contracts. The
+legacy protocols remain adapter inputs for existing Git and GitHub provider
+packages, not application workflow requirements.
+
+Review records carry verified landing evidence as `landed_revision` and
+`landed_at`. A legacy forge adapter obtains that evidence by inspecting the
+landed review after requesting the merge. Evolution promotion therefore checks
+an opaque landed revision against the repository's refreshed authoritative
+revision without parsing Git or GitHub result fields.
 
 The provider registry accepts either `RepositoryProvider` or
 `VersionControlProvider` for `vcs`, and either `ReviewProvider` or
@@ -166,11 +171,12 @@ and `forge.review` before creating a workspace or invoking the runtime.
 `RepositoryProviderConformanceMixin` checks opaque revision resolution, change
 capture without a staging assumption, and isolated workspace lifecycle.
 `ReviewProviderConformanceMixin` checks identity independence, stacked reviews,
-version updates, close, and landing behavior.
+version updates, close, and verified landing behavior.
 
 Both reference fixtures run these suites in provider-kit CI. Git's repository
 adapter and GitHub's review adapter also have integration tests, preserving
-existing behavior while the application migrates. Enoch's application suite
-also loads both fixtures through the provider registry and executes a complete
-queued task without a Git repository, staging index, named branch, or
+existing behavior behind the adapters. Enoch's application suite also loads
+both fixtures through the provider registry and executes task publication,
+existing-reference handoff, review maintenance, update, and evolution
+lifecycle checks without a Git repository, staging index, named branch, or
 pull-request identity.

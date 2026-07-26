@@ -785,9 +785,13 @@ def _record_completed_work(
             trigger="/evolve reconcile",
             candidate=promoted_candidate,
             task_id=task_id,
-            pr_url=pr_url or f"https://github.com/our-ark/enoch/pull/{task_id}",
-            merge_commit=merge_commit,
-            authoritative_branch="main",
+            review_id=f"review-{task_id}",
+            review_urls=(
+                pr_url or f"https://reviews.example/review/{task_id}",
+            ),
+            revision_id=merge_commit,
+            authoritative_revision_id=version or merge_commit,
+            authoritative_name="main",
             promoted_at=completed_at,
         )
         if version:
@@ -798,9 +802,13 @@ def _record_completed_work(
                 trigger="daemon-startup",
                 candidate=promoted_candidate,
                 task_id=task_id,
-                pr_url=pr_url or f"https://github.com/our-ark/enoch/pull/{task_id}",
-                merge_commit=merge_commit,
-                authoritative_branch="main",
+                review_id=f"review-{task_id}",
+                review_urls=(
+                    pr_url or f"https://reviews.example/review/{task_id}",
+                ),
+                revision_id=merge_commit,
+                authoritative_revision_id=version,
+                authoritative_name="main",
                 promoted_at=completed_at,
                 version=version,
                 health_check="passed",

@@ -756,7 +756,7 @@ def pause_task(
     result: str = "",
     *,
     event_actor: str = "system",
-    trigger: str = "codex-unavailable",
+    trigger: str = "runtime-unavailable",
     worker_id: str = "",
 ) -> TaskJob | None:
     with _queue_transaction(root):

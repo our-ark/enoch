@@ -797,6 +797,8 @@ class ReviewRecord:
     signals: tuple[ReviewSignal, ...] = ()
     draft: bool = False
     contract_version: int = REVIEW_CONTRACT_VERSION
+    landed_revision: RepositoryRevision | None = None
+    landed_at: str = ""
 
     def __post_init__(self) -> None:
         state = str(self.state).strip().lower().replace("_", "-")
@@ -813,6 +815,7 @@ class ReviewRecord:
         object.__setattr__(self, "body", str(self.body))
         object.__setattr__(self, "state", state)
         object.__setattr__(self, "draft", bool(self.draft))
+        object.__setattr__(self, "landed_at", str(self.landed_at).strip())
 
 
 @dataclass(frozen=True)
@@ -855,6 +858,7 @@ class ReviewLandResult:
     revision: RepositoryRevision | None = None
     message: str = ""
     contract_version: int = REVIEW_CONTRACT_VERSION
+    landed_at: str = ""
 
     def __post_init__(self) -> None:
         status = str(self.status).strip().lower().replace("_", "-")
@@ -866,6 +870,7 @@ class ReviewLandResult:
         if not status:
             raise ValueError("Review landing status is required.")
         object.__setattr__(self, "status", status)
+        object.__setattr__(self, "landed_at", str(self.landed_at).strip())
         object.__setattr__(self, "message", str(self.message).strip())
 
 

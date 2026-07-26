@@ -306,7 +306,12 @@ class LegacyForgeReviewAdapter:
         review: ReviewIdentity,
         root: Path | None = None,
     ) -> ReviewRecord:
-        result = self.legacy.inspect_pull_request(review.id, root)
+        inspect_landing = getattr(self.legacy, "inspect_pull_request_merge", None)
+        result = (
+            inspect_landing(review.id, root)
+            if callable(inspect_landing)
+            else self.legacy.inspect_pull_request(review.id, root)
+        )
         return self._record(result, fallback=review)
 
     def list_open_reviews(
@@ -351,16 +356,17 @@ class LegacyForgeReviewAdapter:
         root: Path | None = None,
     ) -> ReviewLandResult:
         result = self.legacy.merge_pull_request(request.review.id, root)
+        inspected = self.inspect_review(request.review, root)
         revision_id = str(getattr(result, "merge_commit", "") or "").strip()
-        revision = RepositoryRevision(revision_id) if revision_id else None
+        revision = inspected.landed_revision
+        if revision is None and revision_id:
+            revision = RepositoryRevision(revision_id)
+        landed = inspected.state == "landed"
         return ReviewLandResult(
-            review=ReviewIdentity(
-                id=request.review.id,
-                url=str(getattr(result, "url", "") or request.review.url),
-                metadata=request.review.metadata,
-            ),
-            status="landed" if revision is not None else "requested",
+            review=inspected.identity,
+            status="landed" if landed else "requested",
             revision=revision,
+            landed_at=inspected.landed_at if landed else "",
             message=str(getattr(result, "message", "") or ""),
         )
 
@@ -402,11 +408,14 @@ class LegacyForgeReviewAdapter:
             )
             if value
         )
+        raw_state = str(getattr(result, "state", "") or "open")
+        state = "landed" if raw_state.strip().lower() == "merged" else raw_state
+        landed_revision_id = str(getattr(result, "merge_commit", "") or "").strip()
         return ReviewRecord(
             identity=identity,
             title=str(getattr(result, "title", "") or ""),
             body=str(getattr(result, "body", "") or ""),
-            state=str(getattr(result, "state", "") or "open"),
+            state=state,
             versions=(
                 ReviewVersion(
                     id=revision_id,
@@ -416,6 +425,12 @@ class LegacyForgeReviewAdapter:
             ),
             signals=signals,
             draft=bool(getattr(result, "is_draft", False)),
+            landed_revision=(
+                RepositoryRevision(landed_revision_id)
+                if landed_revision_id
+                else None
+            ),
+            landed_at=str(getattr(result, "merged_at", "") or ""),
         )
 
     @staticmethod

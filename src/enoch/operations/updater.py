@@ -13,17 +13,14 @@ from enoch.evolution.lifecycle import (
     stage_promoted_evolve_adoptions,
 )
 from enoch.formatting import format_doctor_result
-from enoch.vcs_tools import VcsError, current_branch, ensure_clean_worktree
 from enoch.immune import DoctorCheckResult, DoctorDiagnosis, ImmuneResult
-from enoch.providers.registry import provider_name
-from enoch.operations.update_tools import (
-    authoritative_branch_name,
-    current_repository_revision,
-    current_revision_on_authoritative,
-    refresh_repository,
-    restore_repository_revision,
-    update_repository,
+from enoch.providers import as_repository_provider
+from enoch.providers.contracts import (
+    RepositoryProvider,
+    RepositoryProviderError,
 )
+from enoch.providers.registry import provider_name
+from enoch.providers.registry import load_provider
 
 
 @dataclass(frozen=True)
@@ -31,36 +28,75 @@ class UpdateResult:
     message: str
     direct_action_result: str
     restart_required: bool = False
+    previous_revision_id: str = ""
+    revision_id: str = ""
+    authoritative_name: str = ""
 
 
 UPDATE_DOCTOR_TIMEOUT_SECONDS = 300
 
 
-def update_from_authoritative(root: Path) -> UpdateResult:
+def update_from_authoritative(
+    root: Path,
+    *,
+    repository: RepositoryProvider | None = None,
+) -> UpdateResult:
+    repository = repository or as_repository_provider(load_provider("vcs", root))
     try:
-        ensure_clean_worktree(root)
-        authoritative = authoritative_branch_name(root)
-        refresh_repository(root)
-        branch = current_branch(root)
-        if branch != authoritative:
-            if not branch:
-                return _message(
-                    "Enoch could not update: current checkout is detached. "
-                    f"Switch to {authoritative} first."
-                )
-            if not current_revision_on_authoritative(root):
-                return _message(
-                    f"Enoch could not update: current branch {branch} has commits that are not merged into "
-                    f"the authoritative {authoritative} branch. Finish, merge, or switch branches first."
-                )
-        previous_head = current_repository_revision(root)
-        pull_result = update_repository(root)
-        updated_head = current_repository_revision(root)
-    except VcsError as error:
+        working_copy = repository.inspect_working_copy(root)
+        if not working_copy.clean:
+            changed = ", ".join(working_copy.changed_paths[:8])
+            detail = f": {changed}" if changed else ""
+            raise RepositoryProviderError(
+                f"working copy has uncommitted changes{detail}"
+            )
+        authoritative = repository.authoritative_base(root, refresh=True)
+        previous_revision = working_copy.revision
+        if (
+            previous_revision.id != authoritative.revision.id
+            and not repository.repository_is_ancestor(
+                previous_revision,
+                authoritative.revision,
+                root,
+            )
+        ):
+            return _message(
+                "Enoch could not update: current revision "
+                f"{previous_revision.id} is not in the history of authoritative "
+                f"revision {authoritative.revision.id}. Finish or publish that work first."
+            )
+        if previous_revision.id != authoritative.revision.id:
+            repository.restore_repository_revision(
+                authoritative.revision,
+                root,
+            )
+        updated_revision = repository.inspect_working_copy(root).revision
+        if updated_revision.id != authoritative.revision.id:
+            raise RepositoryProviderError(
+                "Repository provider did not activate authoritative revision "
+                f"{authoritative.revision.id}."
+            )
+    except RepositoryProviderError as error:
         return _message(f"Enoch could not update: {error}")
 
+    previous_head = previous_revision.id
+    updated_head = updated_revision.id
+    authoritative_name = authoritative.name or "authoritative repository"
+    update_summary = (
+        "Already at authoritative revision "
+        f"{updated_head}."
+        if previous_head == updated_head
+        else (
+            f"Updated repository from {previous_head} to {updated_head} "
+            f"using {authoritative_name}."
+        )
+    )
     if previous_head == updated_head:
-        pending_promotions = promotions_pending_adoption(root, updated_head)
+        pending_promotions = promotions_pending_adoption(
+            root,
+            updated_head,
+            repository=repository,
+        )
         if pending_promotions:
             doctor = run_update_doctor(root)
             if not doctor.passed:
@@ -73,7 +109,11 @@ def update_from_authoritative(root: Path) -> UpdateResult:
                         ]
                     )
                 )
-            staged_note = _stage_adoptions(root, updated_head)
+            staged_note = _stage_adoptions(
+                root,
+                updated_head,
+                repository=repository,
+            )
             formatted_doctor = format_doctor_result(doctor)
             return UpdateResult(
                 message="\n\n".join(
@@ -89,7 +129,7 @@ def update_from_authoritative(root: Path) -> UpdateResult:
                 direct_action_result="\n\n".join(
                     part
                     for part in [
-                        pull_result,
+                        update_summary,
                         formatted_doctor,
                         staged_note,
                         f"Restarting into {updated_head[:7]}.",
@@ -97,24 +137,32 @@ def update_from_authoritative(root: Path) -> UpdateResult:
                     if part
                 ),
                 restart_required=True,
+                previous_revision_id=previous_head,
+                revision_id=updated_head,
+                authoritative_name=authoritative.name,
             )
         restart_note = _running_commit_restart_note(root, updated_head)
         return UpdateResult(
             message="\n\n".join(part for part in ["Enoch is already up to date.", restart_note] if part),
-            direct_action_result="\n\n".join(part for part in [pull_result, restart_note] if part),
+            direct_action_result="\n\n".join(
+                part for part in [update_summary, restart_note] if part
+            ),
+            previous_revision_id=previous_head,
+            revision_id=updated_head,
+            authoritative_name=authoritative.name,
         )
 
     doctor = run_update_doctor(root)
     if not doctor.passed:
         try:
-            restore_repository_revision(previous_head, root)
+            repository.restore_repository_revision(previous_revision, root)
             rollback = f"Rolled back to {previous_head[:7]}."
-        except VcsError as error:
+        except RepositoryProviderError as error:
             rollback = f"Rollback failed: {error}"
         return _message(
             "\n\n".join(
                 [
-                    f"Enoch updated to latest {authoritative}, but doctor failed. I am not restarting.",
+                    f"Enoch updated to latest {authoritative_name}, but doctor failed. I am not restarting.",
                     format_doctor_result(doctor),
                     rollback,
                     "The currently running Enoch process is still the pre-update code.",
@@ -123,12 +171,16 @@ def update_from_authoritative(root: Path) -> UpdateResult:
         )
 
     formatted_doctor = format_doctor_result(doctor)
-    staged_note = _stage_adoptions(root, updated_head)
+    staged_note = _stage_adoptions(
+        root,
+        updated_head,
+        repository=repository,
+    )
     return UpdateResult(
         message="\n\n".join(
             part
             for part in [
-                f"Enoch updated to latest {authoritative} and doctor passed.",
+                f"Enoch updated to latest {authoritative_name} and doctor passed.",
                 formatted_doctor,
                 staged_note,
                 "Restarting now. The startup notification will confirm Enoch came back.",
@@ -138,7 +190,7 @@ def update_from_authoritative(root: Path) -> UpdateResult:
         direct_action_result="\n\n".join(
             part
             for part in [
-                pull_result,
+                update_summary,
                 formatted_doctor,
                 staged_note,
                 f"Restarting into {updated_head[:7]}.",
@@ -146,6 +198,9 @@ def update_from_authoritative(root: Path) -> UpdateResult:
             if part
         ),
         restart_required=True,
+        previous_revision_id=previous_head,
+        revision_id=updated_head,
+        authoritative_name=authoritative.name,
     )
 
 
@@ -253,12 +308,18 @@ def _doctor_runner_failure(detail: str) -> ImmuneResult:
     )
 
 
-def _stage_adoptions(root: Path, version: str) -> str:
+def _stage_adoptions(
+    root: Path,
+    version: str,
+    *,
+    repository: RepositoryProvider,
+) -> str:
     try:
         staged = stage_promoted_evolve_adoptions(
             root,
             version,
             health_check="passed",
+            repository=repository,
         )
     except OSError as error:
         return f"Could not stage evolution adoption evidence: {error}"

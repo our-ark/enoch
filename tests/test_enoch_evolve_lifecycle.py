@@ -3,7 +3,6 @@ import json
 import sys
 from tempfile import TemporaryDirectory
 import unittest
-from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -24,60 +23,79 @@ from enoch.evolution.lifecycle import (
     reconcile_evolve_candidate,
     stage_promoted_evolve_adoptions,
 )
-from enoch.providers import register_provider
 from enoch.logs import log_conversation_turn
-from our_ark_github.workflow import PullRequestMergeStatus
+from our_ark_provider_kit import (
+    BranchlessRepositoryFixture,
+    IndependentReviewFixture,
+    RepositoryRevision,
+    ReviewLandRequest,
+    ReviewSubmission,
+)
 from enoch.tasks.queue import (
+    TaskPublicationState,
     begin_next_task,
+    claim_running_task,
     complete_task,
     enqueue_task,
-    record_task_result,
+    record_task_publication,
 )
 
 
-PR_URL = "https://github.com/our-ark/enoch/pull/12"
+REVIEW_URL = "https://reviews.invalid/review-1"
 MERGE_COMMIT = "7207317aabbccddeeff001122334455667788990"
 VERSION = "9999999aabbccddeeff001122334455667788990"
 
 
 class EnochEvolveLifecycleTests(unittest.TestCase):
-    def test_reconcile_uses_vcs_authoritative_history_without_git_commands(self) -> None:
-        vcs = _LifecycleVcs()
-        forge = _LifecycleForge(_merged_pr(base_branch="trunk"))
+    def test_reconcile_uses_branchless_repository_and_independent_review(self) -> None:
+        repository = BranchlessRepositoryFixture()
+        review = IndependentReviewFixture()
         with TemporaryDirectory() as temp:
             root = Path(temp)
-            register_provider("vcs", "lifecycle-vcs", lambda _root=None: vcs, replace=True)
-            config = root / ".enoch" / "config.yaml"
-            config.parent.mkdir()
-            config.write_text("providers:\n  vcs: lifecycle-vcs\n", encoding="utf-8")
-            candidate_id = _completed_candidate_with_pr(root)
+            candidate_id = _completed_candidate_with_review(
+                root,
+                repository,
+                review,
+            )
 
-            result = reconcile_evolve_candidate(candidate_id, root, forge=forge)
+            result = reconcile_evolve_candidate(
+                candidate_id,
+                root,
+                repository=repository,
+                review=review,
+            )
 
-        self.assertEqual(result.authoritative_branch, "trunk")
-        self.assertEqual(vcs.refreshed, 1)
-        self.assertEqual(vcs.ancestry_checks, [(MERGE_COMMIT, "trusted-revision")])
-        self.assertEqual(vcs.raw_calls, [])
+        self.assertEqual(result.review_id, "review-1")
+        self.assertEqual(result.review_urls, (REVIEW_URL,))
+        self.assertEqual(result.revision_id, MERGE_COMMIT)
+        self.assertEqual(result.authoritative_revision_id, MERGE_COMMIT)
+        self.assertEqual(result.authoritative_name, "authoritative")
+        self.assertFalse(repository.repository_features.named_branches)
+        self.assertFalse(repository.repository_features.staging_index)
 
-    @patch(
-        "enoch.evolution.lifecycle.revision_on_authoritative",
-        return_value=True,
-    )
-    @patch("enoch.evolution.lifecycle.refresh_repository")
-    @patch("enoch.evolution.lifecycle.inspect_pull_request_merge")
-    def test_reconcile_records_verified_human_promotion_once(
-        self,
-        inspect_pull_request_merge,
-        _refresh_repository,
-        revision_on_main,
-    ) -> None:
+    def test_reconcile_records_verified_human_promotion_once(self) -> None:
+        repository = BranchlessRepositoryFixture()
+        review = IndependentReviewFixture()
         with TemporaryDirectory() as temp:
             root = Path(temp)
-            candidate_id = _completed_candidate_with_pr(root)
-            inspect_pull_request_merge.return_value = _merged_pr()
+            candidate_id = _completed_candidate_with_review(
+                root,
+                repository,
+                review,
+            )
 
-            first = reconcile_evolve_candidate(candidate_id, root)
-            second = reconcile_evolve_candidate(candidate_id, root)
+            first = reconcile_evolve_candidate(
+                candidate_id,
+                root,
+                repository=repository,
+                review=review,
+            )
+            second = reconcile_evolve_candidate(
+                candidate_id,
+                root,
+                repository=repository,
+                review=review,
+            )
             events = load_evolve_events(root, candidate_id=candidate_id)
 
         self.assertFalse(first.already_recorded)
@@ -88,36 +106,37 @@ class EnochEvolveLifecycleTests(unittest.TestCase):
         )
         event = first.event
         self.assertEqual(event.event_actor, "human")
-        self.assertEqual(event.pr_url, PR_URL)
-        self.assertEqual(event.merge_commit, MERGE_COMMIT)
-        self.assertEqual(event.authoritative_branch, "main")
-        self.assertEqual(event.promoted_at, "2026-07-18T18:30:00Z")
+        self.assertEqual(event.review_id, "review-1")
+        self.assertEqual(event.review_urls, (REVIEW_URL,))
+        self.assertEqual(event.revision_id, MERGE_COMMIT)
+        self.assertEqual(event.authoritative_revision_id, MERGE_COMMIT)
+        self.assertEqual(event.authoritative_name, "authoritative")
+        self.assertTrue(event.promoted_at)
         self.assertTrue(event.verified_at)
         self.assertEqual(event.recording_mode, "realtime")
-        revision_on_main.assert_called_with(MERGE_COMMIT, root)
 
-    @patch(
-        "enoch.evolution.lifecycle.revision_on_authoritative",
-        return_value=False,
-    )
-    @patch("enoch.evolution.lifecycle.refresh_repository")
-    @patch("enoch.evolution.lifecycle.inspect_pull_request_merge")
-    def test_reconcile_refuses_merge_commit_outside_trusted_main(
-        self,
-        inspect_pull_request_merge,
-        _refresh_repository,
-        _revision_on_main,
-    ) -> None:
+    def test_reconcile_refuses_landed_revision_outside_authoritative_history(self) -> None:
+        repository = BranchlessRepositoryFixture()
+        review = IndependentReviewFixture()
         with TemporaryDirectory() as temp:
             root = Path(temp)
-            candidate_id = _completed_candidate_with_pr(root)
-            inspect_pull_request_merge.return_value = _merged_pr()
+            candidate_id = _completed_candidate_with_review(
+                root,
+                repository,
+                review,
+            )
+            repository.authoritative = repository.revisions["r0"]
 
             with self.assertRaisesRegex(
                 EvolveLifecycleError,
-                "not on trusted authoritative branch main",
+                "not on trusted authoritative revision r0",
             ):
-                reconcile_evolve_candidate(candidate_id, root)
+                reconcile_evolve_candidate(
+                    candidate_id,
+                    root,
+                    repository=repository,
+                    review=review,
+                )
 
             self.assertEqual(
                 [
@@ -127,64 +146,63 @@ class EnochEvolveLifecycleTests(unittest.TestCase):
                 [],
             )
 
-    @patch("enoch.evolution.lifecycle.inspect_pull_request_merge")
-    def test_reconcile_refuses_open_pull_request(
-        self,
-        inspect_pull_request_merge,
-    ) -> None:
+    def test_reconcile_refuses_open_review(self) -> None:
+        repository = BranchlessRepositoryFixture()
+        review = IndependentReviewFixture()
         with TemporaryDirectory() as temp:
             root = Path(temp)
-            candidate_id = _completed_candidate_with_pr(root)
-            inspect_pull_request_merge.return_value = PullRequestMergeStatus(
-                reference=PR_URL,
-                url=PR_URL,
-                state="OPEN",
-                base_branch="main",
-                merge_commit="",
-                merged_at="",
+            candidate_id = _completed_candidate_with_review(
+                root,
+                repository,
+                review,
+                landed=False,
             )
 
-            with self.assertRaisesRegex(EvolveLifecycleError, "is not merged"):
-                reconcile_evolve_candidate(candidate_id, root)
+            with self.assertRaisesRegex(EvolveLifecycleError, "is not landed"):
+                reconcile_evolve_candidate(
+                    candidate_id,
+                    root,
+                    repository=repository,
+                    review=review,
+                )
 
-    @patch(
-        "enoch.evolution.lifecycle.revision_on_authoritative",
-        return_value=True,
-    )
-    @patch("enoch.evolution.lifecycle.refresh_repository")
-    @patch("enoch.evolution.lifecycle.inspect_pull_request_merge")
-    def test_backfill_and_restart_adoption_preserve_recording_mode(
-        self,
-        inspect_pull_request_merge,
-        _refresh_repository,
-        _revision_on_main,
-    ) -> None:
+    def test_backfill_and_restart_adoption_preserve_recording_mode(self) -> None:
+        repository = BranchlessRepositoryFixture()
+        review = IndependentReviewFixture()
         with TemporaryDirectory() as temp:
             root = Path(temp)
-            candidate_id = _completed_candidate_with_pr(root)
-            inspect_pull_request_merge.return_value = _merged_pr()
+            candidate_id = _completed_candidate_with_review(
+                root,
+                repository,
+                review,
+            )
             promoted = reconcile_evolve_candidate(
                 candidate_id,
                 root,
                 recording_mode="backfill",
+                repository=repository,
+                review=review,
             )
-
-            with patch(
-                "enoch.evolution.lifecycle._is_ancestor",
-                return_value=True,
-            ):
-                staged = stage_promoted_evolve_adoptions(
-                    root,
-                    VERSION,
-                    health_check="passed",
-                )
+            version = RepositoryRevision(VERSION)
+            repository.revisions[VERSION] = version
+            repository.parents[VERSION] = MERGE_COMMIT
+            repository.current = version
+            repository.authoritative = version
+            staged = stage_promoted_evolve_adoptions(
+                root,
+                VERSION,
+                health_check="passed",
+                repository=repository,
+            )
             adopted = finalize_promoted_evolve_adoptions(
                 root,
                 running_version=VERSION,
+                repository=repository,
             )
             duplicate = finalize_promoted_evolve_adoptions(
                 root,
                 running_version=VERSION,
+                repository=repository,
             )
 
             events = load_evolve_events(root, candidate_id=candidate_id)
@@ -204,7 +222,7 @@ class EnochEvolveLifecycleTests(unittest.TestCase):
         self.assertEqual(adoption.event_actor, "system")
         self.assertEqual(adoption.trigger, "daemon-startup")
         self.assertEqual(adoption.version, VERSION)
-        self.assertEqual(adoption.merge_commit, MERGE_COMMIT)
+        self.assertEqual(adoption.revision_id, MERGE_COMMIT)
         self.assertEqual(adoption.health_check, "passed")
         self.assertEqual(adoption.recording_mode, "backfill")
         self.assertEqual(raw_events[0]["recording_mode"], "backfill")
@@ -212,7 +230,13 @@ class EnochEvolveLifecycleTests(unittest.TestCase):
         self.assertFalse(pending_adoption_path(root).exists())
 
 
-def _completed_candidate_with_pr(root: Path) -> str:
+def _completed_candidate_with_review(
+    root: Path,
+    repository: BranchlessRepositoryFixture,
+    review: IndependentReviewFixture,
+    *,
+    landed: bool = True,
+) -> str:
     message = "I want improved governed evolution evidence."
     log_conversation_turn(chat_id=42, message=message, reply="Understood.", root=root)
     scan = scan_evidence(
@@ -260,8 +284,40 @@ def _completed_candidate_with_pr(root: Path) -> str:
     running = begin_next_task(root)
     if running is None:
         raise AssertionError("Expected queued evolve task.")
-    record_task_result(job.id, f"Opened pull request: {PR_URL}", root)
-    complete_task(job.id, root, result=f"Opened pull request: {PR_URL}")
+    revision = RepositoryRevision(MERGE_COMMIT)
+    repository.revisions[revision.id] = revision
+    repository.parents[revision.id] = repository.current.id
+    repository.current = revision
+    repository.authoritative = revision
+    published = review.publish_review(
+        ReviewSubmission(
+            title="Improve governed evolution evidence",
+            body="",
+            revision=revision,
+        )
+    )
+    if landed:
+        review.land_review(ReviewLandRequest(published.identity))
+    claim_running_task(job.id, "worker-one", 1, root)
+    record_task_publication(
+        job.id,
+        "worker-one",
+        TaskPublicationState(
+            stage="review_published",
+            revision_id=revision.id,
+            workspace_id="workspace-independent",
+            review_id=published.identity.id,
+            review_url=published.identity.url,
+            review_published=True,
+        ),
+        root,
+    )
+    complete_task(
+        job.id,
+        root,
+        result=f"Published review: {published.identity.url}",
+        worker_id="worker-one",
+    )
     return candidate_id
 
 
@@ -281,82 +337,6 @@ def _feedback_evidence_response(prompt: str, message: str) -> str:
             }
         ]
     )
-
-
-def _merged_pr(*, base_branch: str = "main") -> PullRequestMergeStatus:
-    return PullRequestMergeStatus(
-        reference=PR_URL,
-        url=PR_URL,
-        state="MERGED",
-        base_branch=base_branch,
-        merge_commit=MERGE_COMMIT,
-        merged_at="2026-07-18T18:30:00Z",
-    )
-
-
-class _LifecycleVcs:
-    name = "lifecycle-vcs"
-    provider_kind = "vcs"
-
-    def __init__(self) -> None:
-        self.refreshed = 0
-        self.ancestry_checks = []
-        self.raw_calls = []
-
-    def run(self, args, root=None):
-        self.raw_calls.append((args, root))
-        raise AssertionError("Lifecycle must not send raw Git commands.")
-
-    def current_branch(self, root=None): return "trunk"
-    def is_clean(self, root=None): return True
-    def changed_files(self, root=None): return []
-    def diff_summary(self, root=None): return ""
-    def stage(self, files, root=None): return None
-    def commit(self, message, root=None): return "revision"
-    def create_branch(self, branch, root=None, *, start_point=""): return None
-    def switch_branch(self, branch, root=None): return None
-    def delete_branch(self, branch, root=None, *, force=False): return None
-    def branch_exists(self, branch, root=None): return False
-    def task_base(self, root=None): return "trusted-revision"
-
-    def authoritative_branch(self, root=None):
-        return "trunk"
-
-    def refresh_authoritative(self, root=None):
-        self.refreshed += 1
-        return "refreshed"
-
-    def authoritative_revision(self, root=None):
-        return "trusted-revision"
-
-    def current_revision(self, root=None): return "trusted-revision"
-    def resolve_revision(self, revision, root=None): return revision
-
-    def is_ancestor(self, revision, descendant, root=None):
-        self.ancestry_checks.append((revision, descendant))
-        return True
-
-    def update_to_authoritative(self, root=None): return "Already up to date."
-    def restore_revision(self, revision, root=None): return None
-    def workspace_paths(self, root=None): return ()
-    def create_workspace(
-        self,
-        path,
-        branch,
-        root=None,
-        *,
-        start_point="",
-        create_branch=False,
-    ): return None
-    def remove_workspace(self, path, root=None): return None
-
-
-class _LifecycleForge:
-    def __init__(self, status: PullRequestMergeStatus) -> None:
-        self.status = status
-
-    def inspect_pull_request_merge(self, reference, root=None):
-        return self.status
 
 
 if __name__ == "__main__":

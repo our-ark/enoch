@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Literal, Protocol, runtime_checkable
+from typing import Literal, Protocol, runtime_checkable
 
 from enoch.providers.contracts import ConversationId, MessageId, RuntimeResult
 from enoch.tasks.queue import TaskJob, TaskPublicationState, TaskQueueStatus
 
 
-WORKFLOW_API_VERSION = 2
+WORKFLOW_API_VERSION = 3
 EnqueueMode = Literal["queued", "front", "direct"]
 FinalTaskStatus = Literal["completed", "failed", "cancelled"]
 
@@ -29,7 +29,24 @@ class WorkflowEngine(Protocol):
         request: str,
         *,
         mode: EnqueueMode = "queued",
-        **options: Any,
+        context: str = "",
+        context_source: str = "",
+        source: str = "",
+        initiated_by: str = "human",
+        event_actor: str = "human",
+        trigger: str = "",
+        candidate_id: str = "",
+        parent_task_id: int | None = None,
+        evidence_source: str = "",
+        signal_actor: str = "",
+        candidate_actor: str = "",
+        approval_actor: str = "",
+        parent_candidate_id: str = "",
+        source_task_id: int | None = None,
+        max_attempts: int = 3,
+        timeout_seconds: int | None = None,
+        required_capabilities: tuple[str, ...] = (),
+        idempotency_key: str = "",
     ) -> TaskJob: ...
 
     def start_next(self) -> TaskJob | None: ...
@@ -86,19 +103,51 @@ class WorkflowEngine(Protocol):
         trigger: str = "task-runner",
     ) -> TaskJob | None: ...
 
-    def retry_failed(self, task_id: int, **options: Any) -> TaskJob: ...
+    def retry_failed(
+        self,
+        task_id: int,
+        *,
+        reconciled_result: str = "",
+        event_actor: str = "human",
+        trigger: str = "/task retry",
+    ) -> TaskJob: ...
 
-    def pause(self, task_id: int, **options: Any) -> TaskJob | None: ...
+    def pause(
+        self,
+        task_id: int,
+        *,
+        result: str = "",
+        event_actor: str = "system",
+        trigger: str = "runtime-unavailable",
+        worker_id: str = "",
+    ) -> TaskJob | None: ...
 
-    def resume(self, **options: Any) -> tuple[TaskJob, ...]: ...
+    def resume(
+        self,
+        *,
+        task_id: int | None = None,
+        event_actor: str = "human",
+        trigger: str = "/task resume",
+    ) -> tuple[TaskJob, ...]: ...
 
-    def regress(self, task_id: int, **options: Any) -> TaskJob | None: ...
+    def regress(
+        self,
+        task_id: int,
+        *,
+        result: str = "",
+        event_actor: str = "agent",
+        trigger: str = "agent-regression-signal",
+    ) -> TaskJob | None: ...
 
     def resolve_regression(
         self,
         task_id: int,
         resolution: str,
-        **options: Any,
+        *,
+        result: str = "",
+        event_actor: str = "agent",
+        trigger: str = "agent-regression-signal",
+        related_task_id: int | None = None,
     ) -> TaskJob | None: ...
 
     def record_status_message(

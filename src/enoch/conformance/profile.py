@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any
 
 from enoch.identity import load_identity
 from enoch.profiles import (
@@ -17,6 +16,10 @@ from enoch.profiles.contracts import extend_prompt
 from enoch.providers import ChatEvent, RuntimeResult, TaskRequirements
 from enoch.storage import local_storage_layout
 from enoch.tasks.queue import TaskJob
+from our_ark_provider_kit import (
+    BranchlessRepositoryFixture,
+    IndependentReviewFixture,
+)
 
 
 @dataclass(frozen=True)
@@ -87,7 +90,8 @@ class ProfileConformanceMixin:
                 command=spec.name,
                 argument=case.argument,
                 runtime=_Runtime(),
-                forge=_Forge(),
+                repository=BranchlessRepositoryFixture(),
+                review=IndependentReviewFixture(),
                 _enqueue=enqueue,
             )
             response = spec.handler(context)
@@ -132,7 +136,8 @@ class ProfileConformanceMixin:
                 storage=local_storage_layout(root),
                 chat=_Chat(),
                 runtime=_Runtime(),
-                forge=_Forge(),
+                repository=BranchlessRepositoryFixture(),
+                review=IndependentReviewFixture(),
             )
             for hook in (
                 profile.lifecycle.on_initialize,
@@ -194,11 +199,3 @@ class _Runtime:
 
     def health(self, root=None):
         return None
-
-
-class _Forge:
-    name = "conformance-forge"
-    provider_kind = "forge"
-
-    def __getattr__(self, _name: str) -> Any:
-        return lambda *_args, **_kwargs: None
