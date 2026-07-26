@@ -30,8 +30,8 @@ inside their compatibility adapters.
 Task persistence uses the same semantic model. Queue and task-event records
 store opaque `workspace_id`, `revision_id`, `review_id`, and review URLs rather
 than branch, commit, or pull-request fields. Existing schema 11 queue data and
-schema 5 task events remain readable, while new writes use queue schema 12 and
-task-event schema 6.
+task events through schema 6 remain readable, while new writes use queue schema
+12 and task-event schema 7.
 
 ## Repository contract
 

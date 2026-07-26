@@ -17,7 +17,7 @@ from enoch.memory.paths import clean_text, now as current_time
 from enoch.paths import artifact_path, artifact_read_paths
 
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 SUMMARY_LIMIT = 4000
 TASK_SOURCES = {
     "backlog",
@@ -55,7 +55,9 @@ class TaskLike(Protocol):
     started_at: str
     completed_at: str
     result: str
+    workspace_id: str
     review_urls: tuple[str, ...]
+    review_id: str
     publish_stage: str
     revision_id: str
     context_source: str
@@ -107,6 +109,8 @@ class TaskEvent:
     parent_candidate_id: str = ""
     source_task_id: int | None = None
     related_task_id: int | None = None
+    workspace_id: str = ""
+    review_id: str = ""
     review_urls: tuple[str, ...] = ()
     changed_files: tuple[str, ...] = ()
     publish_stage: str = ""
@@ -132,6 +136,10 @@ class TaskEvent:
     @property
     def commit_sha(self) -> str:
         return self.revision_id
+
+    @property
+    def branch_name(self) -> str:
+        return self.workspace_id
 
 
 def task_event_path(root: Path | None = None) -> Path:
@@ -183,6 +191,17 @@ def record_task_event(
         parent_candidate_id=clean_text(str(getattr(job, "parent_candidate_id", "") or "")),
         source_task_id=_positive_int(getattr(job, "source_task_id", None)),
         related_task_id=_positive_int(related_task_id),
+        workspace_id=clean_text(
+            str(
+                getattr(
+                    job,
+                    "workspace_id",
+                    getattr(job, "branch_name", ""),
+                )
+                or ""
+            )
+        ),
+        review_id=clean_text(str(getattr(job, "review_id", "") or "")),
         review_urls=_dedupe(
             tuple(
                 getattr(
@@ -366,6 +385,10 @@ def _event_from_line(line: str) -> TaskEvent | None:
         parent_candidate_id=clean_text(str(raw.get("parent_candidate_id") or "")),
         source_task_id=_positive_int(raw.get("source_task_id")),
         related_task_id=_positive_int(raw.get("related_task_id")),
+        workspace_id=clean_text(
+            str(raw.get("workspace_id", raw.get("branch_name")) or "")
+        ),
+        review_id=clean_text(str(raw.get("review_id") or "")),
         review_urls=_string_tuple(
             raw.get("review_urls", raw.get("pr_urls"))
         ),

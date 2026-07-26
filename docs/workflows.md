@@ -71,6 +71,11 @@ migration window. Workflow API v1 implementations must deliberately adopt the
 v2 methods before injection; `LocalWorkflowEngine` retains v1 method adapters
 for direct callers.
 
+Task-event schema 7 records the same opaque `workspace_id`, `revision_id`, and
+`review_id` values with `review_urls` at every lifecycle transition. Event
+readers continue to accept earlier schemas, including Git-shaped
+`branch_name`, `commit_sha`, and `pr_urls` evidence.
+
 Profiles do not receive or own the concrete engine. Their
 `CommandContext.enqueue_task()` method routes through the engine selected by
 the application, preserving one queue owner and keeping profile packages

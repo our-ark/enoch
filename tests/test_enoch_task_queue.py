@@ -149,10 +149,49 @@ class EnochTaskQueueTests(unittest.TestCase):
         self.assertEqual(completed.review_urls, (review_url,))
         self.assertEqual(completed.revision_id, "revision-1")
         self.assertEqual(completed.workspace_id, "workspace-1")
+        self.assertEqual(event_payload["schema_version"], 7)
+        self.assertEqual(event_payload["workspace_id"], "workspace-1")
+        self.assertEqual(event_payload["review_id"], "change-alpha")
         self.assertEqual(event_payload["review_urls"], [review_url])
         self.assertEqual(event_payload["revision_id"], "revision-1")
         self.assertNotIn("pr_urls", event_payload)
         self.assertNotIn("commit_sha", event_payload)
+
+    def test_schema_6_task_event_is_read_with_empty_new_identity_fields(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            path = task_event_path(root)
+            path.parent.mkdir(parents=True)
+            path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 6,
+                        "id": "event-legacy",
+                        "task_id": 9,
+                        "occurred_at": "2026-07-25T00:00:00+00:00",
+                        "event": "completed",
+                        "source": "task",
+                        "initiated_by": "human",
+                        "event_actor": "agent",
+                        "trigger": "/task",
+                        "request": "complete legacy task",
+                        "review_urls": ["https://reviews.example/change/legacy"],
+                        "revision_id": "legacy-revision",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            event = load_task_events(root)[0]
+
+        self.assertEqual(event.workspace_id, "")
+        self.assertEqual(event.review_id, "")
+        self.assertEqual(event.revision_id, "legacy-revision")
+        self.assertEqual(
+            event.review_urls,
+            ("https://reviews.example/change/legacy",),
+        )
 
     def test_recent_task_outcomes_keep_latest_terminal_state_and_publish_evidence(self) -> None:
         with TemporaryDirectory() as temp:
