@@ -47,12 +47,14 @@ from enoch.tasks.config import (
     save_task_timeout,
     task_settings,
 )
+from enoch.version_status import format_code_version_status
 
 
 _MODEL_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
 
 
 ModelSummaryFn = Callable[[Path], str]
+CodeVersionSummaryFn = Callable[[Path, str], str]
 DoctorFn = Callable[[Path], ImmuneResult]
 ResolveLineageFn = Callable[[Path], LineageResolution]
 RefreshLineageFn = Callable[..., LineageInboxReport]
@@ -92,6 +94,7 @@ def status_message(
     chat_provider: str = "chat",
     profile_name: str = "enoch",
     model_summary_fn: ModelSummaryFn = model_summary,
+    code_version_summary_fn: CodeVersionSummaryFn = format_code_version_status,
 ) -> str:
     provider_label = _provider_label(chat_provider)
     lines = [
@@ -115,6 +118,7 @@ def status_message(
         lines.append(
             f"Configure the {provider_label} provider to lock Enoch to this conversation, then restart Enoch."
         )
+    lines.extend(["", code_version_summary_fn(root, chat_provider)])
     return "\n".join(lines)
 
 

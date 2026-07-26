@@ -22,6 +22,7 @@ class VersionControlResult:
 class GitVersionControlProvider:
     name = "git"
     provider_kind = "vcs"
+    authoritative_revision_source = "cached remote ref"
     capabilities = ProviderCapabilities(
         provider_kind="vcs",
         capabilities=frozenset({"vcs.read", "vcs.write"}),
