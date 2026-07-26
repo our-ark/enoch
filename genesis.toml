@@ -32,7 +32,7 @@ optional = true
 
 [[runtime_dependencies]]
 name = "github"
-requirement = "our-ark-github @ git+https://github.com/our-ark/enoch.git@c5a6de8100f4359cd0266238ebc28fcbd2dc65bb#subdirectory=libraries/github"
+requirement = "our-ark-github @ git+https://github.com/our-ark/enoch.git@9e919726b96434309b53c86df978774d42e2890b#subdirectory=libraries/github"
 import_name = "our_ark_github"
 local_source = "libraries/github/src"
 optional = true
