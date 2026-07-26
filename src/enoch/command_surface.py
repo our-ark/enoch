@@ -12,11 +12,10 @@ def lineage_usage(prefix: str = "", *, command_name: str = "ancestors") -> str:
         return "\n".join(
             [
                 "Inherit commands:",
-                f"{command} - show inheritable direct-parent changes",
-                f"{command} show - show inheritable direct-parent changes",
-                f"{command} <change_id> - inherit one direct-parent change",
-                f"{command} all - inherit all direct-parent changes",
-                f"{command} ignore <candidate> - hide a change",
+                f"{command} - scan, assess, and show direct-parent changes",
+                f"{command} inspect <change_id> - show the complete stored assessment",
+                f"{command} <change_id> - adapt one change through the standard task workflow",
+                f"{command} ignore <change_id> - dismiss a change",
             ]
         )
     return "\n".join(

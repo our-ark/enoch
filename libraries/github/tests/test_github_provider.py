@@ -141,6 +141,53 @@ class GithubProviderTests(ProviderContractConformanceMixin, unittest.TestCase):
         self.assertEqual(record.landed_revision, result.revision)
         self.assertEqual(record.landed_at, merged_at)
 
+    def test_lineage_commit_listing_honors_limits_across_pages(self) -> None:
+        provider = GithubForgeProvider(gh="/usr/local/bin/gh")
+        first = [{"sha": f"sha-{index}"} for index in range(100)]
+        second = [{"sha": f"sha-{index}"} for index in range(100, 150)]
+
+        with patch.object(provider, "_json", side_effect=[first, second]) as request:
+            commits = provider.commits("our-ark/seth", "main", limit=150)
+
+        self.assertEqual(len(commits), 150)
+        self.assertEqual(request.call_count, 2)
+        self.assertIn("per_page=100&page=1", request.call_args_list[0].args[0][1])
+        self.assertIn("per_page=50&page=2", request.call_args_list[1].args[0][1])
+
+    def test_lineage_pr_commits_exposes_every_constituent_revision(self) -> None:
+        provider = GithubForgeProvider(gh="/usr/local/bin/gh")
+        with patch.object(
+            provider,
+            "_json",
+            return_value={"commits": [{"oid": "one"}, {"oid": "two"}]},
+        ):
+            commits = provider.pr_commits("our-ark/seth", 42)
+
+        self.assertEqual(commits, ("one", "two"))
+
+    def test_lineage_commit_diff_includes_file_stats_and_patch(self) -> None:
+        provider = GithubForgeProvider(gh="/usr/local/bin/gh")
+        with patch.object(
+            provider,
+            "_json",
+            return_value={
+                "files": [
+                    {
+                        "filename": "src/seth/core.py",
+                        "status": "modified",
+                        "additions": 2,
+                        "deletions": 1,
+                        "patch": "@@ -1 +1 @@\n-old\n+new",
+                    }
+                ]
+            },
+        ):
+            diff = provider.commit_diff("our-ark/seth", "abc")
+
+        self.assertIn("File: src/seth/core.py", diff)
+        self.assertIn("additions: 2; deletions: 1", diff)
+        self.assertIn("+new", diff)
+
     @patch("our_ark_github.subprocess.run")
     def test_reads_published_text_through_forge_contract(self, run) -> None:
         encoded = base64.b64encode(b"name: Lucy\n").decode("ascii")

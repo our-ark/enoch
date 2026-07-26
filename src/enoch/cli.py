@@ -86,8 +86,8 @@ ADMIN_COMMANDS = (
     ),
     AdminCommand(
         "inherit",
-        "Show inheritable direct-parent changes.",
-        "inherit [change_id|all|ignore <candidate>]",
+        "Scan and inspect direct-parent changes.",
+        "inherit [inspect <change_id>|ignore <change_id>]",
         "_admin_inherit",
     ),
     AdminCommand(

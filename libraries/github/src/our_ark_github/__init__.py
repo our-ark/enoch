@@ -143,7 +143,28 @@ class GithubForgeProvider:
         )
 
     def commits(self, repo: str, branch: str, limit: int = 20) -> list[dict[str, Any]]:
-        return list(self._json(["api", f"repos/{repo}/commits?sha={branch}&per_page={limit}"]))
+        remaining = max(1, int(limit))
+        page = 1
+        commits: list[dict[str, Any]] = []
+        while remaining > 0:
+            page_size = min(100, remaining)
+            batch = list(
+                self._json(
+                    [
+                        "api",
+                        (
+                            f"repos/{repo}/commits?sha={branch}"
+                            f"&per_page={page_size}&page={page}"
+                        ),
+                    ]
+                )
+            )
+            commits.extend(batch)
+            if len(batch) < page_size:
+                break
+            remaining -= len(batch)
+            page += 1
+        return commits[:limit]
 
     def commit_files(self, repo: str, sha: str) -> tuple[str, ...]:
         data = self._json(["api", f"repos/{repo}/commits/{sha}"])
@@ -157,6 +178,36 @@ class GithubForgeProvider:
         data = self._json(["pr", "view", str(number), "--repo", repo, "--json", "files"])
         return tuple(str(item.get("path") or "") for item in data.get("files", []) if item.get("path"))
 
+    def pr_commits(self, repo: str, number: int) -> tuple[str, ...]:
+        data = self._json(
+            ["pr", "view", str(number), "--repo", repo, "--json", "commits"]
+        )
+        return tuple(
+            str(item.get("oid") or "").strip()
+            for item in data.get("commits", [])
+            if str(item.get("oid") or "").strip()
+        )
+
+    def commit_diff(self, repo: str, sha: str) -> str:
+        data = self._json(["api", f"repos/{repo}/commits/{sha}"])
+        sections = []
+        for item in data.get("files", []):
+            filename = str(item.get("filename") or "").strip()
+            if not filename:
+                continue
+            header = (
+                f"File: {filename}\n"
+                f"Status: {item.get('status') or 'unknown'}; "
+                f"additions: {item.get('additions') or 0}; "
+                f"deletions: {item.get('deletions') or 0}"
+            )
+            patch = str(item.get("patch") or "").strip()
+            sections.append("\n".join(part for part in (header, patch) if part))
+        return "\n\n".join(sections)
+
+    def pr_diff(self, repo: str, number: int) -> str:
+        return self._text(["pr", "diff", str(number), "--repo", repo, "--patch"])
+
     def _json(self, args: list[str]) -> Any:
         if self.gh is None:
             raise ForgeProviderError("GitHub CLI is not available.")
@@ -168,6 +219,20 @@ class GithubForgeProvider:
             return json.loads(result.stdout or "null")
         except json.JSONDecodeError as error:
             raise ForgeProviderError("GitHub CLI returned invalid JSON.") from error
+
+    def _text(self, args: list[str]) -> str:
+        if self.gh is None:
+            raise ForgeProviderError("GitHub CLI is not available.")
+        result = subprocess.run(
+            [self.gh, *args],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            detail = result.stderr.strip() or result.stdout.strip() or "GitHub CLI command failed."
+            raise ForgeProviderError(detail)
+        return result.stdout
 
     def _content_text(self, repo: str, path: str, ref: str) -> str | None:
         data = self._json(["api", f"repos/{repo}/contents/{path}?ref={ref}"])

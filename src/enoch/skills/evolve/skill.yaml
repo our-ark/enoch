@@ -13,7 +13,6 @@ capabilities:
   semantic_curation: src/enoch/evolution/curation.py
   candidate_collection:
     - src/enoch/evolution/evidence.py
-    - src/enoch/lineage/core.py
     - src/enoch/learn.py
     - src/enoch/evolution/sources/brainstorming.py
   command_surface: src/enoch/app/core.py
@@ -27,7 +26,6 @@ permissions:
       - .enoch/artifacts/learning/peers.jsonl
       - .enoch/artifacts/evolve_events.jsonl
       - .enoch/evolve_curations.jsonl
-      - .agent/lineage_inbox.json
     write:
       - .enoch/evidence.json
       - .enoch/evolve.json

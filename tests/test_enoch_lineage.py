@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import sys
 import unittest
@@ -10,15 +11,21 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from enoch.lineage.core import (
+    APPLICABILITY_APPLICABLE,
+    APPLICABILITY_NOT_APPLICABLE,
+    ASSESSMENT_ASSESSED,
+    ASSESSMENT_FAILED,
+    LineageCandidate,
     LineageError,
     ParentLink,
+    STATUS_ADOPTED,
     find_inbox_candidate,
     format_candidate,
     format_inbox,
     format_lineage,
     format_parent_inherit_report,
     format_refresh_report,
-    lineage_adopt_prompt,
+    lineage_adaptation_request,
     lineage_inbox_file,
     load_birth_commit,
     load_current_agent_profile,
@@ -32,11 +39,19 @@ from enoch.lineage.core import (
     refresh_lineage_inbox,
     resolve_lineage,
 )
-from enoch.lineage.config import (
-    DEFAULT_IMPORTANT_FILE_PREFIXES,
-    DEFAULT_IMPORTANT_TITLE_WORDS,
-    lineage_settings,
+from enoch.lineage.assessment import assess_lineage_inbox
+from enoch.lineage.lifecycle import (
+    lineage_context_source,
+    reconcile_lineage_adoptions,
 )
+from enoch.lineage.config import lineage_settings
+from enoch.providers.contracts import (
+    RepositoryRevision,
+    ReviewIdentity,
+    ReviewRecord,
+    ReviewVersion,
+)
+from enoch.tasks.queue import TaskJob
 
 
 class EnochLineageTests(unittest.TestCase):
@@ -261,7 +276,8 @@ class EnochLineageTests(unittest.TestCase):
         self.assertEqual(inbox_ids, {"our-ark/enoch#32", "our-ark/lucy#7", "our-ark/lucy#8"})
         self.assertIsNotNone(candidate)
         assert candidate is not None
-        self.assertEqual(candidate.relevance, "medium")
+        self.assertEqual(candidate.relevance, "unassessed")
+        self.assertEqual(candidate.assessment_status, "pending")
         self.assertTrue(inbox_exists)
         self.assertIn("Ancestor refresh checked all ancestors", format_refresh_report(report))
         self.assertIn("our-ark/lucy#7", inbox_text)
@@ -279,8 +295,41 @@ class EnochLineageTests(unittest.TestCase):
         self.assertEqual(candidate.pr_number, 0)
         self.assertEqual(candidate.title, "Add direct ancestor commit")
         self.assertEqual(candidate.merge_commit, "enoch-direct-sha")
+        self.assertIn("direct change", candidate.diff_excerpt)
         self.assertIn("Committed at: 2026-06-21T16:37:27Z", format_candidate(candidate))
         self.assertIn("Commit: enoch-direct-sha", format_candidate(candidate))
+
+    def test_pr_is_assessed_once_instead_of_as_each_constituent_commit(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = _root_with_parent(Path(temp))
+
+            report = refresh_lineage_inbox(
+                root,
+                scope="parent",
+                client=MultiCommitPrLineageClient(),
+            )
+
+        self.assertEqual(report.new_count, 1)
+        self.assertEqual(
+            [candidate.id for candidate in report.candidates],
+            ["our-ark/enoch#44"],
+        )
+
+    def test_missing_diff_is_retried_after_the_discovery_cursor_advances(self) -> None:
+        client = FlakyDiffLineageClient()
+        with TemporaryDirectory() as temp:
+            root = _root_with_parent(Path(temp))
+
+            refresh_lineage_inbox(root, scope="parent", client=client)
+            first = find_inbox_candidate("our-ark/enoch#32", root)
+            refresh_lineage_inbox(root, scope="parent", client=client)
+            retried = find_inbox_candidate("our-ark/enoch#32", root)
+
+        assert first is not None
+        assert retried is not None
+        self.assertEqual(first.diff_excerpt, "")
+        self.assertIn("PR 32 change", retried.diff_excerpt)
+        self.assertEqual(client.diff_calls, 2)
 
     def test_refresh_parent_only_stores_direct_parent_candidates(self) -> None:
         with TemporaryDirectory() as temp:
@@ -292,6 +341,44 @@ class EnochLineageTests(unittest.TestCase):
         self.assertEqual(report.scope, "parent")
         self.assertEqual(inbox_ids, ["our-ark/enoch#32"])
         self.assertIn("direct parent", format_refresh_report(report))
+
+    def test_incremental_cursor_discovers_more_than_twenty_new_commits(self) -> None:
+        client = IncrementalLineageClient()
+        with TemporaryDirectory() as temp:
+            root = _root_with_parent(Path(temp))
+            first = refresh_lineage_inbox(root, scope="parent", client=client)
+            client.add_new_commits(25)
+
+            second = refresh_lineage_inbox(root, scope="parent", client=client)
+            ids = {
+                candidate.id
+                for candidate in load_inbox_candidates(root)
+            }
+
+        self.assertEqual(first.new_count, 1)
+        self.assertEqual(second.new_count, 25)
+        self.assertEqual(len(ids), 26)
+        self.assertFalse(second.errors)
+
+    def test_cursor_is_not_advanced_when_scan_limit_cannot_reach_it(self) -> None:
+        client = IncrementalLineageClient()
+        with TemporaryDirectory() as temp:
+            root = _root_with_parent(Path(temp))
+            config = root / ".enoch" / "config.yaml"
+            config.parent.mkdir()
+            config.write_text(
+                "lineage:\n  scan_limit: 20\n",
+                encoding="utf-8",
+            )
+            refresh_lineage_inbox(root, scope="parent", client=client)
+            client.add_new_commits(25)
+
+            failed = refresh_lineage_inbox(root, scope="parent", client=client)
+            payload = json.loads(lineage_inbox_file(root).read_text(encoding="utf-8"))
+
+        self.assertTrue(failed.errors)
+        self.assertIn("No cursor was advanced", failed.errors[-1])
+        self.assertEqual(payload["latest_heads"]["our-ark/enoch"], "base-sha")
 
     def test_parent_inherit_report_excludes_grandparent_candidates(self) -> None:
         with TemporaryDirectory() as temp:
@@ -306,7 +393,7 @@ class EnochLineageTests(unittest.TestCase):
         self.assertNotIn("our-ark/lucy#7", formatted)
         self.assertNotIn("our-ark/lucy#8", formatted)
 
-    def test_parent_inherit_report_only_lists_inheritable_candidates(self) -> None:
+    def test_parent_inherit_report_keeps_unassessed_changes_visible(self) -> None:
         with TemporaryDirectory() as temp:
             root = _root_with_parent(Path(temp))
 
@@ -315,12 +402,11 @@ class EnochLineageTests(unittest.TestCase):
             formatted = format_parent_inherit_report(report)
 
         self.assertEqual([candidate.id for candidate in stored], ["our-ark/enoch#99"])
-        self.assertEqual(stored[0].relevance, "low")
-        self.assertIn("No pending direct-parent inheritance candidates.", formatted)
-        self.assertIn("Filtered out 1 parent change(s)", formatted)
-        self.assertNotIn("our-ark/enoch#99 Update README wording", formatted)
+        self.assertEqual(stored[0].relevance, "unassessed")
+        self.assertIn("Awaiting assessment:", formatted)
+        self.assertIn("our-ark/enoch#99 Update README wording", formatted)
 
-    def test_lineage_settings_use_defaults_and_config_overrides(self) -> None:
+    def test_lineage_settings_use_semantic_assessment_defaults(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
             config = root / ".enoch" / "config.yaml"
@@ -329,8 +415,9 @@ class EnochLineageTests(unittest.TestCase):
                 "\n".join(
                     [
                         "lineage:",
-                        "  important_title_words: thinking, upgrade",
-                        "  important_file_prefixes: README.md, docs/",
+                        "  assessment_batch_size: 4",
+                        "  max_diff_chars: 9000",
+                        "  scan_limit: 250",
                     ]
                 ),
                 encoding="utf-8",
@@ -338,13 +425,11 @@ class EnochLineageTests(unittest.TestCase):
 
             settings = lineage_settings(root)
 
-        self.assertEqual(settings.important_title_words, ("thinking", "upgrade"))
-        self.assertEqual(settings.important_file_prefixes, ("README.md", "docs/"))
-        self.assertIn("fix", DEFAULT_IMPORTANT_TITLE_WORDS)
-        self.assertIn("src/enoch/app/", DEFAULT_IMPORTANT_FILE_PREFIXES)
-        self.assertNotIn("src/enoch/agency.py", DEFAULT_IMPORTANT_FILE_PREFIXES)
+        self.assertEqual(settings.assessment_batch_size, 4)
+        self.assertEqual(settings.max_diff_chars, 9000)
+        self.assertEqual(settings.scan_limit, 250)
 
-    def test_lineage_title_ranking_uses_configured_words(self) -> None:
+    def test_lineage_assessment_limits_are_configurable_and_bounded(self) -> None:
         with TemporaryDirectory() as temp:
             root = _root_with_parent(Path(temp))
             config = root / ".enoch" / "config.yaml"
@@ -353,18 +438,18 @@ class EnochLineageTests(unittest.TestCase):
                 "\n".join(
                     [
                         "lineage:",
-                        "  important_title_words: thinking",
+                        "  assessment_batch_size: 500",
+                        "  max_diff_chars: 20",
+                        "  scan_limit: 10000",
                     ]
                 ),
                 encoding="utf-8",
             )
+            settings = lineage_settings(root)
 
-            refresh_lineage_inbox(root, scope="parent", client=FakeLineageClient())
-            candidate = find_inbox_candidate("our-ark/enoch#32", root)
-
-        assert candidate is not None
-        self.assertEqual(candidate.relevance, "high")
-        self.assertIn("Title suggests", candidate.reason)
+        self.assertEqual(settings.assessment_batch_size, 20)
+        self.assertEqual(settings.max_diff_chars, 1_000)
+        self.assertEqual(settings.scan_limit, 5_000)
 
     def test_ignore_hides_candidate_from_pending_inbox(self) -> None:
         with TemporaryDirectory() as temp:
@@ -394,7 +479,7 @@ class EnochLineageTests(unittest.TestCase):
         self.assertEqual(candidate.status, "ignored")
         self.assertEqual(pending_after_refresh, ())
 
-    def test_format_candidate_and_adopt_prompt_include_context(self) -> None:
+    def test_format_candidate_and_adaptation_request_include_context(self) -> None:
         with TemporaryDirectory() as temp:
             root = _root_with_parent(Path(temp))
             refresh_lineage_inbox(root, scope="parent", client=FakeLineageClient())
@@ -402,8 +487,237 @@ class EnochLineageTests(unittest.TestCase):
 
         assert candidate is not None
         self.assertIn("Status: pending", format_candidate(candidate))
-        self.assertIn("Consider whether Enoch should adapt", lineage_adopt_prompt(candidate))
-        self.assertIn("src/enoch/app/", lineage_adopt_prompt(candidate))
+        self.assertIn("Adapt direct-parent change", lineage_adaptation_request(candidate))
+        self.assertIn("normal pull-request workflow", lineage_adaptation_request(candidate))
+
+    def test_codex_assesses_every_new_change_and_caches_by_source(self) -> None:
+        calls: list[str] = []
+        with TemporaryDirectory() as temp:
+            root = _root_with_parent(Path(temp))
+            report = refresh_lineage_inbox(
+                root,
+                scope="parent",
+                client=FakeLineageClient(),
+            )
+
+            def generator(prompt: str) -> str:
+                calls.append(prompt)
+                self.assertIn("untrusted repository data", prompt)
+                return json.dumps(
+                    [
+                        {
+                            "change_id": "our-ark/enoch#32",
+                            "summary": "Adds a configurable reasoning command.",
+                            "behavioral_change": "Users can select reasoning effort.",
+                            "applicability": "applicable",
+                            "rationale": "Enoch exposes runtime configuration.",
+                            "proposed_adaptation": "Adapt the provider-neutral setting.",
+                            "risks": ["Model capabilities differ."],
+                            "likely_files": ["src/enoch/commands.py"],
+                            "suggested_tests": ["Verify supported effort values."],
+                            "confidence": "high",
+                        }
+                    ]
+                )
+
+            assessed = assess_lineage_inbox(
+                report,
+                root,
+                generator=generator,
+                mission="Help Roy operate and improve Enoch.",
+            )
+            candidate = find_inbox_candidate("our-ark/enoch#32", root)
+            cached = assess_lineage_inbox(
+                assessed,
+                root,
+                generator=lambda _prompt: self.fail("cached change was reassessed"),
+                mission="Help Roy operate and improve Enoch.",
+            )
+
+        assert candidate is not None
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(assessed.assessed_count, 1)
+        self.assertEqual(cached.assessed_count, 0)
+        self.assertEqual(candidate.assessment_status, ASSESSMENT_ASSESSED)
+        self.assertEqual(candidate.applicability, APPLICABILITY_APPLICABLE)
+        self.assertEqual(candidate.summary, "Adds a configurable reasoning command.")
+        self.assertIn("Applicable:", format_parent_inherit_report(assessed))
+        self.assertIn("Codex assessment:", format_candidate(candidate))
+
+    def test_assessment_does_not_process_an_old_inbox_without_a_parent(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            legacy = root / ".agent" / "lineage_inbox.json"
+            legacy.parent.mkdir()
+            legacy.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "candidates": [_lineage_candidate_fixture().__dict__],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            report = refresh_lineage_inbox(
+                root,
+                scope="parent",
+                client=FakeLineageClient(),
+            )
+
+            assessed = assess_lineage_inbox(
+                report,
+                root,
+                generator=lambda _prompt: self.fail(
+                    "an unconfigured parent must not trigger assessment"
+                ),
+                mission="Help Roy operate Enoch.",
+            )
+
+        self.assertEqual(assessed.ancestors, ())
+        self.assertEqual(assessed.candidates, ())
+        self.assertEqual(assessed.assessed_count, 0)
+
+    def test_failed_assessment_preserves_change_for_retry(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = _root_with_parent(Path(temp))
+            report = refresh_lineage_inbox(
+                root,
+                scope="parent",
+                client=FakeLineageClient(),
+            )
+
+            failed = assess_lineage_inbox(
+                report,
+                root,
+                generator=lambda _prompt: "not json",
+                mission="Help Roy operate Enoch.",
+            )
+            candidate = find_inbox_candidate("our-ark/enoch#32", root)
+
+        assert candidate is not None
+        self.assertEqual(failed.assessment_failed_count, 1)
+        self.assertEqual(candidate.assessment_status, ASSESSMENT_FAILED)
+        self.assertEqual(candidate.status, "pending")
+        self.assertIn("malformed JSON", candidate.assessment_error)
+
+    def test_assessment_uses_configurable_fresh_batches(self) -> None:
+        calls = 0
+        with TemporaryDirectory() as temp:
+            root = _root_with_parent(Path(temp))
+            config = root / ".enoch" / "config.yaml"
+            config.parent.mkdir()
+            config.write_text(
+                "lineage:\n  assessment_batch_size: 2\n",
+                encoding="utf-8",
+            )
+            report = refresh_lineage_inbox(
+                root,
+                scope="all",
+                client=FakeLineageClient(),
+            )
+
+            def generator(prompt: str) -> str:
+                nonlocal calls
+                calls += 1
+                raw_records = next(
+                    line.removeprefix("Untrusted lineage changes: ")
+                    for line in prompt.splitlines()
+                    if line.startswith("Untrusted lineage changes: ")
+                )
+                records = json.loads(raw_records)
+                return json.dumps(
+                    [
+                        _assessment_payload(record["change_id"])
+                        for record in records
+                    ]
+                )
+
+            assessed = assess_lineage_inbox(
+                report,
+                root,
+                generator=generator,
+                mission="Help Roy operate Enoch.",
+            )
+
+        self.assertEqual(calls, 2)
+        self.assertEqual(assessed.assessed_count, 3)
+
+    def test_legacy_inbox_is_read_then_migrated_to_private_state(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = _root_with_parent(Path(temp))
+            legacy = root / ".agent" / "lineage_inbox.json"
+            candidate = _lineage_candidate_fixture()
+            legacy.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "candidates": [candidate.__dict__],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            loaded = find_inbox_candidate(candidate.id, root)
+            mark_inbox_candidate(candidate.id, "ignored", root)
+            migrated = json.loads(lineage_inbox_file(root).read_text(encoding="utf-8"))
+
+            self.assertIsNotNone(loaded)
+            self.assertTrue(lineage_inbox_file(root).exists())
+            self.assertTrue(legacy.exists())
+            self.assertEqual(migrated["schema_version"], 2)
+            self.assertEqual(migrated["latest_heads"], {})
+
+    def test_landed_review_is_required_before_linked_change_becomes_adopted(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = _root_with_parent(Path(temp))
+            report = refresh_lineage_inbox(
+                root,
+                scope="parent",
+                client=FakeLineageClient(),
+            )
+            assess_lineage_inbox(
+                report,
+                root,
+                generator=lambda _prompt: _assessment_json(
+                    "our-ark/enoch#32",
+                    applicability=APPLICABILITY_NOT_APPLICABLE,
+                ),
+                mission="Help Roy operate Enoch.",
+            )
+            from enoch.lineage.core import link_inbox_candidate
+
+            link_inbox_candidate("our-ark/enoch#32", 7, root)
+            task = TaskJob(
+                id=7,
+                chat_id=42,
+                text="adapt",
+                created_at="2026-07-26T00:00:00+00:00",
+                status="completed",
+                context_source=lineage_context_source("our-ark/enoch#32"),
+                review_url="https://github.com/our-ark/enoch/pull/77",
+                review_urls=("https://github.com/our-ark/enoch/pull/77",),
+            )
+
+            open_result = reconcile_lineage_adoptions(
+                root,
+                (task,),
+                review=FakeReviewProvider(state="open"),
+            )
+            linked = find_inbox_candidate("our-ark/enoch#32", root)
+            landed_result = reconcile_lineage_adoptions(
+                root,
+                (task,),
+                review=FakeReviewProvider(state="landed"),
+            )
+            adopted = find_inbox_candidate("our-ark/enoch#32", root)
+
+        assert linked is not None
+        assert adopted is not None
+        self.assertEqual(open_result.adopted_ids, ())
+        self.assertEqual(linked.status, "linked")
+        self.assertEqual(landed_result.adopted_ids, ("our-ark/enoch#32",))
+        self.assertEqual(adopted.status, STATUS_ADOPTED)
+        self.assertEqual(adopted.adopted_revision, "landed-sha")
 
 
 class FakeLineageClient:
@@ -419,7 +733,7 @@ class FakeLineageClient:
         }.get(repo, ())
 
     def latest_commit(self, repo: str, branch: str) -> str:
-        return {"our-ark/enoch": "enoch-head", "our-ark/lucy": "lucy-head"}[repo]
+        return {"our-ark/enoch": "enoch-merge", "our-ark/lucy": "lucy-docs"}[repo]
 
     def merged_prs(self, repo: str, branch: str, limit: int = 20) -> list[dict]:
         if repo == "our-ark/enoch":
@@ -463,13 +777,36 @@ class FakeLineageClient:
         return ("README.md",)
 
     def commits(self, repo: str, branch: str, limit: int = 20) -> list[dict]:
-        return []
+        shas = (
+            ("enoch-merge",)
+            if repo == "our-ark/enoch"
+            else ("lucy-docs", "lucy-merge")
+        )
+        return [
+            {
+                "sha": sha,
+                "commit": {
+                    "message": f"Merge {sha}",
+                    "committer": {"date": "2026-06-17T03:00:00Z"},
+                },
+            }
+            for sha in shas[:limit]
+        ]
 
     def commit_files(self, repo: str, sha: str) -> tuple[str, ...]:
         return ()
 
+    def pr_diff(self, repo: str, number: int) -> str:
+        return f"diff --git a/source b/source\n+PR {number} change"
+
+    def commit_diff(self, repo: str, sha: str) -> str:
+        return f"diff --git a/source b/source\n+direct change {sha}"
+
 
 class DirectCommitLineageClient(FakeLineageClient):
+    def latest_commit(self, repo: str, branch: str) -> str:
+        return "enoch-direct-sha"
+
     def merged_prs(self, repo: str, branch: str, limit: int = 20) -> list[dict]:
         return []
 
@@ -490,6 +827,9 @@ class DirectCommitLineageClient(FakeLineageClient):
 
 
 class LowRelevanceLineageClient(FakeLineageClient):
+    def latest_commit(self, repo: str, branch: str) -> str:
+        return "enoch-docs"
+
     def merged_prs(self, repo: str, branch: str, limit: int = 20) -> list[dict]:
         if repo != "our-ark/enoch":
             return []
@@ -507,6 +847,79 @@ class LowRelevanceLineageClient(FakeLineageClient):
 
     def pr_files(self, repo: str, number: int) -> tuple[str, ...]:
         return ("README.md",)
+
+    def commits(self, repo: str, branch: str, limit: int = 20) -> list[dict]:
+        return [
+            {
+                "sha": "enoch-docs",
+                "commit": {
+                    "message": "Update README wording",
+                    "committer": {"date": "2026-06-17T03:00:00Z"},
+                },
+            }
+        ]
+
+
+class MultiCommitPrLineageClient(FakeLineageClient):
+    def latest_commit(self, repo: str, branch: str) -> str:
+        return "merge-commit"
+
+    def merged_prs(self, repo: str, branch: str, limit: int = 20) -> list[dict]:
+        return [
+            {
+                "number": 44,
+                "title": "Add one behavior through two commits",
+                "body": "One logical pull request.",
+                "labels": [],
+                "mergedAt": "2026-07-26T00:00:00Z",
+                "mergeCommit": {"oid": "merge-commit"},
+                "url": "https://github.com/our-ark/enoch/pull/44",
+            }
+        ]
+
+    def commits(self, repo: str, branch: str, limit: int = 20) -> list[dict]:
+        return [
+            _commit_payload("merge-commit"),
+            _commit_payload("pr-commit-2"),
+            _commit_payload("pr-commit-1"),
+        ]
+
+    def pr_commits(self, repo: str, number: int) -> tuple[str, ...]:
+        return ("pr-commit-1", "pr-commit-2")
+
+
+class FlakyDiffLineageClient(FakeLineageClient):
+    def __init__(self) -> None:
+        self.diff_calls = 0
+
+    def pr_diff(self, repo: str, number: int) -> str:
+        self.diff_calls += 1
+        if self.diff_calls == 1:
+            raise OSError("temporary diff failure")
+        return super().pr_diff(repo, number)
+
+
+class IncrementalLineageClient(FakeLineageClient):
+    def __init__(self) -> None:
+        self.items = [_commit_payload("base-sha")]
+
+    def add_new_commits(self, count: int) -> None:
+        self.items = [
+            _commit_payload(f"new-{index:03d}-sha")
+            for index in range(count, 0, -1)
+        ] + self.items
+
+    def latest_commit(self, repo: str, branch: str) -> str:
+        return str(self.items[0]["sha"])
+
+    def merged_prs(self, repo: str, branch: str, limit: int = 20) -> list[dict]:
+        return []
+
+    def commits(self, repo: str, branch: str, limit: int = 20) -> list[dict]:
+        return self.items[:limit]
+
+    def commit_files(self, repo: str, sha: str) -> tuple[str, ...]:
+        return (f"src/enoch/{sha}.py",)
 
 
 class RecordingLineageClient(FakeLineageClient):
@@ -534,6 +947,82 @@ def _root_with_parent(root: Path, *, commit_at_birth: str = "") -> Path:
         encoding="utf-8",
     )
     return root
+
+
+def _assessment_json(
+    change_id: str,
+    *,
+    applicability: str = "applicable",
+) -> str:
+    return json.dumps([_assessment_payload(change_id, applicability=applicability)])
+
+
+def _assessment_payload(
+    change_id: str,
+    *,
+    applicability: str = "applicable",
+) -> dict:
+    return {
+        "change_id": change_id,
+        "summary": "Summary.",
+        "behavioral_change": "Behavior changes.",
+        "applicability": applicability,
+        "rationale": "Rationale.",
+        "proposed_adaptation": "Adapt it.",
+        "risks": [],
+        "likely_files": [],
+        "suggested_tests": [],
+        "confidence": "medium",
+    }
+
+
+def _commit_payload(sha: str) -> dict:
+    return {
+        "sha": sha,
+        "html_url": f"https://github.com/our-ark/enoch/commit/{sha}",
+        "commit": {
+            "message": f"Change {sha}",
+            "committer": {"date": "2026-07-26T00:00:00Z"},
+        },
+    }
+
+
+def _lineage_candidate_fixture() -> LineageCandidate:
+    return LineageCandidate(
+        id="our-ark/enoch#32",
+        repo="our-ark/enoch",
+        pr_number=32,
+        title="Add Telegram thinking level command",
+        url="https://github.com/our-ark/enoch/pull/32",
+        merged_at="2026-06-17T01:31:12Z",
+        merge_commit="enoch-merge",
+        ancestor_name="Enoch",
+        depth=1,
+        labels=(),
+        files=("src/enoch/app/core.py",),
+        relevance="unassessed",
+        confidence="unknown",
+        reason="Awaiting Codex assessment.",
+        body_excerpt="Adds /thinking.",
+    )
+
+
+class FakeReviewProvider:
+    def __init__(self, *, state: str) -> None:
+        self.state = state
+
+    def inspect_review(self, identity: ReviewIdentity, root: Path) -> ReviewRecord:
+        del root
+        revision = RepositoryRevision("landed-sha")
+        return ReviewRecord(
+            identity=identity,
+            title="Adapt ancestor change",
+            body="",
+            state=self.state,
+            versions=(ReviewVersion("v1", revision),),
+            landed_revision=revision if self.state == "landed" else None,
+            landed_at="2026-07-26T01:00:00Z" if self.state == "landed" else "",
+        )
 
 
 if __name__ == "__main__":
