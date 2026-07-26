@@ -19,13 +19,19 @@ from enoch.providers.contracts import (
 )
 from enoch.providers.registry import ProviderError, load_provider, provider_name
 from enoch.state import StateCorruptionError, load_json_object
+from enoch.validation_environment import (
+    VALIDATION_REQUIREMENTS,
+    ValidationEnvironmentError,
+    ensure_validation_environment,
+    existing_validation_environment,
+)
 
 
 DEFAULT_TEST_ARGS = ["-m", "unittest", "discover", "-s", "tests", "-t", "."]
 DEFAULT_TIMEOUT_SECONDS = 120
 MAX_OUTPUT_CHARS = 12000
 MIN_PYTHON_VERSION = (3, 11)
-TEST_BUILD_REQUIREMENTS = Path(".github/requirements/test-build.txt")
+TEST_BUILD_REQUIREMENTS = VALIDATION_REQUIREMENTS
 STATE_OBJECT_FIELDS: dict[str, dict[str, type]] = {
     "backlog.json": {"pending": list, "history": list},
     "codex_sessions.json": {"sessions": dict},
@@ -82,15 +88,23 @@ def run_immune_system(
     ]
     test_check: DoctorCheckResult
     if os.environ.get("ENOCH_TEST_COMMAND") is None:
-        build_backend = _build_backend_check(root_path, timeout)
+        validation_python, build_backend = _validation_python_and_backend_check(
+            root_path,
+            timeout,
+        )
         checks.append(build_backend)
         if build_backend.passed:
-            test_check = _run_check("tests", _test_command(), root_path, timeout)
+            test_check = _run_check(
+                "tests",
+                _test_command(validation_python),
+                root_path,
+                timeout,
+            )
         else:
             test_check = DoctorCheckResult(
                 name="tests",
                 passed=True,
-                command=shlex.join(_test_command()),
+                command=shlex.join(_test_command(validation_python)),
                 output="",
                 summary="not run until the build-backend prerequisite passes",
                 skipped=True,
@@ -118,11 +132,11 @@ def run_immune_system(
     )
 
 
-def _test_command() -> list[str]:
+def _test_command(python: str | None = None) -> list[str]:
     configured = os.environ.get("ENOCH_TEST_COMMAND")
     if configured is not None:
         return _split_configured_command(configured)
-    return [_python_executable(), *DEFAULT_TEST_ARGS]
+    return [python or _python_executable(), *DEFAULT_TEST_ARGS]
 
 
 def _split_configured_command(command: str) -> list[str]:
@@ -176,10 +190,76 @@ def _python_runtime_check(root: Path, timeout: float) -> DoctorCheckResult:
     )
 
 
-def _build_backend_check(root: Path, timeout: float) -> DoctorCheckResult:
+def _validation_python_and_backend_check(
+    root: Path,
+    timeout: float,
+) -> tuple[str, DoctorCheckResult]:
+    base_python = _python_executable()
+    try:
+        existing = existing_validation_environment(
+            root,
+            base_python=base_python,
+        )
+    except ValidationEnvironmentError:
+        existing = None
+    validation_python = str(existing.python) if existing else base_python
+    check = _build_backend_check(
+        root,
+        timeout,
+        python=validation_python,
+    )
+    if check.passed or not _managed_environment_can_repair(check):
+        return validation_python, check
+
+    try:
+        managed = ensure_validation_environment(
+            root,
+            base_python=base_python,
+        )
+    except ValidationEnvironmentError as error:
+        return validation_python, DoctorCheckResult(
+            name=check.name,
+            passed=False,
+            command="provision Enoch-managed validation environment",
+            output=_join_output(
+                "Enoch could not prepare its managed validation environment.",
+                str(error),
+                "Original build-backend check:",
+                check.output,
+            ),
+            category="environment readiness",
+            summary="managed validation environment unavailable",
+        )
+
+    validation_python = str(managed.python)
+    return validation_python, _build_backend_check(
+        root,
+        timeout,
+        python=validation_python,
+    )
+
+
+def _managed_environment_can_repair(check: DoctorCheckResult) -> bool:
+    return (
+        check.name == "build backend"
+        and check.category == "environment readiness"
+        and (
+            check.summary.startswith("missing ")
+            or "requires >=" in check.summary
+        )
+    )
+
+
+def _build_backend_check(
+    root: Path,
+    timeout: float,
+    *,
+    python: str | None = None,
+) -> DoctorCheckResult:
     backend, distribution, minimum_version = _project_build_backend(root)
+    executable = python or _python_executable()
     command = [
-        _python_executable(),
+        executable,
         "-c",
         (
             "import importlib, importlib.metadata; "
@@ -188,7 +268,10 @@ def _build_backend_check(root: Path, timeout: float) -> DoctorCheckResult:
         ),
     ]
     check = _run_check("build backend", command, root, timeout)
-    install_command = _test_prerequisite_install_command(root)
+    install_command = _test_prerequisite_install_command(
+        root,
+        python=executable,
+    )
     if not check.passed:
         return DoctorCheckResult(
             name=check.name,
@@ -285,15 +368,20 @@ def _distribution_version(output: str, distribution: str) -> str:
     return match.group(1) if match else ""
 
 
-def _test_prerequisite_install_command(root: Path) -> str:
+def _test_prerequisite_install_command(
+    root: Path,
+    *,
+    python: str | None = None,
+) -> str:
+    executable = python or _python_executable()
     requirements = root / TEST_BUILD_REQUIREMENTS
     if requirements.is_file():
         return (
-            f"{shlex.quote(_python_executable())} -m pip install "
+            f"{shlex.quote(executable)} -m pip install "
             "--disable-pip-version-check --require-hashes "
             f"-r {TEST_BUILD_REQUIREMENTS.as_posix()}"
         )
-    return f"{shlex.quote(_python_executable())} -m pip install setuptools"
+    return f"{shlex.quote(executable)} -m pip install setuptools"
 
 
 def _python_version(output: str) -> tuple[int, int] | None:

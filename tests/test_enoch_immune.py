@@ -1,3 +1,4 @@
+from dataclasses import replace
 from pathlib import Path
 import subprocess
 import sys
@@ -18,10 +19,15 @@ from enoch.immune import (
     _forge_provider_check,
     _limit_output,
     _memory_storage_check,
+    _validation_python_and_backend_check,
     diagnose_output,
     run_immune_system,
 )
 from enoch.providers.registry import ProviderError
+from enoch.validation_environment import (
+    ValidationEnvironment,
+    ValidationEnvironmentError,
+)
 
 
 def _check(
@@ -416,6 +422,83 @@ FAILED (failures=1)
         self.assertFalse(check.passed)
         self.assertIn("requires >= 77", check.summary)
         self.assertIn("requires at least 77", check.output)
+
+    @patch("enoch.immune.ensure_validation_environment")
+    @patch("enoch.immune.existing_validation_environment", return_value=None)
+    @patch("enoch.immune._build_backend_check")
+    def test_missing_backend_is_repaired_with_managed_environment(
+        self,
+        build_backend_check: MagicMock,
+        _existing_environment: MagicMock,
+        ensure_environment: MagicMock,
+    ) -> None:
+        missing = _check(
+            "build backend",
+            passed=False,
+            category="environment readiness",
+        )
+        missing = replace(
+            missing,
+            summary="missing setuptools.build_meta",
+        )
+        passed = _check(
+            "build backend",
+            category="environment readiness",
+        )
+        ensure_environment.return_value = ValidationEnvironment(
+            root=Path("/managed"),
+            python=Path("/managed/bin/python"),
+            fingerprint="abc",
+            created=True,
+        )
+        build_backend_check.side_effect = [missing, passed]
+
+        python, check = _validation_python_and_backend_check(
+            ROOT,
+            120,
+        )
+
+        self.assertEqual(python, "/managed/bin/python")
+        self.assertTrue(check.passed)
+        ensure_environment.assert_called_once()
+        self.assertEqual(
+            build_backend_check.call_args_list[-1].kwargs["python"],
+            "/managed/bin/python",
+        )
+
+    @patch(
+        "enoch.immune.ensure_validation_environment",
+        side_effect=ValidationEnvironmentError("network unavailable"),
+    )
+    @patch("enoch.immune.existing_validation_environment", return_value=None)
+    @patch("enoch.immune._build_backend_check")
+    def test_managed_environment_failure_is_reported_as_doctor_failure(
+        self,
+        build_backend_check: MagicMock,
+        _existing_environment: MagicMock,
+        _ensure_environment: MagicMock,
+    ) -> None:
+        missing = _check(
+            "build backend",
+            passed=False,
+            category="environment readiness",
+        )
+        build_backend_check.return_value = replace(
+            missing,
+            summary="missing setuptools.build_meta",
+        )
+
+        _python, check = _validation_python_and_backend_check(
+            ROOT,
+            120,
+        )
+
+        self.assertFalse(check.passed)
+        self.assertEqual(
+            check.summary,
+            "managed validation environment unavailable",
+        )
+        self.assertIn("network unavailable", check.output)
 
     def test_environment_failure_outranks_resulting_test_failure(self) -> None:
         output = """
