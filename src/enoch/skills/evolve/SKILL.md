@@ -2,182 +2,186 @@
 
 ## Purpose
 
-Use this skill when Enoch should reason about her next small self-evolution step.
+Use this skill when Enoch should inspect, propose, or govern a small
+self-evolution step. Evolution is an evidence-to-change pipeline, not a generic
+task runner:
 
-The evolve skill is a selection loop, not a generic task runner. It collects possible improvements, deterministically pre-ranks them, and asks the reasoning engine to semantically curate a bounded candidate pool against the current mission and evolution theme.
+```text
+records -> evidence -> candidate -> recommendation -> human approval
+        -> isolated task -> pull request -> promotion -> adoption
+```
+
+Backlog entries are ordinary deferred work and are never evolution evidence by
+themselves.
 
 ## Modes
 
-- `disabled`: do not collect, rank, or propose self-evolution candidates.
-- `co-evolve`: collect and rank candidates, then wait for human approval before changing code.
-- `auto-evolve`: schedule semantic proposal checks under guardrails; still require human approval before queueing or removing candidates, and never merge self-evolution changes.
+- `disabled`: do not scan, synthesize, or propose self-evolution.
+- `co-evolve`: notice and recommend changes, but wait for human approval.
+- `auto-evolve`: schedule the same semantic proposal flow, but still wait for
+  human approval before queueing, removing, or merging anything.
 
-The default mode is `co-evolve`.
+The default is `co-evolve`. The current theme guides synthesis, curation, and
+deterministic fallback ranking; it is context, not an evidence source.
 
-## Candidate Sources
+## Evidence pathways
 
-Enoch collects exactly five semantic candidate sources. Backlog entries are
-ordinary deferred work, not evolution evidence:
+Feedback and experience are two-stage pathways. They first create durable
+evidence, then a separate reasoning pass may turn unlinked evidence into
+candidate changes.
 
-- **feedback** extracted conservatively from local conversation logs, including corrections, preferences, complaints, and repeated requests;
-- **experience** from the durable task experience journal, failed tasks, recurring workflows, repeated successful user workflows, and successful skill-work artifacts;
-- **inheritance** from direct-parent changes in `.agent/lineage_inbox.json`;
-- **learning** from skills explicitly inspected with `/learn`, recorded in `.enoch/artifacts/learning/peers.jsonl`; and
-- **brainstorming** from bounded, structured LLM ideas generated under the current mission and evolution theme.
+### Feedback
 
-Each source contributes raw candidates to the pool; source discovery is not a
-recommendation. Only the semantic curation result from `/propose` is an LLM
-recommendation. Deterministic scores only pre-order and bound that curation
-input, with an explicitly labelled fallback when semantic curation is
-unavailable or invalid.
+The feedback scanner reads unprocessed conversation turns in configurable
+batches, defaulting to 20 user messages. Each record contains the exact user
+message and Enoch reply, plus a stable `conversation:<id>` reference. Credential
+values are redacted before the records leave storage.
 
-The theme is semantic curation context and deterministic pre-ranking pressure, not a seventh source. `/evolve brainstorm` requires a non-empty theme, asks the reasoning engine for a small JSON list, validates the result, and persists only structured candidates in `.enoch/artifacts/evolve_brainstorms.jsonl`.
+The scanner runs in a fresh stateless runtime invocation. It receives no normal
+conversation session and returns a strict JSON array of zero or more
+observations. Simple words, phrases, and regular expressions do not classify
+feedback.
 
-`/propose` refreshes all five sources, applies deterministic pre-ranking, and
-passes a bounded set of structured candidate fields and provenance to semantic
-curation. It also includes bounded, privacy-cleaned recent completion evidence
-from the structured task and evolution journals: task/candidate linkage,
-request and result summaries, PRs and changed files, and recorded
-promotion/merge/version verification. Absolute local paths, credentials,
-private-state paths, chat identifiers, memory identifiers, full logs, and
-runtime session identifiers are not included. The curator may recommend one existing ID with narrower scope, risk,
-and test guidance; suggest duplicate, superseded, obsolete, already-resolved,
-context-only, or not-actionable candidates for removal; and suggest up to three
-new bounded candidates. New suggestions are persisted with
-`brainstorming`/`agent` provenance and never masquerade as human feedback.
+### Experience
 
-Completion evidence distinguishes a worker-completed open PR from a promoted
-body change on the authoritative branch, a completed non-body task, and a
-partial runtime result. Failed, cancelled, regressed, and stale earlier
-completion events are excluded. An open PR or task status of `completed` alone
-does not establish authoritative body resolution. `already-resolved` and
-`superseded` suggestions must cite prompt-provided refs such as `task:<id>`,
-`pr:<url>`, `merge:<revision>`, or `version:<version>`; body-change candidates
-require evidence labelled `authoritative-body`.
+The experience scanner reads configurable batches of distinct changed task
+IDs, defaulting to 20. Each record contains that task's complete ordered event
+history from `.enoch/artifacts/task_events.jsonl`, not merely the last event.
 
-Semantic curation is stored separately in `.enoch/evolve_curations.jsonl`. It
-references raw candidate IDs and immutable provenance instead of rewriting raw
-evidence. It records bounded input and suggestion evidence refs, never the full
-private task result or conversation. Deterministic ranking remains only for bounded context ordering and an
-explicitly labelled fallback when the reasoning engine is unavailable, times
-out, completion evidence cannot be loaded, returns malformed JSON, cites
-unknown or non-authoritative resolution evidence, or produces no valid result. The legacy empty-pool
-brainstorm fallback remains available to direct callers, while the application
-proposal flow uses semantic curation for both existing and newly suggested work.
+The scan cursor records the latest event ID for each task. A later lifecycle
+event makes that task pending again, so a completion followed by a regression
+is rescanned with the full causal history. A failed task, successful task,
+repeated workflow, or cron definition is not evidence by itself; the semantic
+scanner must identify durable operational friction or an improvement signal.
 
-Candidates are persisted in `.enoch/evolve_candidates.json` so Enoch can remember whether a candidate is available, running, done, failed, cancelled, or removed. Normal candidate views retain failed candidates as retryable and hide done, cancelled, and removed candidates.
+### Scan contract
 
-Evolution decisions are appended to `.enoch/artifacts/evolve_events.jsonl`. The funnel
-records checks, proposals, selections, queueing, terminal outcomes, skips, and
-human removals. Proposal events link `curation_id` and `recommendation_kind` to
-the separate curation journal and retain bounded evidence refs. Human removals
-made from a curator suggestion preserve the removal classification, reason,
-curation ID, and evidence refs. The LLM and scheduler never apply a suggestion
-or change candidate status. Candidate provenance separates `evidence_source`, `signal_actor`, and
-`candidate_actor`; execution records `approval_actor`, while `event_actor` and
-`trigger` identify who caused each lifecycle decision. `parent_candidate_id`
-and `source_task_id` preserve causal links for candidates learned from prior
-work, and task `parent_task_id` remains the retry relationship.
+Both scanners:
 
-## Scheduler
+- may return an empty array;
+- may record at most ten evidence items per batch;
+- must use the exact JSON schema and cite only supplied record references;
+- record confidence and whether a human stated the signal explicitly;
+- describe an observation and desired outcome, not a proposed implementation;
+- advance their cursor only after a valid response; and
+- leave every input pending after timeout, malformed JSON, unknown references,
+  or another failed scan.
 
-The evolve scheduler stores its frequency and next run time in `.enoch/evolve.json`.
+Threshold scans run from the daemon loop when evolution is enabled, the chat is
+locked, no task worker is active, and a source reaches its configured batch
+size. This also catches up after restart. `/evolve scan` forces and drains
+unprocessed batches even below the threshold. `/evolve propose` and scheduled
+evolve checks also force and drain both sources before selection.
 
-It can run on a fixed interval, once per day at a local HH:MM time, or a cron-style daily expression like `30 9 * * *`.
+## Evidence storage
 
-When the scheduler is due:
+Evidence settings are stored in `.enoch/evidence.json`.
 
-- `disabled` mode advances the schedule and takes no action.
-- `co-evolve` mode runs the same proposal selection as `/propose` and sends that proposal to the locked chat-provider conversation.
-- `auto-evolve` mode runs the same proposal selection as `/propose`, sends it to
-  the locked conversation, and waits for explicit human approval. It does not
-  queue new candidates, retry failures, or apply remove suggestions automatically.
+Evidence is append-only in:
 
-Proposal selection considers candidates whose status is `candidate` or `failed`. Running candidates are not proposed again.
-Scheduled co-evolve and auto-evolve checks use the same empty-candidate fallback
-and cooldown as `/propose`.
+- `.enoch/artifacts/evidence.jsonl`
+- `.enoch/artifacts/evidence_scans.jsonl`
 
-Each top candidate returned by `/propose` or the evolve scheduler receives a
-unique `proposal_id` in `.enoch/artifacts/evolve_events.jsonl`. Proposal dispositions are
-tracked independently as `selected`, `removed`, or `no-action`; an unresolved
-proposal remains pending, and a newer proposal closes the previous pending one
-as `no-action` with reason `superseded-by-new-proposal`. Queued task outcomes
-retain the same `proposal_id`, including completion, failure, cancellation, and
-regression resolution. `/experience` reports proposal disposition, acceptance
-rate, source and trigger distribution, and selected proposal outcomes.
+An evidence item contains:
 
-Task completion is not promotion or adoption. `/evolve reconcile <id>` verifies
-that a completed candidate's PR was merged by a human and that its merge commit
-is contained in the VCS provider's trusted authoritative branch, then records a
-`promoted` event.
-`/evolve reconcile <id> backfill` performs the same verification while marking
-the evidence as historical backfill. After `/update` passes doctor, Enoch stages
-eligible promotions and records `adopted` only when the restarted daemon confirms
-it is running the verified version.
+- `id`, `source`, observation type, and affected area;
+- desired outcome, confidence, and explicit-human flag;
+- immutable conversation, task, and task-event references;
+- status and timestamps; and
+- candidate IDs linked from that evidence.
 
-Every tracked task writes append-only lifecycle events to `.enoch/artifacts/task_events.jsonl`.
-Events include `created`, `queued`, `started`, `completed`, `failed`, `cancelled`,
-`paused`, `resumed`, `regressed`, `reverted`, and `forward-fixed`. Agent runtime access
-interruptions are recorded as `paused` and `/task resume` transitions without
-closing the task or its linked evolve proposal. A regression is recorded after
-a task was completed; `reverted` and `forward-fixed` are separate resolution
-events so regression counts remain durable. Enoch owns this bookkeeping:
-the agent emits an internal structured signal when evidence identifies the
-original task, and the Enoch application records it after validating task state.
-A human can report a problem naturally and does not maintain lifecycle status
-with `/task` commands. Task events retain the original source and initiator,
-and evolve-linked tasks add explicit provenance:
+Evidence is not deleted when it becomes a candidate. A linkage update changes
+its latest status to `linked` while the earlier journal record remains. There
+is currently no command that deletes evidence.
 
-- `source` is one of `backlog`, `feedback`, `experience`, `inheritance`, `learning`, `brainstorming`, `task`, or `chat-task`;
-- `initiated_by` is `human` or `agent` and remains stable for the task; and
-- `event_actor` is `human`, `agent`, or `system`, identifying who caused that lifecycle transition.
-- `evidence_source`, `signal_actor`, and `candidate_actor` describe why and by
-  whom the candidate was created;
-- `approval_actor` identifies who approved this execution; and
-- `parent_candidate_id`, `source_task_id`, and `parent_task_id` preserve
-  candidate causality, evidence-task causality, and retry causality respectively.
+## Candidate pathways
 
-Cron, recovery, backlog promotion, approval, and evolve scheduling are triggers,
-not extra sources. Failures or feedback encountered during backlog execution can
-still enter through experience or feedback. Legacy `.enoch/experience.jsonl`
-records remain readable.
-Only actionable failures, started cancellations, repeated successful user
-workflows, recurring jobs, and skill-work artifacts become evolve candidates.
+Enoch has five candidate sources:
 
-## Guardrails
+- `feedback`: synthesized from feedback evidence;
+- `experience`: synthesized from task-history evidence;
+- `inheritance`: applicable direct-parent changes from the lineage inbox;
+- `learning`: peer skill observations explicitly recorded through `/learn`;
+- `brainstorming`: bounded ideas generated under the mission and theme.
 
-Evolve candidates should be small, testable, reversible, and aligned with Enoch's mission and current theme.
+Backlog is not a source. Active cron jobs, generic task failures, repeated
+successes, and learning artifacts do not become hardcoded candidates. Cron,
+recovery, backlog promotion, approval, and scheduling remain task triggers; a
+task they create can later be semantically scanned through experience.
 
-All curator output must pass strict JSON schema, known-ID, bounded-field,
-test-plan, protected-scope, and dangerous-action validation. Unknown IDs and
-suggestions that change identity, mission, secrets, credentials, permissions,
-access control, merge authority, deployment, forge settings, daemon
-configuration, destructive behavior, or large architecture are rejected.
+Candidate synthesis is a second fresh stateless reasoning invocation. It sees
+only unlinked evidence, mission, theme, and a bounded summary of existing
+candidates. It may return an empty array. Every returned candidate must:
 
-The reasoning engine only recommends. It cannot approve, queue, run, retry,
-remove, merge, change the mission, or alter permissions. `/evolve approve`,
-`/evolve retry`, and `/evolve remove` are explicit human state-change entries.
-Removal records status, human actor, reason, and event while preserving the raw
-candidate and provenance in the candidate store and append-only journals.
+- cite known evidence IDs;
+- use evidence from only one source;
+- be small, reversible, testable, and about improving Enoch;
+- provide rationale, proposed change, benefit, risk, and test plan; and
+- pass protected-scope and dangerous-action validation.
+
+Candidate records preserve `evidence_ids` and original `evidence_refs`.
+Feedback/experience candidates from the retired hardcoded pathways are retained
+for audit but removed from the actionable pool when they lack evidence IDs.
+
+The other three pathways still create structured candidates directly:
+inheritance from the lineage inbox, learning from peer observations, and
+brainstorming from a dedicated bounded generation pass.
+
+## Recommendation
+
+After synthesis, semantic curation is a third fresh stateless reasoning
+invocation. Deterministic scoring only bounds and orders its input and supplies
+an explicitly labelled fallback.
+
+The curator can recommend one known candidate, suggest bounded brainstorming
+candidates, or suggest that a human remove an item as duplicate, superseded,
+obsolete, already resolved, context-only, or not actionable. It cannot approve,
+queue, retry, remove, merge, deploy, change permissions, or mutate mission or
+identity.
+
+Curations are appended to `.enoch/evolve_curations.jsonl`. Candidates are
+stored in `.enoch/evolve_candidates.json`, and lifecycle decisions are appended
+to `.enoch/artifacts/evolve_events.jsonl`.
+
+## Governed lifecycle
+
+Candidate status and body adoption are separate:
+
+- `candidate`: available for proposal and human approval.
+- `running`: linked work is active.
+- `done`: the task completed; this alone does not prove the change was merged.
+- `failed`: available for an explicit human retry.
+- `removed`, `cancelled`, `regressed`, `reverted`, or `forward-fixed`: retained
+  lifecycle state.
+- `promoted`: a human merged the PR and Enoch verified the revision on the
+  trusted authoritative branch.
+- `adopted`: an update passed doctor, restarted, and confirmed a version that
+  contains the promotion.
+
+`/evolve reconcile <id>` verifies realtime promotion.
+`/evolve reconcile <id> backfill` records equivalent historical evidence
+without pretending it was observed in realtime.
 
 ## Commands
 
-- `/feedback`
-- `/experience`
-- `/propose`
-- `/evolve`
-- `/evolve mode <mode>`
-- `/evolve theme [text]`
-- `/evolve brainstorm`
-- `/evolve list`
-- `/evolve list all`
+- `/evolve` — read-only dashboard
+- `/evolve evidence [feedback|experience|all]`
+- `/evolve scan [feedback|experience|all]`
+- `/evolve candidates [all]`
+- `/evolve propose`
+- `/evolve brainstorm [theme]`
 - `/evolve approve <id>`
 - `/evolve retry <id>`
 - `/evolve reconcile <id> [backfill]`
 - `/evolve remove <id> [reason]`
-- `/evolve schedule <text>`
-- `/evolve schedule once a day`
-- `/evolve schedule every <interval>`
-- `/evolve schedule daily HH:MM`
-- `/evolve schedule cron '30 9 * * *'`
-- `/evolve schedule off`
+- `/evolve config`
+- `/evolve config mode <disabled|co-evolve|auto-evolve>`
+- `/evolve config theme <text>`
+- `/evolve config feedback-batch <1-100>`
+- `/evolve config experience-batch <1-100>`
+- `/evolve config schedule <text>`
+
+There are no top-level `/feedback`, `/experience`, or `/propose` aliases, and
+the older `/evolve list`, `/evolve mode`, `/evolve theme`, and
+`/evolve schedule` forms are not commands. `/help evolve` is the authoritative
+command reference.

@@ -206,17 +206,18 @@ def cron_usage() -> str:
 def evolve_usage() -> str:
     return "\n".join(
         [
-            "Use /evolve to show Enoch's self-evolution status.",
-            "Use /evolve mode <mode> to set self-evolution behavior.",
-            "Modes: disabled, co-evolve, auto-evolve.",
-            "Use /evolve theme [text] to show or set the current evolution theme.",
-            "Use /evolve brainstorm to generate bounded candidates under the current theme.",
-            "Use /evolve list to show current candidates.",
+            "Use /evolve to show the read-only self-evolution dashboard.",
+            "Use /evolve evidence [feedback|experience|all] to show recorded evidence.",
+            "Use /evolve scan [feedback|experience|all] to scan unprocessed records.",
+            "Use /evolve candidates [all] to show candidates.",
+            "Use /evolve propose to flush evidence and recommend a candidate.",
+            "Use /evolve brainstorm [theme] to generate bounded candidates.",
             "Use /evolve approve <id> to approve and queue a candidate as a task.",
             "Use /evolve retry <id> to queue a new task for a failed candidate.",
             "Use /evolve reconcile <id> [backfill] to verify promotion of a completed candidate.",
             "Use /evolve remove <id> [reason] to remove a candidate from future proposals.",
-            "Use /evolve schedule <text> to let Enoch interpret common schedule text.",
+            "Use /evolve config to show settings.",
+            "Use /evolve config <mode|theme|feedback-batch|experience-batch|schedule> <value> to change settings.",
         ]
     )
 

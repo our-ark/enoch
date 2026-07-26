@@ -1,4 +1,5 @@
 from pathlib import Path
+import hashlib
 import json
 import sys
 from tempfile import TemporaryDirectory
@@ -22,7 +23,6 @@ from enoch.evolution.curation import curation_index_path, load_curations
 from enoch.evolution.events import load_evolve_events, record_evolve_event
 from enoch.tasks.events import record_task_event
 from enoch.tasks.queue import task_queue_status
-from enoch.logs import log_conversation_turn
 
 
 class EnochEvolveCurationTests(unittest.TestCase):
@@ -88,15 +88,15 @@ class EnochEvolveCurationTests(unittest.TestCase):
     def test_context_only_feedback_is_suggested_for_removal_not_execution(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
-            article = (
-                "This essay is background context, not an implementation request. "
-                "Actually, it describes how long-running human-agent systems may learn over time. "
-                + "It discusses context, judgment, and verification as general concepts. " * 60
+            candidate = _candidate(
+                "feedback",
+                1,
+                title=(
+                    "Background context about how long-running human-agent "
+                    "systems may learn"
+                ),
             )
-            log_conversation_turn(chat_id=42, message=article, reply="Thanks for the context.", root=root)
-            candidate = next(
-                item for item in collect_evolve_candidates(root) if item.source == "feedback"
-            )
+            _write_candidates(root, (candidate,))
 
             proposal = propose_evolve(
                 root,
@@ -593,7 +593,14 @@ class EnochEvolveCurationTests(unittest.TestCase):
         self.assertEqual(event.reason, "Merged by task 17.")
         self.assertEqual(event.removal_classification, "already-resolved")
         self.assertEqual(event.curation_id, proposal.curation.id)
-        self.assertEqual(event.evidence_refs, ("task:17", "merge:e536d32"))
+        self.assertEqual(
+            event.evidence_refs,
+            (
+                "task:17",
+                "merge:e536d32",
+                f"evidence:{candidate.evidence_ids[0]}",
+            ),
+        )
 
     def test_legacy_curation_without_evidence_fields_still_loads(self) -> None:
         with TemporaryDirectory() as temp:
@@ -634,8 +641,23 @@ def _candidate(source: str, index: int, *, title: str = "", score: int = 10) -> 
     signal_actor = "human" if source in {"feedback", "learning"} else "agent"
     if source == "experience":
         signal_actor = "system"
+    evidence_ids: tuple[str, ...] = ()
+    evidence_refs: tuple[str, ...] = ()
+    if source in {"feedback", "experience"}:
+        digest = hashlib.sha256(f"{source}:{index}".encode("utf-8")).hexdigest()[:16]
+        evidence_ids = (f"evidence-{digest}",)
+        evidence_refs = (
+            f"conversation:fixture-{digest}"
+            if source == "feedback"
+            else f"task:{max(1, index)}",
+        )
+    candidate_id = (
+        f"learning-peer-{index}"
+        if source == "learning"
+        else f"{source}-{index}"
+    )
     return EvolveCandidate(
-        id=f"{source}-{index}",
+        id=candidate_id,
         source=source,
         title=title or f"Bounded {source} improvement {index}",
         rationale="A small repository improvement is supported by evidence.",
@@ -647,6 +669,9 @@ def _candidate(source: str, index: int, *, title: str = "", score: int = 10) -> 
         signal_actor=signal_actor,
         candidate_actor="agent",
         score=score,
+        base_score=score,
+        evidence_ids=evidence_ids,
+        evidence_refs=evidence_refs,
     )
 
 
@@ -685,7 +710,7 @@ def _write_candidates(root: Path, candidates: tuple[EvolveCandidate, ...]) -> No
     path.write_text(
         json.dumps(
             {
-                "schema_version": 4,
+                "schema_version": 5,
                 "candidates": [candidate.__dict__ for candidate in candidates],
             }
         ),

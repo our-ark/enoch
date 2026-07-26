@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 import json
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from enoch.paths import artifact_path, artifact_read_paths
 from enoch.providers.contracts import ConversationId
@@ -52,6 +53,7 @@ def log_conversation_turn(
 ) -> Path:
     timestamp = _now()
     record = {
+        "id": f"conversation-{uuid4().hex}",
         "time": timestamp.isoformat(),
         "channel": channel,
         "chat_id": chat_id,

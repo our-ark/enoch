@@ -54,8 +54,6 @@ from enoch.cron import (
     record_cron_task,
 )
 from enoch.evolution.core import (
-    MODE_AUTO_EVOLVE,
-    MODE_CO_EVOLVE,
     MODE_DISABLED,
     EvolveCandidate,
     EvolveProposal,
@@ -83,6 +81,14 @@ from enoch.evolution.core import (
     set_evolve_schedule,
     set_evolve_mode,
     set_evolve_theme,
+    synthesize_evolve_candidates_from_evidence,
+)
+from enoch.evolution.evidence import (
+    EVIDENCE_SOURCES,
+    EvidenceError,
+    EvidenceScanResult,
+    save_evidence_batch_size,
+    scan_evidence,
 )
 from enoch.evolution.curation import (
     REMOVE_CLASSIFICATIONS,
@@ -173,6 +179,7 @@ from enoch.lineage.core import (
     resolve_lineage,
 )
 from enoch.logs import log_conversation_turn, log_system_event, system_log_dirs
+from enoch.memory.paths import clean_text
 from enoch.memory.prompt import memory_for_prompt
 from enoch.memory.store import ensure_long_term_memory, remember_memory
 from enoch.paths import storage_layout
@@ -330,11 +337,12 @@ from enoch.app.reporting import (
     _format_cron_report,
     _format_evolve_candidate,
     _format_evolve_candidates,
+    _format_evolve_config,
+    _format_evidence_report,
+    _format_evidence_scan_results,
     _format_evolve_proposal,
     _format_evolve_report,
     _format_evolve_theme,
-    _format_experience_report,
-    _format_feedback_report,
     _format_tasks_report,
     _task_status_message,
 )
@@ -614,6 +622,7 @@ class EnochApplication:
             for event in self.client.receive(self.offset):
                 self.handle_event(event)
             self._enqueue_due_cron_jobs()
+            self._run_due_evidence_scans()
             self._run_due_evolve_schedule()
             self._maybe_start_task_worker()
         finally:
@@ -847,11 +856,6 @@ class EnochApplication:
             "stop": self._stop_running_job,
             "backlog": lambda: self._backlog(chat_id, work_text),
             "cron": lambda: self._cron(chat_id, work_text),
-            "feedback": lambda: _format_feedback_report(self.root),
-            "experience": lambda: _format_experience_report(self.root),
-            "propose": lambda: _format_evolve_proposal(
-                self._propose_evolve(chat_id, trigger="propose-fallback")
-            ),
             "evolve": lambda: self._evolve(chat_id, argument),
             "config": lambda: config_command(
                 text,
@@ -1104,6 +1108,25 @@ class EnochApplication:
             TypeError,
         ) as error:
             return str(error)
+
+    def _respond_isolated_evidence_turn(
+        self,
+        chat_id: ConversationId,
+        prompt: str,
+        *,
+        phase: str,
+    ) -> str:
+        return self._invoke_runtime_response(
+            self._profile_prompt(
+                prompt,
+                purpose="evidence",
+                chat_id=chat_id,
+            ),
+            execution=RuntimeExecutionControl(
+                request_id=f"evidence:{phase}:{uuid4().hex}",
+                session_key="",
+            ),
+        ).final_text
 
     def _respond_to_image(
         self,
@@ -2425,54 +2448,83 @@ class EnochApplication:
     def _evolve(self, chat_id: int, argument: str) -> str:
         parts = argument.strip().split(maxsplit=1)
         if not parts:
-            return _format_evolve_report(evolve_report(self.root))
+            return _format_evolve_report(evolve_report(self.root, refresh=False))
         subcommand = parts[0].lower()
         rest = parts[1] if len(parts) > 1 else ""
-        if subcommand in {MODE_DISABLED, MODE_CO_EVOLVE, MODE_AUTO_EVOLVE, "co", "auto", "auto-evovle"}:
+        if subcommand == "evidence":
             try:
-                set_evolve_mode(subcommand, self.root)
+                source = _evidence_source_selection(rest)
             except ValueError as error:
                 return str(error)
-            return _format_evolve_report(evolve_report(self.root))
-        if subcommand == "mode":
-            if not rest.strip():
-                return "Use /evolve mode <mode> to set self-evolution behavior. Modes: disabled, co-evolve, auto-evolve."
+            return _format_evidence_report(self.root, source=source)
+        if subcommand == "scan":
+            state = load_evolve_state(self.root)
+            if state.mode == MODE_DISABLED:
+                return (
+                    "Evolve is disabled. Enable it with "
+                    "/evolve config mode co-evolve before scanning."
+                )
             try:
-                set_evolve_mode(rest, self.root)
+                source = _evidence_source_selection(rest)
             except ValueError as error:
                 return str(error)
-            return _format_evolve_report(evolve_report(self.root))
-        if subcommand == "theme":
-            if not rest.strip():
-                return _format_evolve_theme(load_evolve_state(self.root))
-            set_evolve_theme(rest, self.root)
-            return _format_evolve_report(evolve_report(self.root))
+            results = self._scan_evidence_sources(
+                chat_id,
+                source=source,
+                force=True,
+                drain=True,
+                reason="/evolve scan",
+            )
+            return _format_evidence_scan_results(results)
+        if subcommand == "candidates":
+            report = evolve_report(self.root, refresh=False)
+            normalized_rest = rest.strip().lower()
+            if normalized_rest not in {"", "all"}:
+                return "Use /evolve candidates [all]."
+            candidates = (
+                load_evolve_candidates(
+                    self.root,
+                    include_inactive=True,
+                    theme=report.state.theme,
+                )
+                if normalized_rest == "all"
+                else report.candidates
+            )
+            return _format_evolve_candidates(
+                candidates,
+                include_inactive=normalized_rest == "all",
+            )
+        if subcommand == "propose":
+            if rest.strip():
+                return "Use /evolve propose."
+            return _format_evolve_proposal(
+                self._propose_evolve(chat_id, trigger="evolve-propose")
+            )
+        if subcommand == "config":
+            return self._evolve_config(rest)
         if subcommand == "brainstorm":
-            state = evolve_report(self.root).state
+            state = load_evolve_state(self.root)
             if state.mode == MODE_DISABLED:
                 return "Enable co-evolve or auto-evolve mode before brainstorming."
-            if not state.theme:
-                return "Set a theme with /evolve theme <text> before brainstorming."
+            theme = rest.strip() or state.theme
+            if not theme:
+                return (
+                    "Set a theme with /evolve config theme <text>, or use "
+                    "/evolve brainstorm <theme>."
+                )
+            if rest.strip():
+                state = set_evolve_theme(theme, self.root)
             try:
                 ideas = generate_brainstorm_ideas(
-                    state.theme,
+                    theme,
                     self.root,
                     mission=self.identity.mission,
                     generator=lambda prompt: self._respond_read_only_turn(chat_id, prompt),
                 )
             except (AgentRuntimeError, OSError, ValueError) as error:
                 return f"Enoch could not brainstorm evolution candidates: {error}"
-            report = evolve_report(self.root)
+            report = evolve_report(self.root, refresh=True)
             return f"Added {len(ideas)} theme-guided brainstorming candidate(s).\n\n" + _format_evolve_report(report)
-        if subcommand == "list":
-            report = evolve_report(self.root)
-            include_inactive = rest.strip().lower() in {"all", "inactive"}
-            candidates = (
-                load_evolve_candidates(self.root, include_inactive=True, theme=report.state.theme)
-                if include_inactive
-                else report.candidates
-            )
-            return _format_evolve_candidates(candidates, include_inactive=include_inactive)
         if subcommand == "remove":
             if not rest.strip():
                 return "Use /evolve remove <id> [reason] to remove a self-evolution candidate."
@@ -2552,22 +2604,113 @@ class EnochApplication:
             except (EvolveLifecycleError, CapabilityAuthorizationError) as error:
                 return f"Enoch could not reconcile evolution promotion: {error}"
             return format_reconcile_result(result)
-        if subcommand == "schedule":
-            return self._evolve_schedule(rest)
         return _evolve_usage()
 
+    def _evolve_config(self, argument: str) -> str:
+        parts = argument.strip().split(maxsplit=1)
+        if not parts:
+            return _format_evolve_config(
+                evolve_report(self.root, refresh=False)
+            )
+        setting = parts[0].lower()
+        value = parts[1].strip() if len(parts) > 1 else ""
+        if setting == "mode":
+            if not value:
+                return (
+                    "Use /evolve config mode <disabled|co-evolve|auto-evolve>."
+                )
+            try:
+                set_evolve_mode(value, self.root)
+            except ValueError as error:
+                return str(error)
+        elif setting == "theme":
+            if not value:
+                return _format_evolve_theme(load_evolve_state(self.root))
+            set_evolve_theme(value, self.root)
+        elif setting in {"feedback-batch", "experience-batch"}:
+            if not value:
+                return f"Use /evolve config {setting} <1-100>."
+            try:
+                save_evidence_batch_size(
+                    setting.removesuffix("-batch"),
+                    value,
+                    self.root,
+                )
+            except (TypeError, ValueError) as error:
+                return str(error)
+        elif setting == "schedule":
+            if not value:
+                return _format_evolve_config(
+                    evolve_report(self.root, refresh=False)
+                )
+            return self._evolve_schedule(value)
+        else:
+            return (
+                "Use /evolve config "
+                "<mode|theme|feedback-batch|experience-batch|schedule> <value>."
+            )
+        return _format_evolve_config(
+            evolve_report(self.root, refresh=False)
+        )
+
     def _propose_evolve(self, chat_id: int, *, trigger: str) -> EvolveProposal:
+        scan_results: tuple[EvidenceScanResult, ...] = ()
+        evidence_candidates: tuple[EvolveCandidate, ...] = ()
+        synthesis_error = ""
+        if load_evolve_state(self.root).mode != MODE_DISABLED:
+            scan_results = self._scan_evidence_sources(
+                chat_id,
+                source="all",
+                force=True,
+                drain=True,
+                reason=(
+                    "evolve-scheduler"
+                    if trigger == "evolve-scheduler"
+                    else "/evolve propose"
+                ),
+            )
+            try:
+                evidence_candidates = synthesize_evolve_candidates_from_evidence(
+                    self.root,
+                    mission=self.identity.mission,
+                    generator=lambda prompt: self._respond_isolated_evidence_turn(
+                        chat_id,
+                        prompt,
+                        phase="candidate-synthesis",
+                    ),
+                )
+            except (
+                AgentRuntimeError,
+                CapabilityAuthorizationError,
+                EvidenceError,
+                OSError,
+                RuntimeError,
+                TimeoutError,
+                TypeError,
+                ValueError,
+            ) as error:
+                synthesis_error = clean_text(str(error)) or error.__class__.__name__
         proposal = propose_evolve(
             self.root,
             mission=self.identity.mission,
-            curator=lambda prompt: self._respond_read_only_turn(
+            curator=lambda prompt: self._respond_isolated_evidence_turn(
                 chat_id,
                 prompt,
-                session_key=f"{self._session_key(chat_id)}:{trigger}:curation",
+                phase="candidate-curation",
             ),
         )
+        proposal = replace(
+            proposal,
+            evidence_scan_results=scan_results,
+            evidence_candidates_added=len(evidence_candidates),
+            evidence_synthesis_error=synthesis_error,
+        )
         event_actor = "system" if trigger == "evolve-scheduler" else "human"
-        event_trigger = "evolve-scheduler" if event_actor == "system" else "/propose"
+        event_trigger = (
+            "evolve-scheduler"
+            if event_actor == "system"
+            else "/evolve propose"
+        )
         self._record_evolve_event(
             "checked",
             event_actor=event_actor,
@@ -2805,7 +2948,10 @@ class EnochApplication:
             return self._evolve_schedule_once(rest)
         if subcommand == "daily":
             if not rest.strip():
-                return "Use /evolve schedule daily HH:MM to run evolve once per day at local time."
+                return (
+                    "Use /evolve config schedule daily HH:MM to run evolve "
+                    "once per day at local time."
+                )
             try:
                 set_evolve_daily_schedule(rest, self.root)
             except ValueError as error:
@@ -2813,7 +2959,10 @@ class EnochApplication:
             return _format_evolve_report(evolve_report(self.root))
         if subcommand == "cron":
             if not rest.strip():
-                return "Use /evolve schedule cron '30 9 * * *' to run evolve with a cron-style schedule."
+                return (
+                    "Use /evolve config schedule cron '30 9 * * *' to run "
+                    "evolve with a cron-style schedule."
+                )
             try:
                 set_evolve_cron_schedule(rest, self.root)
             except ValueError as error:
@@ -2822,7 +2971,10 @@ class EnochApplication:
         if subcommand != "every":
             return self._apply_evolve_schedule_text(text)
         if not rest.strip():
-            return "Use /evolve schedule every <interval> to set the scheduler frequency."
+            return (
+                "Use /evolve config schedule every <interval> to set the "
+                "scheduler frequency."
+            )
         try:
             interval_seconds = parse_cron_interval(rest)
             set_evolve_schedule(interval_seconds, self.root)
@@ -3056,6 +3208,60 @@ class EnochApplication:
                 self._work_status_messages[job.id] = message_id
                 self.workflow.record_status_message(job.id, message_id)
         return tuple(jobs)
+
+    def _scan_evidence_sources(
+        self,
+        chat_id: ConversationId,
+        *,
+        source: str,
+        force: bool,
+        drain: bool = False,
+        reason: str,
+    ) -> tuple[EvidenceScanResult, ...]:
+        sources = (
+            ("feedback", "experience")
+            if source == "all"
+            else (source,)
+        )
+        results: list[EvidenceScanResult] = []
+        for evidence_source in sources:
+            while True:
+                result = scan_evidence(
+                    evidence_source,
+                    self.root,
+                    generator=lambda prompt, selected=evidence_source: (
+                        self._respond_isolated_evidence_turn(
+                            chat_id,
+                            prompt,
+                            phase=f"{selected}-scan",
+                        )
+                    ),
+                    force=force,
+                    reason=reason,
+                )
+                results.append(result)
+                if (
+                    not drain
+                    or result.status != "completed"
+                    or result.remaining <= 0
+                ):
+                    break
+        return tuple(results)
+
+    def _run_due_evidence_scans(self) -> tuple[EvidenceScanResult, ...]:
+        if load_evolve_state(self.root).mode == MODE_DISABLED:
+            return ()
+        chat_id = _allowed_conversation_id(self.client)
+        if chat_id is None:
+            return ()
+        if self._task_worker is not None and self._task_worker.is_alive():
+            return ()
+        return self._scan_evidence_sources(
+            chat_id,
+            source="all",
+            force=False,
+            reason="threshold",
+        )
 
     def _run_due_evolve_schedule(self) -> TaskJob | None:
         claimed = claim_due_evolve_schedule(self.root)
@@ -3843,6 +4049,15 @@ def _event_idempotency_key(purpose: str) -> str:
     return f"chat:{event_key}:{normalized_purpose}"
 
 
+def _evidence_source_selection(value: str) -> str:
+    source = value.strip().lower() or "all"
+    if source not in {*EVIDENCE_SOURCES, "all"}:
+        raise ValueError(
+            "Evidence source must be feedback, experience, or all."
+        )
+    return source
+
+
 def _start_task_deadline(
     root: Path,
     cancellation_event: threading.Event,
@@ -4146,6 +4361,8 @@ def _evolve_task_request(candidate: EvolveCandidate, theme: str) -> str:
         f"Evidence source: {candidate.evidence_source or candidate.source}",
         f"Signal actor: {candidate.signal_actor}",
         f"Candidate actor: {candidate.candidate_actor}",
+        f"Evidence IDs: {', '.join(candidate.evidence_ids) or 'none'}",
+        f"Evidence refs: {', '.join(candidate.evidence_refs) or 'none'}",
         f"Theme: {theme or 'not set'}",
         f"Proposed change: {candidate.proposed_change}",
         f"Expected benefit: {candidate.expected_benefit}",
@@ -4168,6 +4385,8 @@ def _evolve_task_context(candidate: EvolveCandidate) -> str:
             f"Evidence source: {candidate.evidence_source or candidate.source}",
             f"Signal actor: {candidate.signal_actor}",
             f"Candidate actor: {candidate.candidate_actor}",
+            f"Evidence IDs: {', '.join(candidate.evidence_ids) or 'none'}",
+            f"Evidence refs: {', '.join(candidate.evidence_refs) or 'none'}",
             f"Parent candidate: {candidate.parent_candidate_id or 'none'}",
             f"Source task: {f'#{candidate.source_task_id}' if candidate.source_task_id is not None else 'none'}",
             f"Score: {candidate.score}",

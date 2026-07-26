@@ -1,20 +1,18 @@
 name: evolve
-version: 0.6.0
-summary: Semantically curate and propose bounded self-evolution candidates under human approval.
+version: 0.7.0
+summary: Turn semantic evidence into bounded, human-governed self-evolution.
 owner: Enoch
 status: active
 mode: co-evolution
 entrypoint: src/enoch/evolution/core.py
 capabilities:
   state: src/enoch/evolution/core.py
+  evidence: src/enoch/evolution/evidence.py
   scheduler: src/enoch/evolution/core.py
   event_journal: src/enoch/evolution/events.py
   semantic_curation: src/enoch/evolution/curation.py
   candidate_collection:
-    - src/enoch/backlog.py
-    - src/enoch/evolution/sources/feedback.py
-    - src/enoch/tasks/queue.py
-    - src/enoch/cron.py
+    - src/enoch/evolution/evidence.py
     - src/enoch/lineage/core.py
     - src/enoch/learn.py
     - src/enoch/evolution/sources/brainstorming.py
@@ -22,22 +20,24 @@ capabilities:
 permissions:
   filesystem:
     read:
-      - .enoch/backlog.json
       - .enoch/artifacts/logs/conversations
-      - .enoch/task_queue.json
-      - .enoch/cron.json
-      - .enoch/artifacts/learning/artifacts.jsonl
+      - .enoch/artifacts/task_events.jsonl
+      - .enoch/artifacts/evidence.jsonl
+      - .enoch/artifacts/evidence_scans.jsonl
       - .enoch/artifacts/learning/peers.jsonl
       - .enoch/artifacts/evolve_events.jsonl
       - .enoch/evolve_curations.jsonl
       - .agent/lineage_inbox.json
     write:
+      - .enoch/evidence.json
       - .enoch/evolve.json
       - .enoch/evolve_candidates.json
+      - .enoch/artifacts/evidence.jsonl
+      - .enoch/artifacts/evidence_scans.jsonl
       - .enoch/artifacts/evolve_brainstorms.jsonl
       - .enoch/artifacts/evolve_events.jsonl
       - .enoch/evolve_curations.jsonl
   git:
     merge: false
 validation:
-  command: python3 -m unittest discover -s tests
+  command: python3 -m unittest discover -s tests -t .

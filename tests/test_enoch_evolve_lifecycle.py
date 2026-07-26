@@ -10,11 +10,12 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from enoch.evolution.core import (
-    collect_evolve_candidates,
     complete_evolve_candidate,
     get_evolve_candidate,
     run_evolve_candidate,
+    synthesize_evolve_candidates_from_evidence,
 )
+from enoch.evolution.evidence import scan_evidence
 from enoch.evolution.events import load_evolve_events
 from enoch.evolution.lifecycle import (
     EvolveLifecycleError,
@@ -214,11 +215,32 @@ class EnochEvolveLifecycleTests(unittest.TestCase):
 def _completed_candidate_with_pr(root: Path) -> str:
     message = "I want improved governed evolution evidence."
     log_conversation_turn(chat_id=42, message=message, reply="Understood.", root=root)
-    candidate_id = next(
-        candidate.id
-        for candidate in collect_evolve_candidates(root)
-        if candidate.source == "feedback" and message in candidate.title
+    scan = scan_evidence(
+        "feedback",
+        root,
+        force=True,
+        generator=lambda prompt: _feedback_evidence_response(prompt, message),
     )
+    created = synthesize_evolve_candidates_from_evidence(
+        root,
+        mission="Evolve safely.",
+        generator=lambda _prompt: json.dumps(
+            [
+                {
+                    "evidence_ids": [scan.evidence[0].id],
+                    "title": "Improve governed evolution evidence",
+                    "rationale": "The explicit feedback supports a bounded improvement.",
+                    "proposed_change": "Add one focused evidence guardrail.",
+                    "expected_benefit": "Evolution evidence remains reliable.",
+                    "risk": "The guardrail may need fixture maintenance.",
+                    "test_plan": "Run lifecycle tests and doctor.",
+                }
+            ]
+        ),
+    )
+    if len(created) != 1:
+        raise AssertionError("Expected one evidence-backed evolve candidate.")
+    candidate_id = created[0].id
     run_evolve_candidate(candidate_id, root)
     complete_evolve_candidate(candidate_id, root)
     candidate = get_evolve_candidate(candidate_id, root)
@@ -241,6 +263,24 @@ def _completed_candidate_with_pr(root: Path) -> str:
     record_task_result(job.id, f"Opened pull request: {PR_URL}", root)
     complete_task(job.id, root, result=f"Opened pull request: {PR_URL}")
     return candidate_id
+
+
+def _feedback_evidence_response(prompt: str, message: str) -> str:
+    records = json.loads(prompt.split("Evidence input: ", 1)[1])
+    record = next(item for item in records if item["user_message"] == message)
+    return json.dumps(
+        [
+            {
+                "observation": message,
+                "evidence_type": "explicit feedback",
+                "affected_area": "evolution governance",
+                "desired_outcome": "Governed evolution evidence is more reliable.",
+                "confidence": 1.0,
+                "explicit": True,
+                "evidence_refs": [record["ref"]],
+            }
+        ]
+    )
 
 
 def _merged_pr(*, base_branch: str = "main") -> PullRequestMergeStatus:

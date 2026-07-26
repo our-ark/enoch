@@ -47,8 +47,11 @@ alias for the private-state root.
 
 ## Compatibility and retention
 
-New logs and append-only task, evolution, curation, brainstorming, experience,
-and learning evidence are written below `.enoch/artifacts/`. Readers also load
+New logs and append-only task, semantic evidence, evidence-scan, evolution,
+curation, brainstorming, compatibility experience, and learning records are
+written below `.enoch/artifacts/`. Semantic evolution evidence lives in
+`evidence.jsonl`, while cursor/audit records live in `evidence_scans.jsonl`.
+Readers also load
 the corresponding pre-boundary files from `.enoch/`, with legacy records
 ordered before new records. Legacy files are not moved or deleted.
 
@@ -69,10 +72,11 @@ private-state schemas. The current manifest format is
 `PRIVATE_STATE_MANIFEST_SCHEMA_VERSION = 1`, and the current aggregate contract
 is `PRIVATE_STATE_VERSION = 1`.
 
-The registry versions queue, backlog, cron, evolution control, memory, runtime
-session, daemon epoch, channel cursor/lifecycle/inbox/notification, config, and
-pending-adoption state. Provider or profile files outside registered patterns
-remain owned by those extensions.
+The registry versions queue, backlog, cron, evolution control, semantic
+evidence batch settings, memory, runtime session, daemon epoch, channel
+cursor/lifecycle/inbox/notification, config, and pending-adoption state.
+Provider or profile files outside registered patterns remain owned by those
+extensions.
 
 Every application startup validates registered files before claiming a daemon
 epoch. Supported legacy versions may continue to run until explicitly

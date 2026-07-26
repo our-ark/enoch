@@ -1,6 +1,7 @@
 from pathlib import Path
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+import hashlib
 import json
 import sys
 from tempfile import TemporaryDirectory
@@ -11,16 +12,13 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from enoch.backlog import add_backlog_item
-from enoch.automatic_learning import record_learning_artifact
 from enoch.evolution.sources.brainstorming import generate_brainstorm_ideas
-from enoch.cron import add_cron_job
 from enoch.evolution.core import (
     MODE_DISABLED,
     cancel_evolve_candidate_for_task,
     claim_due_evolve_schedule,
     acknowledge_evolve_schedule,
     collect_evolve_candidates,
-    collect_experience_candidates,
     disable_evolve_schedule,
     evolve_report,
     complete_evolve_candidate_for_task,
@@ -39,13 +37,13 @@ from enoch.evolution.core import (
     set_evolve_mode,
     set_evolve_theme,
     sync_evolve_candidates,
+    synthesize_evolve_candidates_from_evidence,
 )
+from enoch.evolution.evidence import scan_evidence
 from enoch.evolution.events import load_evolve_events
-from enoch.evolution.sources.experience import record_task_experience
-from enoch.identity import load_identity
 from enoch.learn import LearnRequest, record_peer_learning_observation
 from enoch.lineage.core import LineageCandidate
-from enoch.logs import log_conversation_turn
+from enoch.tasks.events import record_task_event
 from enoch.tasks.queue import TaskJob, begin_next_task, enqueue_task, fail_task
 
 
@@ -70,68 +68,41 @@ class EnochEvolveTests(unittest.TestCase):
         self.assertEqual(ranked[0].source, "inheritance")
         self.assertNotIn("backlog-1", {candidate.id for candidate in candidates})
 
-    def test_collects_operational_and_learning_candidates(self) -> None:
+    def test_task_failures_are_pending_evidence_not_hardcoded_candidates(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
             queued = enqueue_task(42, "ship flaky workflow", root)
             running = begin_next_task(root)
             assert running is not None
             fail_task(queued.id, root, result="Tests failed in Telegram workflow.")
-            add_cron_job(42, "summarize health", 24 * 60 * 60, root)
-            record_learning_artifact(
-                load_identity(),
-                request="add a notes skill",
-                result="\n".join(["Files:", "- src/enoch/skills/notes/SKILL.md"]),
-                root=root,
-                task_id=7,
-                command="/task",
-            )
 
             candidates = collect_evolve_candidates(root)
             report = evolve_report(root)
 
-        sources = {candidate.source for candidate in candidates}
-        self.assertEqual(sources, {"experience"})
-        self.assertEqual(report.counts_by_source["experience"], 3)
+        self.assertEqual(candidates, ())
+        self.assertNotIn("experience", report.counts_by_source)
+        self.assertEqual(report.pending_evidence["experience"], 1)
 
-    def test_repeated_successful_experiences_become_one_reuse_candidate(self) -> None:
+    def test_repeated_successes_do_not_become_hardcoded_candidates(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
-            for task_id in (1, 2):
-                record_task_experience(
-                    _experience_task(task_id, "summarize repository health"),
-                    root,
-                    command="/task",
-                )
+            _write_task_events(root, task_id=1, status="completed")
+            _write_task_events(root, task_id=2, status="completed")
 
             candidates = collect_evolve_candidates(root)
 
-        repeated = [candidate for candidate in candidates if candidate.id.startswith("experience-repeat-")]
-        self.assertEqual(len(repeated), 1)
-        self.assertIn("completing successfully 2 times", repeated[0].rationale)
+        self.assertEqual(candidates, ())
 
-    def test_unstarted_cancellation_is_journaled_but_not_an_evolve_candidate(self) -> None:
+    def test_unstarted_cancellation_is_not_a_hardcoded_candidate(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
-            record_task_experience(
-                TaskJob(
-                    id=3,
-                    chat_id=42,
-                    text="cancel this before it starts",
-                    created_at="2026-07-18T00:00:00+00:00",
-                    completed_at="2026-07-18T00:01:00+00:00",
-                    status="cancelled",
-                    result="Cancelled before running.",
-                ),
-                root,
-                command="/task cancel",
-            )
+            _write_task_events(root, task_id=3, status="cancelled")
 
             candidates = collect_evolve_candidates(root)
 
         self.assertNotIn("task-3", {candidate.id for candidate in candidates})
 
-    def test_collects_exactly_the_five_declared_evolution_sources(self) -> None:
+    def test_nonsemantic_pathways_remain_separate_candidate_sources(self) -> None:
         brainstorm_response = json.dumps(
             [
                 {
@@ -147,16 +118,7 @@ class EnochEvolveTests(unittest.TestCase):
         with TemporaryDirectory() as temp:
             root = Path(temp)
             add_backlog_item(42, "improve Telegram work UX", root, priority="p0")
-            log_conversation_turn(
-                chat_id=42,
-                message="No, keep candidate provenance in the report.",
-                reply="Understood.",
-                root=root,
-            )
             _write_lineage_candidate(root, _lineage_candidate())
-            queued = enqueue_task(42, "ship flaky workflow", root)
-            begin_next_task(root)
-            fail_task(queued.id, root, result="Tests failed.")
             record_peer_learning_observation(LearnRequest(skill="research", agent="enosh"), root)
             generate_brainstorm_ideas(
                 "accountable evolution",
@@ -169,20 +131,18 @@ class EnochEvolveTests(unittest.TestCase):
 
         self.assertEqual(
             {candidate.source for candidate in candidates},
-            {"feedback", "experience", "inheritance", "learning", "brainstorming"},
+            {"inheritance", "learning", "brainstorming"},
         )
         initiators = {candidate.source: candidate.initiated_by for candidate in candidates}
         self.assertEqual(set(initiators.values()), {"agent"})
         signals = {candidate.source: candidate.signal_actor for candidate in candidates}
-        self.assertEqual(signals["feedback"], "human")
-        self.assertEqual(signals["experience"], "system")
         self.assertEqual(signals["inheritance"], "agent")
         self.assertEqual(signals["learning"], "human")
         self.assertEqual(signals["brainstorming"], "agent")
         self.assertTrue(all(candidate.candidate_actor == "agent" for candidate in candidates))
         self.assertTrue(all(candidate.evidence_source == candidate.source for candidate in candidates))
 
-    def test_experience_candidate_links_to_failed_evolve_candidate_and_task(self) -> None:
+    def test_semantic_experience_candidate_keeps_task_causal_chain(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
             queued = enqueue_task(
@@ -200,17 +160,40 @@ class EnochEvolveTests(unittest.TestCase):
             begin_next_task(root)
             fail_task(queued.id, root, result="Worktree branch failed.")
 
-            candidate = next(
-                item
-                for item in collect_experience_candidates(root)
-                if item.id == f"task-{queued.id}"
+            scan = scan_evidence(
+                "experience",
+                root,
+                force=True,
+                generator=lambda prompt: _experience_evidence_response(
+                    prompt,
+                    queued.id,
+                ),
             )
+            created = synthesize_evolve_candidates_from_evidence(
+                root,
+                mission="Improve Enoch safely.",
+                generator=lambda _prompt: json.dumps(
+                    [
+                        {
+                            "evidence_ids": [scan.evidence[0].id],
+                            "title": "Harden task worktree setup",
+                            "rationale": "The failed task records a durable setup failure.",
+                            "proposed_change": "Add a focused worktree setup guardrail.",
+                            "expected_benefit": "Fewer setup failures.",
+                            "risk": "May reject an unusual valid state.",
+                            "test_plan": "Add a focused task setup regression test.",
+                        }
+                    ]
+                ),
+            )
+            candidate = created[0]
 
         self.assertEqual(candidate.evidence_source, "experience")
         self.assertEqual(candidate.signal_actor, "system")
         self.assertEqual(candidate.candidate_actor, "agent")
         self.assertEqual(candidate.parent_candidate_id, "feedback-c3ed71fd1d2d")
         self.assertEqual(candidate.source_task_id, queued.id)
+        self.assertEqual(candidate.evidence_ids, (scan.evidence[0].id,))
 
     def test_brainstorm_candidates_are_scoped_to_current_theme(self) -> None:
         response = json.dumps(
@@ -660,16 +643,99 @@ def _write_lineage_candidate(root: Path, candidate: LineageCandidate) -> None:
 
 
 def _feedback_candidate(root: Path, message: str):
-    log_conversation_turn(
-        chat_id=42,
-        message=message,
-        reply="Understood.",
-        root=root,
+    digest = hashlib.sha256(message.encode("utf-8")).hexdigest()
+    evidence_id = f"evidence-{digest[:16]}"
+    candidate_id = f"feedback-evidence-{digest[:12]}"
+    evidence_path = root / ".enoch" / "artifacts" / "evidence.jsonl"
+    evidence_path.parent.mkdir(parents=True, exist_ok=True)
+    with evidence_path.open("a", encoding="utf-8") as handle:
+        handle.write(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "id": evidence_id,
+                    "source": "feedback",
+                    "observation": message,
+                    "evidence_type": "explicit feedback",
+                    "affected_area": "Enoch workflow",
+                    "desired_outcome": message,
+                    "confidence": 1.0,
+                    "explicit": True,
+                    "evidence_refs": [f"conversation:fixture-{digest[:16]}"],
+                    "created_at": "2026-07-18T00:00:00+00:00",
+                    "updated_at": "2026-07-18T00:00:00+00:00",
+                    "status": "linked",
+                    "candidate_ids": [candidate_id],
+                },
+                sort_keys=True,
+            )
+            + "\n"
+        )
+    path = root / ".enoch" / "evolve_candidates.json"
+    existing = (
+        json.loads(path.read_text(encoding="utf-8")).get("candidates", [])
+        if path.exists()
+        else []
+    )
+    existing.append(
+        {
+            "id": candidate_id,
+            "source": "feedback",
+            "title": message,
+            "rationale": "Explicit semantic evidence supports this candidate.",
+            "proposed_change": message,
+            "expected_benefit": "Addresses the recorded feedback.",
+            "risk": "The change may be too broad.",
+            "test_plan": "Add focused tests.",
+            "evidence_source": "feedback",
+            "signal_actor": "human",
+            "candidate_actor": "agent",
+            "evidence_ids": [evidence_id],
+            "evidence_refs": [f"conversation:fixture-{digest[:16]}"],
+            "status": "candidate",
+            "score": 30,
+            "base_score": 30,
+        }
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps({"schema_version": 5, "candidates": existing}),
+        encoding="utf-8",
     )
     return next(
         candidate
-        for candidate in collect_evolve_candidates(root)
-        if candidate.source == "feedback" and message in candidate.title
+        for candidate in load_evolve_candidates(root)
+        if candidate.id == candidate_id
+    )
+
+
+def _write_task_events(root: Path, *, task_id: int, status: str) -> None:
+    job = _experience_task(task_id, "summarize repository health")
+    record_task_event(job, "created", root, event_actor="human", trigger="/task")
+    record_task_event(
+        replace(job, status=status),
+        status,
+        root,
+        event_actor="agent" if status == "completed" else "human",
+        trigger="task-runner" if status == "completed" else "/task cancel",
+    )
+
+
+def _experience_evidence_response(prompt: str, task_id: int) -> str:
+    records = json.loads(prompt.split("Evidence input: ", 1)[1])
+    assert records[0]["task_id"] == task_id
+    return json.dumps(
+        [
+            {
+                "observation": "A task failed while preparing its worktree branch.",
+                "evidence_type": "task failure",
+                "affected_area": "task worktree setup",
+                "desired_outcome": "Task worktrees initialize reliably.",
+                "confidence": 0.98,
+                "explicit": False,
+                "evidence_refs": [records[0]["task_ref"]],
+            }
+        ]
     )
 
 

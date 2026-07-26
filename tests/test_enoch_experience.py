@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 import sys
 from tempfile import TemporaryDirectory
 import unittest
@@ -8,6 +9,11 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from enoch.evolution.sources.experience import experience_path, load_experience_records, record_task_experience
+from enoch.evolution.evidence import (
+    pending_evidence_counts,
+    save_evidence_batch_size,
+    scan_evidence,
+)
 from enoch.tasks.events import TASK_EVENT_TYPES, TASK_SOURCES, load_task_events, task_event_path
 from enoch.tasks.queue import (
     TaskJob,
@@ -138,6 +144,44 @@ class EnochExperienceTests(unittest.TestCase):
         self.assertEqual(records[0].outcome, "failed")
         self.assertEqual(records[0].source, "task")
         self.assertEqual(records[0].initiated_by, "human")
+
+    def test_scans_distinct_task_ids_and_rescans_changed_lifecycle(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            save_evidence_batch_size("experience", 2, root)
+            first = enqueue_task(42, "first task", root)
+            complete_task(begin_next_task(root).id, root, result="First complete.")
+            second = enqueue_task(42, "second task", root)
+            complete_task(begin_next_task(root).id, root, result="Second complete.")
+            prompts: list[str] = []
+
+            initial = scan_evidence(
+                "experience",
+                root,
+                generator=lambda prompt: prompts.append(prompt) or "[]",
+            )
+            regress_task(first.id, root, result="A later check found a regression.")
+            pending_after_regression = pending_evidence_counts(root)["experience"]
+            rescanned = scan_evidence(
+                "experience",
+                root,
+                force=True,
+                generator=lambda prompt: prompts.append(prompt) or "[]",
+            )
+
+        initial_records = json.loads(prompts[0].split("Evidence input: ", 1)[1])
+        rescanned_records = json.loads(prompts[1].split("Evidence input: ", 1)[1])
+        self.assertEqual(initial.status, "completed")
+        self.assertEqual(initial.processed, 2)
+        self.assertEqual(
+            {record["task_id"] for record in initial_records},
+            {first.id, second.id},
+        )
+        self.assertTrue(all(len(record["events"]) >= 3 for record in initial_records))
+        self.assertEqual(pending_after_regression, 1)
+        self.assertEqual(rescanned.processed, 1)
+        self.assertEqual(rescanned_records[0]["task_id"], first.id)
+        self.assertEqual(rescanned_records[0]["events"][-1]["event"], "regressed")
 
 
 def _task_job(

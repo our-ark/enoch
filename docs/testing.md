@@ -50,7 +50,9 @@ The suite verifies:
 - reference-runtime authentication failure pauses a task and `/task resume`
   completes that same task after access returns;
 - reference-channel progress updates edit one Telegram status message;
-- failed work creates an experience candidate with its complete causal chain.
+- experience scanning batches distinct task IDs, sees each task's complete
+  causal chain, and does not turn failure into a candidate without semantic
+  evidence.
 
 The E2E doctor result is deterministic because the outer test run already
 executes the complete test suite. Git branch, commit, push, cleanup, queue,

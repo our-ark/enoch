@@ -13,13 +13,19 @@ from enoch.evolution.core import (
     EvolveProposal,
     EvolveReport,
     EvolveState,
-    collect_experience_candidates,
+    load_evolve_candidates,
     load_evolve_state,
     rank_evolve_candidates,
 )
+from enoch.evolution.evidence import (
+    EvidenceScanResult,
+    EvidenceSignal,
+    load_evidence,
+    load_evidence_settings,
+    pending_evidence_counts,
+)
 from enoch.evolution.events import EVOLVE_SOURCES, EvolveEvent, load_evolve_events
 from enoch.evolution.sources.experience import ExperienceRecord, load_experience_records
-from enoch.evolution.sources.feedback import FeedbackSignal, extract_feedback_signals
 from enoch.tasks.events import TASK_SOURCES
 from enoch.tasks.queue import TaskJob, TaskQueueStatus, task_queue_status
 
@@ -151,35 +157,118 @@ def _format_cron_list_item(job: CronJob) -> str:
 
 
 def _format_feedback_report(root: Path) -> str:
-    signals = extract_feedback_signals(root)
-    lines = ["Feedback:"]
+    return _format_evidence_report(root, source="feedback")
+
+
+def _format_evidence_report(root: Path, *, source: str = "all") -> str:
+    normalized_source = source.strip().lower() or "all"
+    wanted_source = normalized_source if normalized_source in {"feedback", "experience"} else ""
+    signals = load_evidence(
+        root,
+        source=wanted_source,
+        include_inactive=True,
+    )
+    pending = pending_evidence_counts(root)
+    settings = load_evidence_settings(root)
+    title = "Evolution evidence" + (
+        f" ({wanted_source})" if wanted_source else ""
+    )
+    lines = [
+        f"{title}:",
+        (
+            f"Pending: feedback {pending['feedback']}/{settings.feedback_batch_size}, "
+            f"experience {pending['experience']}/{settings.experience_batch_size}"
+        ),
+        "",
+        "Recorded evidence:",
+    ]
     if not signals:
         lines.append("- none")
         return "\n".join(lines)
-    for signal in signals[:20]:
-        lines.extend(_format_feedback_signal(signal))
+    for signal in reversed(signals[-20:]):
+        lines.extend(_format_evidence_signal(signal))
     if len(signals) > 20:
-        lines.append(f"- {len(signals) - 20} more")
+        lines.append(f"- {len(signals) - 20} older evidence item(s)")
     return "\n".join(lines)
 
 
-def _format_feedback_signal(signal: FeedbackSignal) -> list[str]:
+def _format_evidence_signal(signal: EvidenceSignal) -> list[str]:
     lines = [
         (
-            f"- {signal.id} [{signal.kind} x{signal.occurrences}] "
-            f"{_clip_activity_text(signal.message, limit=140)}"
-        )
+            f"- {signal.id} [{signal.status} {signal.source}; "
+            f"confidence {signal.confidence:.0%}] "
+            f"{_clip_activity_text(signal.observation, limit=180)}"
+        ),
+        (
+            f"  Area: {_clip_activity_text(signal.affected_area, limit=100)}; "
+            f"type: {_clip_activity_text(signal.evidence_type, limit=80)}; "
+            f"explicit: {'yes' if signal.explicit else 'no'}"
+        ),
+        f"  Desired outcome: {_clip_activity_text(signal.desired_outcome, limit=180)}",
+        f"  Refs: {', '.join(signal.evidence_refs) or 'none'}",
     ]
-    if signal.last_seen_at:
-        lines.append(f"  Last seen: {signal.last_seen_at}")
+    if signal.candidate_ids:
+        lines.append(f"  Candidates: {', '.join(signal.candidate_ids)}")
     return lines
+
+
+def _format_evidence_scan_results(
+    results: tuple[EvidenceScanResult, ...],
+) -> str:
+    lines = ["Evidence scan:"]
+    for result in results:
+        if result.status == "completed":
+            lines.append(
+                f"- {result.source}: processed {result.processed}; "
+                f"recorded {len(result.evidence)} evidence item(s); "
+                f"pending {result.remaining}"
+            )
+        elif result.status == "waiting":
+            lines.append(
+                f"- {result.source}: waiting; {result.remaining} pending record(s)"
+            )
+        elif result.status == "empty":
+            lines.append(f"- {result.source}: no unscanned records")
+        else:
+            lines.append(
+                f"- {result.source}: failed; inputs remain pending"
+                + (f" ({_clip_activity_text(result.error, limit=180)})" if result.error else "")
+            )
+    return "\n".join(lines)
+
+
+def _format_evolve_config(report: EvolveReport) -> str:
+    settings = report.evidence_settings
+    return "\n".join(
+        [
+            "Evolve config:",
+            f"- Mode: {report.state.mode}",
+            f"- Theme: {report.state.theme or 'not set'}",
+            f"- Feedback batch: {settings.feedback_batch_size} user messages",
+            f"- Experience batch: {settings.experience_batch_size} changed task IDs",
+            f"- Schedule: {_format_evolve_schedule(report.state)}",
+            "",
+            "Set with /evolve config <mode|theme|feedback-batch|experience-batch|schedule> <value>.",
+        ]
+    )
 
 
 def _format_experience_report(root: Path) -> str:
     state = load_evolve_state(root)
     records = load_experience_records(root, limit=10_000)
     evolve_events = load_evolve_events(root, limit=10_000)
-    candidates = rank_evolve_candidates(collect_experience_candidates(root), theme=state.theme)
+    candidates = rank_evolve_candidates(
+        (
+            candidate
+            for candidate in load_evolve_candidates(
+                root,
+                include_inactive=True,
+                theme=state.theme,
+            )
+            if candidate.source == "experience"
+        ),
+        theme=state.theme,
+    )
     lines = ["Experience:", "", "Task statistics:"]
     if records:
         outcomes = Counter(record.outcome for record in records)
@@ -512,29 +601,41 @@ def _evolve_skip_reason(proposal: EvolveProposal) -> str:
 def _format_evolve_proposal(proposal: EvolveProposal) -> str:
     report = proposal.report
     if report.state.mode == MODE_DISABLED:
-        return "Evolve is disabled. Use /evolve mode co-evolve or /evolve mode auto-evolve before proposing."
+        return (
+            "Evolve is disabled. Use /evolve config mode co-evolve or "
+            "/evolve config mode auto-evolve before proposing."
+        )
     candidate = proposal.top_candidate
     curation = proposal.curation
     if candidate is None and not (
         curation is not None and (curation.remove_suggestions or proposal.new_candidates)
     ):
         if proposal.brainstorm_skip_reason == "candidate-running":
-            return "Enoch found no new evolve candidate because evolve work is already running."
-        if proposal.brainstorm_skip_reason == "theme-not-set":
-            return "Enoch found no new evolve candidate. Set a theme with /evolve theme <text> to enable fallback brainstorming."
-        if proposal.brainstorm_skip_reason == "cooldown":
-            return "Enoch found no new evolve candidate. Fallback brainstorming for this theme is on a 24-hour cooldown."
-        if proposal.brainstorm_error:
-            return f"Enoch found no new evolve candidate. Fallback brainstorming failed: {proposal.brainstorm_error}"
-        if proposal.brainstorm_attempted:
-            return "Enoch found no new evolve candidate after fallback brainstorming."
-        return "Enoch found no new evolve candidate to propose."
+            message = "Enoch found no new evolve candidate because evolve work is already running."
+        elif proposal.brainstorm_skip_reason == "theme-not-set":
+            message = (
+                "Enoch found no new evolve candidate. Set a theme with "
+                "/evolve config theme <text> to enable fallback brainstorming."
+            )
+        elif proposal.brainstorm_skip_reason == "cooldown":
+            message = "Enoch found no new evolve candidate. Fallback brainstorming for this theme is on a 24-hour cooldown."
+        elif proposal.brainstorm_error:
+            message = f"Enoch found no new evolve candidate. Fallback brainstorming failed: {proposal.brainstorm_error}"
+        elif proposal.brainstorm_attempted:
+            message = "Enoch found no new evolve candidate after fallback brainstorming."
+        else:
+            message = "Enoch found no new evolve candidate to propose."
+        activity = _format_proposal_evidence_activity(proposal)
+        return message + (f"\n\n{activity}" if activity else "")
     lines = [
         "Enoch proposes:",
         f"Theme: {report.state.theme or 'not set'}",
-        f"Ranked {len(proposal.candidates)} actionable candidate(s) from the five evolve sources.",
+        f"Ranked {len(proposal.candidates)} actionable candidate(s) from the evolution pathways.",
         "Deterministic ranking was used only for bounded input ordering and fallback.",
     ]
+    evidence_activity = _format_proposal_evidence_activity(proposal)
+    if evidence_activity:
+        lines.extend(["", evidence_activity])
     if proposal.brainstorm_attempted:
         lines.append(f"Fallback brainstorm added {proposal.brainstorm_added} candidate(s).")
     lines.append("")
@@ -587,6 +688,22 @@ def _format_evolve_proposal(proposal: EvolveProposal) -> str:
     return "\n".join(lines)
 
 
+def _format_proposal_evidence_activity(proposal: EvolveProposal) -> str:
+    lines: list[str] = []
+    if proposal.evidence_scan_results:
+        lines.append(_format_evidence_scan_results(proposal.evidence_scan_results))
+    if proposal.evidence_candidates_added:
+        lines.append(
+            f"Evidence synthesis added {proposal.evidence_candidates_added} candidate(s)."
+        )
+    if proposal.evidence_synthesis_error:
+        lines.append(
+            "Evidence synthesis failed without consuming evidence: "
+            f"{_clip_activity_text(proposal.evidence_synthesis_error, limit=180)}"
+        )
+    return "\n".join(lines)
+
+
 def _format_evolve_report(report: EvolveReport) -> str:
     state = report.state
     lines = [
@@ -595,6 +712,18 @@ def _format_evolve_report(report: EvolveReport) -> str:
         f"Theme: {state.theme or 'not set'}",
         f"Schedule: {_format_evolve_schedule(state)}",
         "",
+        "Evidence:",
+        (
+            f"- feedback: {report.evidence_counts.get('feedback', 0)} recorded; "
+            f"{report.pending_evidence.get('feedback', 0)}/"
+            f"{report.evidence_settings.feedback_batch_size} pending"
+        ),
+        (
+            f"- experience: {report.evidence_counts.get('experience', 0)} recorded; "
+            f"{report.pending_evidence.get('experience', 0)}/"
+            f"{report.evidence_settings.experience_batch_size} pending task IDs"
+        ),
+        "",
         "Candidate counts:",
     ]
     if report.counts_by_source:
@@ -602,7 +731,13 @@ def _format_evolve_report(report: EvolveReport) -> str:
             lines.append(f"- {source}: {report.counts_by_source[source]}")
     else:
         lines.append("- none")
-    lines.extend(["", "Top candidate:", "(deterministic pre-ranking; semantic selection occurs in /propose)"])
+    lines.extend(
+        [
+            "",
+            "Top candidate:",
+            "(deterministic pre-ranking; semantic selection occurs in /evolve propose)",
+        ]
+    )
     if report.top_candidate is None:
         lines.append("- none")
     else:
@@ -629,13 +764,13 @@ def _format_evolve_theme(state: EvolveState) -> str:
             "Evolve theme:",
             state.theme or "not set",
             "",
-            "Set with /evolve theme <text>.",
+            "Set with /evolve config theme <text>.",
         ]
     )
 
 
 def _format_evolve_candidate(candidate: EvolveCandidate) -> list[str]:
-    return [
+    lines = [
         f"- {candidate.id} [{candidate.status} {candidate.source}] {_clip_activity_text(candidate.title, limit=100)}",
         (
             f"  Provenance: evidence {candidate.evidence_source or candidate.source}; "
@@ -646,6 +781,11 @@ def _format_evolve_candidate(candidate: EvolveCandidate) -> list[str]:
         f"  Proposed change: {_clip_activity_text(candidate.proposed_change, limit=180)}",
         f"  Test plan: {_clip_activity_text(candidate.test_plan, limit=180)}",
     ]
+    if candidate.evidence_ids:
+        lines.append(f"  Evidence IDs: {', '.join(candidate.evidence_ids)}")
+    if candidate.evidence_refs:
+        lines.append(f"  Evidence refs: {', '.join(candidate.evidence_refs)}")
+    return lines
 
 
 def _format_evolve_candidates(candidates: tuple[EvolveCandidate, ...], *, include_inactive: bool = False) -> str:

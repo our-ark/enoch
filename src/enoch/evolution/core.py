@@ -1,21 +1,18 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-import hashlib
 import json
 from pathlib import Path
 from typing import Callable, Iterable
 from uuid import uuid4
 
-from enoch.automatic_learning import LearningArtifact, learning_index_paths
 from enoch.evolution.sources.brainstorming import (
     BrainstormIdea,
     brainstorm_idea,
     load_brainstorm_ideas,
     save_brainstorm_ideas,
 )
-from enoch.cron import CronJob, cron_status, format_cron_interval
 from enoch.evolution.curation import (
     DEFAULT_CURATION_LIMIT,
     CurationGenerator,
@@ -29,23 +26,33 @@ from enoch.evolution.curation import (
     sanitize_curation_text,
     with_new_candidate_ids,
 )
-from enoch.evolution.sources.experience import ExperienceRecord, load_experience_records
+from enoch.evolution.evidence import (
+    EvidenceCandidateDraft,
+    EvidenceScanResult,
+    EvidenceSettings,
+    link_evidence,
+    load_evidence,
+    load_evidence_settings,
+    pending_evidence_counts,
+    synthesize_evidence_candidates,
+    unlinked_evidence,
+)
 from enoch.evolution.events import (
     latest_open_proposal_id,
     linked_proposal_id,
     record_evolve_event,
 )
-from enoch.evolution.sources.feedback import FeedbackSignal, extract_feedback_signals
 from enoch.learn import PeerLearningObservation, load_peer_learning_observations
 from enoch.lineage.core import LineageCandidate, load_parent_inbox_candidates
 from enoch.memory.paths import atomic_write, clean_text, now as current_time
 from enoch.paths import private_state_path
+from enoch.tasks.events import load_task_events
 from enoch.tasks.queue import TaskJob, task_queue_status
 from enoch.state import StateCorruptionError, file_transaction, load_json_object
 
 
 SCHEMA_VERSION = 2
-CANDIDATE_SCHEMA_VERSION = 4
+CANDIDATE_SCHEMA_VERSION = 5
 MODE_DISABLED = "disabled"
 MODE_CO_EVOLVE = "co-evolve"
 MODE_AUTO_EVOLVE = "auto-evolve"
@@ -103,6 +110,9 @@ class EvolveCandidate:
     source_task_id: int | None = None
     status: str = "candidate"
     score: int = 0
+    base_score: int | None = None
+    evidence_ids: tuple[str, ...] = ()
+    evidence_refs: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -111,6 +121,9 @@ class EvolveReport:
     candidates: tuple[EvolveCandidate, ...]
     top_candidate: EvolveCandidate | None
     counts_by_source: dict[str, int]
+    evidence_counts: dict[str, int] = field(default_factory=dict)
+    pending_evidence: dict[str, int] = field(default_factory=dict)
+    evidence_settings: EvidenceSettings = field(default_factory=EvidenceSettings)
 
 
 @dataclass(frozen=True)
@@ -125,6 +138,9 @@ class EvolveProposal:
     brainstorm_error: str = ""
     curation: SemanticCuration | None = None
     new_candidates: tuple[EvolveCandidate, ...] = ()
+    evidence_scan_results: tuple[EvidenceScanResult, ...] = ()
+    evidence_candidates_added: int = 0
+    evidence_synthesis_error: str = ""
 
 
 def evolve_state_path(root: Path | None = None) -> Path:
@@ -381,28 +397,38 @@ def acknowledge_evolve_schedule(
 
 def normalize_evolve_mode(mode: str) -> str:
     normalized = mode.strip().lower()
-    if normalized in {"co", "coevolve", "co_evolve"}:
-        normalized = MODE_CO_EVOLVE
-    if normalized in {"auto", "autoevolve", "auto_evolve", "auto-evovle", "auto_evovle", "autoevovle"}:
-        normalized = MODE_AUTO_EVOLVE
     if normalized not in MODES:
         raise ValueError("Evolve mode must be disabled, co-evolve, or auto-evolve.")
     return normalized
 
 
-def evolve_report(root: Path | None = None) -> EvolveReport:
+def evolve_report(
+    root: Path | None = None,
+    *,
+    refresh: bool = True,
+) -> EvolveReport:
     state = load_evolve_state(root)
     candidates = ()
     if state.mode != MODE_DISABLED:
-        candidates = sync_evolve_candidates(root, theme=state.theme)
+        candidates = (
+            sync_evolve_candidates(root, theme=state.theme)
+            if refresh
+            else load_evolve_candidates(root, theme=state.theme)
+        )
     counts: dict[str, int] = {}
     for candidate in candidates:
         counts[candidate.source] = counts.get(candidate.source, 0) + 1
+    evidence_counts = {"feedback": 0, "experience": 0}
+    for signal in load_evidence(root, include_inactive=True):
+        evidence_counts[signal.source] = evidence_counts.get(signal.source, 0) + 1
     return EvolveReport(
         state=state,
         candidates=candidates,
         top_candidate=candidates[0] if candidates else None,
         counts_by_source=counts,
+        evidence_counts=evidence_counts,
+        pending_evidence=pending_evidence_counts(root),
+        evidence_settings=load_evidence_settings(root),
     )
 
 
@@ -543,6 +569,8 @@ def _candidate_curation_snapshot(candidate: EvolveCandidate) -> dict[str, object
         "deterministic_score": candidate.score,
         "provenance": {
             "evidence_source": candidate.evidence_source or candidate.source,
+            "evidence_ids": list(candidate.evidence_ids),
+            "evidence_refs": list(candidate.evidence_refs),
             "signal_actor": candidate.signal_actor,
             "candidate_actor": candidate.candidate_actor,
             "parent_candidate_id": candidate.parent_candidate_id,
@@ -616,28 +644,105 @@ def collect_evolve_candidates(
     theme: str = "",
 ) -> tuple[EvolveCandidate, ...]:
     candidates: list[EvolveCandidate] = []
-    candidates.extend(_feedback_candidates(extract_feedback_signals(root)))
     candidates.extend(_inheritance_candidates(load_parent_inbox_candidates(root)))
-    candidates.extend(collect_experience_candidates(root))
     candidates.extend(_peer_learning_candidates(load_peer_learning_observations(root)))
     candidates.extend(_brainstorm_candidates(load_brainstorm_ideas(root, theme=theme)))
     return tuple(candidates)
 
 
-def collect_experience_candidates(root: Path | None = None) -> tuple[EvolveCandidate, ...]:
-    candidates: list[EvolveCandidate] = []
-    records = load_experience_records(root)
-    candidates.extend(_experience_record_candidates(records))
-    recorded_task_ids = {record.task_id for record in records}
-    candidates.extend(
-        _task_history_candidates(
-            job for job in task_queue_status(root).history if job.id not in recorded_task_ids
-        )
+def synthesize_evolve_candidates_from_evidence(
+    root: Path | None = None,
+    *,
+    mission: str,
+    generator: CurationGenerator,
+    limit: int = 5,
+) -> tuple[EvolveCandidate, ...]:
+    state = load_evolve_state(root)
+    if state.mode == MODE_DISABLED:
+        return ()
+    signals = unlinked_evidence(root)
+    if not signals:
+        return ()
+    stored = _load_all_evolve_candidates(root)
+    drafts = synthesize_evidence_candidates(
+        signals,
+        mission=mission,
+        theme=state.theme,
+        existing_candidates=(_candidate_to_json(candidate) for candidate in stored),
+        generator=generator,
+        limit=limit,
     )
-    candidates.extend(_repeated_success_candidates(records))
-    candidates.extend(_cron_candidates(cron_status(root).active))
-    candidates.extend(_learning_candidates(_load_learning_artifacts(root)))
-    return tuple(candidates)
+    if not drafts:
+        return ()
+    existing = {candidate.id: candidate for candidate in stored}
+    created: list[EvolveCandidate] = []
+    for draft in drafts:
+        if draft.id in existing:
+            # Recover cleanly if a previous process wrote the candidate but
+            # stopped before appending the evidence linkage update.
+            link_evidence(draft.evidence_ids, draft.id, root)
+            continue
+        candidate = _candidate_from_evidence_draft(draft, root)
+        existing[candidate.id] = candidate
+        created.append(candidate)
+    if not created:
+        return ()
+    ranked = rank_evolve_candidates(existing.values(), theme=state.theme)
+    _write_evolve_candidates(ranked, root)
+    for candidate in created:
+        link_evidence(candidate.evidence_ids, candidate.id, root)
+    created_ids = {candidate.id for candidate in created}
+    return tuple(candidate for candidate in ranked if candidate.id in created_ids)
+
+
+def _candidate_from_evidence_draft(
+    draft: EvidenceCandidateDraft,
+    root: Path | None,
+) -> EvolveCandidate:
+    task_events = load_task_events(root)
+    event_task_ids = {
+        event.id: event.task_id
+        for event in task_events
+    }
+    referenced_task_ids = [
+        int(ref.removeprefix("task:"))
+        for ref in draft.evidence_refs
+        if ref.startswith("task:") and ref.removeprefix("task:").isdigit()
+    ]
+    referenced_task_ids.extend(
+        event_task_ids[ref.removeprefix("task-event:")]
+        for ref in draft.evidence_refs
+        if ref.startswith("task-event:")
+        and ref.removeprefix("task-event:") in event_task_ids
+    )
+    source_task_id = referenced_task_ids[0] if referenced_task_ids else None
+    parent_candidate_id = next(
+        (
+            event.candidate_id
+            for event in reversed(task_events)
+            if event.task_id == source_task_id and event.candidate_id
+        ),
+        "",
+    )
+    return EvolveCandidate(
+        id=draft.id,
+        source=draft.source,
+        title=draft.title,
+        rationale=draft.rationale,
+        proposed_change=draft.proposed_change,
+        expected_benefit=draft.expected_benefit,
+        risk=draft.risk,
+        test_plan=draft.test_plan,
+        initiated_by="agent",
+        evidence_source=draft.source,
+        signal_actor="human" if draft.source == "feedback" else "system",
+        candidate_actor="agent",
+        parent_candidate_id=parent_candidate_id,
+        source_task_id=source_task_id,
+        score=draft.score,
+        evidence_ids=draft.evidence_ids,
+        evidence_refs=draft.evidence_refs,
+    )
 
 
 def sync_evolve_candidates(root: Path | None = None, *, theme: str = "") -> tuple[EvolveCandidate, ...]:
@@ -645,7 +750,7 @@ def sync_evolve_candidates(root: Path | None = None, *, theme: str = "") -> tupl
     collected = collect_evolve_candidates(root, theme=theme)
     collected_ids = {candidate.id for candidate in collected}
     merged: dict[str, EvolveCandidate] = {}
-    retired: list[EvolveCandidate] = []
+    retired: list[tuple[EvolveCandidate, str]] = []
     for candidate_id, candidate in stored.items():
         if (
             candidate.source == "brainstorming"
@@ -653,12 +758,10 @@ def sync_evolve_candidates(root: Path | None = None, *, theme: str = "") -> tupl
             and candidate_id not in collected_ids
         ):
             continue
-        if (
-            candidate.source in RETIRED_CANDIDATE_SOURCES
-            and candidate.status in ACTIONABLE_CANDIDATE_STATUSES
-        ):
+        retirement_reason = _candidate_retirement_reason(candidate)
+        if retirement_reason and candidate.status in ACTIONABLE_CANDIDATE_STATUSES:
             candidate = EvolveCandidate(**{**candidate.__dict__, "status": "removed"})
-            retired.append(candidate)
+            retired.append((candidate, retirement_reason))
         merged[candidate_id] = candidate
     for candidate in collected:
         previous = stored.get(candidate.id)
@@ -666,17 +769,25 @@ def sync_evolve_candidates(root: Path | None = None, *, theme: str = "") -> tupl
         merged[candidate.id] = EvolveCandidate(**{**candidate.__dict__, "status": status})
     ranked = rank_evolve_candidates(merged.values(), theme=theme)
     _write_evolve_candidates(ranked, root)
-    for candidate in retired:
+    for candidate, reason in retired:
         record_evolve_event(
             "removed",
             root,
             event_actor="system",
             trigger="candidate-source-retirement",
             candidate=candidate,
-            reason="backlog-is-not-evolution-evidence",
+            reason=reason,
             proposal_id=latest_open_proposal_id(candidate.id, root),
         )
     return tuple(candidate for candidate in ranked if candidate.status in VISIBLE_CANDIDATE_STATUSES)
+
+
+def _candidate_retirement_reason(candidate: EvolveCandidate) -> str:
+    if candidate.source in RETIRED_CANDIDATE_SOURCES:
+        return "backlog-is-not-evolution-evidence"
+    if candidate.source in {"feedback", "experience"} and not candidate.evidence_ids:
+        return "legacy-hardcoded-evidence-pathway-retired"
+    return ""
 
 
 def load_evolve_candidates(
@@ -1156,8 +1267,15 @@ def _candidate_to_json(candidate: EvolveCandidate) -> dict[str, object]:
         "candidate_actor": candidate.candidate_actor,
         "parent_candidate_id": candidate.parent_candidate_id,
         "source_task_id": candidate.source_task_id,
+        "evidence_ids": list(candidate.evidence_ids),
+        "evidence_refs": list(candidate.evidence_refs),
         "status": candidate.status if candidate.status in CANDIDATE_STATUSES else "candidate",
         "score": int(candidate.score),
+        "base_score": (
+            int(candidate.base_score)
+            if candidate.base_score is not None
+            else int(candidate.score)
+        ),
     }
 
 
@@ -1201,6 +1319,7 @@ def _candidate_from_json(raw: dict[str, object]) -> EvolveCandidate | None:
         if candidate_actor in {"human", "agent"}
         else legacy_initiated_by
     )
+    score = _int(raw.get("score"), default=0)
     return EvolveCandidate(
         id=candidate_id,
         source=source,
@@ -1217,7 +1336,10 @@ def _candidate_from_json(raw: dict[str, object]) -> EvolveCandidate | None:
         parent_candidate_id=clean_text(str(raw.get("parent_candidate_id") or "")),
         source_task_id=_positive_int(raw.get("source_task_id")),
         status=status,
-        score=_int(raw.get("score"), default=0),
+        score=score,
+        base_score=_int(raw.get("base_score"), default=score),
+        evidence_ids=_string_tuple(raw.get("evidence_ids")),
+        evidence_refs=_string_tuple(raw.get("evidence_refs")),
     )
 
 
@@ -1293,215 +1415,6 @@ def _inheritance_candidates(items: Iterable[LineageCandidate]) -> list[EvolveCan
     return candidates
 
 
-def _feedback_candidates(items: Iterable[FeedbackSignal]) -> list[EvolveCandidate]:
-    kind_score = {"complaint": 34, "correction": 32, "repeated-request": 28, "preference": 24}
-    candidates = []
-    for item in items:
-        title = item.message if len(item.message) <= 120 else f"{item.message[:117].rstrip()}..."
-        candidates.append(
-            EvolveCandidate(
-                id=f"feedback-{item.id}",
-                source="feedback",
-                title=f"Respond to {item.kind}: {title}",
-                rationale=(
-                    f"Conversation feedback classified as {item.kind}; observed {item.occurrences} time(s)."
-                ),
-                proposed_change=(
-                    "Inspect the conversation context and make the smallest durable body or workflow change that "
-                    "addresses this feedback without encoding private conversation content."
-                ),
-                expected_benefit="Turns explicit human feedback into an accountable, testable improvement candidate.",
-                risk="Heuristic feedback extraction can misclassify ordinary conversation; confirm intent before editing.",
-                test_plan="Add or update focused tests for the affected behavior and verify the feedback is addressed.",
-                initiated_by="agent",
-                evidence_source="feedback",
-                signal_actor="human",
-                candidate_actor="agent",
-                score=kind_score.get(item.kind, 20) + min(item.occurrences, 3) * 2,
-            )
-        )
-    return candidates
-
-
-def _task_history_candidates(items: Iterable[TaskJob]) -> list[EvolveCandidate]:
-    candidates = []
-    for item in items:
-        if item.status not in {"failed", "cancelled", "regressed", "reverted"}:
-            continue
-        if item.status == "cancelled" and not item.started_at:
-            continue
-        result = clean_text(item.result)
-        is_failed = item.status == "failed"
-        is_regression = item.status in {"regressed", "reverted"}
-        candidates.append(
-            EvolveCandidate(
-                id=f"task-{item.id}",
-                source="experience",
-                title=f"Improve reliability after {item.status} task #{item.id}: {item.text}",
-                rationale=(
-                    f"Task #{item.id} ended as {item.status}."
-                    + (f" Result: {result}" if result else "")
-                ),
-                proposed_change=(
-                    "Inspect the task request, result, and surrounding workflow; add a small fix or guardrail that "
-                    "prevents similar work from failing again."
-                ),
-                expected_benefit="Turns recent operational friction into a concrete reliability improvement.",
-                risk="The original task may have failed for transient reasons, so avoid broad changes without evidence.",
-                test_plan="Reproduce the failed or cancelled path if possible, then run focused tests around the changed workflow.",
-                initiated_by="agent",
-                evidence_source="experience",
-                signal_actor="system",
-                candidate_actor="agent",
-                parent_candidate_id=item.candidate_id,
-                source_task_id=item.id,
-                score=40 if is_regression else (30 if is_failed else 18),
-            )
-        )
-    return candidates
-
-
-def _experience_record_candidates(items: Iterable[ExperienceRecord]) -> list[EvolveCandidate]:
-    candidates = []
-    for item in items:
-        is_actionable_regression = item.regressed and item.regression_resolution != "forward-fixed"
-        if item.outcome not in {"failed", "cancelled"} and not is_actionable_regression:
-            continue
-        if item.outcome == "cancelled" and not item.started:
-            continue
-        is_failed = item.outcome == "failed"
-        outcome = item.regression_resolution or "regressed" if is_actionable_regression else item.outcome
-        candidates.append(
-            EvolveCandidate(
-                id=f"task-{item.task_id}",
-                source="experience",
-                title=f"Improve reliability after {outcome} task #{item.task_id}: {item.request}",
-                rationale=(
-                    f"Experience journal recorded task #{item.task_id} as {outcome}."
-                    + (f" Result: {clean_text(item.result_summary)}" if item.result_summary else "")
-                ),
-                proposed_change=(
-                    "Inspect the recorded task experience and add the smallest fix or guardrail that prevents "
-                    "similar work from failing again."
-                ),
-                expected_benefit="Turns a durable operational experience into a concrete reliability improvement.",
-                risk="The task may have failed for transient reasons, so confirm the lesson before changing behavior.",
-                test_plan="Reproduce the recorded failure if possible, then run focused tests around the changed workflow.",
-                initiated_by="agent",
-                evidence_source="experience",
-                signal_actor="system",
-                candidate_actor="agent",
-                parent_candidate_id=item.candidate_id,
-                source_task_id=item.task_id,
-                score=42 if is_actionable_regression else (30 if is_failed else 18),
-            )
-        )
-    return candidates
-
-
-def _repeated_success_candidates(items: Iterable[ExperienceRecord]) -> list[EvolveCandidate]:
-    grouped: dict[str, list[ExperienceRecord]] = {}
-    for item in items:
-        if item.outcome != "completed":
-            continue
-        if item.context_source.startswith("cron") or item.context_source in {
-            "evolve-approve",
-            "evolve-run",
-            "evolve-scheduler",
-        }:
-            continue
-        key = clean_text(item.request).lower()
-        grouped.setdefault(key, []).append(item)
-    candidates = []
-    for key, records in grouped.items():
-        if len(records) < 2:
-            continue
-        latest = records[0]
-        digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:12]
-        candidates.append(
-            EvolveCandidate(
-                id=f"experience-repeat-{digest}",
-                source="experience",
-                title=f"Review repeated successful workflow: {latest.request}",
-                rationale=f"The experience journal records this workflow completing successfully {len(records)} times.",
-                proposed_change=(
-                    "Inspect the successful runs and decide whether a reusable command, skill, template, or automation "
-                    "would preserve the proven pattern without overfitting."
-                ),
-                expected_benefit="Converts repeated successful work into reusable capability when the evidence supports it.",
-                risk="Repeated requests may still differ in important context; do not automate away necessary judgment.",
-                test_plan="Add focused tests for any extracted reusable behavior and verify existing task execution remains intact.",
-                initiated_by="agent",
-                evidence_source="experience",
-                signal_actor="system",
-                candidate_actor="agent",
-                parent_candidate_id=latest.candidate_id,
-                source_task_id=latest.task_id,
-                score=18 + min(len(records), 5),
-            )
-        )
-    return candidates
-
-
-def _cron_candidates(items: Iterable[CronJob]) -> list[EvolveCandidate]:
-    candidates = []
-    for item in items:
-        cadence = format_cron_interval(item.interval_seconds)
-        candidates.append(
-            EvolveCandidate(
-                id=f"cron-{item.id}",
-                source="experience",
-                title=f"Review recurring workflow #{item.id}: {item.text}",
-                rationale=(
-                    f"Active cron job runs every {cadence}; next run {item.next_run_at or 'unknown'}."
-                    + (f" Last task #{item.last_task_id}." if item.last_task_id is not None else "")
-                ),
-                proposed_change=(
-                    "Inspect whether the recurring request is still useful, has enough context, and should be made "
-                    "safer or more observable."
-                ),
-                expected_benefit="Keeps scheduled automation aligned with current needs instead of letting stale jobs drift.",
-                risk="Recurring jobs are user-facing automation; changes should not silently disable or broaden their behavior.",
-                test_plan="Run cron parsing/status tests and verify the scheduled request still renders clearly in the configured chat provider.",
-                initiated_by="agent",
-                evidence_source="experience",
-                signal_actor="system",
-                candidate_actor="agent",
-                source_task_id=item.last_task_id,
-                score=12,
-            )
-        )
-    return candidates
-
-
-def _learning_candidates(items: Iterable[LearningArtifact]) -> list[EvolveCandidate]:
-    candidates = []
-    for item in items:
-        skills = ", ".join(item.skill_names) or "unknown"
-        candidates.append(
-            EvolveCandidate(
-                id=f"learning-{item.id}",
-                source="experience",
-                title=f"Turn learned skill work into reusable behavior: {skills}",
-                rationale=f"Learning artifact from task {item.task_id or 'unknown'} recorded skill work for {skills}.",
-                proposed_change=(
-                    "Inspect the learning artifact and decide whether Enoch should adapt docs, tests, or command behavior "
-                    "from that successful skill change."
-                ),
-                expected_benefit="Promotes successful skill work into deliberate self-improvement instead of passive archive data.",
-                risk="The artifact may be too context-specific to generalize; adapt only reusable pieces.",
-                test_plan="Run skill discovery tests and focused tests for any adapted skill behavior.",
-                initiated_by="agent",
-                evidence_source="experience",
-                signal_actor="agent",
-                candidate_actor="agent",
-                source_task_id=item.task_id,
-                score=20,
-            )
-        )
-    return candidates
-
-
 def _peer_learning_candidates(items: Iterable[PeerLearningObservation]) -> list[EvolveCandidate]:
     candidates = []
     for item in items:
@@ -1549,54 +1462,13 @@ def _brainstorm_candidates(items: Iterable[BrainstormIdea]) -> list[EvolveCandid
     ]
 
 
-def _load_learning_artifacts(root: Path | None = None, *, limit: int = 10) -> tuple[LearningArtifact, ...]:
-    artifacts = []
-    lines: list[str] = []
-    for path in learning_index_paths(root):
-        try:
-            lines.extend(path.read_text(encoding="utf-8").splitlines())
-        except OSError:
-            continue
-    for line in reversed(lines):
-        if not line.strip():
-            continue
-        try:
-            raw = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        artifact = _learning_artifact_from_json(raw)
-        if artifact is not None:
-            artifacts.append(artifact)
-        if len(artifacts) >= limit:
-            break
-    return tuple(artifacts)
-
-
-def _learning_artifact_from_json(raw: object) -> LearningArtifact | None:
-    if not isinstance(raw, dict):
-        return None
-    artifact_id = clean_text(str(raw.get("id") or ""))
-    request = clean_text(str(raw.get("request") or ""))
-    if not artifact_id or not request:
-        return None
-    return LearningArtifact(
-        id=artifact_id,
-        artifact_type=clean_text(str(raw.get("artifact_type") or "skill")) or "skill",
-        source_agent=clean_text(str(raw.get("source_agent") or "")),
-        created_at=str(raw.get("created_at") or ""),
-        task_id=_optional_int(raw.get("task_id")),
-        command=clean_text(str(raw.get("command") or "")),
-        request=request,
-        result_summary=clean_text(str(raw.get("result_summary") or "")),
-        pr_urls=_string_tuple(raw.get("pr_urls")),
-        changed_files=_string_tuple(raw.get("changed_files")),
-        skill_names=_string_tuple(raw.get("skill_names")),
-        context_source=clean_text(str(raw.get("context_source") or "")),
-    )
-
-
 def _score_candidate(candidate: EvolveCandidate, *, theme: str) -> EvolveCandidate:
-    score = candidate.score + 25
+    base_score = (
+        candidate.base_score
+        if candidate.base_score is not None
+        else candidate.score
+    )
+    score = base_score + 25
     text = " ".join([candidate.title, candidate.rationale, candidate.proposed_change]).lower()
     theme_words = {word for word in clean_text(theme).lower().split() if len(word) >= 4}
     if theme_words and any(word in text for word in theme_words):
@@ -1613,12 +1485,13 @@ def _score_candidate(candidate: EvolveCandidate, *, theme: str) -> EvolveCandida
         score += 4
     if candidate.status == "failed":
         score += FAILED_RETRY_SCORE_BONUS
-    return EvolveCandidate(**{**candidate.__dict__, "score": score})
-
-
-def _optional_int(value: object) -> int | None:
-    parsed = _int(value, default=0)
-    return parsed if parsed > 0 else None
+    return EvolveCandidate(
+        **{
+            **candidate.__dict__,
+            "score": score,
+            "base_score": base_score,
+        }
+    )
 
 
 def _string_tuple(value: object) -> tuple[str, ...]:
