@@ -52,13 +52,10 @@ theme, auto-evolve can drift into random optimization.
 
 ## Candidate Sources
 
-Self-evolution candidates can come from six sources.
-
-### backlog
-
-Enoch can inspect backlog items and select the most important candidate that also fits the current theme.
-
-Backlog items are human-visible deferred work, so they are strong candidates when they are relevant and actionable.
+Self-evolution candidates can come from five sources. Backlog items are ordinary
+deferred work and are deliberately not evolution evidence. A failure or user
+feedback encountered while executing backlog work may still provide evidence
+through the experience or feedback pathways.
 
 ### feedback
 
@@ -88,7 +85,7 @@ every success into an evolve candidate.
 
 Evolve-linked candidates and tasks add explicit provenance fields:
 
-- `evidence_source`: which of the six evolve sources supplied the evidence;
+- `evidence_source`: which of the five evolve sources supplied the evidence;
 - `signal_actor`: who produced the original signal;
 - `candidate_actor`: who turned that signal into a candidate;
 - `approval_actor`: who approved a particular execution;
@@ -133,7 +130,7 @@ Each candidate should be stored with enough context to explain why it exists and
 
 ```yaml
 id: evo_001
-source: backlog|feedback|experience|brainstorming|inheritance|learning
+source: feedback|experience|brainstorming|inheritance|learning
 evidence_source: feedback
 signal_actor: human|agent|system
 candidate_actor: human|agent|system
@@ -151,7 +148,7 @@ status: candidate|running|done|failed|cancelled|regressed|reverted|forward-fixed
 
 ## Selection
 
-The six source adapters discover raw candidates and preserve their provenance.
+The five source adapters discover raw candidates and preserve their provenance.
 They do not make the final recommendation. `/propose` deterministically
 pre-ranks and bounds the pool, then gives the reasoning engine the candidate
 fields, mission, theme, provenance, and privacy-cleaned completion evidence.
@@ -263,7 +260,7 @@ Candidate selection and control:
 
 `/feedback` shows the human feedback signals available to evolution. `/experience`
 shows candidates derived from Enoch's task history, recurring workflows, and
-successful skill work. `/propose` refreshes all six sources, pre-ranks new and
+successful skill work. `/propose` refreshes all five sources, pre-ranks new and
 failed candidates into a bounded pool, and asks the reasoning engine for a
 semantic recommendation without selecting or running it. Failed candidates
 remain available for `/evolve retry <id>`, which

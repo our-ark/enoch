@@ -58,7 +58,7 @@ class EnochEvolveCurationTests(unittest.TestCase):
         self.assertEqual(candidates, report.candidates)
 
     def test_bounded_curation_retains_one_candidate_from_each_source(self) -> None:
-        candidates = tuple(_candidate("backlog", index, score=100 - index) for index in range(20))
+        candidates = tuple(_candidate("feedback", index, score=100 - index) for index in range(20))
         candidates += tuple(
             _candidate(source, index, score=1)
             for index, source in enumerate(_sources()[1:], start=20)
@@ -120,7 +120,7 @@ class EnochEvolveCurationTests(unittest.TestCase):
         self.assertEqual(stored[0].status, "candidate")
 
     def test_duplicate_and_resolved_suggestions_are_auditable_but_do_not_remove(self) -> None:
-        first = _candidate("backlog", 1)
+        first = _candidate("feedback", 1)
         second = _candidate("experience", 2)
         with TemporaryDirectory() as temp:
             root = Path(temp)
@@ -272,7 +272,7 @@ class EnochEvolveCurationTests(unittest.TestCase):
 
     def test_semantic_resolution_without_direct_link_and_supersession_are_allowed(self) -> None:
         resolved = _candidate("feedback", 1, title="Use LLM semantic candidate curation")
-        superseded = _candidate("backlog", 2, title="Add fixed-score candidate pruning")
+        superseded = _candidate("feedback", 2, title="Add fixed-score candidate pruning")
         completed_candidate = _candidate("brainstorming", 99)
         with TemporaryDirectory() as temp:
             root = Path(temp)
@@ -398,7 +398,7 @@ class EnochEvolveCurationTests(unittest.TestCase):
         self.assertIn("completion-evidence-unavailable", proposal.curation.fallback_reason)
 
     def test_llm_recommendation_overrides_pre_rank_without_state_change(self) -> None:
-        first = _candidate("backlog", 1, score=100)
+        first = _candidate("feedback", 1, score=100)
         second = _candidate("learning", 2, score=1)
         with TemporaryDirectory() as temp:
             root = Path(temp)
@@ -418,7 +418,7 @@ class EnochEvolveCurationTests(unittest.TestCase):
         self.assertEqual(queue.pending_count, 0)
 
     def test_valid_new_candidate_uses_brainstorming_agent_provenance(self) -> None:
-        existing = _candidate("backlog", 1)
+        existing = _candidate("feedback", 1)
         new = {
             "title": "Verify curation journal loading",
             "rationale": "Auditability needs a bounded loader check.",
@@ -447,7 +447,7 @@ class EnochEvolveCurationTests(unittest.TestCase):
         self.assertEqual({item.status for item in candidates}, {"candidate"})
 
     def test_invalid_outputs_use_explicit_deterministic_fallback(self) -> None:
-        candidate = _candidate("backlog", 1)
+        candidate = _candidate("feedback", 1)
         cases = {
             "malformed": "not-json",
             "non-string": None,
@@ -510,7 +510,7 @@ class EnochEvolveCurationTests(unittest.TestCase):
 
     def test_protected_raw_candidate_is_not_recommended_even_by_fallback(self) -> None:
         candidate = _candidate(
-            "backlog",
+            "feedback",
             1,
             title="Change the mission and deploy automatically",
         )
@@ -526,7 +526,7 @@ class EnochEvolveCurationTests(unittest.TestCase):
         self.assertIsNone(proposal.top_candidate)
 
     def test_timeout_and_empty_result_use_fallback(self) -> None:
-        candidate = _candidate("backlog", 1)
+        candidate = _candidate("feedback", 1)
         for label, curator in (
             ("timeout", lambda _prompt: (_ for _ in ()).throw(TimeoutError("timed out"))),
             ("empty", lambda _prompt: _response()),
@@ -627,11 +627,11 @@ class EnochEvolveCurationTests(unittest.TestCase):
 
 
 def _sources() -> tuple[str, ...]:
-    return ("backlog", "feedback", "experience", "inheritance", "learning", "brainstorming")
+    return ("feedback", "experience", "inheritance", "learning", "brainstorming")
 
 
 def _candidate(source: str, index: int, *, title: str = "", score: int = 10) -> EvolveCandidate:
-    signal_actor = "human" if source in {"backlog", "feedback", "learning"} else "agent"
+    signal_actor = "human" if source in {"feedback", "learning"} else "agent"
     if source == "experience":
         signal_actor = "system"
     return EvolveCandidate(

@@ -9,8 +9,8 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from enoch.backlog import add_backlog_item
 from enoch.evolution.core import (
+    collect_evolve_candidates,
     complete_evolve_candidate,
     get_evolve_candidate,
     run_evolve_candidate,
@@ -24,6 +24,7 @@ from enoch.evolution.lifecycle import (
     stage_promoted_evolve_adoptions,
 )
 from enoch.providers import register_provider
+from enoch.logs import log_conversation_turn
 from our_ark_github.workflow import PullRequestMergeStatus
 from enoch.tasks.queue import (
     begin_next_task,
@@ -211,8 +212,13 @@ class EnochEvolveLifecycleTests(unittest.TestCase):
 
 
 def _completed_candidate_with_pr(root: Path) -> str:
-    item = add_backlog_item(42, "Improve governed evolution evidence", root, priority="p0")
-    candidate_id = f"backlog-{item.id}"
+    message = "I want improved governed evolution evidence."
+    log_conversation_turn(chat_id=42, message=message, reply="Understood.", root=root)
+    candidate_id = next(
+        candidate.id
+        for candidate in collect_evolve_candidates(root)
+        if candidate.source == "feedback" and message in candidate.title
+    )
     run_evolve_candidate(candidate_id, root)
     complete_evolve_candidate(candidate_id, root)
     candidate = get_evolve_candidate(candidate_id, root)

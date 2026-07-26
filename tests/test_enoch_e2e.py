@@ -14,10 +14,10 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from enoch.backlog import add_backlog_item
-from enoch.evolution.core import get_evolve_candidate
+from enoch.evolution.core import collect_evolve_candidates, get_evolve_candidate
 from enoch.identity import load_identity
 from enoch.immune import DoctorDiagnosis, ImmuneResult
+from enoch.logs import log_conversation_turn
 from enoch.tasks.events import load_task_events
 from enoch.tasks.queue import begin_next_task, task_queue_status
 from enoch.app.core import EnochApplication
@@ -80,7 +80,7 @@ class EnochEvolutionEndToEndTests(unittest.TestCase):
     def test_evolve_approve_publishes_ready_pr_from_latest_main_with_one_progress_message(
         self,
     ) -> None:
-        candidate_id = self._add_backlog_candidate("Improve evolve reliability")
+        candidate_id = self._add_feedback_candidate("Improve evolve reliability")
 
         reply = self._command(f"/evolve approve {candidate_id}")
         self.assertIn("queued task #1", reply)
@@ -94,7 +94,7 @@ class EnochEvolutionEndToEndTests(unittest.TestCase):
         self.assertNotIn("--draft", call)
         body = _argument_value(call, "--body")
         self.assertIn(f"- Candidate: `{candidate_id}`", body)
-        self.assertIn("- Evidence source: backlog", body)
+        self.assertIn("- Evidence source: feedback", body)
         self.assertIn("- Signal actor: human", body)
         self.assertIn("- Candidate actor: agent", body)
         self.assertIn("- Approval actor: human", body)
@@ -127,7 +127,7 @@ class EnochEvolutionEndToEndTests(unittest.TestCase):
         self.assertIn(f"- Candidate: `{candidate_id}`", prompt)
 
     def test_evolve_retry_keeps_failed_history_and_links_new_task(self) -> None:
-        candidate_id = self._add_backlog_candidate("Add a retry guardrail")
+        candidate_id = self._add_feedback_candidate("Add a retry guardrail")
         self._command(f"/evolve approve {candidate_id}")
         self.client.clear()
         self._set_codex_mode("error")
@@ -157,7 +157,7 @@ class EnochEvolutionEndToEndTests(unittest.TestCase):
         self.assertIn("- Retry of task: #1", body)
 
     def test_codex_auth_failure_pauses_and_resume_completes_same_task(self) -> None:
-        candidate_id = self._add_backlog_candidate("Handle unavailable Codex access")
+        candidate_id = self._add_feedback_candidate("Handle unavailable Codex access")
         self._command(f"/evolve approve {candidate_id}")
         self.client.clear()
         self._set_codex_mode("auth-fail")
@@ -190,7 +190,7 @@ class EnochEvolutionEndToEndTests(unittest.TestCase):
     def test_failed_evolve_task_creates_experience_candidate_with_causal_provenance(
         self,
     ) -> None:
-        parent_id = self._add_backlog_candidate("Prevent a recurring worker failure")
+        parent_id = self._add_feedback_candidate("Prevent a recurring worker failure")
         self._command(f"/evolve approve {parent_id}")
         self.client.clear()
         self._set_codex_mode("error")
@@ -336,9 +336,19 @@ class EnochEvolutionEndToEndTests(unittest.TestCase):
         )
         executable.chmod(0o755)
 
-    def _add_backlog_candidate(self, text: str) -> str:
-        item = add_backlog_item(CHAT_ID, text, self.instance, priority="p0")
-        candidate_id = f"backlog-{item.id}"
+    def _add_feedback_candidate(self, text: str) -> str:
+        message = f"I want Enoch to {text.lower()}."
+        log_conversation_turn(
+            chat_id=CHAT_ID,
+            message=message,
+            reply="Understood.",
+            root=self.instance,
+        )
+        candidate_id = next(
+            candidate.id
+            for candidate in collect_evolve_candidates(self.instance)
+            if candidate.source == "feedback" and message in candidate.title
+        )
         self.assertEqual(get_evolve_candidate(candidate_id, self.instance).status, "candidate")
         return candidate_id
 

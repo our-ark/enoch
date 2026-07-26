@@ -57,7 +57,7 @@ class EnochEvolveTests(unittest.TestCase):
         self.assertEqual(state.mode, "co-evolve")
         self.assertEqual(state.theme, "")
 
-    def test_collects_backlog_and_parent_inheritance_candidates(self) -> None:
+    def test_pending_backlog_is_not_evolution_evidence(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
             add_backlog_item(42, "improve Telegram work UX", root, priority="p0")
@@ -66,9 +66,9 @@ class EnochEvolveTests(unittest.TestCase):
             candidates = collect_evolve_candidates(root)
             ranked = rank_evolve_candidates(candidates, theme="Telegram UX")
 
-        self.assertEqual({candidate.source for candidate in candidates}, {"backlog", "inheritance"})
-        self.assertEqual(ranked[0].source, "backlog")
-        self.assertIn("Telegram", ranked[0].title)
+        self.assertEqual({candidate.source for candidate in candidates}, {"inheritance"})
+        self.assertEqual(ranked[0].source, "inheritance")
+        self.assertNotIn("backlog-1", {candidate.id for candidate in candidates})
 
     def test_collects_operational_and_learning_candidates(self) -> None:
         with TemporaryDirectory() as temp:
@@ -131,7 +131,7 @@ class EnochEvolveTests(unittest.TestCase):
 
         self.assertNotIn("task-3", {candidate.id for candidate in candidates})
 
-    def test_collects_exactly_the_six_declared_evolution_sources(self) -> None:
+    def test_collects_exactly_the_five_declared_evolution_sources(self) -> None:
         brainstorm_response = json.dumps(
             [
                 {
@@ -169,12 +169,11 @@ class EnochEvolveTests(unittest.TestCase):
 
         self.assertEqual(
             {candidate.source for candidate in candidates},
-            {"backlog", "feedback", "experience", "inheritance", "learning", "brainstorming"},
+            {"feedback", "experience", "inheritance", "learning", "brainstorming"},
         )
         initiators = {candidate.source: candidate.initiated_by for candidate in candidates}
         self.assertEqual(set(initiators.values()), {"agent"})
         signals = {candidate.source: candidate.signal_actor for candidate in candidates}
-        self.assertEqual(signals["backlog"], "human")
         self.assertEqual(signals["feedback"], "human")
         self.assertEqual(signals["experience"], "system")
         self.assertEqual(signals["inheritance"], "agent")
@@ -265,16 +264,33 @@ class EnochEvolveTests(unittest.TestCase):
     def test_removed_candidate_status_is_persisted_across_reports(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
-            add_backlog_item(1, "low value cleanup", root, priority="p2")
+            candidate = _feedback_candidate(root, "I want less low value cleanup.")
 
-            removed = remove_evolve_candidate("backlog-1", root)
+            removed = remove_evolve_candidate(candidate.id, root)
             visible = load_evolve_candidates(root)
             all_candidates = load_evolve_candidates(root, include_inactive=True)
 
         self.assertEqual(removed.status, "removed")
-        self.assertNotIn("backlog-1", {candidate.id for candidate in visible})
+        self.assertNotIn(candidate.id, {item.id for item in visible})
         statuses = {candidate.id: candidate.status for candidate in all_candidates}
-        self.assertEqual(statuses["backlog-1"], "removed")
+        self.assertEqual(statuses[candidate.id], "removed")
+
+    def test_stored_actionable_backlog_candidate_is_retired(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            _write_stored_candidate(root, candidate_id="backlog-7", source="backlog")
+
+            visible = sync_evolve_candidates(root)
+            all_candidates = load_evolve_candidates(root, include_inactive=True)
+            events = load_evolve_events(root, candidate_id="backlog-7")
+
+        self.assertNotIn("backlog-7", {candidate.id for candidate in visible})
+        statuses = {candidate.id: candidate.status for candidate in all_candidates}
+        self.assertEqual(statuses["backlog-7"], "removed")
+        self.assertEqual([event.event for event in events], ["removed"])
+        self.assertEqual(events[0].event_actor, "system")
+        self.assertEqual(events[0].trigger, "candidate-source-retirement")
+        self.assertEqual(events[0].reason, "backlog-is-not-evolution-evidence")
 
     def test_legacy_selected_and_rejected_statuses_are_migrated(self) -> None:
         with TemporaryDirectory() as temp:
@@ -332,47 +348,47 @@ class EnochEvolveTests(unittest.TestCase):
     def test_run_candidate_marks_it_running(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
-            add_backlog_item(1, "ship evolve run", root, priority="p1")
+            candidate = _feedback_candidate(root, "I want a clearer evolve run.")
 
-            running = run_evolve_candidate("backlog-1", root)
+            running = run_evolve_candidate(candidate.id, root)
             visible = load_evolve_candidates(root)
 
         self.assertEqual(running.status, "running")
-        self.assertEqual(visible[0].id, "backlog-1")
+        self.assertEqual(visible[0].id, candidate.id)
         self.assertEqual(visible[0].status, "running")
 
     def test_proposal_skips_running_candidate(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
-            add_backlog_item(1, "lower priority candidate", root, priority="p2")
-            add_backlog_item(2, "highest priority candidate", root, priority="p0")
-            run_evolve_candidate("backlog-2", root)
+            first = _feedback_candidate(root, "I want a clearer lower priority candidate.")
+            second = _feedback_candidate(root, "I want a clearer highest priority candidate.")
+            run_evolve_candidate(second.id, root)
 
             proposal = propose_evolve(root)
 
-        self.assertEqual([candidate.id for candidate in proposal.candidates], ["backlog-1"])
+        self.assertEqual([candidate.id for candidate in proposal.candidates], [first.id])
         assert proposal.top_candidate is not None
-        self.assertEqual(proposal.top_candidate.id, "backlog-1")
+        self.assertEqual(proposal.top_candidate.id, first.id)
         self.assertEqual(proposal.top_candidate.status, "candidate")
 
     def test_proposal_does_not_brainstorm_when_candidate_exists(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
-            add_backlog_item(1, "existing work", root, priority="p1")
+            _feedback_candidate(root, "I want clearer existing work.")
             calls = []
 
             proposal = propose_evolve(root, brainstormer=lambda theme: calls.append(theme) or ())
 
         self.assertEqual(calls, [])
         self.assertFalse(proposal.brainstorm_attempted)
-        self.assertEqual(proposal.top_candidate.source, "backlog")
+        self.assertEqual(proposal.top_candidate.source, "feedback")
 
     def test_proposal_does_not_brainstorm_while_candidate_is_running(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
-            add_backlog_item(1, "running evolve work", root, priority="p1")
+            candidate = _feedback_candidate(root, "I want clearer running evolve work.")
             set_evolve_theme("reliable evolution", root)
-            run_evolve_candidate("backlog-1", root, theme="reliable evolution")
+            run_evolve_candidate(candidate.id, root, theme="reliable evolution")
             calls = []
 
             proposal = propose_evolve(root, brainstormer=lambda theme: calls.append(theme) or ())
@@ -439,13 +455,13 @@ class EnochEvolveTests(unittest.TestCase):
     def test_completed_evolve_task_marks_candidate_done(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
-            add_backlog_item(1, "ship evolve completion", root, priority="p1")
-            run_evolve_candidate("backlog-1", root)
+            candidate = _feedback_candidate(root, "I want clearer evolve completion.")
+            run_evolve_candidate(candidate.id, root)
             job = enqueue_task(
                 42,
-                "Evolve approved candidate backlog-1",
+                f"Evolve approved candidate {candidate.id}",
                 root,
-                context="\n".join(["Evolve candidate context:", "ID: backlog-1"]),
+                context="\n".join(["Evolve candidate context:", f"ID: {candidate.id}"]),
                 context_source="evolve-approve",
             )
             job = replace(
@@ -464,8 +480,8 @@ class EnochEvolveTests(unittest.TestCase):
 
         assert completed is not None
         self.assertEqual(completed.status, "done")
-        self.assertNotIn("backlog-1", {candidate.id for candidate in visible})
-        self.assertEqual(all_candidates[0].id, "backlog-1")
+        self.assertNotIn(candidate.id, {item.id for item in visible})
+        self.assertEqual(all_candidates[0].id, candidate.id)
         self.assertEqual(all_candidates[0].status, "done")
         self.assertEqual([event.event for event in events], ["completed"])
         self.assertEqual(events[0].event_actor, "agent")
@@ -477,22 +493,22 @@ class EnochEvolveTests(unittest.TestCase):
     def test_failed_candidate_stays_retryable_while_cancelled_candidate_is_inactive(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
-            add_backlog_item(1, "ship failing evolve", root, priority="p1")
-            add_backlog_item(2, "ship cancelled evolve", root, priority="p1")
-            run_evolve_candidate("backlog-1", root)
-            run_evolve_candidate("backlog-2", root)
+            failed_candidate = _feedback_candidate(root, "I want clearer failing evolve work.")
+            cancelled_candidate = _feedback_candidate(root, "I want clearer cancelled evolve work.")
+            run_evolve_candidate(failed_candidate.id, root)
+            run_evolve_candidate(cancelled_candidate.id, root)
             failed_job = enqueue_task(
                 42,
-                "Evolve approved candidate backlog-1",
+                f"Evolve approved candidate {failed_candidate.id}",
                 root,
-                context="\n".join(["Evolve candidate context:", "ID: backlog-1"]),
+                context="\n".join(["Evolve candidate context:", f"ID: {failed_candidate.id}"]),
                 context_source="evolve-approve",
             )
             cancelled_job = enqueue_task(
                 42,
-                "Evolve approved candidate backlog-2",
+                f"Evolve approved candidate {cancelled_candidate.id}",
                 root,
-                context="\n".join(["Evolve candidate context:", "ID: backlog-2"]),
+                context="\n".join(["Evolve candidate context:", f"ID: {cancelled_candidate.id}"]),
                 context_source="evolve-approve",
             )
 
@@ -509,27 +525,27 @@ class EnochEvolveTests(unittest.TestCase):
         self.assertEqual(cancelled.status, "cancelled")
         self.assertEqual(
             [(candidate.id, candidate.status) for candidate in visible],
-            [("backlog-1", "failed")],
+            [(failed_candidate.id, "failed")],
         )
         statuses = {candidate.id: candidate.status for candidate in all_candidates}
-        self.assertEqual(statuses["backlog-1"], "failed")
-        self.assertEqual(statuses["backlog-2"], "cancelled")
+        self.assertEqual(statuses[failed_candidate.id], "failed")
+        self.assertEqual(statuses[cancelled_candidate.id], "cancelled")
         self.assertEqual(failed_events[0].event, "failed")
         self.assertEqual(cancelled_events[0].event, "cancelled")
 
     def test_failed_candidate_remains_proposable_and_can_retry(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
-            add_backlog_item(1, "ship retryable evolve work", root, priority="p1")
-            run_evolve_candidate("backlog-1", root)
+            candidate = _feedback_candidate(root, "I want clearer retryable evolve work.")
+            run_evolve_candidate(candidate.id, root)
             queued = enqueue_task(
                 42,
-                "Evolve approved candidate backlog-1",
+                f"Evolve approved candidate {candidate.id}",
                 root,
-                context="\n".join(["Evolve candidate context:", "ID: backlog-1"]),
+                context="\n".join(["Evolve candidate context:", f"ID: {candidate.id}"]),
                 context_source="evolve-approve",
-                source="backlog",
-                candidate_id="backlog-1",
+                source="feedback",
+                candidate_id=candidate.id,
             )
             running = begin_next_task(root)
             assert running is not None
@@ -540,13 +556,13 @@ class EnochEvolveTests(unittest.TestCase):
                 root,
                 brainstormer=lambda _theme: self.fail("failed candidate should prevent fallback brainstorming"),
             )
-            failed_task = latest_failed_evolve_task("backlog-1", root)
-            retried = retry_evolve_candidate("backlog-1", root)
+            failed_task = latest_failed_evolve_task(candidate.id, root)
+            retried = retry_evolve_candidate(candidate.id, root)
 
         assert failed is not None
         assert proposal.top_candidate is not None
         assert failed_task is not None
-        self.assertEqual(proposal.top_candidate.id, "backlog-1")
+        self.assertEqual(proposal.top_candidate.id, candidate.id)
         self.assertEqual(proposal.top_candidate.status, "failed")
         self.assertFalse(proposal.brainstorm_attempted)
         self.assertEqual(failed_task.id, queued.id)
@@ -641,6 +657,41 @@ def _write_lineage_candidate(root: Path, candidate: LineageCandidate) -> None:
     lineage.write_text("parent:\n  name: Seth\n  repo: our-ark/enoch\n", encoding="utf-8")
     inbox = root / ".agent" / "lineage_inbox.json"
     inbox.write_text(json.dumps({"schema_version": 1, "candidates": [candidate.__dict__]}), encoding="utf-8")
+
+
+def _feedback_candidate(root: Path, message: str):
+    log_conversation_turn(
+        chat_id=42,
+        message=message,
+        reply="Understood.",
+        root=root,
+    )
+    return next(
+        candidate
+        for candidate in collect_evolve_candidates(root)
+        if candidate.source == "feedback" and message in candidate.title
+    )
+
+
+def _write_stored_candidate(root: Path, *, candidate_id: str, source: str) -> None:
+    path = root / ".enoch" / "evolve_candidates.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": 4,
+                "candidates": [
+                    {
+                        "id": candidate_id,
+                        "source": source,
+                        "title": "Legacy candidate",
+                        "status": "candidate",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
 
 
 def _lineage_candidate() -> LineageCandidate:

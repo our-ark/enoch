@@ -40,13 +40,14 @@ EVOLVE_EVENT_TYPES = {
 }
 EVOLVE_EVENT_ACTORS = {"human", "agent", "system"}
 EVOLVE_SOURCES = {
-    "backlog",
     "feedback",
     "experience",
     "inheritance",
     "learning",
     "brainstorming",
 }
+LEGACY_EVOLVE_SOURCES = {"backlog"}
+RECOGNIZED_EVOLVE_SOURCES = EVOLVE_SOURCES | LEGACY_EVOLVE_SOURCES
 _CANDIDATE_EVENTS = {
     "proposed",
     "selected",
@@ -221,13 +222,14 @@ def record_evolve_event(
         )
     if normalized_event in _CANDIDATE_EVENTS and not candidate_id:
         raise ValueError(f"Evolve event {normalized_event} requires a candidate.")
-    if candidate_id and source not in EVOLVE_SOURCES:
+    if candidate_id and source not in RECOGNIZED_EVOLVE_SOURCES:
         raise ValueError(
-            f"Evolve source must be one of: {', '.join(sorted(EVOLVE_SOURCES))}."
+            f"Evolve source must be one of: {', '.join(sorted(RECOGNIZED_EVOLVE_SOURCES))}."
         )
-    if candidate_id and evidence_source not in EVOLVE_SOURCES:
+    if candidate_id and evidence_source not in RECOGNIZED_EVOLVE_SOURCES:
         raise ValueError(
-            f"Evolution evidence source must be one of: {', '.join(sorted(EVOLVE_SOURCES))}."
+            "Evolution evidence source must be one of: "
+            f"{', '.join(sorted(RECOGNIZED_EVOLVE_SOURCES))}."
         )
     if candidate_id and initiated_by not in {"human", "agent"}:
         raise ValueError("Candidate initiator must be human or agent.")
@@ -494,7 +496,7 @@ def _event_from_line(line: str) -> EvolveEvent | None:
     source = clean_text(str(raw.get("source") or "")).lower()
     initiated_by = clean_text(str(raw.get("candidate_initiated_by") or "")).lower()
     evidence_source = clean_text(str(raw.get("evidence_source") or source)).lower()
-    if evidence_source not in EVOLVE_SOURCES:
+    if evidence_source not in RECOGNIZED_EVOLVE_SOURCES:
         evidence_source = source
     signal_actor = _actor(raw.get("signal_actor"))
     candidate_actor = _actor(raw.get("candidate_actor"))
@@ -505,7 +507,7 @@ def _event_from_line(line: str) -> EvolveEvent | None:
     if event in _CANDIDATE_EVENTS and not candidate_id:
         return None
     if candidate_id and (
-        source not in EVOLVE_SOURCES or initiated_by not in {"human", "agent"}
+        source not in RECOGNIZED_EVOLVE_SOURCES or initiated_by not in {"human", "agent"}
     ):
         return None
     if candidate_id:
