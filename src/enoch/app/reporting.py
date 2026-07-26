@@ -532,7 +532,7 @@ def _format_evolve_proposal(proposal: EvolveProposal) -> str:
     lines = [
         "Enoch proposes:",
         f"Theme: {report.state.theme or 'not set'}",
-        f"Ranked {len(proposal.candidates)} actionable candidate(s) from the six evolve sources.",
+        f"Ranked {len(proposal.candidates)} actionable candidate(s) from the five evolve sources.",
         "Deterministic ranking was used only for bounded input ordering and fallback.",
     ]
     if proposal.brainstorm_attempted:

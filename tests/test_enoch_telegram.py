@@ -1692,10 +1692,10 @@ class EnochTelegramTests(unittest.TestCase):
     def test_task_retry_restores_linked_evolve_candidate(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
-            add_backlog_item(42, "retry evolve work", root, priority="p0")
+            _add_feedback_evolve_candidate(root, "retry evolve work")
             client = FakeTelegramClient(allowed_chat_id=42)
             bot = EnochApplication(load_identity(), root, client)
-            bot._evolve_approve("backlog-1")
+            bot._evolve_approve("feedback-1")
             original = begin_next_task(root)
             with patch.object(
                 bot,
@@ -1704,7 +1704,7 @@ class EnochTelegramTests(unittest.TestCase):
             ):
                 bot._run_task_job(original)
             self.assertEqual(
-                get_evolve_candidate("backlog-1", root).status,
+                get_evolve_candidate("feedback-1", root).status,
                 "failed",
             )
             client.sent.clear()
@@ -1714,11 +1714,11 @@ class EnochTelegramTests(unittest.TestCase):
                 _message_update(chat_id=42, text="/task retry 1")
             )
             status = task_queue_status(root)
-            candidate = get_evolve_candidate("backlog-1", root)
-            evolve_events = load_evolve_events(root, candidate_id="backlog-1")
+            candidate = get_evolve_candidate("feedback-1", root)
+            evolve_events = load_evolve_events(root, candidate_id="feedback-1")
 
         self.assertEqual(candidate.status, "running")
-        self.assertEqual(status.pending[0].candidate_id, "backlog-1")
+        self.assertEqual(status.pending[0].candidate_id, "feedback-1")
         self.assertEqual(status.pending[0].parent_task_id, 1)
         self.assertEqual(status.pending[0].approval_actor, "human")
         self.assertEqual(evolve_events[-1].event, "queued")
@@ -2014,11 +2014,11 @@ class EnochTelegramTests(unittest.TestCase):
     ) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
-            add_backlog_item(42, "ship evolve status updates", root, priority="p1")
+            _add_feedback_evolve_candidate(root, "ship evolve status updates")
             client = FakeTelegramClient(allowed_chat_id=42)
             bot = EnochApplication(load_identity(), root, client)
             _handle_update(bot,
-                _message_update(chat_id=42, text="/evolve approve backlog-1")
+                _message_update(chat_id=42, text="/evolve approve feedback-1")
             )
             job = begin_next_task(root)
             assert job is not None
@@ -2034,7 +2034,7 @@ class EnochTelegramTests(unittest.TestCase):
             completed = task_queue_status(root).history[-1]
 
         self.assertEqual(len(client.sent), 3)
-        self.assertIn("Approved evolve candidate backlog-1", client.sent[0][1])
+        self.assertIn("Approved evolve candidate feedback-1", client.sent[0][1])
         self.assertIn("Task #1", client.sent[1][1])
         self.assertIn("Task #1 final update", client.sent[2][1])
         self.assertFalse(
@@ -2422,10 +2422,10 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("Backlog:", client.sent[1][1])
         self.assertIn("#1 [p0 pending] first", client.sent[1][1])
 
-    def test_evolve_reports_top_candidate_from_backlog(self) -> None:
+    def test_evolve_reports_top_feedback_candidate(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
-            add_backlog_item(42, "improve Telegram work UX", root, priority="p0")
+            _add_feedback_evolve_candidate(root, "improve Telegram work UX")
             client = FakeTelegramClient(allowed_chat_id=42)
             bot = EnochApplication(load_identity(), root, client)
 
@@ -2434,8 +2434,8 @@ class EnochTelegramTests(unittest.TestCase):
         reply = client.sent[0][1]
         self.assertIn("Evolve:", reply)
         self.assertIn("Mode: co-evolve", reply)
-        self.assertIn("- backlog: 1", reply)
-        self.assertIn("backlog-1 [candidate backlog] improve Telegram work UX", reply)
+        self.assertIn("- feedback: 1", reply)
+        self.assertIn("feedback-1 [candidate feedback] improve Telegram work UX", reply)
         self.assertIn("wait for human approval", reply)
 
     @patch(
@@ -2536,7 +2536,7 @@ class EnochTelegramTests(unittest.TestCase):
     def test_propose_ranks_all_sources_without_selecting_candidate(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
-            add_backlog_item(42, "improve Telegram work UX", root, priority="p0")
+            _add_feedback_evolve_candidate(root, "improve Telegram work UX")
             client = FakeTelegramClient(allowed_chat_id=42)
             bot = EnochApplication(load_identity(), root, client)
 
@@ -2547,16 +2547,16 @@ class EnochTelegramTests(unittest.TestCase):
 
         reply = client.sent[0][1]
         self.assertIn("Enoch proposes:", reply)
-        self.assertIn("Ranked 1 actionable candidate(s) from the six evolve sources.", reply)
+        self.assertIn("Ranked 1 actionable candidate(s) from the five evolve sources.", reply)
         self.assertIn("Deterministic fallback recommendation", reply)
-        self.assertIn("backlog-1 [candidate backlog] improve Telegram work UX", reply)
-        self.assertIn("Approve with /evolve approve backlog-1.", reply)
-        self.assertIn("Remove with /evolve remove backlog-1.", reply)
+        self.assertIn("feedback-1 [candidate feedback] improve Telegram work UX", reply)
+        self.assertIn("Approve with /evolve approve feedback-1.", reply)
+        self.assertIn("Remove with /evolve remove feedback-1.", reply)
         self.assertEqual(candidates[0].status, "candidate")
         self.assertEqual([event.event for event in events], ["checked", "proposed"])
         self.assertEqual([event.event_actor for event in events], ["human", "human"])
         self.assertEqual(events[-1].trigger, "/propose")
-        self.assertEqual(events[-1].candidate_id, "backlog-1")
+        self.assertEqual(events[-1].candidate_id, "feedback-1")
         self.assertTrue(events[-1].proposal_id.startswith("proposal-"))
         self.assertTrue(events[-1].curation_id.startswith("curation-"))
         self.assertEqual(events[-1].recommendation_kind, "deterministic-fallback")
@@ -2564,18 +2564,22 @@ class EnochTelegramTests(unittest.TestCase):
     def test_propose_displays_llm_recommendation_and_remove_suggestions_without_mutation(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
-            add_backlog_item(42, "context-only background note", root, priority="p0")
-            add_backlog_item(42, "add bounded curation coverage", root, priority="p1")
+            _add_feedback_evolve_candidate(root, "context-only background note")
+            _add_feedback_evolve_candidate(
+                root,
+                "add bounded curation coverage",
+                candidate_id="feedback-2",
+            )
             response = json.dumps(
                 {
-                    "recommended_candidate_id": "backlog-2",
+                    "recommended_candidate_id": "feedback-2",
                     "recommendation_reason": "This is the clearest bounded code change.",
                     "scope_guidance": "Limit the work to curation tests.",
                     "risk_guidance": "Avoid broad refactors.",
                     "test_plan_guidance": "Run focused tests and doctor.",
                     "remove_suggestions": [
                         {
-                            "candidate_id": "backlog-1",
+                            "candidate_id": "feedback-1",
                             "classification": "context-only",
                             "reason": "The note does not request an implementation change.",
                             "evidence_refs": ["task:17"],
@@ -2604,9 +2608,9 @@ class EnochTelegramTests(unittest.TestCase):
 
         reply = client.sent[0][1]
         self.assertIn("LLM recommended candidate:", reply)
-        self.assertIn("backlog-2 [candidate backlog]", reply)
+        self.assertIn("feedback-2 [candidate feedback]", reply)
         self.assertIn("LLM remove suggestions (no status changed):", reply)
-        self.assertIn("backlog-1 [context-only]", reply)
+        self.assertIn("feedback-1 [context-only]", reply)
         self.assertIn("Evidence: task:17", reply)
         self.assertEqual({candidate.status for candidate in candidates}, {"candidate"})
         self.assertEqual(queued.pending_count, 0)
@@ -2617,7 +2621,7 @@ class EnochTelegramTests(unittest.TestCase):
     def test_repeated_proposal_marks_previous_one_no_action(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
-            add_backlog_item(42, "improve Telegram work UX", root, priority="p0")
+            _add_feedback_evolve_candidate(root, "improve Telegram work UX")
             client = FakeTelegramClient(allowed_chat_id=42)
             bot = EnochApplication(load_identity(), root, client)
 
@@ -2645,7 +2649,7 @@ class EnochTelegramTests(unittest.TestCase):
     def test_removed_candidate_closes_latest_proposal(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
-            add_backlog_item(42, "remove proposed cleanup", root, priority="p1")
+            _add_feedback_evolve_candidate(root, "remove proposed cleanup")
             client = FakeTelegramClient(allowed_chat_id=42)
             bot = EnochApplication(load_identity(), root, client)
 
@@ -2654,10 +2658,10 @@ class EnochTelegramTests(unittest.TestCase):
                 _message_update(
                     update_id=2,
                     chat_id=42,
-                    text="/evolve remove backlog-1",
+                    text="/evolve remove feedback-1",
                 )
             )
-            events = load_evolve_events(root, candidate_id="backlog-1")
+            events = load_evolve_events(root, candidate_id="feedback-1")
 
         self.assertEqual([event.event for event in events], ["proposed", "removed"])
         self.assertEqual(events[0].proposal_id, events[1].proposal_id)
@@ -2665,7 +2669,7 @@ class EnochTelegramTests(unittest.TestCase):
     def test_human_remove_applies_recorded_curation_classification_and_refs(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
-            add_backlog_item(42, "add bounded curation evidence", root, priority="p0")
+            _add_feedback_evolve_candidate(root, "add bounded curation evidence")
             response = json.dumps(
                 {
                     "recommended_candidate_id": None,
@@ -2675,7 +2679,7 @@ class EnochTelegramTests(unittest.TestCase):
                     "test_plan_guidance": "",
                     "remove_suggestions": [
                         {
-                            "candidate_id": "backlog-1",
+                            "candidate_id": "feedback-1",
                             "classification": "already-resolved",
                             "reason": "Task 17 was merged into the authoritative body.",
                             "evidence_refs": ["task:17", "merge:e536d32"],
@@ -2704,10 +2708,10 @@ class EnochTelegramTests(unittest.TestCase):
                 _message_update(
                     update_id=2,
                     chat_id=42,
-                    text="/evolve remove backlog-1 already-resolved",
+                    text="/evolve remove feedback-1 already-resolved",
                 ),
             )
-            removed = load_evolve_events(root, candidate_id="backlog-1")[-1]
+            removed = load_evolve_events(root, candidate_id="feedback-1")[-1]
 
         self.assertEqual(removed.event, "removed")
         self.assertEqual(removed.event_actor, "human")
@@ -2760,23 +2764,27 @@ class EnochTelegramTests(unittest.TestCase):
     def test_evolve_can_list_and_remove_candidates(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
-            add_backlog_item(42, "low value cleanup", root, priority="p2")
-            add_backlog_item(42, "important Telegram recovery", root, priority="p0")
+            _add_feedback_evolve_candidate(root, "low value cleanup")
+            _add_feedback_evolve_candidate(
+                root,
+                "important Telegram recovery",
+                candidate_id="feedback-2",
+            )
             client = FakeTelegramClient(allowed_chat_id=42)
             bot = EnochApplication(load_identity(), root, client)
 
             _handle_update(bot, _message_update(chat_id=42, text="/evolve list"))
-            _handle_update(bot, _message_update(update_id=2, chat_id=42, text="/evolve remove backlog-1"))
+            _handle_update(bot, _message_update(update_id=2, chat_id=42, text="/evolve remove feedback-1"))
             _handle_update(bot, _message_update(update_id=3, chat_id=42, text="/evolve list"))
             _handle_update(bot, _message_update(update_id=4, chat_id=42, text="/evolve list all"))
             events = load_evolve_events(root)
 
         self.assertIn("Evolve candidates:", client.sent[0][1])
-        self.assertIn("backlog-1 [candidate backlog] low value cleanup", client.sent[0][1])
+        self.assertIn("feedback-1 [candidate feedback] low value cleanup", client.sent[0][1])
         self.assertIn("Removed evolve candidate.", client.sent[1][1])
-        self.assertIn("backlog-1 [removed backlog] low value cleanup", client.sent[1][1])
-        self.assertNotIn("backlog-1", client.sent[2][1])
-        self.assertIn("backlog-1 [removed backlog] low value cleanup", client.sent[3][1])
+        self.assertIn("feedback-1 [removed feedback] low value cleanup", client.sent[1][1])
+        self.assertNotIn("feedback-1", client.sent[2][1])
+        self.assertIn("feedback-1 [removed feedback] low value cleanup", client.sent[3][1])
         self.assertEqual(events[-1].event, "removed")
         self.assertEqual(events[-1].event_actor, "human")
         self.assertEqual(events[-1].trigger, "/evolve remove")
@@ -2785,12 +2793,12 @@ class EnochTelegramTests(unittest.TestCase):
         for index, command in enumerate(("select", "run", "reject"), start=1):
             with self.subTest(command=command), TemporaryDirectory() as temp:
                 root = Path(temp)
-                add_backlog_item(42, "keep this candidate", root, priority="p1")
+                _add_feedback_evolve_candidate(root, "keep this candidate")
                 client = FakeTelegramClient(allowed_chat_id=42)
                 bot = EnochApplication(load_identity(), root, client)
 
                 _handle_update(bot,
-                    _message_update(update_id=index, chat_id=42, text=f"/evolve {command} backlog-1")
+                    _message_update(update_id=index, chat_id=42, text=f"/evolve {command} feedback-1")
                 )
                 candidates = evolve_report(root).candidates
                 queued = task_queue_status(root)
@@ -2802,33 +2810,33 @@ class EnochTelegramTests(unittest.TestCase):
     def test_evolve_approve_queues_candidate_as_task(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
-            add_backlog_item(42, "ship evolve approval", root, priority="p1")
+            _add_feedback_evolve_candidate(root, "ship evolve approval")
             client = FakeTelegramClient(allowed_chat_id=42)
             bot = EnochApplication(load_identity(), root, client)
 
-            _handle_update(bot, _message_update(chat_id=42, text="/evolve approve backlog-1"))
+            _handle_update(bot, _message_update(chat_id=42, text="/evolve approve feedback-1"))
             queued = task_queue_status(root)
             events = load_evolve_events(root)
 
         self.assertEqual(queued.pending_count, 1)
-        self.assertIn("Approved evolve candidate backlog-1 and queued task #1.", client.sent[0][1])
-        self.assertIn("backlog-1 [running backlog] ship evolve approval", client.sent[0][1])
-        self.assertIn("Evolve candidate backlog-1", queued.pending[0].text)
+        self.assertIn("Approved evolve candidate feedback-1 and queued task #1.", client.sent[0][1])
+        self.assertIn("feedback-1 [running feedback] ship evolve approval", client.sent[0][1])
+        self.assertIn("Evolve candidate feedback-1", queued.pending[0].text)
         self.assertIn("open a ready-for-review PR", queued.pending[0].text)
         self.assertNotIn("Open a PR for human review", queued.pending[0].text)
         self.assertEqual(queued.pending[0].context_source, "evolve-approve")
-        self.assertEqual(queued.pending[0].source, "backlog")
+        self.assertEqual(queued.pending[0].source, "feedback")
         self.assertEqual(queued.pending[0].initiated_by, "human")
-        self.assertEqual(queued.pending[0].candidate_id, "backlog-1")
-        self.assertEqual(queued.pending[0].evidence_source, "backlog")
+        self.assertEqual(queued.pending[0].candidate_id, "feedback-1")
+        self.assertEqual(queued.pending[0].evidence_source, "feedback")
         self.assertEqual(queued.pending[0].signal_actor, "human")
         self.assertEqual(queued.pending[0].candidate_actor, "agent")
         self.assertEqual(queued.pending[0].approval_actor, "human")
         self.assertIn("Evolve candidate context:", queued.pending[0].context)
         worker_context = telegram._task_worker_context(queued.pending[0])
         self.assertIn("## Evolution provenance", worker_context)
-        self.assertIn("- Candidate: `backlog-1`", worker_context)
-        self.assertIn("- Evidence source: backlog", worker_context)
+        self.assertIn("- Candidate: `feedback-1`", worker_context)
+        self.assertIn("- Evidence source: feedback", worker_context)
         self.assertIn("- Signal actor: human", worker_context)
         self.assertIn("- Candidate actor: agent", worker_context)
         self.assertIn("- Approval actor: human", worker_context)
@@ -2915,12 +2923,12 @@ class EnochTelegramTests(unittest.TestCase):
     def test_evolve_cannot_approve_removed_candidate(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
-            add_backlog_item(42, "remove this candidate", root, priority="p1")
+            _add_feedback_evolve_candidate(root, "remove this candidate")
             client = FakeTelegramClient(allowed_chat_id=42)
             bot = EnochApplication(load_identity(), root, client)
 
-            _handle_update(bot, _message_update(chat_id=42, text="/evolve remove backlog-1"))
-            _handle_update(bot, _message_update(update_id=2, chat_id=42, text="/evolve approve backlog-1"))
+            _handle_update(bot, _message_update(chat_id=42, text="/evolve remove feedback-1"))
+            _handle_update(bot, _message_update(update_id=2, chat_id=42, text="/evolve approve feedback-1"))
             queued = task_queue_status(root)
 
         self.assertIn("cannot be approved from status removed", client.sent[1][1])
@@ -2929,13 +2937,13 @@ class EnochTelegramTests(unittest.TestCase):
     def test_queued_evolve_task_cancellation_is_journaled(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
-            add_backlog_item(42, "cancel queued evolution", root, priority="p1")
+            _add_feedback_evolve_candidate(root, "cancel queued evolution")
             client = FakeTelegramClient(allowed_chat_id=42)
             bot = EnochApplication(load_identity(), root, client)
 
-            _handle_update(bot, _message_update(chat_id=42, text="/evolve approve backlog-1"))
+            _handle_update(bot, _message_update(chat_id=42, text="/evolve approve feedback-1"))
             _handle_update(bot, _message_update(update_id=2, chat_id=42, text="/task cancel 1"))
-            events = load_evolve_events(root, candidate_id="backlog-1")
+            events = load_evolve_events(root, candidate_id="feedback-1")
             candidate = load_evolve_candidates(root, include_inactive=True)[0]
 
         self.assertEqual([event.event for event in events], ["selected", "queued", "cancelled"])
@@ -2952,11 +2960,11 @@ class EnochTelegramTests(unittest.TestCase):
     ) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
-            add_backlog_item(42, "ship evolve completion", root, priority="p1")
+            _add_feedback_evolve_candidate(root, "ship evolve completion")
             client = FakeTelegramClient(allowed_chat_id=42)
             bot = EnochApplication(load_identity(), root, client)
 
-            _handle_update(bot, _message_update(chat_id=42, text="/evolve approve backlog-1"))
+            _handle_update(bot, _message_update(chat_id=42, text="/evolve approve feedback-1"))
             job = begin_next_task(root)
             assert job is not None
             with patch.object(bot, "_run_direct_work", return_value="Done with evolve work."):
@@ -2964,8 +2972,8 @@ class EnochTelegramTests(unittest.TestCase):
             visible = load_evolve_candidates(root)
             all_candidates = load_evolve_candidates(root, include_inactive=True)
 
-        self.assertNotIn("backlog-1", {candidate.id for candidate in visible})
-        self.assertEqual(all_candidates[0].id, "backlog-1")
+        self.assertNotIn("feedback-1", {candidate.id for candidate in visible})
+        self.assertEqual(all_candidates[0].id, "feedback-1")
         self.assertEqual(all_candidates[0].status, "done")
         self.assertIn("Final status: completed", client.sent[-1][1])
 
@@ -2978,7 +2986,7 @@ class EnochTelegramTests(unittest.TestCase):
     ) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
-            add_backlog_item(42, "ship tracked proposal", root, priority="p1")
+            _add_feedback_evolve_candidate(root, "ship tracked proposal")
             client = FakeTelegramClient(allowed_chat_id=42)
             bot = EnochApplication(load_identity(), root, client)
 
@@ -2987,7 +2995,7 @@ class EnochTelegramTests(unittest.TestCase):
                 _message_update(
                     update_id=2,
                     chat_id=42,
-                    text="/evolve approve backlog-1",
+                    text="/evolve approve feedback-1",
                 )
             )
             job = begin_next_task(root)
@@ -2997,7 +3005,7 @@ class EnochTelegramTests(unittest.TestCase):
             _handle_update(bot,
                 _message_update(update_id=3, chat_id=42, text="/experience")
             )
-            events = load_evolve_events(root, candidate_id="backlog-1")
+            events = load_evolve_events(root, candidate_id="feedback-1")
 
         proposal_id = next(
             event.proposal_id for event in events if event.event == "proposed"
@@ -3024,11 +3032,11 @@ class EnochTelegramTests(unittest.TestCase):
     ) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
-            add_backlog_item(42, "ship failing evolve", root, priority="p1")
+            _add_feedback_evolve_candidate(root, "ship failing evolve")
             client = FakeTelegramClient(allowed_chat_id=42)
             bot = EnochApplication(load_identity(), root, client)
 
-            _handle_update(bot, _message_update(chat_id=42, text="/evolve approve backlog-1"))
+            _handle_update(bot, _message_update(chat_id=42, text="/evolve approve feedback-1"))
             job = begin_next_task(root)
             assert job is not None
             with patch.object(bot, "_run_direct_work", return_value="Enoch could not publish this edit as a pull request: GH007"):
@@ -3037,9 +3045,9 @@ class EnochTelegramTests(unittest.TestCase):
             all_candidates = load_evolve_candidates(root, include_inactive=True)
             report = evolve_report(root)
 
-        self.assertIn("backlog-1", {candidate.id for candidate in visible})
+        self.assertIn("feedback-1", {candidate.id for candidate in visible})
         statuses = {candidate.id: candidate.status for candidate in all_candidates}
-        self.assertEqual(statuses["backlog-1"], "failed")
+        self.assertEqual(statuses["feedback-1"], "failed")
         self.assertIn("experience", report.counts_by_source)
         self.assertIn("Final status: failed", client.sent[-1][1])
 
@@ -3052,11 +3060,11 @@ class EnochTelegramTests(unittest.TestCase):
     ) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
-            add_backlog_item(42, "ship retryable evolve work", root, priority="p1")
+            _add_feedback_evolve_candidate(root, "ship retryable evolve work")
             client = FakeTelegramClient(allowed_chat_id=42)
             bot = EnochApplication(load_identity(), root, client)
 
-            _handle_update(bot, _message_update(chat_id=42, text="/evolve approve backlog-1"))
+            _handle_update(bot, _message_update(chat_id=42, text="/evolve approve feedback-1"))
             failed_job = begin_next_task(root)
             assert failed_job is not None
             with patch.object(
@@ -3072,25 +3080,25 @@ class EnochTelegramTests(unittest.TestCase):
                 _message_update(
                     update_id=3,
                     chat_id=42,
-                    text="/evolve retry backlog-1",
+                    text="/evolve retry feedback-1",
                 )
             )
             queued = task_queue_status(root)
             candidates = load_evolve_candidates(root)
             task_events = load_task_events(root, task_id=2)
-            evolve_events = load_evolve_events(root, candidate_id="backlog-1")
+            evolve_events = load_evolve_events(root, candidate_id="feedback-1")
 
-        self.assertIn("backlog-1 [failed backlog]", proposal_reply)
-        self.assertIn("Retry with /evolve retry backlog-1.", proposal_reply)
-        self.assertNotIn("Approve with /evolve approve backlog-1.", proposal_reply)
+        self.assertIn("feedback-1 [failed feedback]", proposal_reply)
+        self.assertIn("Retry with /evolve retry feedback-1.", proposal_reply)
+        self.assertNotIn("Approve with /evolve approve feedback-1.", proposal_reply)
         self.assertEqual(queued.pending_count, 1)
         self.assertEqual(queued.pending[0].id, 2)
-        self.assertEqual(queued.pending[0].candidate_id, "backlog-1")
+        self.assertEqual(queued.pending[0].candidate_id, "feedback-1")
         self.assertEqual(queued.pending[0].parent_task_id, failed_job.id)
         self.assertEqual(queued.pending[0].context_source, "evolve-retry")
         worker_context = telegram._task_worker_context(queued.pending[0])
-        self.assertIn("- Candidate: `backlog-1`", worker_context)
-        self.assertIn("- Evidence source: backlog", worker_context)
+        self.assertIn("- Candidate: `feedback-1`", worker_context)
+        self.assertIn("- Evidence source: feedback", worker_context)
         self.assertIn("- Signal actor: human", worker_context)
         self.assertIn("- Candidate actor: agent", worker_context)
         self.assertIn("- Approval actor: human", worker_context)
@@ -3108,7 +3116,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual(evolve_events[-1].approval_actor, "human")
         self.assertEqual(evolve_events[-1].reason, "retry-of-task-1")
         self.assertIn(
-            "Retrying evolve candidate backlog-1 as task #2, linked to failed task #1.",
+            "Retrying evolve candidate feedback-1 as task #2, linked to failed task #1.",
             client.sent[-1][1],
         )
 
@@ -3121,12 +3129,12 @@ class EnochTelegramTests(unittest.TestCase):
     ) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
-            add_backlog_item(42, "ship regressing evolve work", root, priority="p1")
+            _add_feedback_evolve_candidate(root, "ship regressing evolve work")
             client = FakeTelegramClient(allowed_chat_id=42)
             bot = EnochApplication(load_identity(), root, client)
 
             _handle_update(bot,
-                _message_update(chat_id=42, text="/evolve approve backlog-1")
+                _message_update(chat_id=42, text="/evolve approve feedback-1")
             )
             job = begin_next_task(root)
             assert job is not None
@@ -3147,11 +3155,11 @@ class EnochTelegramTests(unittest.TestCase):
                         text="that evolve change regressed behavior; revert it",
                     )
                 )
-            events = load_evolve_events(root, candidate_id="backlog-1")
+            events = load_evolve_events(root, candidate_id="feedback-1")
             candidate = next(
                 item
                 for item in load_evolve_candidates(root, include_inactive=True)
-                if item.id == "backlog-1"
+                if item.id == "feedback-1"
             )
 
         self.assertEqual(
@@ -3345,7 +3353,7 @@ class EnochTelegramTests(unittest.TestCase):
     def test_due_evolve_schedule_reports_in_co_evolve_mode(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
-            add_backlog_item(42, "improve Telegram work UX", root, priority="p0")
+            _add_feedback_evolve_candidate(root, "improve Telegram work UX")
             set_evolve_schedule(
                 60,
                 root,
@@ -3360,8 +3368,8 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIsNone(job)
         self.assertIn("Scheduled evolve check", client.sent[0][1])
         self.assertIn("Enoch proposes:", client.sent[0][1])
-        self.assertIn("Ranked 1 actionable candidate(s) from the six evolve sources.", client.sent[0][1])
-        self.assertIn("backlog-1 [candidate backlog] improve Telegram work UX", client.sent[0][1])
+        self.assertIn("Ranked 1 actionable candidate(s) from the five evolve sources.", client.sent[0][1])
+        self.assertIn("feedback-1 [candidate feedback] improve Telegram work UX", client.sent[0][1])
         self.assertEqual([event.event for event in events], ["checked", "proposed", "skipped"])
         self.assertEqual(events[-1].reason, "awaiting-human-approval")
         self.assertEqual(events[-1].proposal_id, events[-2].proposal_id)
@@ -3369,7 +3377,7 @@ class EnochTelegramTests(unittest.TestCase):
     def test_due_evolve_schedule_auto_mode_still_requires_human_approval(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
-            add_backlog_item(42, "improve Telegram work UX", root, priority="p0")
+            _add_feedback_evolve_candidate(root, "improve Telegram work UX")
             set_evolve_mode(MODE_AUTO_EVOLVE, root)
             set_evolve_schedule(
                 60,
@@ -3413,10 +3421,10 @@ class EnochTelegramTests(unittest.TestCase):
     ) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
-            add_backlog_item(42, "retry only with human approval", root, priority="p1")
+            _add_feedback_evolve_candidate(root, "retry only with human approval")
             client = FakeTelegramClient(allowed_chat_id=42)
             bot = EnochApplication(load_identity(), root, client)
-            _handle_update(bot, _message_update(chat_id=42, text="/evolve approve backlog-1"))
+            _handle_update(bot, _message_update(chat_id=42, text="/evolve approve feedback-1"))
             failed_job = begin_next_task(root)
             assert failed_job is not None
             with patch.object(
@@ -3435,25 +3443,25 @@ class EnochTelegramTests(unittest.TestCase):
 
             retry_job = bot._run_due_evolve_schedule()
             queued = task_queue_status(root)
-            events = load_evolve_events(root, candidate_id="backlog-1")
+            events = load_evolve_events(root, candidate_id="feedback-1")
 
         self.assertIsNone(retry_job)
         self.assertEqual(queued.pending_count, 0)
-        self.assertIn("Retry with /evolve retry backlog-1.", client.sent[0][1])
+        self.assertIn("Retry with /evolve retry feedback-1.", client.sent[0][1])
         self.assertEqual(events[-1].event, "skipped")
         self.assertEqual(events[-1].reason, "retry-requires-human")
 
     def test_due_auto_evolve_schedule_does_not_requeue_running_candidate(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
-            add_backlog_item(42, "improve Telegram work UX", root, priority="p0")
+            _add_feedback_evolve_candidate(root, "improve Telegram work UX")
             set_evolve_mode(MODE_AUTO_EVOLVE, root)
             set_evolve_schedule(60, root, now=datetime(2020, 1, 1, tzinfo=timezone.utc))
             client = FakeTelegramClient(allowed_chat_id=42)
             bot = EnochApplication(load_identity(), root, client)
 
             first = bot._run_due_evolve_schedule()
-            _handle_update(bot, _message_update(chat_id=42, text="/evolve approve backlog-1"))
+            _handle_update(bot, _message_update(chat_id=42, text="/evolve approve feedback-1"))
             set_evolve_schedule(60, root, now=datetime(2020, 1, 1, tzinfo=timezone.utc))
             second = bot._run_due_evolve_schedule()
             queued = task_queue_status(root)
@@ -3755,10 +3763,10 @@ class EnochTelegramTests(unittest.TestCase):
     def test_evolve_task_timeout_is_journaled_as_system_failure(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
-            add_backlog_item(42, "time out evolution safely", root, priority="p1")
+            _add_feedback_evolve_candidate(root, "time out evolution safely")
             client = FakeTelegramClient(allowed_chat_id=42)
             bot = EnochApplication(load_identity(), root, client)
-            _handle_update(bot, _message_update(chat_id=42, text="/evolve approve backlog-1"))
+            _handle_update(bot, _message_update(chat_id=42, text="/evolve approve feedback-1"))
             job = begin_next_task(root)
             assert job is not None
 
@@ -3775,10 +3783,10 @@ class EnochTelegramTests(unittest.TestCase):
     def test_evolve_task_pause_and_resume_keep_candidate_running(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
-            add_backlog_item(42, "pause evolution safely", root, priority="p1")
+            _add_feedback_evolve_candidate(root, "pause evolution safely")
             client = FakeTelegramClient(allowed_chat_id=42)
             bot = EnochApplication(load_identity(), root, client)
-            _handle_update(bot, _message_update(chat_id=42, text="/evolve approve backlog-1"))
+            _handle_update(bot, _message_update(chat_id=42, text="/evolve approve feedback-1"))
             job = begin_next_task(root)
             assert job is not None
 
@@ -3801,7 +3809,7 @@ class EnochTelegramTests(unittest.TestCase):
             candidate = next(
                 item
                 for item in load_evolve_candidates(root, include_inactive=True)
-                if item.id == "backlog-1"
+                if item.id == "feedback-1"
             )
 
         self.assertEqual(
@@ -5389,6 +5397,40 @@ class EnochTelegramTests(unittest.TestCase):
 
         schedule_restart.assert_called_once_with(root)
         self.assertEqual(bot.offset, 11)
+
+
+def _add_feedback_evolve_candidate(
+    root: Path,
+    title: str,
+    *,
+    candidate_id: str = "feedback-1",
+) -> str:
+    path = root / ".enoch" / "evolve_candidates.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError):
+        raw = {"schema_version": 4, "candidates": []}
+    candidates = raw.setdefault("candidates", [])
+    candidates.append(
+        {
+            "id": candidate_id,
+            "source": "feedback",
+            "title": title,
+            "rationale": "Explicit human feedback identified a durable improvement.",
+            "proposed_change": title,
+            "expected_benefit": "Addresses the reported feedback.",
+            "risk": "The change could alter adjacent behavior.",
+            "test_plan": "Run focused tests and doctor.",
+            "evidence_source": "feedback",
+            "signal_actor": "human",
+            "candidate_actor": "agent",
+            "status": "candidate",
+            "score": 24,
+        }
+    )
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    return candidate_id
 
 
 class FakeTelegramClient:

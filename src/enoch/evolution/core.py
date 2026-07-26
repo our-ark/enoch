@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Callable, Iterable
 from uuid import uuid4
 
-from enoch.backlog import BacklogItem, backlog_status
 from enoch.automatic_learning import LearningArtifact, learning_index_paths
 from enoch.evolution.sources.brainstorming import (
     BrainstormIdea,
@@ -67,6 +66,7 @@ ACTIONABLE_CANDIDATE_STATUSES = {"candidate", "failed"}
 VISIBLE_CANDIDATE_STATUSES = {"candidate", "running", "failed"}
 AUTO_BRAINSTORM_COOLDOWN_SECONDS = 24 * 60 * 60
 FAILED_RETRY_SCORE_BONUS = 30
+RETIRED_CANDIDATE_SOURCES = {"backlog"}
 BrainstormFallback = Callable[[str], Iterable[object]]
 
 
@@ -616,7 +616,6 @@ def collect_evolve_candidates(
     theme: str = "",
 ) -> tuple[EvolveCandidate, ...]:
     candidates: list[EvolveCandidate] = []
-    candidates.extend(_backlog_candidates(backlog_status(root).pending))
     candidates.extend(_feedback_candidates(extract_feedback_signals(root)))
     candidates.extend(_inheritance_candidates(load_parent_inbox_candidates(root)))
     candidates.extend(collect_experience_candidates(root))
@@ -645,21 +644,38 @@ def sync_evolve_candidates(root: Path | None = None, *, theme: str = "") -> tupl
     stored = {candidate.id: candidate for candidate in _load_all_evolve_candidates(root)}
     collected = collect_evolve_candidates(root, theme=theme)
     collected_ids = {candidate.id for candidate in collected}
-    merged: dict[str, EvolveCandidate] = {
-        candidate_id: candidate
-        for candidate_id, candidate in stored.items()
-        if not (
+    merged: dict[str, EvolveCandidate] = {}
+    retired: list[EvolveCandidate] = []
+    for candidate_id, candidate in stored.items():
+        if (
             candidate.source == "brainstorming"
             and candidate.status in VISIBLE_CANDIDATE_STATUSES
             and candidate_id not in collected_ids
-        )
-    }
+        ):
+            continue
+        if (
+            candidate.source in RETIRED_CANDIDATE_SOURCES
+            and candidate.status in ACTIONABLE_CANDIDATE_STATUSES
+        ):
+            candidate = EvolveCandidate(**{**candidate.__dict__, "status": "removed"})
+            retired.append(candidate)
+        merged[candidate_id] = candidate
     for candidate in collected:
         previous = stored.get(candidate.id)
         status = previous.status if previous is not None else candidate.status
         merged[candidate.id] = EvolveCandidate(**{**candidate.__dict__, "status": status})
     ranked = rank_evolve_candidates(merged.values(), theme=theme)
     _write_evolve_candidates(ranked, root)
+    for candidate in retired:
+        record_evolve_event(
+            "removed",
+            root,
+            event_actor="system",
+            trigger="candidate-source-retirement",
+            candidate=candidate,
+            reason="backlog-is-not-evolution-evidence",
+            proposal_id=latest_open_proposal_id(candidate.id, root),
+        )
     return tuple(candidate for candidate in ranked if candidate.status in VISIBLE_CANDIDATE_STATUSES)
 
 
@@ -1253,30 +1269,6 @@ def _provenance_actor(value: object, *, default: str) -> str:
     return actor if actor in {"human", "agent", "system"} else default
 
 
-def _backlog_candidates(items: Iterable[BacklogItem]) -> list[EvolveCandidate]:
-    priority_score = {"p0": 35, "p1": 25, "p2": 15}
-    candidates = []
-    for item in items:
-        candidates.append(
-            EvolveCandidate(
-                id=f"backlog-{item.id}",
-                source="backlog",
-                title=item.text,
-                rationale=f"Pending {item.priority} backlog item.",
-                proposed_change=item.text,
-                expected_benefit="Completes deferred human-visible work that may improve Enoch's body or workflow.",
-                risk="Backlog item may need clarification before implementation.",
-                test_plan="Run focused tests for the changed behavior and Enoch doctor if code changes.",
-                initiated_by="agent",
-                evidence_source="backlog",
-                signal_actor="human",
-                candidate_actor="agent",
-                score=priority_score.get(item.priority, 10),
-            )
-        )
-    return candidates
-
-
 def _inheritance_candidates(items: Iterable[LineageCandidate]) -> list[EvolveCandidate]:
     relevance_score = {"high": 32, "medium": 22, "low": 8}
     candidates = []
@@ -1609,8 +1601,6 @@ def _score_candidate(candidate: EvolveCandidate, *, theme: str) -> EvolveCandida
     theme_words = {word for word in clean_text(theme).lower().split() if len(word) >= 4}
     if theme_words and any(word in text for word in theme_words):
         score += 20
-    if candidate.source == "backlog":
-        score += 10
     if candidate.source == "inheritance":
         score += 8
     if candidate.source == "experience":

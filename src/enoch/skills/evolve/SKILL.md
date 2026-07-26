@@ -16,9 +16,9 @@ The default mode is `co-evolve`.
 
 ## Candidate Sources
 
-Enoch collects exactly six semantic candidate sources:
+Enoch collects exactly five semantic candidate sources. Backlog entries are
+ordinary deferred work, not evolution evidence:
 
-- **backlog** from `.enoch/backlog.json`;
 - **feedback** extracted conservatively from local conversation logs, including corrections, preferences, complaints, and repeated requests;
 - **experience** from the durable task experience journal, failed tasks, recurring workflows, repeated successful user workflows, and successful skill-work artifacts;
 - **inheritance** from direct-parent changes in `.agent/lineage_inbox.json`;
@@ -33,7 +33,7 @@ unavailable or invalid.
 
 The theme is semantic curation context and deterministic pre-ranking pressure, not a seventh source. `/evolve brainstorm` requires a non-empty theme, asks the reasoning engine for a small JSON list, validates the result, and persists only structured candidates in `.enoch/artifacts/evolve_brainstorms.jsonl`.
 
-`/propose` refreshes all six sources, applies deterministic pre-ranking, and
+`/propose` refreshes all five sources, applies deterministic pre-ranking, and
 passes a bounded set of structured candidate fields and provenance to semantic
 curation. It also includes bounded, privacy-cleaned recent completion evidence
 from the structured task and evolution journals: task/candidate linkage,
@@ -138,7 +138,9 @@ and evolve-linked tasks add explicit provenance:
   candidate causality, evidence-task causality, and retry causality respectively.
 
 Cron, recovery, backlog promotion, approval, and evolve scheduling are triggers,
-not extra sources. Legacy `.enoch/experience.jsonl` records remain readable.
+not extra sources. Failures or feedback encountered during backlog execution can
+still enter through experience or feedback. Legacy `.enoch/experience.jsonl`
+records remain readable.
 Only actionable failures, started cancellations, repeated successful user
 workflows, recurring jobs, and skill-work artifacts become evolve candidates.
 
