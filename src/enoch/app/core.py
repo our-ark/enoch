@@ -237,7 +237,6 @@ from enoch.tasks.queue import (
     TaskQueueStatus,
     TaskAlreadyExists,
     TaskRetryError,
-    task_result_has_pull_request,
 )
 from enoch.commands import (
     CoreCommand,
@@ -1678,17 +1677,19 @@ class EnochApplication:
         self,
         stage: str,
         *,
-        commit_sha: str = "",
-        remote_branch: str = "",
-        pr_url: str = "",
-        published_remotely: bool | None = None,
+        revision_id: str = "",
+        workspace_id: str = "",
+        review_id: str = "",
+        review_url: str = "",
+        review_published: bool | None = None,
     ) -> None:
         self._task_workflow.record_current_publish_stage(
             stage,
-            commit_sha=commit_sha,
-            remote_branch=remote_branch,
-            pr_url=pr_url,
-            published_remotely=published_remotely,
+            revision_id=revision_id,
+            workspace_id=workspace_id,
+            review_id=review_id,
+            review_url=review_url,
+            review_published=review_published,
         )
 
     def _resume_task_publish(self, job: TaskJob) -> WorkOutcome:
@@ -1836,7 +1837,13 @@ class EnochApplication:
         digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:20]
         return f"{scope}:{operation}:{digest}"
 
-    def _update_work_status(self, latest_update: str, *, status: str | None = None, pr_url: str = "") -> bool:
+    def _update_work_status(
+        self,
+        latest_update: str,
+        *,
+        status: str | None = None,
+        review_url: str = "",
+    ) -> bool:
         with self._notification_order_lock:
             task_status = _CURRENT_WORK_STATUS.get()
             if task_status is None:
@@ -1846,8 +1853,8 @@ class EnochApplication:
             if status:
                 task_status.status = status
             task_status.latest_update = latest_update
-            if pr_url and pr_url not in task_status.prs:
-                task_status.prs.append(pr_url)
+            if review_url and review_url not in task_status.reviews:
+                task_status.reviews.append(review_url)
             if normalize_message_id(task_status.message_id) is None:
                 return True
             self._safe_edit_message(
@@ -2121,9 +2128,9 @@ class EnochApplication:
                 latest_update=(
                     (
                         f"Retry of failed task #{task_id} reconciled "
-                        f"{len(job.pr_urls)} existing PR(s)."
+                        f"{len(job.review_urls)} existing review(s)."
                     )
-                    if job.pr_urls
+                    if job.review_urls
                     else f"Retry of failed task #{task_id} queued at position {position}."
                 ),
                 context=job.context,
@@ -3151,7 +3158,7 @@ class EnochApplication:
                 task_id=job.id,
                 status="running",
                 latest_update=start_update,
-                prs=list(job.pr_urls),
+                reviews=list(job.review_urls),
                 context=job.context,
             )
             message_id = self._safe_send_message_id(
@@ -3171,7 +3178,7 @@ class EnochApplication:
             task_id=job.id,
             status="running",
             latest_update=start_update,
-            prs=list(job.pr_urls),
+            reviews=list(job.review_urls),
             context=job.context,
         )
         token = _CURRENT_WORK_STATUS.set(task_status)
@@ -3213,7 +3220,7 @@ class EnochApplication:
                 "review_published",
             }:
                 outcome = self._resume_task_publish(job)
-            elif task_result_has_pull_request(job.result):
+            elif job.review_urls:
                 reply = job.result
                 outcome = WorkOutcome.completed(reply)
             elif not self._action_allowed():
@@ -3409,7 +3416,7 @@ class EnochApplication:
             )
             self._record_automatic_learning(summary_job, command=command, result=reply)
         if task_status is not None:
-            task_status.prs = list(summary_job.pr_urls)
+            task_status.reviews = list(summary_job.review_urls)
             final_token = _CURRENT_WORK_STATUS.set(task_status)
             try:
                 self._update_work_status(
@@ -3452,7 +3459,7 @@ class EnochApplication:
                 task_id=job.id,
                 command=command,
                 context_source=job.context_source,
-                pr_urls=job.pr_urls,
+                pr_urls=job.review_urls,
             )
         except (OSError, ValueError):
             return
@@ -3962,17 +3969,17 @@ def _reconciled_retry_result(
                 or pull_request.merged_at
             ):
                 return result
-    if job.branch_name:
+    if job.workspace_id:
         matching = [
             pull_request
             for pull_request in forge.list_open_pull_requests(root)
-            if pull_request.head_branch == job.branch_name
+            if pull_request.head_branch == job.workspace_id
         ]
         if matching:
             pull_request = matching[0]
             return (
                 f"Reconciled existing PR #{pull_request.number} for task "
-                f"branch {job.branch_name}: {pull_request.url}"
+                f"workspace {job.workspace_id}: {pull_request.url}"
             )
     return ""
 
@@ -4028,9 +4035,9 @@ def _cleanup_completed_task_worktree(job: TaskJob | None, root: Path) -> None:
     if (
         job is None
         or job.status != "completed"
-        or not job.worktree_path
-        or not job.branch_name
-        or not Path(job.worktree_path).exists()
+        or not job.workspace_path
+        or not job.workspace_id
+        or not Path(job.workspace_path).exists()
     ):
         return
     try:
@@ -4038,8 +4045,8 @@ def _cleanup_completed_task_worktree(job: TaskJob | None, root: Path) -> None:
             root,
             TaskWorktree(
                 task_id=job.id,
-                path=Path(job.worktree_path),
-                branch=job.branch_name,
+                path=Path(job.workspace_path),
+                workspace_id=job.workspace_id,
                 created=False,
             ),
             force_delete_branch=True,
@@ -4241,12 +4248,12 @@ def _tasks_for_worktree(
     linked = []
     for job in jobs:
         same_path = False
-        if job.worktree_path:
+        if job.workspace_path:
             try:
-                same_path = Path(job.worktree_path).expanduser().resolve() == state_path
+                same_path = Path(job.workspace_path).expanduser().resolve() == state_path
             except OSError:
                 same_path = False
-        if same_path or (state.branch and job.branch_name == state.branch):
+        if same_path or (state.branch and job.workspace_id == state.branch):
             linked.append(job)
     return tuple(sorted(linked, key=lambda job: job.id))
 
@@ -4391,7 +4398,7 @@ def _task_status_notification_key(status: WorkStatusMessage) -> str:
         {
             "status": status.status,
             "latest_update": status.latest_update,
-            "prs": status.prs,
+            "reviews": status.reviews,
         },
         sort_keys=True,
     )

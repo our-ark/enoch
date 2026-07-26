@@ -156,7 +156,7 @@ def _task_job(
         completed_at="2026-07-18T00:02:00+00:00",
         status=status,
         result=result,
-        pr_urls=pr_urls,
+        review_urls=pr_urls,
         context_source="chat-snapshot",
     )
 

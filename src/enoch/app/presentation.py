@@ -124,7 +124,7 @@ def format_task_final_message(
                 clip_activity_block(summary, limit=1200),
             ]
         )
-    prs = job.pr_urls or ("none",)
+    reviews = job.review_urls or ("none",)
     lines = [
         f"{task_label} #{job.id} final update",
         f"Final status: {final_status}",
@@ -138,8 +138,8 @@ def format_task_final_message(
         )
     lines.extend(
         [
-            "PR URL:",
-            *[f"- {pr}" for pr in prs],
+            "Review URL:",
+            *[f"- {review}" for review in reviews],
             "Result summary:",
             clip_activity_block(summary, limit=1200),
         ]
@@ -153,7 +153,7 @@ def format_work_status_message(
     task_label: str = "Task",
 ) -> str:
     elapsed = format_elapsed(max(0, int(time.monotonic() - status.started_at)))
-    prs = status.prs or ["none"]
+    reviews = status.reviews or ["none"]
     title = (
         f"{task_label} #{status.task_id}"
         if status.task_id is not None
@@ -164,8 +164,8 @@ def format_work_status_message(
         f"Status: {status.status}",
         f"Time: {elapsed}",
         f"Latest update: {status.latest_update}",
-        "PRs created:",
-        *[f"- {pr}" for pr in prs],
+        "Reviews published:",
+        *[f"- {review}" for review in reviews],
         "",
         "Request:",
         clip_activity_text(status.request, limit=1200),

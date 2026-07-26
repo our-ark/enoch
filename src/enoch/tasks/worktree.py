@@ -28,9 +28,13 @@ from enoch.vcs_tools import (
 class TaskWorktree:
     task_id: int
     path: Path
-    branch: str
+    workspace_id: str
     created: bool
     repository_workspace: RepositoryWorkspace | None = None
+
+    @property
+    def branch(self) -> str:
+        return self.workspace_id
 
 
 @dataclass(frozen=True)
@@ -155,7 +159,12 @@ def prepare_task_worktree(
             raise VcsError(
                 f"Task #{task_id} worktree is on {branch}, expected {existing_branch}."
             )
-        return TaskWorktree(task_id=task_id, path=path, branch=branch, created=False)
+        return TaskWorktree(
+            task_id=task_id,
+            path=path,
+            workspace_id=branch,
+            created=False,
+        )
 
     if path.exists() and any(path.iterdir()):
         raise VcsError(f"Task #{task_id} worktree path is not empty: {path}")
@@ -174,7 +183,12 @@ def prepare_task_worktree(
         start_point="" if exists else start_point,
         create_branch=not exists,
     )
-    return TaskWorktree(task_id=task_id, path=path, branch=branch, created=True)
+    return TaskWorktree(
+        task_id=task_id,
+        path=path,
+        workspace_id=branch,
+        created=True,
+    )
 
 
 def prepare_repository_task_workspace(
@@ -213,7 +227,7 @@ def prepare_repository_task_workspace(
         return TaskWorktree(
             task_id=task_id,
             path=existing.path,
-            branch=existing.id,
+            workspace_id=existing.id,
             created=False,
             repository_workspace=existing,
         )
@@ -241,7 +255,7 @@ def prepare_repository_task_workspace(
     return TaskWorktree(
         task_id=task_id,
         path=workspace.path,
-        branch=workspace.id,
+        workspace_id=workspace.id,
         created=True,
         repository_workspace=workspace,
     )
@@ -289,14 +303,24 @@ def prepare_existing_branch_worktree(
             raise VcsError(
                 f"Task #{task_id} worktree is on {checked_out}, expected {branch}."
             )
-        return TaskWorktree(task_id=task_id, path=path, branch=branch, created=False)
+        return TaskWorktree(
+            task_id=task_id,
+            path=path,
+            workspace_id=branch,
+            created=False,
+        )
     if path.exists() and any(path.iterdir()):
         raise VcsError(f"Task #{task_id} worktree path is not empty: {path}")
     if not branch_exists(branch, control_root):
         raise VcsError(f"Local branch {branch} does not exist.")
     path.parent.mkdir(parents=True, exist_ok=True)
     create_workspace(path, branch, control_root)
-    return TaskWorktree(task_id=task_id, path=path, branch=branch, created=True)
+    return TaskWorktree(
+        task_id=task_id,
+        path=path,
+        workspace_id=branch,
+        created=True,
+    )
 
 
 def remove_task_worktree(

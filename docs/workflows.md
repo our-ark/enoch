@@ -2,7 +2,7 @@
 
 `enoch.workflows.WorkflowEngine` is the versioned public boundary for Enoch's
 single-owner task lifecycle. The current contract is
-`WORKFLOW_API_VERSION = 1`.
+`WORKFLOW_API_VERSION = 2`.
 
 The engine owns:
 
@@ -12,7 +12,7 @@ The engine owns:
 - cancellation, pause, retry, and terminal finalization;
 - interrupted-worker recovery;
 - queue inspection and task lookup;
-- task status, runtime evidence, worktree, and publication records.
+- task status, runtime evidence, workspace, revision, and review records;
 - persisted task capability requirements used by the application authorizer.
 
 `LocalWorkflowEngine` is the default file-backed implementation. It preserves
@@ -55,6 +55,21 @@ app = EnochApplication(
 
 Enoch validates the runtime-checkable protocol and `api_version` during
 application construction. Unsupported versions fail explicitly.
+
+Version 2 replaces the Git-shaped `record_worktree`,
+`record_publish_state(**state)`, and `result_has_pull_request` surface with
+`record_workspace` and a typed `record_publication(TaskPublicationState)`
+operation. Durable `TaskJob` state now exposes `workspace_path`,
+`workspace_id`, `revision_id`, `review_id`, `review_url`, `review_urls`, and
+`review_published`.
+
+Queue schema 12 reads schema 11's `worktree_path`, `branch_name`,
+`commit_sha`, `remote_branch`, `pr_url`, `pr_urls`, and
+`published_remotely` keys, then writes only the provider-neutral names.
+Read-only Python properties preserve those old attribute names during the
+migration window. Workflow API v1 implementations must deliberately adopt the
+v2 methods before injection; `LocalWorkflowEngine` retains v1 method adapters
+for direct callers.
 
 Profiles do not receive or own the concrete engine. Their
 `CommandContext.enqueue_task()` method routes through the engine selected by

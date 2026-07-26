@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import re
+from urllib.parse import urlsplit
 
 from enoch.memory.paths import atomic_write, now as current_time
 from enoch.paths import private_state_path
@@ -21,9 +22,11 @@ from enoch.tasks.events import normalize_task_initiator, normalize_task_source, 
 from enoch.state import StateCorruptionError, file_transaction, load_json_object
 
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 DEFAULT_MAX_ATTEMPTS = 3
-PULL_REQUEST_URL_PATTERN = re.compile(r"https://[^\s]+/(?:pull|pulls|merge_requests)/\d+")
+LEGACY_REVIEW_URL_PATTERN = re.compile(
+    r"https://[^\s]+/(?:pull|pulls|merge_requests)/\d+"
+)
 
 
 @dataclass(frozen=True)
@@ -37,7 +40,7 @@ class TaskJob:
     status: str = "pending"
     status_message_id: MessageId | None = None
     result: str = ""
-    pr_urls: tuple[str, ...] = ()
+    review_urls: tuple[str, ...] = ()
     context: str = ""
     context_source: str = ""
     source: str = "task"
@@ -54,8 +57,8 @@ class TaskJob:
     worker_id: str = ""
     worker_pid: int | None = None
     worker_heartbeat_at: str = ""
-    worktree_path: str = ""
-    branch_name: str = ""
+    workspace_path: str = ""
+    workspace_id: str = ""
     attempt: int = 0
     max_attempts: int = DEFAULT_MAX_ATTEMPTS
     timeout_seconds: int | None = None
@@ -73,10 +76,39 @@ class TaskJob:
     runtime_side_effects: tuple[str, ...] = ()
     idempotency_key: str = ""
     publish_stage: str = ""
-    commit_sha: str = ""
-    remote_branch: str = ""
-    pr_url: str = ""
-    published_remotely: bool = False
+    revision_id: str = ""
+    review_id: str = ""
+    review_url: str = ""
+    review_published: bool = False
+
+    # Compatibility aliases for task queue schema <= 11 and workflow API v1.
+    @property
+    def pr_urls(self) -> tuple[str, ...]:
+        return self.review_urls
+
+    @property
+    def worktree_path(self) -> str:
+        return self.workspace_path
+
+    @property
+    def branch_name(self) -> str:
+        return self.workspace_id
+
+    @property
+    def commit_sha(self) -> str:
+        return self.revision_id
+
+    @property
+    def remote_branch(self) -> str:
+        return self.workspace_id
+
+    @property
+    def pr_url(self) -> str:
+        return self.review_url
+
+    @property
+    def published_remotely(self) -> bool:
+        return self.review_published
 
 
 @dataclass(frozen=True)
@@ -87,6 +119,16 @@ class TaskQueueStatus:
     pending: tuple[TaskJob, ...] = ()
     paused: tuple[TaskJob, ...] = ()
     history: tuple[TaskJob, ...] = ()
+
+
+@dataclass(frozen=True)
+class TaskPublicationState:
+    stage: str
+    revision_id: str = ""
+    workspace_id: str = ""
+    review_id: str = ""
+    review_url: str = ""
+    review_published: bool | None = None
 
 
 class TaskRetryError(ValueError):
@@ -239,14 +281,18 @@ def retry_failed_task(
             parent_candidate_id=original.parent_candidate_id,
             source_task_id=original.source_task_id,
             result=artifact_result,
-            pr_urls=_pull_request_urls(artifact_result),
-            worktree_path=original.worktree_path,
-            branch_name=original.branch_name,
+            review_urls=_merge_review_urls(
+                original.review_urls,
+                _review_urls(artifact_result),
+                (original.review_url,) if original.review_url else (),
+            ),
+            workspace_path=original.workspace_path,
+            workspace_id=original.workspace_id,
             publish_stage=original.publish_stage,
-            commit_sha=original.commit_sha,
-            remote_branch=original.remote_branch,
-            pr_url=original.pr_url,
-            published_remotely=original.published_remotely,
+            revision_id=original.revision_id,
+            review_id=original.review_id,
+            review_url=original.review_url,
+            review_published=original.review_published,
             max_attempts=original.max_attempts,
             timeout_seconds=original.timeout_seconds,
             required_capabilities=original.required_capabilities,
@@ -556,7 +602,10 @@ def retry_running_task(
             started_at="",
             completed_at="",
             result=result,
-            pr_urls=_merge_pr_urls(running.pr_urls, _pull_request_urls(result)),
+            review_urls=_merge_review_urls(
+                running.review_urls,
+                _review_urls(result),
+            ),
             worker_id="",
             worker_pid=None,
             worker_heartbeat_at="",
@@ -644,11 +693,11 @@ def heartbeat_task(
         return updated
 
 
-def record_task_worktree(
+def record_task_workspace(
     task_id: int,
     worker_id: str,
-    worktree_path: Path,
-    branch_name: str,
+    workspace_path: Path,
+    workspace_id: str,
     root: Path | None = None,
 ) -> TaskJob | None:
     with _queue_transaction(root):
@@ -663,12 +712,30 @@ def record_task_worktree(
             return None
         updated = _replace_job(
             running,
-            worktree_path=str(worktree_path.resolve()),
-            branch_name=branch_name.strip(),
+            workspace_path=str(workspace_path.resolve()),
+            workspace_id=workspace_id.strip(),
         )
         data["running"] = _job_to_dict(updated)
         _write_queue(data, root)
         return updated
+
+
+def record_task_worktree(
+    task_id: int,
+    worker_id: str,
+    worktree_path: Path,
+    branch_name: str,
+    root: Path | None = None,
+) -> TaskJob | None:
+    """Compatibility wrapper for workflow API v1."""
+
+    return record_task_workspace(
+        task_id,
+        worker_id,
+        worktree_path,
+        branch_name,
+        root,
+    )
 
 
 def task_worker_is_active(job: TaskJob) -> bool:
@@ -930,7 +997,10 @@ def record_task_result(task_id: int, result: str, root: Path | None = None) -> N
                 job = _replace_job(
                     job,
                     result=result,
-                    pr_urls=_merge_pr_urls(job.pr_urls, _pull_request_urls(result)),
+                    review_urls=_merge_review_urls(
+                        job.review_urls,
+                        _review_urls(result),
+                    ),
                 )
                 changed = True
             pending.append(_job_to_dict(job))
@@ -939,7 +1009,10 @@ def record_task_result(task_id: int, result: str, root: Path | None = None) -> N
             running = _replace_job(
                 running,
                 result=result,
-                pr_urls=_merge_pr_urls(running.pr_urls, _pull_request_urls(result)),
+                review_urls=_merge_review_urls(
+                    running.review_urls,
+                    _review_urls(result),
+                ),
             )
             changed = True
         if not changed:
@@ -947,6 +1020,54 @@ def record_task_result(task_id: int, result: str, root: Path | None = None) -> N
         data["pending"] = pending
         data["running"] = _job_to_dict(running) if running is not None else None
         _write_queue(data, root)
+
+
+def record_task_publication(
+    task_id: int,
+    worker_id: str,
+    state: TaskPublicationState,
+    root: Path | None = None,
+) -> TaskJob | None:
+    allowed_stages = {
+        "validated",
+        "committed",
+        "pushed",
+        "pr_opened",
+        "captured",
+        "review_published",
+    }
+    if state.stage not in allowed_stages:
+        raise ValueError(f"Unknown publish stage {state.stage!r}.")
+    with _queue_transaction(root):
+        data = _load_queue(root)
+        running = _parse_job(data.get("running"))
+        if (
+            running is None
+            or running.id != task_id
+            or not worker_id
+            or running.worker_id != worker_id
+        ):
+            return None
+        updated = _replace_job(
+            running,
+            publish_stage=state.stage,
+            revision_id=state.revision_id.strip() or running.revision_id,
+            workspace_id=state.workspace_id.strip() or running.workspace_id,
+            review_id=state.review_id.strip() or running.review_id,
+            review_url=state.review_url.strip() or running.review_url,
+            review_published=(
+                running.review_published
+                if state.review_published is None
+                else state.review_published
+            ),
+            review_urls=_merge_review_urls(
+                running.review_urls,
+                (state.review_url.strip(),) if state.review_url.strip() else (),
+            ),
+        )
+        data["running"] = _job_to_dict(updated)
+        _write_queue(data, root)
+        return updated
 
 
 def record_task_publish_state(
@@ -960,45 +1081,20 @@ def record_task_publish_state(
     pr_url: str = "",
     published_remotely: bool | None = None,
 ) -> TaskJob | None:
-    allowed_stages = {
-        "validated",
-        "committed",
-        "pushed",
-        "pr_opened",
-        "captured",
-        "review_published",
-    }
-    if stage not in allowed_stages:
-        raise ValueError(f"Unknown publish stage {stage!r}.")
-    with _queue_transaction(root):
-        data = _load_queue(root)
-        running = _parse_job(data.get("running"))
-        if (
-            running is None
-            or running.id != task_id
-            or not worker_id
-            or running.worker_id != worker_id
-        ):
-            return None
-        updated = _replace_job(
-            running,
-            publish_stage=stage,
-            commit_sha=commit_sha.strip() or running.commit_sha,
-            remote_branch=remote_branch.strip() or running.remote_branch,
-            pr_url=pr_url.strip() or running.pr_url,
-            published_remotely=(
-                running.published_remotely
-                if published_remotely is None
-                else published_remotely
-            ),
-            pr_urls=_merge_pr_urls(
-                running.pr_urls,
-                (pr_url.strip(),) if pr_url.strip() else (),
-            ),
-        )
-        data["running"] = _job_to_dict(updated)
-        _write_queue(data, root)
-        return updated
+    """Compatibility wrapper for queue schema <= 11 and workflow API v1."""
+
+    return record_task_publication(
+        task_id,
+        worker_id,
+        TaskPublicationState(
+            stage=stage,
+            revision_id=commit_sha,
+            workspace_id=remote_branch,
+            review_url=pr_url,
+            review_published=published_remotely,
+        ),
+        root,
+    )
 
 
 def record_task_runtime_result(
@@ -1080,7 +1176,10 @@ def _finish_running_task(
             status=status,
             completed_at=current_time(),
             result=result,
-            pr_urls=_merge_pr_urls(running.pr_urls, _pull_request_urls(result)),
+            review_urls=_merge_review_urls(
+                running.review_urls,
+                _review_urls(result),
+            ),
             worker_id="",
             worker_pid=None,
             worker_heartbeat_at="",
@@ -1168,7 +1267,10 @@ def cancel_running_task(
             status="cancelled",
             completed_at=current_time(),
             result=result,
-            pr_urls=_merge_pr_urls(running.pr_urls, _pull_request_urls(result)),
+            review_urls=_merge_review_urls(
+                running.review_urls,
+                _review_urls(result),
+            ),
             worker_id="",
             worker_pid=None,
             worker_heartbeat_at="",
@@ -1197,7 +1299,7 @@ def recover_interrupted_task(root: Path | None = None) -> TaskJob | None:
             return None
         if task_worker_is_active(running):
             return None
-        if _job_has_pull_request(running):
+        if _job_has_review(running):
             completed = _replace_job(
                 running,
                 status="completed",
@@ -1300,12 +1402,20 @@ def task_queue_status(root: Path | None = None) -> TaskQueueStatus:
         )
 
 
+def task_result_has_review(result: str) -> bool:
+    """Detect legacy forge review URLs embedded in unstructured task output."""
+
+    return bool(LEGACY_REVIEW_URL_PATTERN.search(result))
+
+
 def task_result_has_pull_request(result: str) -> bool:
-    return bool(PULL_REQUEST_URL_PATTERN.search(result))
+    """Compatibility alias for workflow API v1."""
+
+    return task_result_has_review(result)
 
 
-def _job_has_pull_request(job: TaskJob) -> bool:
-    return bool(job.pr_urls) or task_result_has_pull_request(job.result)
+def _job_has_review(job: TaskJob) -> bool:
+    return bool(job.review_urls) or task_result_has_review(job.result)
 
 
 def _load_queue(root: Path | None = None) -> dict:
@@ -1436,8 +1546,10 @@ def _parse_job(raw: object) -> TaskJob | None:
     status = str(raw.get("status") or "").strip() or "pending"
     status_message_id = normalize_message_id(raw.get("status_message_id"))
     result = str(raw.get("result") or "").strip()
-    pr_urls = _parse_pr_urls(raw.get("pr_urls"))
-    pr_urls = _merge_pr_urls(pr_urls, _pull_request_urls(result))
+    review_urls = _parse_review_urls(
+        raw.get("review_urls", raw.get("pr_urls"))
+    )
+    review_urls = _merge_review_urls(review_urls, _review_urls(result))
     context = str(raw.get("context") or "").strip()
     context_source = str(raw.get("context_source") or "").strip()
     try:
@@ -1458,8 +1570,15 @@ def _parse_job(raw: object) -> TaskJob | None:
     worker_id = str(raw.get("worker_id") or "").strip()
     worker_pid = _optional_int(raw.get("worker_pid"))
     worker_heartbeat_at = str(raw.get("worker_heartbeat_at") or "").strip()
-    worktree_path = str(raw.get("worktree_path") or "").strip()
-    branch_name = str(raw.get("branch_name") or "").strip()
+    workspace_path = str(
+        raw.get("workspace_path", raw.get("worktree_path")) or ""
+    ).strip()
+    workspace_id = str(
+        raw.get("workspace_id")
+        or raw.get("branch_name")
+        or raw.get("remote_branch")
+        or ""
+    ).strip()
     attempt_default = 1 if status in {"running", "paused"} else 0
     attempt = max(0, _int(raw.get("attempt"), default=attempt_default))
     max_attempts = max(1, _int(raw.get("max_attempts"), default=DEFAULT_MAX_ATTEMPTS))
@@ -1485,10 +1604,24 @@ def _parse_job(raw: object) -> TaskJob | None:
     runtime_side_effects = _parse_string_tuple(raw.get("runtime_side_effects"))
     idempotency_key = str(raw.get("idempotency_key") or "").strip()
     publish_stage = str(raw.get("publish_stage") or "").strip()
-    commit_sha = str(raw.get("commit_sha") or "").strip()
-    remote_branch = str(raw.get("remote_branch") or "").strip()
-    pr_url = str(raw.get("pr_url") or "").strip()
-    published_remotely = bool(raw.get("published_remotely", False))
+    revision_id = str(
+        raw.get("revision_id", raw.get("commit_sha")) or ""
+    ).strip()
+    review_id = str(raw.get("review_id") or "").strip()
+    review_url = str(raw.get("review_url", raw.get("pr_url")) or "").strip()
+    review_urls = _merge_review_urls(
+        review_urls,
+        (review_url,) if review_url else (),
+    )
+    raw_review_published = raw.get(
+        "review_published",
+        raw.get("published_remotely"),
+    )
+    review_published = (
+        bool(review_url)
+        if raw_review_published is None
+        else bool(raw_review_published)
+    )
     if candidate_id:
         evidence_source = evidence_source or source
         signal_actor = signal_actor or _legacy_signal_actor(evidence_source)
@@ -1506,7 +1639,7 @@ def _parse_job(raw: object) -> TaskJob | None:
         status=status,
         status_message_id=status_message_id,
         result=result,
-        pr_urls=pr_urls,
+        review_urls=review_urls,
         context=context,
         context_source=context_source,
         source=source,
@@ -1523,8 +1656,8 @@ def _parse_job(raw: object) -> TaskJob | None:
         worker_id=worker_id,
         worker_pid=worker_pid,
         worker_heartbeat_at=worker_heartbeat_at,
-        worktree_path=worktree_path,
-        branch_name=branch_name,
+        workspace_path=workspace_path,
+        workspace_id=workspace_id,
         attempt=attempt,
         max_attempts=max_attempts,
         timeout_seconds=timeout_seconds,
@@ -1542,10 +1675,10 @@ def _parse_job(raw: object) -> TaskJob | None:
         runtime_side_effects=runtime_side_effects,
         idempotency_key=idempotency_key,
         publish_stage=publish_stage,
-        commit_sha=commit_sha,
-        remote_branch=remote_branch,
-        pr_url=pr_url,
-        published_remotely=published_remotely,
+        revision_id=revision_id,
+        review_id=review_id,
+        review_url=review_url,
+        review_published=review_published,
     )
 
 
@@ -1562,7 +1695,7 @@ def _job_to_dict(job: TaskJob | None) -> dict:
         "status": job.status,
         "status_message_id": job.status_message_id,
         "result": job.result,
-        "pr_urls": list(job.pr_urls),
+        "review_urls": list(job.review_urls),
         "context": job.context,
         "context_source": job.context_source,
         "source": job.source,
@@ -1579,8 +1712,8 @@ def _job_to_dict(job: TaskJob | None) -> dict:
         "worker_id": job.worker_id,
         "worker_pid": job.worker_pid,
         "worker_heartbeat_at": job.worker_heartbeat_at,
-        "worktree_path": job.worktree_path,
-        "branch_name": job.branch_name,
+        "workspace_path": job.workspace_path,
+        "workspace_id": job.workspace_id,
         "attempt": job.attempt,
         "max_attempts": job.max_attempts,
         "timeout_seconds": job.timeout_seconds,
@@ -1598,10 +1731,10 @@ def _job_to_dict(job: TaskJob | None) -> dict:
         "runtime_side_effects": list(job.runtime_side_effects),
         "idempotency_key": job.idempotency_key,
         "publish_stage": job.publish_stage,
-        "commit_sha": job.commit_sha,
-        "remote_branch": job.remote_branch,
-        "pr_url": job.pr_url,
-        "published_remotely": job.published_remotely,
+        "revision_id": job.revision_id,
+        "review_id": job.review_id,
+        "review_url": job.review_url,
+        "review_published": job.review_published,
     }
 
 
@@ -1616,7 +1749,7 @@ def _replace_job(job: TaskJob, **changes: object) -> TaskJob:
         "status": job.status,
         "status_message_id": job.status_message_id,
         "result": job.result,
-        "pr_urls": job.pr_urls,
+        "review_urls": job.review_urls,
         "context": job.context,
         "context_source": job.context_source,
         "source": job.source,
@@ -1632,8 +1765,8 @@ def _replace_job(job: TaskJob, **changes: object) -> TaskJob:
         "source_task_id": job.source_task_id,
         "worker_id": job.worker_id,
         "worker_pid": job.worker_pid,
-        "worktree_path": job.worktree_path,
-        "branch_name": job.branch_name,
+        "workspace_path": job.workspace_path,
+        "workspace_id": job.workspace_id,
         "attempt": job.attempt,
         "max_attempts": job.max_attempts,
         "timeout_seconds": job.timeout_seconds,
@@ -1651,10 +1784,10 @@ def _replace_job(job: TaskJob, **changes: object) -> TaskJob:
         "runtime_side_effects": job.runtime_side_effects,
         "idempotency_key": job.idempotency_key,
         "publish_stage": job.publish_stage,
-        "commit_sha": job.commit_sha,
-        "remote_branch": job.remote_branch,
-        "pr_url": job.pr_url,
-        "published_remotely": job.published_remotely,
+        "revision_id": job.revision_id,
+        "review_id": job.review_id,
+        "review_url": job.review_url,
+        "review_published": job.review_published,
     }
     values.update(changes)
     return TaskJob(**values)
@@ -1771,8 +1904,8 @@ def _task_is_due(job: TaskJob) -> bool:
     return due <= datetime.now(timezone.utc)
 
 
-def _pull_request_urls(result: str) -> tuple[str, ...]:
-    return tuple(PULL_REQUEST_URL_PATTERN.findall(result))
+def _review_urls(result: str) -> tuple[str, ...]:
+    return tuple(LEGACY_REVIEW_URL_PATTERN.findall(result))
 
 
 def _record_task_event_safely(
@@ -1799,18 +1932,19 @@ def _record_task_event_safely(
         return
 
 
-def _parse_pr_urls(raw: object) -> tuple[str, ...]:
-    if not isinstance(raw, list):
+def _parse_review_urls(raw: object) -> tuple[str, ...]:
+    if not isinstance(raw, (list, tuple)):
         return ()
     urls = []
     for item in raw:
         url = str(item or "").strip()
-        if PULL_REQUEST_URL_PATTERN.fullmatch(url):
+        parsed = urlsplit(url)
+        if parsed.scheme in {"http", "https"} and parsed.netloc:
             urls.append(url)
-    return tuple(urls)
+    return _merge_review_urls(tuple(urls))
 
 
-def _merge_pr_urls(*groups: tuple[str, ...]) -> tuple[str, ...]:
+def _merge_review_urls(*groups: tuple[str, ...]) -> tuple[str, ...]:
     merged: list[str] = []
     for group in groups:
         for url in group:

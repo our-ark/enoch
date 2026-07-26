@@ -176,7 +176,7 @@ class EnochPortableInstallTests(unittest.TestCase):
         self.assertEqual(result["vcs_provider_version"], "0.0.1")
         self.assertEqual(result["profile"], "researcher")
         self.assertEqual(result["profile_version"], "0.0.1")
-        self.assertEqual(result["workflow_api_version"], 1)
+        self.assertEqual(result["workflow_api_version"], 2)
         self.assertEqual(result["conformance_api_version"], 1)
         self.assertEqual(result["repository_contract_version"], 1)
         self.assertEqual(result["review_contract_version"], 1)

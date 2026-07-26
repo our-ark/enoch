@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 import os
 import sys
 import threading
@@ -11,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from enoch.tasks.queue import (
+    TaskPublicationState,
     TaskRetryError,
     begin_direct_task,
     begin_next_task,
@@ -26,6 +28,7 @@ from enoch.tasks.queue import (
     record_task_result,
     record_task_runtime_result,
     record_task_publish_state,
+    record_task_publication,
     record_task_status_message,
     record_task_worktree,
     regress_task,
@@ -35,6 +38,7 @@ from enoch.tasks.queue import (
     resume_paused_tasks,
     revert_task,
     task_result_has_pull_request,
+    task_queue_path,
     task_queue_status,
 )
 from enoch.providers import (
@@ -44,11 +48,112 @@ from enoch.providers import (
     RuntimeSideEffect,
     RuntimeUsage,
 )
-from enoch.tasks.events import load_recent_task_outcomes, load_task_events
+from enoch.tasks.events import (
+    load_recent_task_outcomes,
+    load_task_events,
+    task_event_path,
+)
 from enoch.tasks import queue as task_queue
 
 
 class EnochTaskQueueTests(unittest.TestCase):
+    def test_schema_11_queue_is_read_and_rewritten_with_neutral_fields(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            path = task_queue_path(root)
+            path.parent.mkdir(parents=True)
+            path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 11,
+                        "next_id": 2,
+                        "pending": [
+                            {
+                                "id": 1,
+                                "chat_id": 42,
+                                "text": "resume legacy review",
+                                "created_at": "2026-07-25T00:00:00+00:00",
+                                "worktree_path": str(root / "legacy-workspace"),
+                                "branch_name": "legacy-workspace-id",
+                                "publish_stage": "pr_opened",
+                                "commit_sha": "legacy-revision",
+                                "remote_branch": "legacy-workspace-id",
+                                "pr_url": "https://reviews.example/change/legacy",
+                                "published_remotely": True,
+                            }
+                        ],
+                        "paused": [],
+                        "running": None,
+                        "history": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            loaded = task_queue_status(root).pending[0]
+            record_task_result(loaded.id, loaded.result, root)
+            rewritten = json.loads(path.read_text(encoding="utf-8"))
+            persisted = rewritten["pending"][0]
+
+        self.assertEqual(loaded.workspace_id, "legacy-workspace-id")
+        self.assertEqual(loaded.revision_id, "legacy-revision")
+        self.assertEqual(
+            loaded.review_urls,
+            ("https://reviews.example/change/legacy",),
+        )
+        self.assertEqual(loaded.review_url, loaded.review_urls[0])
+        self.assertTrue(loaded.review_published)
+        self.assertEqual(rewritten["schema_version"], 12)
+        self.assertEqual(persisted["workspace_id"], "legacy-workspace-id")
+        self.assertEqual(persisted["revision_id"], "legacy-revision")
+        self.assertNotIn("branch_name", persisted)
+        self.assertNotIn("commit_sha", persisted)
+        self.assertNotIn("pr_urls", persisted)
+        self.assertNotIn("pr_url", persisted)
+
+    def test_publication_tracks_arbitrary_review_identity_and_neutral_event_keys(self) -> None:
+        review_url = "https://reviews.example/change/alpha"
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            queued = enqueue_task(42, "publish provider-neutral review", root)
+            running = begin_next_task(root)
+            assert running is not None
+            claim_running_task(running.id, "worker-one", os.getpid(), root)
+            recorded = record_task_publication(
+                running.id,
+                "worker-one",
+                TaskPublicationState(
+                    stage="review_published",
+                    revision_id="revision-1",
+                    workspace_id="workspace-1",
+                    review_id="change-alpha",
+                    review_url=review_url,
+                    review_published=True,
+                ),
+                root,
+            )
+            completed = complete_task(
+                queued.id,
+                root,
+                result="Published through an independent review provider.",
+                worker_id="worker-one",
+            )
+            event_payload = json.loads(
+                task_event_path(root).read_text(encoding="utf-8").splitlines()[-1]
+            )
+
+        assert recorded is not None
+        assert completed is not None
+        self.assertEqual(completed.review_id, "change-alpha")
+        self.assertEqual(completed.review_url, review_url)
+        self.assertEqual(completed.review_urls, (review_url,))
+        self.assertEqual(completed.revision_id, "revision-1")
+        self.assertEqual(completed.workspace_id, "workspace-1")
+        self.assertEqual(event_payload["review_urls"], [review_url])
+        self.assertEqual(event_payload["revision_id"], "revision-1")
+        self.assertNotIn("pr_urls", event_payload)
+        self.assertNotIn("commit_sha", event_payload)
+
     def test_recent_task_outcomes_keep_latest_terminal_state_and_publish_evidence(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)

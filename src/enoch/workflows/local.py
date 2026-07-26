@@ -8,6 +8,7 @@ from enoch.app.epoch import DaemonEpoch, daemon_epoch_guard
 from enoch.providers.contracts import ConversationId, MessageId, RuntimeResult
 from enoch.tasks.queue import (
     TaskJob,
+    TaskPublicationState,
     TaskQueueStatus,
     begin_direct_task,
     begin_next_task,
@@ -20,11 +21,11 @@ from enoch.tasks.queue import (
     fail_task,
     heartbeat_task,
     pause_task,
-    record_task_publish_state,
+    record_task_publication,
     record_task_result,
     record_task_runtime_result,
     record_task_status_message,
-    record_task_worktree,
+    record_task_workspace,
     recover_interrupted_task,
     regress_task,
     resolve_regressed_task,
@@ -32,7 +33,7 @@ from enoch.tasks.queue import (
     retry_failed_task,
     retry_running_task,
     task_queue_status,
-    task_result_has_pull_request,
+    task_result_has_review,
     task_worker_is_active,
 )
 from enoch.workflows.contracts import (
@@ -222,6 +223,22 @@ class LocalWorkflowEngine:
         with self._mutation():
             record_task_status_message(task_id, message_id, self.root)
 
+    def record_workspace(
+        self,
+        task_id: int,
+        worker_id: str,
+        workspace_path: Path,
+        workspace_id: str,
+    ) -> TaskJob | None:
+        with self._mutation():
+            return record_task_workspace(
+                task_id,
+                worker_id,
+                workspace_path,
+                workspace_id,
+                self.root,
+            )
+
     def record_worktree(
         self,
         task_id: int,
@@ -229,18 +246,32 @@ class LocalWorkflowEngine:
         worktree_path: Path,
         branch_name: str,
     ) -> TaskJob | None:
-        with self._mutation():
-            return record_task_worktree(
-                task_id,
-                worker_id,
-                worktree_path,
-                branch_name,
-                self.root,
-            )
+        """Compatibility adapter for workflow API v1 callers."""
+
+        return self.record_workspace(
+            task_id,
+            worker_id,
+            worktree_path,
+            branch_name,
+        )
 
     def record_result(self, task_id: int, result: str) -> None:
         with self._mutation():
             record_task_result(task_id, result, self.root)
+
+    def record_publication(
+        self,
+        task_id: int,
+        worker_id: str,
+        state: TaskPublicationState,
+    ) -> TaskJob | None:
+        with self._mutation():
+            return record_task_publication(
+                task_id,
+                worker_id,
+                state,
+                self.root,
+            )
 
     def record_publish_state(
         self,
@@ -248,13 +279,23 @@ class LocalWorkflowEngine:
         worker_id: str,
         **state: Any,
     ) -> TaskJob | None:
-        with self._mutation():
-            return record_task_publish_state(
-                task_id,
-                worker_id,
-                self.root,
-                **state,
-            )
+        """Compatibility adapter for workflow API v1 callers."""
+
+        return self.record_publication(
+            task_id,
+            worker_id,
+            TaskPublicationState(
+                stage=str(state.get("stage") or ""),
+                revision_id=str(state.get("commit_sha") or ""),
+                workspace_id=str(state.get("remote_branch") or ""),
+                review_url=str(state.get("pr_url") or ""),
+                review_published=(
+                    bool(state["published_remotely"])
+                    if state.get("published_remotely") is not None
+                    else None
+                ),
+            ),
+        )
 
     def record_runtime_result(
         self,
@@ -274,8 +315,13 @@ class LocalWorkflowEngine:
     def worker_is_active(self, job: TaskJob) -> bool:
         return task_worker_is_active(job)
 
+    def result_has_review(self, result: str) -> bool:
+        return task_result_has_review(result)
+
     def result_has_pull_request(self, result: str) -> bool:
-        return task_result_has_pull_request(result)
+        """Compatibility adapter for workflow API v1 callers."""
+
+        return self.result_has_review(result)
 
     def _mutation(self):
         if self.epoch is None:
