@@ -9,6 +9,8 @@ from our_ark_provider_kit.conformance import (
     CONFORMANCE_API_VERSION,
     AgentRuntimeConformanceMixin,
     ProviderContractConformanceMixin,
+    RepositoryProviderConformanceMixin,
+    ReviewProviderConformanceMixin,
 )
 
 from enoch.conformance.profile import ProfileCommandCase, ProfileConformanceMixin
@@ -23,5 +25,7 @@ __all__ = [
     "ProfileCommandCase",
     "ProfileConformanceMixin",
     "ProviderContractConformanceMixin",
+    "RepositoryProviderConformanceMixin",
+    "ReviewProviderConformanceMixin",
     "WorkflowEngineConformanceMixin",
 ]

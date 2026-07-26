@@ -242,6 +242,9 @@ chat events, typed runtime results, and migration compatibility are documented i
 [`docs/providers.md`](docs/providers.md).
 Reusable provider, runtime, workflow, and profile test suites are documented in
 [`docs/conformance.md`](docs/conformance.md).
+Provider-neutral repository revisions, review identities, and compatibility
+adapters are documented in
+[`docs/repository-review-providers.md`](docs/repository-review-providers.md).
 
 Downstream agent bodies can also add commands, prompt context, and lifecycle
 hooks through the versioned `AgentProfile` API without changing the core

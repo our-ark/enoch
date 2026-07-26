@@ -202,6 +202,14 @@ Core capability names are `chat.receive`, `chat.send`, `chat.edit`,
 `vcs.read`, `vcs.write`, `forge.read`, `forge.publish`, `forge.maintain`,
 `forge.merge`, `service.read`, and `service.manage`.
 
+The versioned semantic repository and review contracts add granular
+`vcs.inspect`, `vcs.resolve`, `vcs.ancestry`, `vcs.authoritative`,
+`vcs.capture`, `vcs.workspace`, `vcs.restore`, `forge.review`,
+`forge.inspect`, `forge.close`, `forge.land`, and `forge.stack` capabilities.
+Their typed requests, optional feature discovery, compatibility adapters, and
+branchless fixtures are documented in
+[`repository-review-providers.md`](repository-review-providers.md).
+
 Providers that predate this contract receive the complete legacy capability set
 for their provider kind, preserving installation compatibility. Once a
 provider declares capabilities, the declaration is authoritative and missing

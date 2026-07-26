@@ -25,12 +25,26 @@ from our_ark_provider_kit import (
     NotificationIntent,
     NotificationReceipt,
     ProviderCapabilities,
+    REPOSITORY_CONTRACT_VERSION,
+    REVIEW_CONTRACT_VERSION,
+    RepositoryProvider,
+    ReviewProvider,
+    UnsupportedProviderFeature,
     RuntimeExecutionControl,
     RuntimeProgress,
     TaskRequirements,
     agent_context,
     normalize_conversation_id,
     normalize_message_id,
+    require_repository_features,
+)
+from our_ark_provider_kit.conformance import (
+    RepositoryProviderConformanceMixin,
+    ReviewProviderConformanceMixin,
+)
+from our_ark_provider_kit.conformance_fixtures import (
+    BranchlessRepositoryFixture,
+    IndependentReviewFixture,
 )
 
 
@@ -180,6 +194,47 @@ class ProviderKitTests(unittest.TestCase):
         timeout.clear()
         with self.assertRaises(AgentRuntimeCancelled):
             execution.raise_if_stopped()
+
+    def test_repository_and_review_contracts_are_versioned_and_runtime_checkable(
+        self,
+    ) -> None:
+        repository = BranchlessRepositoryFixture()
+        review = IndependentReviewFixture()
+
+        self.assertEqual(repository.repository_features.contract_version, REPOSITORY_CONTRACT_VERSION)
+        self.assertEqual(review.review_features.contract_version, REVIEW_CONTRACT_VERSION)
+        self.assertIsInstance(repository, RepositoryProvider)
+        self.assertIsInstance(review, ReviewProvider)
+
+    def test_feature_preflight_fails_before_repository_side_effect(self) -> None:
+        repository = BranchlessRepositoryFixture()
+        before = repository.operation_count
+
+        with self.assertRaisesRegex(
+            UnsupportedProviderFeature,
+            "named-branches",
+        ):
+            require_repository_features(repository, "named-branches")
+
+        self.assertEqual(repository.operation_count, before)
+
+
+class BranchlessRepositoryConformanceTests(
+    RepositoryProviderConformanceMixin,
+    unittest.TestCase,
+):
+    def create_repository_provider(self, root):
+        del root
+        return BranchlessRepositoryFixture()
+
+
+class IndependentReviewConformanceTests(
+    ReviewProviderConformanceMixin,
+    unittest.TestCase,
+):
+    def create_review_provider(self, root):
+        del root
+        return IndependentReviewFixture()
 
 
 class FakeChatProvider:

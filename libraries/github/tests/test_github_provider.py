@@ -17,7 +17,17 @@ for source in (
     sys.path.insert(0, str(source))
 
 from our_ark_github import OUR_ARK_PROVIDERS, GithubForgeProvider
-from our_ark_provider_kit import ForgeProvider, ProviderContractConformanceMixin
+from our_ark_provider_kit import (
+    ForgeProvider,
+    ProviderContractConformanceMixin,
+    PullRequestResult,
+    RepositoryRevision,
+    ReviewIdentity,
+    ReviewProvider,
+    ReviewSubmission,
+    UnsupportedProviderFeature,
+    as_review_provider,
+)
 
 
 class GithubProviderTests(ProviderContractConformanceMixin, unittest.TestCase):
@@ -33,6 +43,54 @@ class GithubProviderTests(ProviderContractConformanceMixin, unittest.TestCase):
         self.assertEqual(descriptor["kind"], "forge")
         self.assertEqual(descriptor["name"], "github")
         self.assertTrue(descriptor["default"])
+
+    def test_github_provider_adapts_to_semantic_review_contract(self) -> None:
+        provider = GithubForgeProvider(gh="/usr/local/bin/gh")
+        result = PullRequestResult(
+            branch="change/config",
+            title="Review config",
+            body="Evidence.",
+            created=True,
+            url="https://github.com/our-ark/enoch/pull/42",
+            fallback_url=None,
+        )
+        review_provider = as_review_provider(provider)
+
+        with patch.object(provider, "create_pull_request", return_value=result) as create:
+            review = review_provider.publish_review(
+                ReviewSubmission(
+                    title="Review config",
+                    body="Evidence.",
+                    revision=RepositoryRevision("revision-42"),
+                )
+            )
+
+        self.assertIsInstance(review_provider, ReviewProvider)
+        self.assertEqual(review.identity.id, result.url)
+        self.assertEqual(review.versions[-1].revision.id, "revision-42")
+        create.assert_called_once()
+
+    def test_github_adapter_rejects_stack_before_provider_side_effect(self) -> None:
+        provider = GithubForgeProvider(gh="/usr/local/bin/gh")
+        review_provider = as_review_provider(provider)
+        dependency = review_provider.publish_review
+        request = ReviewSubmission(
+            title="Dependent review",
+            body="",
+            revision=RepositoryRevision("revision-2"),
+            dependencies=(
+                ReviewIdentity(
+                    id="review-independent",
+                    url="https://reviews.invalid/review-independent",
+                ),
+            ),
+        )
+
+        with patch.object(provider, "create_pull_request") as create:
+            with self.assertRaises(UnsupportedProviderFeature):
+                dependency(request)
+
+        create.assert_not_called()
 
     @patch("our_ark_github.subprocess.run")
     def test_reads_published_text_through_forge_contract(self, run) -> None:

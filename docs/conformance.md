@@ -100,3 +100,10 @@ The core test suite applies all behavioral suites to Enoch's built-in runtime,
 workflow engine, and a representative profile. The offline wheel E2E also
 imports the conformance API from the installed artifact, preventing accidental
 source-checkout-only publication.
+
+Repository and review implementations use
+`RepositoryProviderConformanceMixin` and `ReviewProviderConformanceMixin`.
+The included `BranchlessRepositoryFixture` and `IndependentReviewFixture`
+prove that the portable contracts do not require staging, branches, or
+pull-request identities. See
+[`repository-review-providers.md`](repository-review-providers.md).

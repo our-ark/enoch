@@ -21,11 +21,13 @@ from enoch.providers import (
     AgentRuntimeCancelled,
     AgentRuntimeTimedOut,
     ChatEvent,
+    ChangeCaptureRequest,
     LocalPublishResult,
     PullRequestResult,
     ProviderError,
     ProviderHealth,
     RemotePublishResult,
+    RepositoryProvider,
     RuntimeEvent,
     RuntimeExecutionControl,
     RuntimeOutputReference,
@@ -34,6 +36,7 @@ from enoch.providers import (
     RuntimeSideEffect,
     RuntimeUsage,
     available_providers,
+    as_repository_provider,
     load_provider,
     provider_name,
     register_provider,
@@ -318,6 +321,40 @@ class _EntryPoints(list):
 
 
 class EnochProviderTests(unittest.TestCase):
+    def test_git_provider_adapts_to_semantic_repository_contract(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            for args in (
+                ["init", "-b", "main"],
+                ["config", "user.name", "Enoch Test"],
+                ["config", "user.email", "enoch@example.com"],
+            ):
+                self.assertEqual(run_git(args, root).returncode, 0)
+            readme = root / "README.md"
+            readme.write_text("initial\n", encoding="utf-8")
+            self.assertEqual(run_git(["add", "README.md"], root).returncode, 0)
+            self.assertEqual(
+                run_git(["commit", "-m", "Initial revision"], root).returncode,
+                0,
+            )
+            repository = as_repository_provider(GitVersionControlProvider())
+            before = repository.inspect_working_copy(root)
+            readme.write_text("changed\n", encoding="utf-8")
+            captured = repository.capture_change(
+                ChangeCaptureRequest(
+                    message="Capture semantic change",
+                    paths=("README.md",),
+                ),
+                root,
+            )
+            after = repository.inspect_working_copy(root)
+
+        self.assertIsInstance(repository, RepositoryProvider)
+        self.assertTrue(before.clean)
+        self.assertNotEqual(captured.revision.id, before.revision.id)
+        self.assertEqual(after.revision.id, captured.revision.id)
+        self.assertTrue(after.clean)
+
     def test_git_task_base_refuses_stale_fallback_when_fetch_fails(self) -> None:
         provider = GitVersionControlProvider()
         with patch.object(

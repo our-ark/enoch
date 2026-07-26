@@ -52,6 +52,12 @@ GitHub, Telegram, or service-manager commands. Compatibility escape hatches may
 exist inside a concrete provider, but they are not part of the portable core
 contract.
 
+Repository and review providers expose opaque revision and review identities
+through versioned typed contracts. Git branches, staging, and pull-request
+numbers are legacy-adapter concerns rather than requirements of those public
+contracts. Migration of task and evolution workflows is incremental; see
+[`repository-review-providers.md`](repository-review-providers.md).
+
 The stable executable surfaces remain `bin/enoch`, `bin/enoch-agent`, and
 `bin/enoch-daemon`. Internal Python module paths may evolve with the package
 boundaries, while these launchers and chat commands remain stable.

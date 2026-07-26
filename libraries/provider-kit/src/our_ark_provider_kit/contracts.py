@@ -15,6 +15,8 @@ CAPABILITY_CONTRACT_VERSION = 1
 RUNTIME_CONTRACT_VERSION = 1
 RUNTIME_EXECUTION_CONTRACT_VERSION = 1
 NOTIFICATION_CONTRACT_VERSION = 1
+REPOSITORY_CONTRACT_VERSION = 1
+REVIEW_CONTRACT_VERSION = 1
 
 
 def normalize_conversation_id(value: object) -> ConversationId | None:
@@ -73,6 +75,27 @@ class ForgeProviderError(RuntimeError):
 
 class VersionControlProviderError(RuntimeError):
     """Raised when a version control provider operation fails."""
+
+
+class RepositoryProviderError(RuntimeError):
+    """Raised when a semantic repository operation fails."""
+
+
+class ReviewProviderError(RuntimeError):
+    """Raised when a semantic review operation fails."""
+
+
+class UnsupportedProviderFeature(RuntimeError):
+    """Raised before an operation requiring an unsupported provider feature."""
+
+    def __init__(self, provider_kind: str, missing: Sequence[str]) -> None:
+        features = tuple(dict.fromkeys(str(item).strip() for item in missing if str(item).strip()))
+        super().__init__(
+            f"The selected {provider_kind} provider does not support: "
+            f"{', '.join(features) or 'the requested feature'}."
+        )
+        self.provider_kind = provider_kind
+        self.missing = features
 
 
 class ServiceProviderError(RuntimeError):
@@ -471,6 +494,382 @@ def normalize_runtime_result(value: RuntimeResultLike) -> RuntimeResult:
 
 
 @dataclass(frozen=True)
+class RepositoryFeatures:
+    """Portable repository behavior, independent of branches or staging."""
+
+    staging_index: bool = False
+    named_branches: bool = False
+    isolated_workspaces: bool = True
+    immutable_revisions: bool = True
+    contract_version: int = REPOSITORY_CONTRACT_VERSION
+
+    def __post_init__(self) -> None:
+        if self.contract_version != REPOSITORY_CONTRACT_VERSION:
+            raise ValueError(
+                f"Repository features use contract version {self.contract_version}; "
+                f"supported version is {REPOSITORY_CONTRACT_VERSION}."
+            )
+
+    def supports(self, feature: str) -> bool:
+        name = str(feature).strip().lower().replace("-", "_")
+        if name not in {
+            "staging_index",
+            "named_branches",
+            "isolated_workspaces",
+            "immutable_revisions",
+        }:
+            raise ValueError(f"Unknown repository feature {feature!r}.")
+        return bool(getattr(self, name))
+
+
+@dataclass(frozen=True)
+class RepositoryRevision:
+    id: str
+    display: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
+    contract_version: int = REPOSITORY_CONTRACT_VERSION
+
+    def __post_init__(self) -> None:
+        revision_id = str(self.id).strip()
+        if self.contract_version != REPOSITORY_CONTRACT_VERSION:
+            raise ValueError(
+                f"Repository revision uses contract version {self.contract_version}; "
+                f"supported version is {REPOSITORY_CONTRACT_VERSION}."
+            )
+        if not revision_id:
+            raise ValueError("Repository revision id is required.")
+        object.__setattr__(self, "id", revision_id)
+        object.__setattr__(self, "display", str(self.display).strip() or revision_id)
+
+
+@dataclass(frozen=True)
+class WorkingCopyState:
+    revision: RepositoryRevision
+    clean: bool
+    changed_paths: tuple[str, ...] = ()
+    summary: str = ""
+    contract_version: int = REPOSITORY_CONTRACT_VERSION
+
+    def __post_init__(self) -> None:
+        if self.contract_version != REPOSITORY_CONTRACT_VERSION:
+            raise ValueError(
+                f"Working-copy state uses contract version {self.contract_version}; "
+                f"supported version is {REPOSITORY_CONTRACT_VERSION}."
+            )
+        paths = tuple(dict.fromkeys(str(path).strip() for path in self.changed_paths if str(path).strip()))
+        if self.clean and paths:
+            raise ValueError("A clean working copy cannot report changed paths.")
+        object.__setattr__(self, "clean", bool(self.clean))
+        object.__setattr__(self, "changed_paths", paths)
+        object.__setattr__(self, "summary", str(self.summary).strip())
+
+
+@dataclass(frozen=True)
+class AuthoritativeBase:
+    revision: RepositoryRevision
+    name: str = ""
+    refreshed: bool = False
+    contract_version: int = REPOSITORY_CONTRACT_VERSION
+
+    def __post_init__(self) -> None:
+        if self.contract_version != REPOSITORY_CONTRACT_VERSION:
+            raise ValueError(
+                f"Authoritative base uses contract version {self.contract_version}; "
+                f"supported version is {REPOSITORY_CONTRACT_VERSION}."
+            )
+        object.__setattr__(self, "name", str(self.name).strip())
+        object.__setattr__(self, "refreshed", bool(self.refreshed))
+
+
+@dataclass(frozen=True)
+class ChangeCaptureRequest:
+    message: str
+    paths: tuple[str, ...] = ()
+    metadata: dict[str, Any] = field(default_factory=dict)
+    contract_version: int = REPOSITORY_CONTRACT_VERSION
+
+    def __post_init__(self) -> None:
+        message = " ".join(str(self.message).split())
+        if self.contract_version != REPOSITORY_CONTRACT_VERSION:
+            raise ValueError(
+                f"Change-capture request uses contract version {self.contract_version}; "
+                f"supported version is {REPOSITORY_CONTRACT_VERSION}."
+            )
+        if not message:
+            raise ValueError("Change-capture message is required.")
+        object.__setattr__(self, "message", message)
+        object.__setattr__(
+            self,
+            "paths",
+            tuple(dict.fromkeys(str(path).strip() for path in self.paths if str(path).strip())),
+        )
+
+
+@dataclass(frozen=True)
+class ChangeCaptureResult:
+    revision: RepositoryRevision
+    changed_paths: tuple[str, ...]
+    summary: str = ""
+    contract_version: int = REPOSITORY_CONTRACT_VERSION
+
+    def __post_init__(self) -> None:
+        if self.contract_version != REPOSITORY_CONTRACT_VERSION:
+            raise ValueError(
+                f"Change-capture result uses contract version {self.contract_version}; "
+                f"supported version is {REPOSITORY_CONTRACT_VERSION}."
+            )
+        paths = tuple(dict.fromkeys(str(path).strip() for path in self.changed_paths if str(path).strip()))
+        if not paths:
+            raise ValueError("A captured change must report at least one changed path.")
+        object.__setattr__(self, "changed_paths", paths)
+        object.__setattr__(self, "summary", str(self.summary).strip())
+
+
+@dataclass(frozen=True)
+class WorkspaceRequest:
+    path: Path
+    base_revision: RepositoryRevision
+    workspace_id: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
+    contract_version: int = REPOSITORY_CONTRACT_VERSION
+
+    def __post_init__(self) -> None:
+        if self.contract_version != REPOSITORY_CONTRACT_VERSION:
+            raise ValueError(
+                f"Workspace request uses contract version {self.contract_version}; "
+                f"supported version is {REPOSITORY_CONTRACT_VERSION}."
+            )
+        object.__setattr__(self, "path", self.path.expanduser().resolve())
+        object.__setattr__(self, "workspace_id", str(self.workspace_id).strip())
+
+
+@dataclass(frozen=True)
+class RepositoryWorkspace:
+    id: str
+    path: Path
+    base_revision: RepositoryRevision
+    current_revision: RepositoryRevision
+    contract_version: int = REPOSITORY_CONTRACT_VERSION
+
+    def __post_init__(self) -> None:
+        workspace_id = str(self.id).strip()
+        if self.contract_version != REPOSITORY_CONTRACT_VERSION:
+            raise ValueError(
+                f"Repository workspace uses contract version {self.contract_version}; "
+                f"supported version is {REPOSITORY_CONTRACT_VERSION}."
+            )
+        if not workspace_id:
+            raise ValueError("Repository workspace id is required.")
+        object.__setattr__(self, "id", workspace_id)
+        object.__setattr__(self, "path", self.path.expanduser().resolve())
+
+
+@dataclass(frozen=True)
+class ReviewFeatures:
+    stacked_changes: bool = False
+    signals: bool = True
+    landing: bool = True
+    mutable_versions: bool = True
+    contract_version: int = REVIEW_CONTRACT_VERSION
+
+    def __post_init__(self) -> None:
+        if self.contract_version != REVIEW_CONTRACT_VERSION:
+            raise ValueError(
+                f"Review features use contract version {self.contract_version}; "
+                f"supported version is {REVIEW_CONTRACT_VERSION}."
+            )
+
+    def supports(self, feature: str) -> bool:
+        name = str(feature).strip().lower().replace("-", "_")
+        if name not in {
+            "stacked_changes",
+            "signals",
+            "landing",
+            "mutable_versions",
+        }:
+            raise ValueError(f"Unknown review feature {feature!r}.")
+        return bool(getattr(self, name))
+
+
+@dataclass(frozen=True)
+class ReviewIdentity:
+    id: str
+    url: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
+    contract_version: int = REVIEW_CONTRACT_VERSION
+
+    def __post_init__(self) -> None:
+        review_id = str(self.id).strip()
+        if self.contract_version != REVIEW_CONTRACT_VERSION:
+            raise ValueError(
+                f"Review identity uses contract version {self.contract_version}; "
+                f"supported version is {REVIEW_CONTRACT_VERSION}."
+            )
+        if not review_id:
+            raise ValueError("Review identity is required.")
+        object.__setattr__(self, "id", review_id)
+        object.__setattr__(self, "url", str(self.url).strip())
+
+
+@dataclass(frozen=True)
+class ReviewVersion:
+    id: str
+    revision: RepositoryRevision
+    created_at: str = ""
+    contract_version: int = REVIEW_CONTRACT_VERSION
+
+    def __post_init__(self) -> None:
+        version_id = str(self.id).strip()
+        if self.contract_version != REVIEW_CONTRACT_VERSION:
+            raise ValueError(
+                f"Review version uses contract version {self.contract_version}; "
+                f"supported version is {REVIEW_CONTRACT_VERSION}."
+            )
+        if not version_id:
+            raise ValueError("Review version id is required.")
+        object.__setattr__(self, "id", version_id)
+        object.__setattr__(self, "created_at", str(self.created_at).strip())
+
+
+@dataclass(frozen=True)
+class ReviewSignal:
+    name: str
+    status: str
+    summary: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
+    contract_version: int = REVIEW_CONTRACT_VERSION
+
+    def __post_init__(self) -> None:
+        name = str(self.name).strip()
+        status = str(self.status).strip().lower().replace("_", "-")
+        if self.contract_version != REVIEW_CONTRACT_VERSION:
+            raise ValueError(
+                f"Review signal uses contract version {self.contract_version}; "
+                f"supported version is {REVIEW_CONTRACT_VERSION}."
+            )
+        if not name or not status:
+            raise ValueError("Review signals require name and status.")
+        object.__setattr__(self, "name", name)
+        object.__setattr__(self, "status", status)
+        object.__setattr__(self, "summary", str(self.summary).strip())
+
+
+@dataclass(frozen=True)
+class ReviewSubmission:
+    title: str
+    body: str
+    revision: RepositoryRevision
+    base_revision: RepositoryRevision | None = None
+    review: ReviewIdentity | None = None
+    dependencies: tuple[ReviewIdentity, ...] = ()
+    evidence: tuple[str, ...] = ()
+    draft: bool = False
+    metadata: dict[str, Any] = field(default_factory=dict)
+    contract_version: int = REVIEW_CONTRACT_VERSION
+
+    def __post_init__(self) -> None:
+        title = " ".join(str(self.title).split())
+        if self.contract_version != REVIEW_CONTRACT_VERSION:
+            raise ValueError(
+                f"Review submission uses contract version {self.contract_version}; "
+                f"supported version is {REVIEW_CONTRACT_VERSION}."
+            )
+        if not title:
+            raise ValueError("Review title is required.")
+        object.__setattr__(self, "title", title)
+        object.__setattr__(self, "body", str(self.body))
+        object.__setattr__(
+            self,
+            "evidence",
+            tuple(dict.fromkeys(str(item).strip() for item in self.evidence if str(item).strip())),
+        )
+        object.__setattr__(self, "draft", bool(self.draft))
+
+
+@dataclass(frozen=True)
+class ReviewRecord:
+    identity: ReviewIdentity
+    title: str
+    body: str
+    state: str
+    versions: tuple[ReviewVersion, ...]
+    dependencies: tuple[ReviewIdentity, ...] = ()
+    signals: tuple[ReviewSignal, ...] = ()
+    draft: bool = False
+    contract_version: int = REVIEW_CONTRACT_VERSION
+
+    def __post_init__(self) -> None:
+        state = str(self.state).strip().lower().replace("_", "-")
+        if self.contract_version != REVIEW_CONTRACT_VERSION:
+            raise ValueError(
+                f"Review record uses contract version {self.contract_version}; "
+                f"supported version is {REVIEW_CONTRACT_VERSION}."
+            )
+        if not state:
+            raise ValueError("Review state is required.")
+        if not self.versions:
+            raise ValueError("A review record requires at least one version.")
+        object.__setattr__(self, "title", " ".join(str(self.title).split()))
+        object.__setattr__(self, "body", str(self.body))
+        object.__setattr__(self, "state", state)
+        object.__setattr__(self, "draft", bool(self.draft))
+
+
+@dataclass(frozen=True)
+class ReviewCloseRequest:
+    review: ReviewIdentity
+    note: str = ""
+    contract_version: int = REVIEW_CONTRACT_VERSION
+
+    def __post_init__(self) -> None:
+        if self.contract_version != REVIEW_CONTRACT_VERSION:
+            raise ValueError(
+                f"Review-close request uses contract version {self.contract_version}; "
+                f"supported version is {REVIEW_CONTRACT_VERSION}."
+            )
+        object.__setattr__(self, "note", str(self.note).strip())
+
+
+@dataclass(frozen=True)
+class ReviewLandRequest:
+    review: ReviewIdentity
+    strategy: str = "merge"
+    contract_version: int = REVIEW_CONTRACT_VERSION
+
+    def __post_init__(self) -> None:
+        strategy = str(self.strategy).strip().lower().replace("_", "-")
+        if self.contract_version != REVIEW_CONTRACT_VERSION:
+            raise ValueError(
+                f"Review-land request uses contract version {self.contract_version}; "
+                f"supported version is {REVIEW_CONTRACT_VERSION}."
+            )
+        if not strategy:
+            raise ValueError("Review landing strategy is required.")
+        object.__setattr__(self, "strategy", strategy)
+
+
+@dataclass(frozen=True)
+class ReviewLandResult:
+    review: ReviewIdentity
+    status: str
+    revision: RepositoryRevision | None = None
+    message: str = ""
+    contract_version: int = REVIEW_CONTRACT_VERSION
+
+    def __post_init__(self) -> None:
+        status = str(self.status).strip().lower().replace("_", "-")
+        if self.contract_version != REVIEW_CONTRACT_VERSION:
+            raise ValueError(
+                f"Review-land result uses contract version {self.contract_version}; "
+                f"supported version is {REVIEW_CONTRACT_VERSION}."
+            )
+        if not status:
+            raise ValueError("Review landing status is required.")
+        object.__setattr__(self, "status", status)
+        object.__setattr__(self, "message", str(self.message).strip())
+
+
+@dataclass(frozen=True)
 class LocalPublishResult:
     branch: str
     commit_message: str
@@ -677,6 +1076,113 @@ class AgentRuntime(Protocol):
 
 
 @runtime_checkable
+class RepositoryProvider(Protocol):
+    """Portable repository operations without required branches or staging."""
+
+    name: str
+    provider_kind: str
+    capabilities: ProviderCapabilities
+    repository_features: RepositoryFeatures
+
+    def inspect_working_copy(
+        self,
+        root: Path | None = None,
+    ) -> WorkingCopyState: ...
+
+    def resolve_repository_revision(
+        self,
+        reference: str,
+        root: Path | None = None,
+    ) -> RepositoryRevision | None: ...
+
+    def repository_is_ancestor(
+        self,
+        ancestor: RepositoryRevision,
+        descendant: RepositoryRevision,
+        root: Path | None = None,
+    ) -> bool: ...
+
+    def authoritative_base(
+        self,
+        root: Path | None = None,
+        *,
+        refresh: bool = False,
+    ) -> AuthoritativeBase: ...
+
+    def capture_change(
+        self,
+        request: ChangeCaptureRequest,
+        root: Path | None = None,
+    ) -> ChangeCaptureResult: ...
+
+    def restore_repository_revision(
+        self,
+        revision: RepositoryRevision,
+        root: Path | None = None,
+    ) -> None: ...
+
+    def list_repository_workspaces(
+        self,
+        root: Path | None = None,
+    ) -> tuple[RepositoryWorkspace, ...]: ...
+
+    def create_repository_workspace(
+        self,
+        request: WorkspaceRequest,
+        root: Path | None = None,
+    ) -> RepositoryWorkspace: ...
+
+    def remove_repository_workspace(
+        self,
+        workspace: RepositoryWorkspace,
+        root: Path | None = None,
+        *,
+        force: bool = False,
+    ) -> None: ...
+
+
+@runtime_checkable
+class ReviewProvider(Protocol):
+    """Portable review operations using opaque review identities."""
+
+    name: str
+    provider_kind: str
+    capabilities: ProviderCapabilities
+    review_features: ReviewFeatures
+
+    def publish_review(
+        self,
+        request: ReviewSubmission,
+        root: Path | None = None,
+    ) -> ReviewRecord: ...
+
+    def inspect_review(
+        self,
+        review: ReviewIdentity,
+        root: Path | None = None,
+    ) -> ReviewRecord: ...
+
+    def list_open_reviews(
+        self,
+        root: Path | None = None,
+        *,
+        limit: int = 20,
+    ) -> tuple[ReviewRecord, ...]: ...
+
+    def close_review(
+        self,
+        request: ReviewCloseRequest,
+        root: Path | None = None,
+    ) -> ReviewRecord: ...
+
+    def land_review(
+        self,
+        request: ReviewLandRequest,
+        root: Path | None = None,
+    ) -> ReviewLandResult: ...
+
+
+@runtime_checkable
 class VersionControlProvider(Protocol):
     name: str
     provider_kind: str
@@ -823,6 +1329,32 @@ class ForgeProvider(Protocol):
     ) -> tuple[Any, ...]: ...
 
     def merge_pull_request(self, reference: str, root: Path | None = None) -> Any: ...
+
+
+def require_repository_features(
+    provider: RepositoryProvider,
+    *features: str,
+) -> None:
+    missing = tuple(
+        feature
+        for feature in features
+        if not provider.repository_features.supports(feature)
+    )
+    if missing:
+        raise UnsupportedProviderFeature("repository", missing)
+
+
+def require_review_features(
+    provider: ReviewProvider,
+    *features: str,
+) -> None:
+    missing = tuple(
+        feature
+        for feature in features
+        if not provider.review_features.supports(feature)
+    )
+    if missing:
+        raise UnsupportedProviderFeature("review", missing)
 
 
 def _normalize_capability(value: object) -> str:
