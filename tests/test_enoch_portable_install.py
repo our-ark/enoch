@@ -59,6 +59,13 @@ class EnochPortableInstallTests(unittest.TestCase):
     def test_reference_providers_share_the_core_contract_pin(self) -> None:
         root_metadata = _project_metadata(ROOT / "pyproject.toml")
         core_contract = _dependency(root_metadata["project"]["dependencies"], "our-ark-provider-kit")
+        manifest = _project_metadata(ROOT / "genesis.toml")
+        runtime_contracts = [
+            dependency["requirement"]
+            for dependency in manifest["runtime_dependencies"]
+            if dependency["name"] == "provider-kit"
+        ]
+        self.assertEqual(runtime_contracts, [core_contract])
         for package in ("github", "launchd", "systemd", "telegram"):
             metadata = _project_metadata(ROOT / "libraries" / package / "pyproject.toml")
             provider_contract = _dependency(
