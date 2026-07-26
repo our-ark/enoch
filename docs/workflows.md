@@ -13,6 +13,7 @@ The engine owns:
 - interrupted-worker recovery;
 - queue inspection and task lookup;
 - task status, runtime evidence, worktree, and publication records.
+- persisted task capability requirements used by the application authorizer.
 
 `LocalWorkflowEngine` is the default file-backed implementation. It preserves
 the existing `.enoch/task_queue.json` state and serializes mutations through
@@ -66,6 +67,12 @@ portable.
 atomically moves one due task into the running slot, and `claim()` binds that
 task to a worker identity and process. `heartbeat()` refreshes the durable
 claim. `finalize()` accepts only `completed`, `failed`, or `cancelled`.
+
+Every core repository task records `runtime.execute`, `vcs.write`, and
+`forge.publish` requirements when it is queued. Profiles may add requirements
+but cannot remove these core guarantees. Requirements survive pause, restart,
+recovery, and retry, and authorization denial is a permanent, non-retryable
+task failure recorded before the runtime or repository provider is invoked.
 
 The default engine uses worker identity checks on owned mutations and daemon
 epoch fencing around every state-changing operation. `inspect()` and `find()`

@@ -11,6 +11,7 @@ ConversationId = int | str
 MessageId = int | str
 Cursor = int | str
 ProgressCallback = Callable[[int, str], None]
+CAPABILITY_CONTRACT_VERSION = 1
 RUNTIME_CONTRACT_VERSION = 1
 RUNTIME_EXECUTION_CONTRACT_VERSION = 1
 NOTIFICATION_CONTRACT_VERSION = 1
@@ -76,6 +77,124 @@ class VersionControlProviderError(RuntimeError):
 
 class ServiceProviderError(RuntimeError):
     """Raised when a host service manager operation fails."""
+
+
+@dataclass(frozen=True)
+class ProviderCapabilities:
+    provider_kind: str
+    capabilities: frozenset[str]
+    contract_version: int = CAPABILITY_CONTRACT_VERSION
+
+    def __post_init__(self) -> None:
+        kind = _capability_segment(self.provider_kind, "provider kind")
+        if self.contract_version != CAPABILITY_CONTRACT_VERSION:
+            raise ValueError(
+                f"Provider capabilities use contract version {self.contract_version}; "
+                f"supported version is {CAPABILITY_CONTRACT_VERSION}."
+            )
+        capabilities = frozenset(
+            _normalize_capability(value)
+            for value in self.capabilities
+        )
+        invalid = sorted(
+            capability
+            for capability in capabilities
+            if capability.split(".", 1)[0] != kind
+        )
+        if invalid:
+            raise ValueError(
+                f"Provider kind {kind} cannot declare capabilities for another "
+                f"provider kind: {', '.join(invalid)}."
+            )
+        object.__setattr__(self, "provider_kind", kind)
+        object.__setattr__(self, "capabilities", capabilities)
+
+    def supports(self, capability: str) -> bool:
+        return _normalize_capability(capability) in self.capabilities
+
+
+@dataclass(frozen=True)
+class TaskRequirements:
+    capabilities: tuple[str, ...] = ()
+    reason: str = ""
+    contract_version: int = CAPABILITY_CONTRACT_VERSION
+
+    def __post_init__(self) -> None:
+        if self.contract_version != CAPABILITY_CONTRACT_VERSION:
+            raise ValueError(
+                f"Task requirements use contract version {self.contract_version}; "
+                f"supported version is {CAPABILITY_CONTRACT_VERSION}."
+            )
+        capabilities = tuple(
+            dict.fromkeys(
+                _normalize_capability(value)
+                for value in self.capabilities
+            )
+        )
+        object.__setattr__(self, "capabilities", capabilities)
+        object.__setattr__(self, "reason", str(self.reason).strip())
+
+
+@dataclass(frozen=True)
+class AuthorizationRequest:
+    action: str
+    requirements: TaskRequirements
+    provider_capabilities: tuple[ProviderCapabilities, ...]
+    task_id: int | None = None
+    profile_name: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
+    contract_version: int = CAPABILITY_CONTRACT_VERSION
+
+    def __post_init__(self) -> None:
+        if self.contract_version != CAPABILITY_CONTRACT_VERSION:
+            raise ValueError(
+                f"Authorization request uses contract version {self.contract_version}; "
+                f"supported version is {CAPABILITY_CONTRACT_VERSION}."
+            )
+        action = str(self.action).strip().lower().replace("_", "-")
+        if not action:
+            raise ValueError("Authorization action is required.")
+        object.__setattr__(self, "action", action)
+        object.__setattr__(self, "profile_name", self.profile_name.strip().lower())
+
+
+@dataclass(frozen=True)
+class AuthorizationDecision:
+    allowed: bool
+    reason: str = ""
+    denied_capabilities: tuple[str, ...] = ()
+    contract_version: int = CAPABILITY_CONTRACT_VERSION
+
+    def __post_init__(self) -> None:
+        if self.contract_version != CAPABILITY_CONTRACT_VERSION:
+            raise ValueError(
+                f"Authorization decision uses contract version {self.contract_version}; "
+                f"supported version is {CAPABILITY_CONTRACT_VERSION}."
+            )
+        denied = tuple(
+            dict.fromkeys(
+                _normalize_capability(value)
+                for value in self.denied_capabilities
+            )
+        )
+        if self.allowed and denied:
+            raise ValueError(
+                "An allowed authorization decision cannot deny capabilities."
+            )
+        object.__setattr__(self, "allowed", bool(self.allowed))
+        object.__setattr__(self, "reason", str(self.reason).strip())
+        object.__setattr__(self, "denied_capabilities", denied)
+
+
+@runtime_checkable
+class AuthorizationPolicy(Protocol):
+    def authorize(self, request: AuthorizationRequest) -> AuthorizationDecision: ...
+
+
+@runtime_checkable
+class CapabilityProvider(Protocol):
+    @property
+    def capabilities(self) -> ProviderCapabilities: ...
 
 
 @dataclass(frozen=True)
@@ -704,3 +823,27 @@ class ForgeProvider(Protocol):
     ) -> tuple[Any, ...]: ...
 
     def merge_pull_request(self, reference: str, root: Path | None = None) -> Any: ...
+
+
+def _normalize_capability(value: object) -> str:
+    text = str(value).strip().lower().replace("_", "-")
+    parts = text.split(".")
+    if len(parts) != 2:
+        raise ValueError(
+            f"Invalid capability {value!r}; expected <provider-kind>.<operation>."
+        )
+    return ".".join(
+        _capability_segment(part, "capability segment")
+        for part in parts
+    )
+
+
+def _capability_segment(value: object, label: str) -> str:
+    text = str(value).strip().lower().replace("_", "-")
+    if (
+        not text
+        or not text[0].isalpha()
+        or any(not (character.isalnum() or character == "-") for character in text)
+    ):
+        raise ValueError(f"Invalid {label} {value!r}.")
+    return text

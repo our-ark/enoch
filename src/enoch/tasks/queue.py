@@ -13,6 +13,7 @@ from enoch.providers.contracts import (
     ConversationId,
     MessageId,
     RuntimeResult,
+    TaskRequirements,
     normalize_conversation_id,
     normalize_message_id,
 )
@@ -20,7 +21,7 @@ from enoch.tasks.events import normalize_task_initiator, normalize_task_source, 
 from enoch.state import StateCorruptionError, file_transaction, load_json_object
 
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 DEFAULT_MAX_ATTEMPTS = 3
 PULL_REQUEST_URL_PATTERN = re.compile(r"https://[^\s]+/(?:pull|pulls|merge_requests)/\d+")
 
@@ -58,6 +59,7 @@ class TaskJob:
     attempt: int = 0
     max_attempts: int = DEFAULT_MAX_ATTEMPTS
     timeout_seconds: int | None = None
+    required_capabilities: tuple[str, ...] = ()
     next_attempt_at: str = ""
     failure_code: str = ""
     failure_class: str = ""
@@ -122,6 +124,7 @@ def enqueue_task(
     source_task_id: int | None = None,
     max_attempts: int = DEFAULT_MAX_ATTEMPTS,
     timeout_seconds: int | None = None,
+    required_capabilities: tuple[str, ...] = (),
     idempotency_key: str = "",
 ) -> TaskJob:
     cleaned = " ".join(text.split())
@@ -131,6 +134,7 @@ def enqueue_task(
     initiated_by = normalize_task_initiator(initiated_by)
     max_attempts = _required_positive_int(max_attempts, "Task max attempts")
     timeout_seconds = _optional_positive_int(timeout_seconds, "Task timeout")
+    required_capabilities = TaskRequirements(required_capabilities).capabilities
     with _queue_transaction(root):
         data = _load_queue(root)
         if existing := _find_task_by_idempotency_key(data, idempotency_key):
@@ -155,6 +159,7 @@ def enqueue_task(
             source_task_id=_positive_int(source_task_id),
             max_attempts=max_attempts,
             timeout_seconds=timeout_seconds,
+            required_capabilities=required_capabilities,
             idempotency_key=idempotency_key.strip(),
         )
         pending = data.setdefault("pending", [])
@@ -244,6 +249,7 @@ def retry_failed_task(
             published_remotely=original.published_remotely,
             max_attempts=original.max_attempts,
             timeout_seconds=original.timeout_seconds,
+            required_capabilities=original.required_capabilities,
         )
         pending = data.setdefault("pending", [])
         pending.append(_job_to_dict(job))
@@ -287,6 +293,7 @@ def enqueue_task_front(
     source_task_id: int | None = None,
     max_attempts: int = DEFAULT_MAX_ATTEMPTS,
     timeout_seconds: int | None = None,
+    required_capabilities: tuple[str, ...] = (),
     idempotency_key: str = "",
 ) -> TaskJob:
     cleaned = " ".join(text.split())
@@ -296,6 +303,7 @@ def enqueue_task_front(
     initiated_by = normalize_task_initiator(initiated_by)
     max_attempts = _required_positive_int(max_attempts, "Task max attempts")
     timeout_seconds = _optional_positive_int(timeout_seconds, "Task timeout")
+    required_capabilities = TaskRequirements(required_capabilities).capabilities
     with _queue_transaction(root):
         data = _load_queue(root)
         if existing := _find_task_by_idempotency_key(data, idempotency_key):
@@ -320,6 +328,7 @@ def enqueue_task_front(
             source_task_id=_positive_int(source_task_id),
             max_attempts=max_attempts,
             timeout_seconds=timeout_seconds,
+            required_capabilities=required_capabilities,
             idempotency_key=idempotency_key.strip(),
         )
         pending = data.setdefault("pending", [])
@@ -352,6 +361,7 @@ def begin_direct_task(
     source_task_id: int | None = None,
     max_attempts: int = DEFAULT_MAX_ATTEMPTS,
     timeout_seconds: int | None = None,
+    required_capabilities: tuple[str, ...] = (),
     idempotency_key: str = "",
 ) -> TaskJob:
     cleaned = " ".join(text.split())
@@ -361,6 +371,7 @@ def begin_direct_task(
     initiated_by = normalize_task_initiator(initiated_by)
     max_attempts = _required_positive_int(max_attempts, "Task max attempts")
     timeout_seconds = _optional_positive_int(timeout_seconds, "Task timeout")
+    required_capabilities = TaskRequirements(required_capabilities).capabilities
     with _queue_transaction(root):
         data = _load_queue(root)
         if existing := _find_task_by_idempotency_key(data, idempotency_key):
@@ -390,6 +401,7 @@ def begin_direct_task(
             attempt=1,
             max_attempts=max_attempts,
             timeout_seconds=timeout_seconds,
+            required_capabilities=required_capabilities,
             idempotency_key=idempotency_key.strip(),
         )
         data["running"] = _job_to_dict(job)
@@ -1445,6 +1457,12 @@ def _parse_job(raw: object) -> TaskJob | None:
     attempt = max(0, _int(raw.get("attempt"), default=attempt_default))
     max_attempts = max(1, _int(raw.get("max_attempts"), default=DEFAULT_MAX_ATTEMPTS))
     timeout_seconds = _positive_int(raw.get("timeout_seconds"))
+    try:
+        required_capabilities = TaskRequirements(
+            _parse_string_tuple(raw.get("required_capabilities"))
+        ).capabilities
+    except ValueError:
+        required_capabilities = ()
     next_attempt_at = str(raw.get("next_attempt_at") or "").strip()
     failure_code = str(raw.get("failure_code") or "").strip()
     failure_class = str(raw.get("failure_class") or "").strip()
@@ -1503,6 +1521,7 @@ def _parse_job(raw: object) -> TaskJob | None:
         attempt=attempt,
         max_attempts=max_attempts,
         timeout_seconds=timeout_seconds,
+        required_capabilities=required_capabilities,
         next_attempt_at=next_attempt_at,
         failure_code=failure_code,
         failure_class=failure_class,
@@ -1558,6 +1577,7 @@ def _job_to_dict(job: TaskJob | None) -> dict:
         "attempt": job.attempt,
         "max_attempts": job.max_attempts,
         "timeout_seconds": job.timeout_seconds,
+        "required_capabilities": list(job.required_capabilities),
         "next_attempt_at": job.next_attempt_at,
         "failure_code": job.failure_code,
         "failure_class": job.failure_class,
@@ -1610,6 +1630,7 @@ def _replace_job(job: TaskJob, **changes: object) -> TaskJob:
         "attempt": job.attempt,
         "max_attempts": job.max_attempts,
         "timeout_seconds": job.timeout_seconds,
+        "required_capabilities": job.required_capabilities,
         "next_attempt_at": job.next_attempt_at,
         "failure_code": job.failure_code,
         "failure_class": job.failure_class,

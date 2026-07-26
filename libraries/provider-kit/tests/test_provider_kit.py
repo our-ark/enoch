@@ -16,14 +16,18 @@ from our_ark_provider_kit import (
     AgentRuntimeTimedOut,
     Attachment,
     AttachmentProvider,
+    AuthorizationDecision,
+    AuthorizationRequest,
     ChatEvent,
     ChatProvider,
     DurableNotificationProvider,
     NotificationCapabilities,
     NotificationIntent,
     NotificationReceipt,
+    ProviderCapabilities,
     RuntimeExecutionControl,
     RuntimeProgress,
+    TaskRequirements,
     agent_context,
     normalize_conversation_id,
     normalize_message_id,
@@ -85,6 +89,33 @@ class ProviderKitTests(unittest.TestCase):
 
         self.assertEqual(event.attachments, (attachment,))
         self.assertEqual(event.attachments[0].metadata["width"], 640)
+
+    def test_capability_contracts_normalize_and_validate_requirements(self) -> None:
+        capabilities = ProviderCapabilities(
+            provider_kind="runtime",
+            capabilities=frozenset({"runtime.respond", "runtime.execute"}),
+        )
+        requirements = TaskRequirements(
+            capabilities=("runtime.execute", "runtime.execute"),
+            reason="run task",
+        )
+        request = AuthorizationRequest(
+            action="task_execute",
+            requirements=requirements,
+            provider_capabilities=(capabilities,),
+        )
+        decision = AuthorizationDecision(allowed=True)
+
+        self.assertTrue(capabilities.supports("runtime.execute"))
+        self.assertEqual(requirements.capabilities, ("runtime.execute",))
+        self.assertEqual(request.action, "task-execute")
+        self.assertTrue(decision.allowed)
+
+        with self.assertRaisesRegex(ValueError, "another provider kind"):
+            ProviderCapabilities(
+                provider_kind="runtime",
+                capabilities=frozenset({"forge.publish"}),
+            )
 
     def test_chat_provider_contract_is_runtime_checkable(self) -> None:
         self.assertIsInstance(FakeChatProvider(), ChatProvider)

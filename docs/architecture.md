@@ -21,6 +21,7 @@ and validation boundary.
 | `enoch.evolution.sources` | Feedback, experience, and brainstorming evidence adapters |
 | `enoch.operations` | Background-service facade and software update lifecycle |
 | `enoch.providers` | Shared provider contracts, selection, and core adapters |
+| `enoch.providers.authorization` | Provider grants, persisted task requirements, and deny-only policy composition |
 | `enoch.profiles` | Versioned downstream-agent commands, prompt context, lifecycle hooks, and discovery |
 | `enoch.workflows` | Versioned queue lifecycle contract and fenced local engine |
 | `enoch.memory` | Durable memory paths, prompts, and storage |

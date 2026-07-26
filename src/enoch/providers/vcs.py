@@ -6,7 +6,10 @@ from pathlib import Path
 import subprocess
 
 from enoch.paths import repo_root
-from enoch.providers.contracts import VersionControlProviderError
+from enoch.providers.contracts import (
+    ProviderCapabilities,
+    VersionControlProviderError,
+)
 
 
 @dataclass(frozen=True)
@@ -19,6 +22,10 @@ class VersionControlResult:
 class GitVersionControlProvider:
     name = "git"
     provider_kind = "vcs"
+    capabilities = ProviderCapabilities(
+        provider_kind="vcs",
+        capabilities=frozenset({"vcs.read", "vcs.write"}),
+    )
     remote = "origin"
     main_branch = "main"
 

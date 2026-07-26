@@ -10,6 +10,7 @@ from enoch.providers.contracts import (
     EvolutionProvenance,
     ForgeProviderError,
     LocalPublishResult,
+    ProviderCapabilities,
     PullRequestResult,
     RemotePublishResult,
 )
@@ -26,6 +27,17 @@ class FunctionForgeProvider:
     merge_fn: Callable[..., Any]
     name: str = "function-forge"
     provider_kind: str = "forge"
+    capabilities: ProviderCapabilities = ProviderCapabilities(
+        provider_kind="forge",
+        capabilities=frozenset(
+            {
+                "forge.read",
+                "forge.publish",
+                "forge.maintain",
+                "forge.merge",
+            }
+        ),
+    )
 
     def close_pull_request(
         self,
@@ -69,6 +81,10 @@ class LocalForgeProvider:
     name = "local"
     provider_kind = "forge"
     supports_remote_review = False
+    capabilities = ProviderCapabilities(
+        provider_kind="forge",
+        capabilities=frozenset({"forge.read", "forge.publish"}),
+    )
 
     @staticmethod
     def feature_title(text: str) -> str:

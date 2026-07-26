@@ -13,6 +13,7 @@ from enoch.app.epoch import (
     require_current_daemon_epoch,
 )
 from enoch.providers.contracts import RuntimeExecutionControl
+from enoch.providers.authorization import CapabilityAuthorizer
 
 
 Result = TypeVar("Result")
@@ -26,10 +27,12 @@ class DaemonEffectFence:
         root: Path,
         epoch: DaemonEpoch,
         *,
+        authorizer: CapabilityAuthorizer | None = None,
         monitor_interval_seconds: float = 0.1,
     ) -> None:
         self.root = root
         self.epoch = epoch
+        self.authorizer = authorizer
         self.monitor_interval_seconds = max(0.01, monitor_interval_seconds)
 
     def require_current(self) -> None:
@@ -41,6 +44,24 @@ class DaemonEffectFence:
         with daemon_epoch_guard(self.epoch, self.root):
             return effect(*args, **kwargs)
 
+    def run_authorized(
+        self,
+        action: str,
+        requirements: tuple[str, ...],
+        effect: Callable[..., Result],
+        *args,
+        task_id: int | None = None,
+        metadata: dict[str, object] | None = None,
+        **kwargs,
+    ) -> Result:
+        self.authorize(
+            action,
+            requirements,
+            task_id=task_id,
+            metadata=metadata,
+        )
+        return self.run(effect, *args, **kwargs)
+
     def run_runtime(
         self,
         effect: Callable[[RuntimeExecutionControl], Result],
@@ -50,6 +71,41 @@ class DaemonEffectFence:
 
         with self.runtime_control(execution) as fenced_execution:
             return effect(fenced_execution)
+
+    def run_runtime_authorized(
+        self,
+        action: str,
+        requirements: tuple[str, ...],
+        effect: Callable[[RuntimeExecutionControl], Result],
+        execution: RuntimeExecutionControl,
+        *,
+        task_id: int | None = None,
+        metadata: dict[str, object] | None = None,
+    ) -> Result:
+        self.authorize(
+            action,
+            requirements,
+            task_id=task_id,
+            metadata=metadata,
+        )
+        return self.run_runtime(effect, execution)
+
+    def authorize(
+        self,
+        action: str,
+        requirements: tuple[str, ...],
+        *,
+        task_id: int | None = None,
+        metadata: dict[str, object] | None = None,
+    ) -> None:
+        self.require_current()
+        if self.authorizer is not None:
+            self.authorizer.require(
+                action,
+                requirements,
+                task_id=task_id,
+                metadata=metadata,
+            )
 
     @contextmanager
     def runtime_control(

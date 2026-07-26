@@ -8,17 +8,20 @@ from typing import Callable, Literal
 from enoch.identity import Identity
 from enoch.providers.contracts import (
     AgentRuntime,
+    AuthorizationDecision,
+    AuthorizationRequest,
     ChatEvent,
     ChatProvider,
     ConversationId,
     ForgeProvider,
+    TaskRequirements,
 )
 from enoch.tasks.queue import TaskJob
 
 
-PROFILE_API_VERSION = 2
+PROFILE_API_VERSION = 3
 PromptPurpose = Literal["conversation", "image", "task-context", "task"]
-TaskEnqueuer = Callable[[str, str], TaskJob]
+TaskEnqueuer = Callable[[str, str, TaskRequirements], TaskJob]
 
 
 class ProfileError(RuntimeError):
@@ -49,9 +52,22 @@ class CommandContext:
     forge: ForgeProvider
     _enqueue: TaskEnqueuer = field(repr=False)
 
-    def enqueue_task(self, request: str, *, context: str = "") -> TaskJob:
+    def enqueue_task(
+        self,
+        request: str,
+        *,
+        context: str = "",
+        required_capabilities: tuple[str, ...] = (),
+    ) -> TaskJob:
         """Queue human-requested work through Enoch's single task queue."""
-        return self._enqueue(request, context)
+        return self._enqueue(
+            request,
+            context,
+            TaskRequirements(
+                capabilities=required_capabilities,
+                reason=f"Profile command {self.command} queued this task.",
+            ),
+        )
 
 
 CommandHandler = Callable[[CommandContext], str]
@@ -63,6 +79,7 @@ class CommandSpec:
     summary: str
     handler: CommandHandler
     usage: str = ""
+    required_capabilities: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         name = _command_name(self.name)
@@ -71,6 +88,11 @@ class CommandSpec:
         object.__setattr__(self, "name", name)
         object.__setattr__(self, "summary", self.summary.strip())
         object.__setattr__(self, "usage", self.usage.strip())
+        object.__setattr__(
+            self,
+            "required_capabilities",
+            TaskRequirements(self.required_capabilities).capabilities,
+        )
 
     @property
     def command(self) -> str:
@@ -141,6 +163,33 @@ class WorkflowPolicy:
 
 
 @dataclass(frozen=True)
+class CapabilityPolicy:
+    """Deny-only profile policy applied to every governed provider effect."""
+
+    denied_capabilities: tuple[str, ...] = ()
+    reason: str = ""
+
+    def __post_init__(self) -> None:
+        denied = TaskRequirements(self.denied_capabilities).capabilities
+        object.__setattr__(self, "denied_capabilities", denied)
+        object.__setattr__(self, "reason", self.reason.strip())
+
+    def authorize(self, request: AuthorizationRequest) -> AuthorizationDecision:
+        denied = tuple(
+            capability
+            for capability in request.requirements.capabilities
+            if capability in self.denied_capabilities
+        )
+        if not denied:
+            return AuthorizationDecision(allowed=True)
+        return AuthorizationDecision(
+            allowed=False,
+            reason=self.reason or "The active profile denies this capability.",
+            denied_capabilities=denied,
+        )
+
+
+@dataclass(frozen=True)
 class ProfilePresentation:
     """Bounded human-facing labels owned by a downstream profile."""
 
@@ -181,6 +230,7 @@ class AgentProfile:
     commands: tuple[CommandSpec, ...] = ()
     prompt_contributors: tuple[PromptContributor, ...] = ()
     workflow: WorkflowPolicy = field(default_factory=WorkflowPolicy)
+    authorization: CapabilityPolicy = field(default_factory=CapabilityPolicy)
     presentation: ProfilePresentation = field(default_factory=ProfilePresentation)
     lifecycle: LifecycleHooks = field(default_factory=LifecycleHooks)
 

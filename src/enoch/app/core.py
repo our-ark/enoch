@@ -104,7 +104,6 @@ from enoch.app.epoch import (
     DaemonEpoch,
     StaleDaemonEpoch,
     begin_daemon_epoch,
-    daemon_epoch_guard,
     require_current_daemon_epoch,
 )
 from enoch.app.effects import DaemonEffectFence
@@ -190,6 +189,7 @@ from enoch.providers.contracts import (
     AgentRuntimeError,
     AgentRuntimeTimedOut,
     Attachment,
+    AuthorizationPolicy,
     ChatEvent,
     ChatProvider,
     ChatProviderError,
@@ -200,6 +200,12 @@ from enoch.providers.contracts import (
     MessageId,
     RuntimeExecutionControl,
     normalize_message_id,
+)
+from enoch.providers.authorization import (
+    DEFAULT_TASK_REQUIREMENTS,
+    CapabilityAuthorizationError,
+    CapabilityAuthorizer,
+    CompositeAuthorizationPolicy,
 )
 from enoch.providers.forge import FunctionForgeProvider
 from enoch.providers.registry import ProviderError, load_provider
@@ -406,6 +412,7 @@ class EnochApplication:
         profile: AgentProfile | None = None,
         daemon_epoch: DaemonEpoch | None = None,
         workflow: WorkflowEngine | None = None,
+        authorization_policy: AuthorizationPolicy | None = None,
     ) -> None:
         self.identity = identity
         self.root = root
@@ -414,17 +421,6 @@ class EnochApplication:
         self.daemon_epoch = daemon_epoch or begin_daemon_epoch(
             root,
             provider=self.channel_name,
-        )
-        self.effect_fence = DaemonEffectFence(root, self.daemon_epoch)
-        self.notifications = NotificationDeliveryService(
-            client,
-            self.channel_name,
-            root,
-            self.daemon_epoch,
-        )
-        self._notification_order_lock = threading.RLock()
-        self.workflow = validate_workflow_engine(
-            workflow or LocalWorkflowEngine(root, epoch=self.daemon_epoch)
         )
         self._forge_injected = forge is not None
         self.runtime = runtime or FunctionAgentRuntime(
@@ -443,6 +439,32 @@ class EnochApplication:
             merge_fn=lambda *args, **kwargs: merge_pull_request(*args, **kwargs),
         )
         self.profile = profile or AgentProfile(name="enoch")
+        policies = tuple(
+            policy
+            for policy in (self.profile.authorization, authorization_policy)
+            if policy is not None
+        )
+        self.authorization = CapabilityAuthorizer(
+            self._provider_for_authorization,
+            policy=CompositeAuthorizationPolicy(policies) if policies else None,
+            profile_name=self.profile.name,
+        )
+        self.effect_fence = DaemonEffectFence(
+            root,
+            self.daemon_epoch,
+            authorizer=self.authorization,
+        )
+        self.notifications = NotificationDeliveryService(
+            client,
+            self.channel_name,
+            root,
+            self.daemon_epoch,
+            self.authorization,
+        )
+        self._notification_order_lock = threading.RLock()
+        self.workflow = validate_workflow_engine(
+            workflow or LocalWorkflowEngine(root, epoch=self.daemon_epoch)
+        )
         self._validate_profile_commands()
         self.previous_shutdown_warning = previous_shutdown_warning
         self.offset: Cursor | None = _load_provider_cursor(self.channel_name, root)
@@ -506,6 +528,15 @@ class EnochApplication:
         )
         self.notifications.recover()
         self._run_profile_hook("on_initialize")
+
+    def _provider_for_authorization(self, kind: str) -> object:
+        if kind == "chat":
+            return self.client
+        if kind == "runtime":
+            return self.runtime
+        if kind == "forge":
+            return self.forge
+        return load_provider(kind, self.root)
 
     def run_forever(self) -> None:
         while True:
@@ -571,6 +602,10 @@ class EnochApplication:
             if recovered is None:
                 recovered = self.workflow.recover()
             _cleanup_completed_task_worktree(recovered, self.root)
+            self.effect_fence.authorize(
+                "chat.receive",
+                ("chat.receive",),
+            )
             for event in self.client.receive(self.offset):
                 self.handle_event(event)
             self._enqueue_due_cron_jobs()
@@ -630,7 +665,15 @@ class EnochApplication:
         chat_id = event.conversation_id
         text = event.text.strip()
         self._safe_send_read_ack(chat_id, event.message_id)
-        self.runtime.reset_usage()
+        try:
+            self.authorization.require(
+                "runtime.reset-usage",
+                ("runtime.respond",),
+            )
+        except CapabilityAuthorizationError:
+            pass
+        else:
+            self.runtime.reset_usage()
         image = select_image_attachment(event.attachments)
         logged_input = text
         if image is not None:
@@ -840,7 +883,11 @@ class EnochApplication:
     ) -> str:
         enqueue_index = 0
 
-        def queue(request: str, context: str) -> TaskJob:
+        def queue(
+            request: str,
+            context: str,
+            requirements,
+        ) -> TaskJob:
             nonlocal enqueue_index
             enqueue_index += 1
             return self.workflow.enqueue(
@@ -855,7 +902,7 @@ class EnochApplication:
                 idempotency_key=_event_idempotency_key(
                     f"profile:{self.profile.name}:{command}:{enqueue_index}"
                 ),
-                **self._profile_task_options(),
+                **self._profile_task_options(requirements.capabilities),
             )
 
         context = CommandContext(
@@ -870,7 +917,14 @@ class EnochApplication:
             _enqueue=queue,
         )
         try:
+            self.authorization.require(
+                f"profile-command:{spec.name}",
+                spec.required_capabilities,
+                metadata={"command": command},
+            )
             return str(spec.handler(context))
+        except CapabilityAuthorizationError as error:
+            return str(error)
         except Exception as error:
             _record_system_event(
                 "profile_command_failed",
@@ -883,8 +937,31 @@ class EnochApplication:
             )
             return f"Profile command {command} failed: {error}"
 
-    def _profile_task_options(self) -> dict[str, int]:
-        return self.profile.workflow.task_options()
+    def _profile_task_options(
+        self,
+        extra_capabilities: tuple[str, ...] = (),
+    ) -> dict[str, object]:
+        options: dict[str, object] = self.profile.workflow.task_options()
+        options["required_capabilities"] = tuple(
+            dict.fromkeys(
+                (
+                    *DEFAULT_TASK_REQUIREMENTS.capabilities,
+                    *extra_capabilities,
+                )
+            )
+        )
+        return options
+
+    def _authorize_task(self, job: TaskJob) -> None:
+        self.authorization.require(
+            "task.execute",
+            job.required_capabilities or DEFAULT_TASK_REQUIREMENTS,
+            task_id=job.id,
+            metadata={
+                "source": job.source,
+                "trigger": job.trigger,
+            },
+        )
 
     def _profile_status_name(self) -> str:
         display_name = self.profile.display_name
@@ -978,7 +1055,9 @@ class EnochApplication:
         execution: RuntimeExecutionControl,
         image_paths: tuple[Path, ...] = (),
     ):
-        return self.effect_fence.run_runtime(
+        return self.effect_fence.run_runtime_authorized(
+            "runtime.respond",
+            ("runtime.respond",),
             lambda fenced_execution: invoke_runtime_respond(
                 self.runtime,
                 self.identity,
@@ -988,6 +1067,7 @@ class EnochApplication:
                 execution=fenced_execution,
             ),
             execution,
+            task_id=_CURRENT_TASK_ID.get(),
         )
 
     def _respond_read_only_turn(
@@ -1010,7 +1090,11 @@ class EnochApplication:
                     session_key=resolved_session_key,
                 ),
             ).final_text
-        except (AgentRuntimeError, TypeError) as error:
+        except (
+            AgentRuntimeError,
+            CapabilityAuthorizationError,
+            TypeError,
+        ) as error:
             return str(error)
 
     def _respond_to_image(
@@ -1020,6 +1104,10 @@ class EnochApplication:
         caption: str,
     ) -> str:
         try:
+            self.effect_fence.authorize(
+                "chat.attachment",
+                ("chat.attachment", "runtime.respond"),
+            )
             with temporary_image_attachment(
                 self.client,
                 image,
@@ -1045,6 +1133,7 @@ class EnochApplication:
                 ).final_text
         except (
             AgentRuntimeError,
+            CapabilityAuthorizationError,
             TypeError,
             OSError,
             ChatProviderError,
@@ -1158,7 +1247,11 @@ class EnochApplication:
             ).final_text
         except AgentRuntimeAccessUnavailable as error:
             return TaskContextSnapshot(codex_unavailable_reason=str(error))
-        except (AgentRuntimeError, TypeError) as error:
+        except (
+            AgentRuntimeError,
+            CapabilityAuthorizationError,
+            TypeError,
+        ) as error:
             return TaskContextSnapshot(error=str(error))
         return _parse_task_context_snapshot(reply)
 
@@ -1289,6 +1382,7 @@ class EnochApplication:
         failure: TaskFailure | None = None
         regression_signals: tuple[TaskRegressionSignal, ...] = ()
         try:
+            self._authorize_task(job)
             outcome = _coerce_work_outcome(
                 self._run_direct_work(
                     chat_id,
@@ -1310,6 +1404,14 @@ class EnochApplication:
                     failure_class=outcome.failure_class or "permanent",
                     retryable=outcome.retryable,
                 )
+        except CapabilityAuthorizationError as error:
+            reply = str(error)
+            completed_status = "failed"
+            failure = TaskFailure(
+                code="authorization_denied",
+                failure_class="permanent",
+                retryable=False,
+            )
         except AgentRuntimeAccessUnavailable as error:
             reply = _codex_pause_warning(job.id, str(error))
             completed_status = "paused"
@@ -1635,7 +1737,7 @@ class EnochApplication:
                 message,
                 idempotency_key=key,
             )
-        except (OSError, ChatProviderError) as error:
+        except (OSError, ChatProviderError, CapabilityAuthorizationError) as error:
             return NotificationResult(
                 delivered=False,
                 error=str(error),
@@ -1690,7 +1792,7 @@ class EnochApplication:
                 message,
                 idempotency_key=key,
             )
-        except (OSError, ChatProviderError):
+        except (OSError, ChatProviderError, CapabilityAuthorizationError):
             return
 
     def _notification_key(
@@ -1748,9 +1850,14 @@ class EnochApplication:
         if not isinstance(message_id, (int, str)):
             return
         try:
-            with daemon_epoch_guard(self.daemon_epoch, self.root):
-                self.client.send_read_ack(chat_id, message_id)
-        except (OSError, ChatProviderError) as error:
+            self.effect_fence.run_authorized(
+                "chat.ack",
+                ("chat.ack",),
+                self.client.send_read_ack,
+                chat_id,
+                message_id,
+            )
+        except (OSError, ChatProviderError, CapabilityAuthorizationError) as error:
             _record_system_event(
                 "chat_read_ack_failed",
                 self.root,
@@ -2415,12 +2522,15 @@ class EnochApplication:
                 }
                 if self._forge_injected:
                     reconcile_kwargs["forge"] = self.forge
-                result = reconcile_evolve_candidate(
+                result = self.effect_fence.run_authorized(
+                    "evolve.reconcile",
+                    ("forge.read", "vcs.write"),
+                    reconcile_evolve_candidate,
                     reconcile_parts[0],
                     self.root,
                     **reconcile_kwargs,
                 )
-            except EvolveLifecycleError as error:
+            except (EvolveLifecycleError, CapabilityAuthorizationError) as error:
                 return f"Enoch could not reconcile evolution promotion: {error}"
             return format_reconcile_result(result)
         if subcommand == "schedule":
@@ -3082,6 +3192,7 @@ class EnochApplication:
         failure: TaskFailure | None = None
         regression_signals: tuple[TaskRegressionSignal, ...] = ()
         try:
+            self._authorize_task(job)
             if job.publish_stage in {"committed", "pushed", "pr_opened"}:
                 outcome = self._resume_task_publish(job)
             elif task_result_has_pull_request(job.result):
@@ -3117,6 +3228,14 @@ class EnochApplication:
                     failure_class=outcome.failure_class or "permanent",
                     retryable=outcome.retryable,
                 )
+        except CapabilityAuthorizationError as error:
+            reply = str(error)
+            completed_status = "failed"
+            failure = TaskFailure(
+                code="authorization_denied",
+                failure_class="permanent",
+                retryable=False,
+            )
         except AgentRuntimeAccessUnavailable as error:
             reply = _codex_pause_warning(job.id, str(error))
             completed_status = "paused"
@@ -3408,8 +3527,9 @@ class EnochApplication:
         parts = argument.split()
         if not parts or (len(parts) == 1 and parts[0].lower() == "list"):
             try:
+                self.authorization.require("vcs.list-worktrees", ("vcs.read",))
                 states = list_task_worktrees(self.root)
-            except VcsError as error:
+            except (VcsError, CapabilityAuthorizationError) as error:
                 return f"Enoch could not list task worktrees: {error}"
             return _format_task_worktrees(states, self.workflow.inspect())
 
@@ -3419,8 +3539,9 @@ class EnochApplication:
             if task_id is None:
                 return worktree_usage()
             try:
+                self.authorization.require("vcs.inspect-worktree", ("vcs.read",))
                 state = task_worktree_state(self.root, task_id)
-            except VcsError as error:
+            except (VcsError, CapabilityAuthorizationError) as error:
                 return f"Enoch could not inspect task #{task_id} worktree: {error}"
             if state is None:
                 return f"Task #{task_id} has no registered task worktree."
@@ -3449,13 +3570,15 @@ class EnochApplication:
                 f"used by {labels}."
             )
         try:
-            result = self.effect_fence.run(
+            result = self.effect_fence.run_authorized(
+                "vcs.remove-worktree",
+                ("vcs.write",),
                 remove_managed_task_worktree,
                 self.root,
                 task_id,
                 discard=discard,
             )
-        except VcsError as error:
+        except (VcsError, CapabilityAuthorizationError) as error:
             return f"Enoch could not remove task #{task_id} worktree: {error}"
         self.effect_fence.run(
             _record_system_event,
@@ -3473,14 +3596,16 @@ class EnochApplication:
         parts = argument.split()
         if not parts or (len(parts) == 1 and parts[0].lower() == "list"):
             try:
+                self.authorization.require("forge.list", ("forge.read",))
                 pull_requests = self.forge.list_open_pull_requests(self.root)
-            except ForgeProviderError as error:
+            except (ForgeProviderError, CapabilityAuthorizationError) as error:
                 return f"Enoch could not list open pull requests: {error}"
             return _format_open_pull_requests(pull_requests)
         if len(parts) == 2 and parts[0].lower() == "show":
             try:
+                self.authorization.require("forge.inspect", ("forge.read",))
                 pull_request = self.forge.inspect_pull_request(parts[1], self.root)
-            except ForgeProviderError as error:
+            except (ForgeProviderError, CapabilityAuthorizationError) as error:
                 return f"Enoch could not inspect that pull request: {error}"
             return _format_pull_request(pull_request)
         if len(parts) != 2 or parts[0].lower() != "merge":
@@ -3492,19 +3617,29 @@ class EnochApplication:
                 f"{provider_label(self.channel_name)} conversation."
             )
         try:
-            result = self.effect_fence.run(
+            result = self.effect_fence.run_authorized(
+                "forge.merge",
+                ("forge.merge",),
                 self.forge.merge_pull_request,
                 parts[1],
                 self.root,
             )
-        except ForgeProviderError as error:
+        except (ForgeProviderError, CapabilityAuthorizationError) as error:
             return f"Enoch could not merge that pull request: {error}"
         return _format_pull_request_merge_result(result)
 
     def _update(self) -> str:
         if not self._action_allowed():
             return self._action_lock_message()
-        result = self.effect_fence.run(update_from_authoritative, self.root)
+        try:
+            result = self.effect_fence.run_authorized(
+                "vcs.update",
+                ("vcs.write",),
+                update_from_authoritative,
+                self.root,
+            )
+        except CapabilityAuthorizationError as error:
+            return str(error)
         if result.direct_action_result:
             _record_direct_action(
                 "update from authoritative repository",
@@ -4187,8 +4322,13 @@ def _sync_session_activity(
         if effect_fence is None:
             invoke(execution)
         else:
-            effect_fence.run_runtime(invoke, execution)
-    except (AgentRuntimeError, TypeError):
+            effect_fence.run_runtime_authorized(
+                "runtime.session-sync",
+                ("runtime.respond",),
+                invoke,
+                execution,
+            )
+    except (AgentRuntimeError, CapabilityAuthorizationError, TypeError):
         return
 
 

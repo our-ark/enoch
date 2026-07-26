@@ -21,6 +21,7 @@ from enoch.providers.contracts import (
     normalize_conversation_id,
     normalize_message_id,
 )
+from enoch.providers.authorization import CapabilityAuthorizer
 from enoch.state import StateCorruptionError, atomic_write, file_transaction, load_json_object
 
 
@@ -75,11 +76,13 @@ class NotificationDeliveryService:
         provider_name: str,
         root: Path,
         epoch: DaemonEpoch,
+        authorizer: CapabilityAuthorizer | None = None,
     ) -> None:
         self.provider = provider
         self.provider_name = provider_name.strip().lower() or "chat"
         self.root = root
         self.epoch = epoch
+        self.authorizer = authorizer
 
     def send(
         self,
@@ -88,6 +91,7 @@ class NotificationDeliveryService:
         *,
         idempotency_key: str,
     ) -> NotificationResult:
+        self._authorize("notification.send", ("chat.send",))
         intent = NotificationIntent(
             idempotency_key=idempotency_key,
             operation="send",
@@ -105,6 +109,7 @@ class NotificationDeliveryService:
         *,
         idempotency_key: str,
     ) -> NotificationResult:
+        self._authorize("notification.edit", ("chat.edit",))
         intent = NotificationIntent(
             idempotency_key=idempotency_key,
             operation="edit",
@@ -124,6 +129,10 @@ class NotificationDeliveryService:
             )
             results: list[NotificationResult] = []
             for record in records:
+                self._authorize(
+                    f"notification.recover-{record.operation}",
+                    (f"chat.{record.operation}",),
+                )
                 if record.status == IN_FLIGHT:
                     results.append(self._recover_in_flight(record))
                     continue
@@ -357,6 +366,10 @@ class NotificationDeliveryService:
             status="delivered",
             message_id=message_id,
         )
+
+    def _authorize(self, action: str, requirements: tuple[str, ...]) -> None:
+        if self.authorizer is not None:
+            self.authorizer.require(action, requirements)
 
 
 def notifications_path(provider: str, root: Path | None = None) -> Path:

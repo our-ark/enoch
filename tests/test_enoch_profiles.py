@@ -368,7 +368,10 @@ class EnochProfileTests(unittest.TestCase):
         self.assertIn("Agent profile: researcher", chat.sent[-1][1])
 
     def test_profile_rejects_unsupported_api_version(self) -> None:
-        with self.assertRaisesRegex(ProfileError, "supports version 2"):
+        with self.assertRaisesRegex(
+            ProfileError,
+            f"supports version {PROFILE_API_VERSION}",
+        ):
             AgentProfile(name="future", api_version=PROFILE_API_VERSION + 1)
 
     def test_profile_rejects_invalid_workflow_and_presentation_values(self) -> None:

@@ -1,6 +1,7 @@
 from enoch.profiles.contracts import (
     PROFILE_API_VERSION,
     AgentProfile,
+    CapabilityPolicy,
     CommandContext,
     CommandSpec,
     LifecycleContext,
@@ -18,6 +19,7 @@ from enoch.profiles.registry import available_profiles, load_profile, register_p
 __all__ = [
     "PROFILE_API_VERSION",
     "AgentProfile",
+    "CapabilityPolicy",
     "CommandContext",
     "CommandSpec",
     "LifecycleContext",

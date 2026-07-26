@@ -9,6 +9,7 @@ from typing import Any, Callable, Sequence
 from enoch.identity import Identity
 from enoch.providers.contracts import (
     ProgressCallback,
+    ProviderCapabilities,
     ProviderHealth,
     RuntimeExecutionControl,
     RuntimeProgress,
@@ -38,6 +39,10 @@ class FunctionAgentRuntime:
     name: str = "codex"
     provider_kind: str = "runtime"
     config_section: str = "codex"
+    capabilities: ProviderCapabilities = ProviderCapabilities(
+        provider_kind="runtime",
+        capabilities=frozenset({"runtime.respond", "runtime.execute"}),
+    )
 
     def respond(
         self,

@@ -66,6 +66,7 @@ from enoch.providers.forge import (
     prepare_local_publish,
     push_current_branch,
 )
+from enoch.providers.authorization import CapabilityAuthorizationError
 from enoch.providers.runtime import invoke_runtime_action
 from enoch.runtime import (
     ACTION_SANDBOX_FULL_ACCESS,
@@ -272,7 +273,9 @@ class TaskWorkflow:
                     progress.sandbox,
                 ),
             )
-            runtime_result = app.effect_fence.run_runtime(
+            runtime_result = app.effect_fence.run_runtime_authorized(
+                "runtime.execute",
+                ("runtime.execute",),
                 lambda fenced_execution: invoke_runtime_action(
                     app.runtime,
                     app.identity,
@@ -292,6 +295,7 @@ class TaskWorkflow:
                     state_root=app.root,
                 ),
                 runtime_execution,
+                task_id=CURRENT_TASK_ID.get(),
             )
             record_current_task_runtime_result(
                 runtime_result,
@@ -315,7 +319,13 @@ class TaskWorkflow:
                 action_files = ()
         except (AgentRuntimeCancelled, AgentRuntimeTimedOut, AgentRuntimeAccessUnavailable):
             raise
-        except (AgentRuntimeError, TypeError, VcsError, OSError) as error:
+        except (
+            AgentRuntimeError,
+            CapabilityAuthorizationError,
+            TypeError,
+            VcsError,
+            OSError,
+        ) as error:
             message = f"Enoch could not complete the requested work yet: {error}"
             failure = classify_task_failure(message)
             return WorkOutcome.failure(
@@ -328,10 +338,13 @@ class TaskWorkflow:
         parts = [branch_note, result or "Enoch completed the requested work.", memory_note]
         if not action_files:
             try:
-                cleanup = app.effect_fence.run(
+                cleanup = app.effect_fence.run_authorized(
+                    "vcs.remove-worktree",
+                    ("vcs.write",),
                     self.dependencies.remove_task_worktree,
                     app.root,
                     task_worktree,
+                    task_id=CURRENT_TASK_ID.get(),
                     force_delete_branch=True,
                 )
                 parts.append("No files changed.")
@@ -401,11 +414,14 @@ class TaskWorkflow:
         if job is None or job.status != "running" or job.worker_id != worker_id:
             raise VcsError(f"Task #{task_id} no longer owns its execution lease.")
         base = self.dependencies.task_branch_base(app.root)
-        worktree = app.effect_fence.run(
+        worktree = app.effect_fence.run_authorized(
+            "vcs.prepare-worktree",
+            ("vcs.write",),
             self.dependencies.prepare_task_worktree,
             app.root,
             task_id,
             request,
+            task_id=task_id,
             start_point=base,
             resident_branch=app._resident_branch_name(),
             created_at=job.created_at,
@@ -430,9 +446,12 @@ class TaskWorkflow:
         results = []
         for number in request.close_numbers:
             results.append(
-                app.effect_fence.run(
+                app.effect_fence.run_authorized(
+                    "forge.maintain",
+                    ("forge.maintain",),
                     app.forge.close_pull_request,
                     number,
+                    task_id=CURRENT_TASK_ID.get(),
                     root=app.root,
                     comment=(
                         duplicate_close_comment(request.keep_number)
@@ -495,8 +514,11 @@ class TaskWorkflow:
             self.dependencies.ensure_clean_worktree(work_root)
 
             app._send_step_update(chat_id, f"Handing off branch {branch}.")
-            pushed = app.effect_fence.run(
+            pushed = app.effect_fence.run_authorized(
+                "forge.publish-branch",
+                ("forge.publish",),
                 self.dependencies.push_current_branch,
+                task_id=CURRENT_TASK_ID.get(),
                 root=work_root,
             )
             outputs.append(format_remote_publish_result(pushed))
@@ -510,10 +532,13 @@ class TaskWorkflow:
             )
 
             app._send_step_update(chat_id, "Preparing the review handoff.")
-            pr = app.effect_fence.run(
+            pr = app.effect_fence.run_authorized(
+                "forge.create-pull-request",
+                ("forge.publish",),
                 create_pull_request_for_current_task,
                 work_root,
                 app.root,
+                task_id=CURRENT_TASK_ID.get(),
                 forge=app.forge,
                 workflow=app.workflow,
             )
@@ -532,10 +557,13 @@ class TaskWorkflow:
                 "Cleaning up the isolated task worktree.",
             )
             outputs.append(
-                app.effect_fence.run(
+                app.effect_fence.run_authorized(
+                    "vcs.remove-worktree",
+                    ("vcs.write",),
                     self.dependencies.remove_task_worktree,
                     app.root,
                     task_worktree,
+                    task_id=CURRENT_TASK_ID.get(),
                     delete_local_branch=False,
                 )
             )
@@ -553,7 +581,11 @@ class TaskWorkflow:
                         app._authoritative_branch_name(),
                     ),
                 )
-        except (VcsError, ForgeProviderError) as error:
+        except (
+            VcsError,
+            ForgeProviderError,
+            CapabilityAuthorizationError,
+        ) as error:
             failure = f"Enoch could not publish existing branch {branch}: {error}"
             app._send_step_update(chat_id, failure)
             return "\n\n".join([*outputs, failure]) if outputs else failure
@@ -568,11 +600,14 @@ class TaskWorkflow:
         job = app.workflow.find(task_id)
         if job is None or job.status != "running" or job.worker_id != worker_id:
             raise VcsError(f"Task #{task_id} no longer owns its execution lease.")
-        worktree = app.effect_fence.run(
+        worktree = app.effect_fence.run_authorized(
+            "vcs.prepare-worktree",
+            ("vcs.write",),
             self.dependencies.prepare_existing_branch_worktree,
             app.root,
             task_id,
             branch,
+            task_id=task_id,
             existing_path=job.worktree_path,
         )
         recorded = app.workflow.record_worktree(
@@ -619,9 +654,12 @@ class TaskWorkflow:
         try:
             if stage not in {"committed", "pushed", "pr_opened"}:
                 app._send_step_update(chat_id, "Committing the change.")
-                commit = app.effect_fence.run(
+                commit = app.effect_fence.run_authorized(
+                    "forge.prepare-local-publish",
+                    ("forge.publish", "vcs.write"),
                     self.dependencies.prepare_local_publish,
                     self.dependencies.feature_title(request),
+                    task_id=CURRENT_TASK_ID.get(),
                     root=publish_root,
                     allowed_files=allowed_files,
                     validation_result=validation_result,
@@ -648,8 +686,11 @@ class TaskWorkflow:
                     chat_id,
                     "Handing off the branch to the configured forge.",
                 )
-                pushed = app.effect_fence.run(
+                pushed = app.effect_fence.run_authorized(
+                    "forge.publish-branch",
+                    ("forge.publish",),
                     self.dependencies.push_current_branch,
+                    task_id=CURRENT_TASK_ID.get(),
                     root=publish_root,
                 )
                 remote_branch = pushed.branch
@@ -675,10 +716,13 @@ class TaskWorkflow:
 
             if stage != "pr_opened":
                 app._send_step_update(chat_id, "Preparing the review handoff.")
-                pr = app.effect_fence.run(
+                pr = app.effect_fence.run_authorized(
+                    "forge.create-pull-request",
+                    ("forge.publish",),
                     create_pull_request_for_current_task,
                     publish_root,
                     app.root,
+                    task_id=CURRENT_TASK_ID.get(),
                     forge=app.forge,
                     workflow=app.workflow,
                 )
@@ -734,10 +778,13 @@ class TaskWorkflow:
                     chat_id,
                     "Cleaning up the isolated task worktree.",
                 )
-                handoff = app.effect_fence.run(
+                handoff = app.effect_fence.run_authorized(
+                    "vcs.remove-worktree",
+                    ("vcs.write",),
                     self.dependencies.remove_task_worktree,
                     app.root,
                     task_worktree,
+                    task_id=CURRENT_TASK_ID.get(),
                     delete_local_branch=pushed_remotely,
                     force_delete_branch=pushed_remotely,
                 )
@@ -746,8 +793,11 @@ class TaskWorkflow:
                     chat_id,
                     f"Returning local checkout to {resident_branch}.",
                 )
-                handoff = app.effect_fence.run(
+                handoff = app.effect_fence.run_authorized(
+                    "vcs.return-to-resident",
+                    ("vcs.write",),
                     app._return_to_resident_after_handoff,
+                    task_id=CURRENT_TASK_ID.get(),
                     published_remotely=pushed_remotely,
                 )
             outputs.append(handoff)
@@ -766,7 +816,11 @@ class TaskWorkflow:
                         app._authoritative_branch_name(),
                     ),
                 )
-        except (VcsError, ForgeProviderError) as error:
+        except (
+            VcsError,
+            ForgeProviderError,
+            CapabilityAuthorizationError,
+        ) as error:
             failure = f"Enoch could not publish this edit as a pull request: {error}"
             app._send_step_update(chat_id, failure)
             classified = classify_task_failure(failure)

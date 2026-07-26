@@ -1,7 +1,7 @@
 # Enoch providers
 
 Enoch separates replaceable infrastructure from agent behavior through five
-provider capabilities. Only `chat` and `vcs` must be supplied when moving the
+provider kinds. Only `chat` and `vcs` must be supplied when moving the
 core agent into a new environment:
 
 | Kind | Reference provider | Responsibility |
@@ -176,6 +176,42 @@ Providers that support attachments implement the optional
 def download_attachment(self, attachment, destination, *, max_bytes):
     ...
 ```
+
+### Capabilities and authorization
+
+Providers may explicitly declare their supported operations with the versioned
+`ProviderCapabilities` contract:
+
+```python
+from enoch.providers import ProviderCapabilities
+
+
+class SlackProvider:
+    name = "slack"
+    provider_kind = "chat"
+    capabilities = ProviderCapabilities(
+        provider_kind="chat",
+        capabilities=frozenset(
+            {"chat.receive", "chat.send", "chat.edit", "chat.ack"}
+        ),
+    )
+```
+
+Core capability names are `chat.receive`, `chat.send`, `chat.edit`,
+`chat.ack`, `chat.attachment`, `runtime.respond`, `runtime.execute`,
+`vcs.read`, `vcs.write`, `forge.read`, `forge.publish`, `forge.maintain`,
+`forge.merge`, `service.read`, and `service.manage`.
+
+Providers that predate this contract receive the complete legacy capability set
+for their provider kind, preserving installation compatibility. Once a
+provider declares capabilities, the declaration is authoritative and missing
+requirements fail closed before its method is called.
+
+`EnochApplication` also accepts an `authorization_policy`. The base authorizer
+first verifies provider grants, then asks the policy whether to tighten them.
+An allow decision cannot restore a capability omitted by the provider.
+Authorization therefore remains in the application shell rather than inside a
+profile command or task prompt.
 
 ### Durable notifications
 

@@ -112,7 +112,7 @@ profile change is activated only after restarting Enoch.
 embed Enoch can instead pass `profile=` directly to `EnochApplication` or use
 `register_profile()` for static registration.
 
-The current contract is `PROFILE_API_VERSION = 2`. A profile must declare that
+The current contract is `PROFILE_API_VERSION = 3`. A profile must declare that
 version (the default) and Enoch rejects unsupported versions at startup rather
 than guessing compatibility.
 
@@ -122,6 +122,11 @@ Command handlers receive identity, repository root, normalized chat event,
 selected runtime and forge providers, and the command argument. The provided
 `enqueue_task()` method records the request as a human-created `task`, keeps the
 profile command as its trigger, and uses the existing queue lifecycle.
+
+`CommandSpec.required_capabilities` declares authority needed before a handler
+may run. `enqueue_task(required_capabilities=(...))` adds task-specific
+requirements to the standard repository-work requirements. The application
+authorizer evaluates both declarations before provider execution.
 
 Prompt contributors receive an immutable context and return additional text.
 Enoch appends non-empty contributions under a `Profile context` section; the
@@ -139,6 +144,27 @@ configured timeout and default retry limit.
 When `allow_direct_work` is false, `/do` directs the human to `/task`; queued
 and system work remain available. This is a workflow constraint, not an
 authorization system.
+
+`CapabilityPolicy` is a deny-only profile boundary. For example, a profile may
+deny `forge.publish` and `forge.merge` to keep all work local:
+
+```python
+from enoch.profiles import AgentProfile, CapabilityPolicy
+
+
+profile = AgentProfile(
+    name="local-researcher",
+    authorization=CapabilityPolicy(
+        denied_capabilities=("forge.publish", "forge.merge"),
+    ),
+)
+```
+
+The profile policy applies to core workflows and cannot grant a capability
+that the selected provider omitted. Profile packages are still trusted Python
+extensions; capability authorization governs provider use through Enoch's
+public command and workflow surfaces rather than sandboxing arbitrary profile
+code.
 
 `ProfilePresentation` changes only bounded human-facing labels. `display_name`
 appears in status, `help_heading` names the profile section in `/help`, and

@@ -47,6 +47,27 @@ from our_ark_provider_kit import (  # noqa: E402
 
 try:
     from our_ark_provider_kit import (
+        CAPABILITY_CONTRACT_VERSION,
+        AuthorizationDecision,
+        AuthorizationPolicy,
+        AuthorizationRequest,
+        CapabilityProvider,
+        ProviderCapabilities,
+        TaskRequirements,
+    )
+except ImportError:  # provider-kit compatibility during capability rollout
+    from enoch.providers._capability_compat import (
+        CAPABILITY_CONTRACT_VERSION,
+        AuthorizationDecision,
+        AuthorizationPolicy,
+        AuthorizationRequest,
+        CapabilityProvider,
+        ProviderCapabilities,
+        TaskRequirements,
+    )
+
+try:
+    from our_ark_provider_kit import (
         AgentRuntimeTimedOut,
         RUNTIME_CONTRACT_VERSION,
         RUNTIME_EXECUTION_CONTRACT_VERSION,
@@ -98,6 +119,7 @@ except ImportError:  # provider-kit compatibility during notification rollout
     )
 
 __all__ = [
+    "CAPABILITY_CONTRACT_VERSION",
     "AgentIdentity",
     "AgentRuntime",
     "AgentRuntimeAccessUnavailable",
@@ -106,9 +128,13 @@ __all__ = [
     "AgentRuntimeTimedOut",
     "Attachment",
     "AttachmentProvider",
+    "AuthorizationDecision",
+    "AuthorizationPolicy",
+    "AuthorizationRequest",
     "ChatEvent",
     "ChatProvider",
     "ChatProviderError",
+    "CapabilityProvider",
     "ConversationId",
     "Cursor",
     "DurableNotificationProvider",
@@ -129,6 +155,7 @@ __all__ = [
     "PullRequestResult",
     "PullRequestTarget",
     "ProgressCallback",
+    "ProviderCapabilities",
     "ProviderHealth",
     "RUNTIME_CONTRACT_VERSION",
     "RUNTIME_EXECUTION_CONTRACT_VERSION",
@@ -144,6 +171,7 @@ __all__ = [
     "RuntimeUsage",
     "ServiceProvider",
     "ServiceProviderError",
+    "TaskRequirements",
     "VersionControlProvider",
     "VersionControlProviderError",
     "normalize_conversation_id",
