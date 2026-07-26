@@ -13,6 +13,11 @@ from our_ark_provider_kit import (
     ConversationId,
     MessageId,
 )
+from our_ark_telegram.presentation import (
+    is_formatting_error,
+    render_telegram_html,
+    telegram_message_chunks,
+)
 
 
 TELEGRAM_API = "https://api.telegram.org"
@@ -64,10 +69,15 @@ class TelegramClient:
         text: str,
     ) -> MessageId | None:
         first_message_id: int | None = None
-        for chunk in chunks(text):
-            data = self._call(
+        for chunk in telegram_message_chunks(text, MAX_TELEGRAM_MESSAGE):
+            data = self._call_with_plain_fallback(
                 "sendMessage",
-                {"chat_id": conversation_id, "text": chunk},
+                {
+                    "chat_id": conversation_id,
+                    "text": chunk.html,
+                    "parse_mode": "HTML",
+                },
+                plain_text=chunk.plain,
             )
             message_id = _message_id(data)
             if first_message_id is None and message_id is not None:
@@ -113,13 +123,15 @@ class TelegramClient:
         message_id: MessageId,
         text: str,
     ) -> None:
-        self._call(
+        self._call_with_plain_fallback(
             "editMessageText",
             {
                 "chat_id": conversation_id,
                 "message_id": message_id,
-                "text": text,
+                "text": render_telegram_html(text),
+                "parse_mode": "HTML",
             },
+            plain_text=text,
         )
 
     def send_read_ack(
@@ -152,6 +164,23 @@ class TelegramClient:
         if not data.get("ok"):
             raise TelegramError(str(data))
         return data
+
+    def _call_with_plain_fallback(
+        self,
+        method: str,
+        payload: dict[str, Any],
+        *,
+        plain_text: str,
+    ) -> dict[str, Any]:
+        try:
+            return self._call(method, payload)
+        except TelegramError as error:
+            if not is_formatting_error(error):
+                raise
+        fallback = dict(payload)
+        fallback["text"] = plain_text
+        fallback.pop("parse_mode", None)
+        return self._call(method, fallback)
 
 
 def telegram_event(update: dict[str, Any]) -> ChatEvent | None:

@@ -5145,6 +5145,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual(len(calls), 2)
         self.assertEqual(calls[0][0], "sendMessage")
         self.assertEqual(calls[0][1]["chat_id"], 42)
+        self.assertEqual(calls[0][1]["parse_mode"], "HTML")
 
     def test_client_sets_read_ack_as_message_reaction(self) -> None:
         config = TelegramConfig(token="token", poll_timeout=1)
