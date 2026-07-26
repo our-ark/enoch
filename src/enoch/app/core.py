@@ -171,16 +171,35 @@ from enoch.learn import (
 )
 from enoch.lineage.core import (
     ASSESSMENT_ASSESSED,
+    ASSESSMENT_FAILED,
     find_parent_inbox_candidate,
+    format_inheritance_scan_queued,
+    format_lineage_assessment_complete,
+    format_parent_inherit_report,
     LineageError,
     STATUS_ADOPTED,
     STATUS_LINKED,
     lineage_adaptation_request,
     lineage_candidate_context,
     link_inbox_candidate,
+    load_inbox_candidates,
+    load_lineage_inbox_report,
+    refresh_lineage_inbox,
     resolve_lineage,
 )
-from enoch.lineage.assessment import refresh_and_assess_lineage_inbox
+from enoch.lineage.assessment import (
+    LineageAssessmentProgress,
+    assess_lineage_inbox,
+    lineage_assessment_candidates,
+)
+from enoch.lineage.assessment_queue import (
+    LineageAssessmentJob,
+    claim_lineage_assessment,
+    complete_lineage_assessment,
+    enqueue_lineage_assessment,
+    fail_lineage_assessment,
+    load_lineage_assessment_queue,
+)
 from enoch.lineage.lifecycle import (
     lineage_context_source,
     reconcile_lineage_adoptions,
@@ -495,6 +514,8 @@ class EnochApplication:
         self._pending_session_syncs: list[tuple[int, str]] = []
         self._task_worker: threading.Thread | None = None
         self._direct_workers: dict[int, threading.Thread] = {}
+        self._lineage_worker: threading.Thread | None = None
+        self._lineage_worker_lock = threading.Lock()
         self._task_cancellations: dict[int, threading.Event] = {}
         self._stopping = False
         self._resident_branch = instance_branch(root)
@@ -597,6 +618,7 @@ class EnochApplication:
 
     def run_once(self) -> None:
         require_current_daemon_epoch(self.daemon_epoch, self.root)
+        self._maybe_start_lineage_worker()
         self._run_profile_hook("before_run")
         try:
             recovered = _recover_running_task_from_direct_action_log(
@@ -616,6 +638,7 @@ class EnochApplication:
             self._run_due_evidence_scans()
             self._run_due_evolve_schedule()
             self._maybe_start_task_worker()
+            self._maybe_start_lineage_worker()
         finally:
             self._run_profile_hook("after_run")
 
@@ -750,6 +773,8 @@ class EnochApplication:
         if self._restart_after_reply:
             self._restart_after_reply = False
             _schedule_daemon_restart(self.root)
+            return
+        self._maybe_start_lineage_worker()
 
     def _remember_update_offset(self, offset: Cursor | None) -> None:
         if offset is None:
@@ -1601,6 +1626,8 @@ class EnochApplication:
         workers = [*self._direct_workers.values()]
         if self._task_worker is not None:
             workers.append(self._task_worker)
+        if self._lineage_worker is not None:
+            workers.append(self._lineage_worker)
         deadline = time.monotonic() + max(0.0, timeout_seconds)
         for worker in workers:
             if worker is current or not worker.is_alive():
@@ -3672,32 +3699,200 @@ class EnochApplication:
         )
 
     def _inherit(self, chat_id: int, text: str) -> str:
-        self._reconcile_lineage_adoptions()
         parts = text.split(maxsplit=2)
         subcommand = parts[1].lower() if len(parts) >= 2 else ""
         argument = parts[2].strip() if len(parts) >= 3 else ""
-        if subcommand and subcommand not in {"inspect", "ignore"}:
+        if subcommand != "inbox":
+            self._reconcile_lineage_adoptions()
+        if not subcommand:
+            return self._scan_and_queue_lineage_assessment(chat_id)
+        if subcommand not in {"inbox", "inspect", "ignore"}:
             return self._adopt_lineage_candidate(chat_id, subcommand)
         reply = inherit_command(
             text,
             self.root,
             command_name="inherit",
-            refresh_lineage_fn=lambda root, scope: refresh_and_assess_lineage_inbox(
-                root,
-                scope=scope,
-                generator=lambda prompt: self._respond_isolated_evidence_turn(
-                    chat_id,
-                    prompt,
-                    phase="lineage-assessment",
-                ),
-                mission=self.identity.mission,
-            ),
         )
         if subcommand == "inspect":
             candidate = find_parent_inbox_candidate(argument, self.root)
             if candidate is not None:
                 self._queue_session_sync(chat_id, lineage_candidate_context(candidate))
         return reply
+
+    def _scan_and_queue_lineage_assessment(self, chat_id: int) -> str:
+        try:
+            active = load_lineage_assessment_queue(self.root).current
+            if active is not None:
+                return "\n".join(
+                    [
+                        (
+                            "Inheritance assessment is already "
+                            f"{active.status} for {active.total_count} change(s)."
+                        ),
+                        "No additional scan was started.",
+                        "Use /inherit inbox to view the stored inbox while it runs.",
+                    ]
+                )
+            report = refresh_lineage_inbox(self.root, scope="parent")
+            candidates = lineage_assessment_candidates(report, self.root)
+            if not candidates:
+                return format_parent_inherit_report(report)
+            job, created = enqueue_lineage_assessment(
+                chat_id,
+                tuple(candidate.id for candidate in candidates),
+                self.root,
+                new_count=report.new_count,
+            )
+        except (LineageError, OSError, RuntimeError, ValueError) as error:
+            return f"Enoch could not scan the inheritance inbox: {error}"
+        if not created:
+            return (
+                f"Inheritance assessment is already {job.status}. "
+                "Use /inherit inbox to view the stored inbox."
+            )
+        return format_inheritance_scan_queued(report, job.total_count)
+
+    def _maybe_start_lineage_worker(self) -> None:
+        if self._stopping:
+            return
+        with self._lineage_worker_lock:
+            if self._lineage_worker is not None and self._lineage_worker.is_alive():
+                return
+            job = claim_lineage_assessment(
+                self.daemon_epoch.token,
+                self.root,
+            )
+            if job is None:
+                return
+            worker = threading.Thread(
+                target=self._run_lineage_assessment_worker,
+                args=(job,),
+                name=f"enoch-lineage-assessment-{job.id[-8:]}",
+                daemon=True,
+            )
+            self._lineage_worker = worker
+            worker.start()
+
+    def _run_lineage_assessment_worker(
+        self,
+        job: LineageAssessmentJob,
+    ) -> None:
+        try:
+            report = load_lineage_inbox_report(self.root, scope="parent")
+            assess_lineage_inbox(
+                report,
+                self.root,
+                generator=lambda prompt: self._respond_isolated_evidence_turn(
+                    job.conversation_id,
+                    prompt,
+                    phase="lineage-assessment",
+                ),
+                mission=self.identity.mission,
+                candidate_ids=job.candidate_ids,
+                progress_callback=lambda progress: self._lineage_assessment_progress(
+                    job,
+                    progress,
+                ),
+                guard=lambda: require_current_daemon_epoch(
+                    self.daemon_epoch,
+                    self.root,
+                ),
+            )
+            require_current_daemon_epoch(self.daemon_epoch, self.root)
+            assessed_count, failed_count = self._lineage_assessment_counts(job)
+            final_report = load_lineage_inbox_report(self.root, scope="parent")
+            self._safe_send_message(
+                job.conversation_id,
+                format_lineage_assessment_complete(
+                    final_report.candidates,
+                    assessed_count=assessed_count,
+                    failed_count=failed_count,
+                ),
+                notification_key=f"lineage-assessment:{job.id}:final",
+            )
+            complete_lineage_assessment(
+                job.id,
+                self.root,
+                owner_epoch=job.owner_epoch,
+                assessed_count=assessed_count,
+                failed_count=failed_count,
+            )
+        except StaleDaemonEpoch:
+            return
+        except Exception as error:
+            failed = fail_lineage_assessment(
+                job.id,
+                str(error),
+                self.root,
+                owner_epoch=job.owner_epoch,
+            )
+            if failed is not None:
+                self._safe_send_message(
+                    job.conversation_id,
+                    "\n".join(
+                        [
+                            "Inheritance assessment stopped.",
+                            f"Failure: {' '.join(str(error).split())[:1000]}",
+                            "The inbox was preserved. Run /inherit to retry.",
+                        ]
+                    ),
+                    notification_key=f"lineage-assessment:{job.id}:failed",
+                )
+        finally:
+            with self._lineage_worker_lock:
+                if self._lineage_worker is threading.current_thread():
+                    self._lineage_worker = None
+
+    def _lineage_assessment_progress(
+        self,
+        job: LineageAssessmentJob,
+        progress: LineageAssessmentProgress,
+    ) -> None:
+        if progress.processed_count >= progress.total_count:
+            return
+        stride = max(1, (progress.batch_count + 3) // 4)
+        if progress.batch_index != 1 and progress.batch_index % stride:
+            return
+        require_current_daemon_epoch(self.daemon_epoch, self.root)
+        assessed_count, failed_count = self._lineage_assessment_counts(job)
+        processed = min(job.total_count, assessed_count + failed_count)
+        self._safe_send_message(
+            job.conversation_id,
+            "\n".join(
+                [
+                    "Inheritance assessment progress",
+                    f"Processed: {processed}/{job.total_count}",
+                    f"Assessed: {assessed_count}",
+                    f"Failed: {failed_count}",
+                    "Enoch remains available for other messages.",
+                ]
+            ),
+            notification_key=(
+                f"lineage-assessment:{job.id}:progress:{processed}"
+            ),
+        )
+
+    def _lineage_assessment_counts(
+        self,
+        job: LineageAssessmentJob,
+    ) -> tuple[int, int]:
+        selected = set(job.candidate_ids)
+        candidates = (
+            candidate
+            for candidate in load_inbox_candidates(
+                self.root,
+                include_inactive=True,
+            )
+            if candidate.id in selected
+        )
+        assessed_count = 0
+        failed_count = 0
+        for candidate in candidates:
+            if candidate.assessment_status == ASSESSMENT_ASSESSED:
+                assessed_count += 1
+            elif candidate.assessment_status == ASSESSMENT_FAILED:
+                failed_count += 1
+        return assessed_count, failed_count
 
     def _adopt_lineage_candidate(self, chat_id: int, candidate_id: str) -> str:
         if not candidate_id:

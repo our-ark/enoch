@@ -57,6 +57,7 @@ from enoch.immune import DoctorDiagnosis
 from enoch.lineage.core import (
     AncestorLink,
     LineageCandidate,
+    LineageInboxReport,
     LineageResolution,
     load_inbox_candidates,
 )
@@ -747,7 +748,10 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertNotIn("/thinking", client.sent[0][1])
         self.assertNotIn("/lineage", client.sent[0][1])
         self.assertIn("/ancestors - show ancestor chain and ancestor skills", client.sent[0][1])
-        self.assertIn("/inherit - scan and assess direct-parent changes", client.sent[0][1])
+        self.assertIn(
+            "/inherit - scan direct-parent changes and assess them in the background",
+            client.sent[0][1],
+        )
         self.assertNotIn("/memory", client.sent[0][1])
         self.assertIn("/skills [agent-or-path] - show declared skills", client.sent[0][1])
         self.assertNotIn("/teach", client.sent[0][1])
@@ -1297,7 +1301,14 @@ class EnochTelegramTests(unittest.TestCase):
 
         reply = client.sent[0][1]
         self.assertIn("Inherit commands:", reply)
-        self.assertIn("/inherit - scan, assess, and show direct-parent changes", reply)
+        self.assertIn(
+            "/inherit - scan direct-parent changes and assess them in the background",
+            reply,
+        )
+        self.assertIn(
+            "/inherit inbox - show the stored inbox without scanning",
+            reply,
+        )
         self.assertIn("/inherit inspect <change_id>", reply)
         self.assertIn("/inherit <change_id> - adapt one change", reply)
         self.assertIn("/inherit ignore <change_id> - dismiss a change", reply)
@@ -4252,20 +4263,104 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("private repo", client.sent[0][1])
         self.assertIn("Ancestor commands:", client.sent[0][1])
 
-    @patch("enoch.app.core.inherit_command", return_value="Direct parent inheritance checked.\nour-ark/enoch#32")
-    def test_inherit_uses_shared_command(self, inherit_command: MagicMock) -> None:
+    @patch(
+        "enoch.app.core.inherit_command",
+        return_value="Direct parent inheritance inbox.\nour-ark/enoch#32",
+    )
+    def test_inherit_inbox_is_read_only(self, inherit_command: MagicMock) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
             bot = EnochApplication(load_identity(), root, client)
 
-            _handle_update(bot, _message_update(chat_id=42, text="/inherit"))
+            with (
+                patch.object(bot, "_reconcile_lineage_adoptions") as reconcile,
+                patch("enoch.app.core.refresh_lineage_inbox") as refresh,
+                patch.object(bot, "_respond_isolated_evidence_turn") as assess,
+            ):
+                _handle_update(bot, _message_update(chat_id=42, text="/inherit inbox"))
 
         inherit_command.assert_called_once()
-        self.assertEqual(inherit_command.call_args.args[:2], ("/inherit", root))
+        self.assertEqual(inherit_command.call_args.args[:2], ("/inherit inbox", root))
         self.assertEqual(inherit_command.call_args.kwargs["command_name"], "inherit")
-        self.assertIn("Direct parent inheritance checked", client.sent[0][1])
+        reconcile.assert_not_called()
+        refresh.assert_not_called()
+        assess.assert_not_called()
+        self.assertIn("Direct parent inheritance inbox", client.sent[0][1])
         self.assertIn("our-ark/enoch#32", client.sent[0][1])
+
+    def test_inherit_assessment_runs_in_background_while_chat_stays_responsive(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            candidate = replace(
+                _lineage_candidate(),
+                assessment_status="pending",
+                assessment_version=0,
+                applicability="unknown",
+                summary="",
+            )
+            _write_lineage_inbox(root, candidate)
+            report = LineageInboxReport(
+                scope="parent",
+                ancestors=(
+                    AncestorLink(
+                        name="Enoch",
+                        repo="our-ark/enoch",
+                        branch="main",
+                        depth=1,
+                    ),
+                ),
+                candidates=(candidate,),
+                latest_heads={"our-ark/enoch": "abc123"},
+                new_count=1,
+            )
+            client = FakeTelegramClient(allowed_chat_id=42)
+            bot = EnochApplication(load_identity(), root, client)
+            worker_started = threading.Event()
+            release_worker = threading.Event()
+            reply_present_at_start = []
+
+            def hold_worker(_job) -> None:
+                reply_present_at_start.append(
+                    bool(client.sent and "Queued 1 change" in client.sent[0][1])
+                )
+                worker_started.set()
+                release_worker.wait(timeout=3)
+
+            with (
+                patch.object(bot, "_reconcile_lineage_adoptions"),
+                patch("enoch.app.core.refresh_lineage_inbox", return_value=report),
+                patch.object(
+                    bot,
+                    "_run_lineage_assessment_worker",
+                    side_effect=hold_worker,
+                ),
+            ):
+                _handle_update(
+                    bot,
+                    _message_update(
+                        update_id=1,
+                        chat_id=42,
+                        text="/inherit",
+                    ),
+                )
+                self.assertTrue(worker_started.wait(timeout=1))
+
+                _handle_update(
+                    bot,
+                    _message_update(
+                        update_id=2,
+                        chat_id=42,
+                        text="/help",
+                    ),
+                )
+
+                release_worker.set()
+                bot.stop_workers()
+
+        self.assertEqual(reply_present_at_start, [True])
+        self.assertIn("background Codex assessment", client.sent[0][1])
+        self.assertIn("Enoch commands:", client.sent[1][1])
 
     def test_inherit_inspect_syncs_candidate_context_to_codex_session(self) -> None:
         with TemporaryDirectory() as temp:
@@ -5601,6 +5696,39 @@ def _lineage_candidate():
         suggested_tests=("Verify supported levels.",),
         assessed_at="2026-07-26T00:00:00+00:00",
         assessment_version=1,
+    )
+
+
+def _write_lineage_inbox(root: Path, candidate: LineageCandidate) -> None:
+    lineage = root / ".agent" / "lineage.yaml"
+    lineage.parent.mkdir(parents=True, exist_ok=True)
+    lineage.write_text(
+        "parent:\n  name: Enoch\n  repo: our-ark/enoch\n  branch: main\n",
+        encoding="utf-8",
+    )
+    inbox = root / ".enoch" / "lineage" / "inbox.json"
+    inbox.parent.mkdir(parents=True, exist_ok=True)
+    inbox.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "ancestors": [
+                    {
+                        "name": "Enoch",
+                        "repo": "our-ark/enoch",
+                        "branch": "main",
+                        "depth": 1,
+                        "skills": [],
+                        "commit_at_birth": "",
+                    }
+                ],
+                "latest_heads": {"our-ark/enoch": "abc123"},
+                "errors": [],
+                "refreshed_at": "2026-07-26T00:00:00+00:00",
+                "candidates": [candidate.__dict__],
+            }
+        ),
+        encoding="utf-8",
     )
 
 

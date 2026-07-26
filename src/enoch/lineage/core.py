@@ -555,6 +555,44 @@ def load_inbox_candidates(root: Path | None = None, *, include_inactive: bool = 
     return _candidates_from_payload(payload, include_inactive=include_inactive)
 
 
+def load_lineage_inbox_report(
+    root: Path | None = None,
+    *,
+    scope: str = "parent",
+) -> LineageInboxReport:
+    normalized_scope = scope.strip().lower() or "parent"
+    if normalized_scope not in {"all", "parent"}:
+        raise LineageError("Lineage inbox scope must be all or parent.")
+    payload = _load_inbox_payload(root)
+    ancestors = tuple(
+        ancestor
+        for item in payload.get("ancestors", [])
+        if isinstance(item, dict)
+        and (ancestor := _ancestor_from_json(item)) is not None
+    )
+    if normalized_scope == "parent":
+        ancestors = ancestors[:1]
+    ancestor_repos = {ancestor.repo for ancestor in ancestors}
+    candidates = tuple(
+        candidate
+        for candidate in _candidates_from_payload(payload, include_inactive=False)
+        if candidate.repo in ancestor_repos
+    )
+    latest_heads = {
+        str(repo): str(head)
+        for repo, head in dict(payload.get("latest_heads") or {}).items()
+        if str(repo).strip() and str(head).strip()
+    }
+    return LineageInboxReport(
+        scope=normalized_scope,
+        ancestors=ancestors,
+        candidates=candidates,
+        latest_heads=latest_heads,
+        errors=tuple(str(item) for item in payload.get("errors", []) if str(item)),
+        refreshed_at=str(payload.get("refreshed_at") or ""),
+    )
+
+
 def load_parent_inbox_candidates(
     root: Path | None = None,
     *,
@@ -830,6 +868,62 @@ def format_parent_inherit_report(report: LineageInboxReport) -> str:
             "- /inherit ignore <change_id>",
         ]
     )
+    return "\n".join(lines)
+
+
+def format_inheritance_scan_queued(
+    report: LineageInboxReport,
+    assessment_count: int,
+) -> str:
+    if not report.ancestors:
+        return format_parent_inherit_report(report)
+    parent = report.ancestors[0]
+    lines = [
+        "Direct parent inheritance scan completed.",
+        "",
+        f"Parent: {parent.name} ({parent.repo}@{parent.branch})",
+    ]
+    if report.errors:
+        lines.extend(["", "Warnings:", *(f"- {error}" for error in report.errors)])
+    lines.extend(
+        [
+            "",
+            (
+                "Added 1 new direct-parent change."
+                if report.new_count == 1
+                else f"Added {report.new_count} new direct-parent changes."
+            ),
+            (
+                "Queued 1 change for background Codex assessment."
+                if assessment_count == 1
+                else f"Queued {assessment_count} changes for background Codex assessment."
+            ),
+            "Enoch will remain available while assessment runs.",
+            "",
+            "Use /inherit inbox to view the stored inbox at any time.",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def format_lineage_assessment_complete(
+    candidates: tuple[LineageCandidate, ...],
+    *,
+    assessed_count: int,
+    failed_count: int,
+) -> str:
+    lines = [
+        "Inheritance assessment finished.",
+        f"Assessed: {max(0, assessed_count)}",
+        f"Failed: {max(0, failed_count)}",
+        "",
+        format_parent_inbox(candidates),
+        "",
+        "Next:",
+        "- /inherit inspect <change_id>",
+        "- /inherit <change_id>",
+        "- /inherit ignore <change_id>",
+    ]
     return "\n".join(lines)
 
 
@@ -1181,6 +1275,23 @@ def _candidate_from_json(data: dict[str, Any]) -> LineageCandidate:
         linked_at=str(data.get("linked_at") or ""),
         adopted_revision=str(data.get("adopted_revision") or ""),
         adopted_at=str(data.get("adopted_at") or ""),
+    )
+
+
+def _ancestor_from_json(data: dict[str, Any]) -> AncestorLink | None:
+    name = str(data.get("name") or "").strip()
+    repo = str(data.get("repo") or "").strip()
+    branch = str(data.get("branch") or DEFAULT_BRANCH).strip() or DEFAULT_BRANCH
+    depth = _positive_int(data.get("depth"))
+    if not name or not repo or depth is None:
+        return None
+    return AncestorLink(
+        name=name,
+        repo=repo,
+        branch=branch,
+        depth=depth,
+        skills=_string_tuple(data.get("skills")),
+        commit_at_birth=str(data.get("commit_at_birth") or ""),
     )
 
 

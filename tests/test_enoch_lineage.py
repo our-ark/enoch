@@ -30,6 +30,7 @@ from enoch.lineage.core import (
     load_birth_commit,
     load_current_agent_profile,
     load_inbox_candidates,
+    load_lineage_inbox_report,
     load_parent,
     mark_inbox_candidate,
     parse_declared_skills,
@@ -40,6 +41,7 @@ from enoch.lineage.core import (
     resolve_lineage,
 )
 from enoch.lineage.assessment import assess_lineage_inbox
+from enoch.commands import inherit_command
 from enoch.lineage.lifecycle import (
     lineage_context_source,
     reconcile_lineage_adoptions,
@@ -602,6 +604,7 @@ class EnochLineageTests(unittest.TestCase):
 
     def test_assessment_uses_configurable_fresh_batches(self) -> None:
         calls = 0
+        progress = []
         with TemporaryDirectory() as temp:
             root = _root_with_parent(Path(temp))
             config = root / ".enoch" / "config.yaml"
@@ -637,10 +640,55 @@ class EnochLineageTests(unittest.TestCase):
                 root,
                 generator=generator,
                 mission="Help Roy operate Enoch.",
+                progress_callback=progress.append,
             )
 
         self.assertEqual(calls, 2)
         self.assertEqual(assessed.assessed_count, 3)
+        self.assertEqual(
+            [update.processed_count for update in progress],
+            [2, 3],
+        )
+        self.assertEqual(
+            [update.batch_index for update in progress],
+            [1, 2],
+        )
+
+    def test_stored_inherit_inbox_does_not_refresh(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = _root_with_parent(Path(temp))
+            refresh_lineage_inbox(root, scope="parent", client=FakeLineageClient())
+
+            reply = inherit_command(
+                "/inherit inbox",
+                root,
+                refresh_lineage_fn=lambda *_args, **_kwargs: self.fail(
+                    "/inherit inbox must not scan the forge"
+                ),
+            )
+
+        self.assertIn("Direct parent inheritance inbox:", reply)
+        self.assertIn("our-ark/enoch#32", reply)
+        self.assertIn("/inherit inspect <change_id>", reply)
+
+    def test_stored_lineage_report_reconstructs_scan_context(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = _root_with_parent(Path(temp))
+            refreshed = refresh_lineage_inbox(
+                root,
+                scope="parent",
+                client=FakeLineageClient(),
+            )
+
+            loaded = load_lineage_inbox_report(root, scope="parent")
+
+        self.assertEqual(loaded.scope, "parent")
+        self.assertEqual(loaded.ancestors, refreshed.ancestors)
+        self.assertEqual(
+            tuple(candidate.id for candidate in loaded.candidates),
+            tuple(candidate.id for candidate in refreshed.candidates),
+        )
+        self.assertEqual(loaded.latest_heads, refreshed.latest_heads)
 
     def test_legacy_inbox_is_read_then_migrated_to_private_state(self) -> None:
         with TemporaryDirectory() as temp:

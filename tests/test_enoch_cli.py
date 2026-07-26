@@ -40,7 +40,7 @@ class EnochCliTests(unittest.TestCase):
         self.assertIn("mission     Show or update Enoch's mission.", output)
         self.assertNotIn("memory      Manage long-term memory", output)
         self.assertIn("ancestors   Inspect ancestor chain and inheritable updates.", output)
-        self.assertIn("inherit     Scan and inspect direct-parent changes.", output)
+        self.assertIn("inherit     Scan or inspect stored direct-parent changes.", output)
         self.assertIn("skills      Show declared skills for Enoch or another local agent.", output)
         self.assertNotIn("teach       Package local changes as a portable lesson.", output)
         self.assertIn("learn       Inspect a published skill for adaptation.", output)

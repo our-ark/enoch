@@ -16,8 +16,10 @@ permissions:
       - .agent/lineage.yaml
       - .agent/lineage_inbox.json
       - .enoch/lineage/inbox.json
+      - .enoch/lineage/assessment_queue.json
     write:
       - .enoch/lineage/inbox.json
+      - .enoch/lineage/assessment_queue.json
   forge:
     read_repo: true
 validation:

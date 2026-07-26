@@ -12,7 +12,8 @@ def lineage_usage(prefix: str = "", *, command_name: str = "ancestors") -> str:
         return "\n".join(
             [
                 "Inherit commands:",
-                f"{command} - scan, assess, and show direct-parent changes",
+                f"{command} - scan direct-parent changes and assess them in the background",
+                f"{command} inbox - show the stored inbox without scanning",
                 f"{command} inspect <change_id> - show the complete stored assessment",
                 f"{command} <change_id> - adapt one change through the standard task workflow",
                 f"{command} ignore <change_id> - dismiss a change",

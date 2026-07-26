@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import replace
+from dataclasses import dataclass, replace
 import json
 from pathlib import Path
 from typing import Any
@@ -30,6 +30,7 @@ from enoch.providers.runtime import invoke_runtime_respond
 
 
 LineageAssessmentGenerator = Callable[[str], str]
+LineageAssessmentGuard = Callable[[], None]
 ASSESSMENT_DIFF_CHARS = 6_000
 ASSESSMENT_TEXT_LIMIT = 2_000
 ASSESSMENT_LIST_LIMIT = 12
@@ -37,6 +38,19 @@ ASSESSMENT_LIST_LIMIT = 12
 
 class LineageAssessmentError(ValueError):
     pass
+
+
+@dataclass(frozen=True)
+class LineageAssessmentProgress:
+    processed_count: int
+    total_count: int
+    assessed_count: int
+    failed_count: int
+    batch_index: int
+    batch_count: int
+
+
+LineageAssessmentProgressCallback = Callable[[LineageAssessmentProgress], None]
 
 
 def refresh_and_assess_lineage_inbox(
@@ -62,6 +76,9 @@ def assess_lineage_inbox(
     *,
     generator: LineageAssessmentGenerator,
     mission: str,
+    candidate_ids: Iterable[str] | None = None,
+    progress_callback: LineageAssessmentProgressCallback | None = None,
+    guard: LineageAssessmentGuard | None = None,
 ) -> LineageInboxReport:
     if not report.ancestors:
         return replace(
@@ -70,16 +87,10 @@ def assess_lineage_inbox(
             assessed_count=0,
             assessment_failed_count=0,
         )
-    ancestor_repos = {ancestor.repo for ancestor in report.ancestors}
-    candidates = tuple(
-        candidate
-        for candidate in load_inbox_candidates(root)
-        if candidate.status == STATUS_PENDING
-        and candidate.repo in ancestor_repos
-        and (
-            candidate.assessment_status != ASSESSMENT_ASSESSED
-            or candidate.assessment_version != ASSESSMENT_SCHEMA_VERSION
-        )
+    candidates = lineage_assessment_candidates(
+        report,
+        root,
+        candidate_ids=candidate_ids,
     )
     if not candidates:
         return replace(
@@ -90,9 +101,13 @@ def assess_lineage_inbox(
         )
 
     batch_size = lineage_settings(root).assessment_batch_size
+    batches = tuple(_batches(candidates, batch_size))
     assessed_count = 0
     failed_count = 0
-    for batch in _batches(candidates, batch_size):
+    processed_count = 0
+    for batch_index, batch in enumerate(batches, start=1):
+        if guard is not None:
+            guard()
         try:
             raw = generator(
                 lineage_assessment_prompt(
@@ -101,10 +116,16 @@ def assess_lineage_inbox(
                     current_context=_current_enoch_context(root),
                 )
             )
+            if guard is not None:
+                guard()
             assessments = _parse_assessment_response(raw, batch)
         except (LineageAssessmentError, OSError, RuntimeError, TimeoutError, TypeError, ValueError) as error:
+            if guard is not None:
+                guard()
             detail = _clean_text(str(error)) or error.__class__.__name__
             for candidate in batch:
+                if guard is not None:
+                    guard()
                 update_inbox_candidate(
                     candidate.id,
                     root,
@@ -114,9 +135,21 @@ def assess_lineage_inbox(
                     assessment_version=ASSESSMENT_SCHEMA_VERSION,
                 )
             failed_count += len(batch)
+            processed_count += len(batch)
+            _report_progress(
+                progress_callback,
+                processed_count=processed_count,
+                total_count=len(candidates),
+                assessed_count=assessed_count,
+                failed_count=failed_count,
+                batch_index=batch_index,
+                batch_count=len(batches),
+            )
             continue
 
         for candidate in batch:
+            if guard is not None:
+                guard()
             assessment = assessments[candidate.id]
             update_inbox_candidate(
                 candidate.id,
@@ -138,12 +171,51 @@ def assess_lineage_inbox(
                 assessment_error="",
             )
             assessed_count += 1
+        processed_count += len(batch)
+        _report_progress(
+            progress_callback,
+            processed_count=processed_count,
+            total_count=len(candidates),
+            assessed_count=assessed_count,
+            failed_count=failed_count,
+            batch_index=batch_index,
+            batch_count=len(batches),
+        )
 
     return replace(
         report,
         candidates=_active_report_candidates(report, root),
         assessed_count=assessed_count,
         assessment_failed_count=failed_count,
+    )
+
+
+def lineage_assessment_candidates(
+    report: LineageInboxReport,
+    root: Path | None = None,
+    *,
+    candidate_ids: Iterable[str] | None = None,
+) -> tuple[LineageCandidate, ...]:
+    ancestor_repos = {ancestor.repo for ancestor in report.ancestors}
+    selected_ids = (
+        {
+            candidate_id.strip()
+            for candidate_id in candidate_ids
+            if candidate_id.strip()
+        }
+        if candidate_ids is not None
+        else None
+    )
+    return tuple(
+        candidate
+        for candidate in load_inbox_candidates(root)
+        if candidate.status == STATUS_PENDING
+        and candidate.repo in ancestor_repos
+        and (selected_ids is None or candidate.id in selected_ids)
+        and (
+            candidate.assessment_status != ASSESSMENT_ASSESSED
+            or candidate.assessment_version != ASSESSMENT_SCHEMA_VERSION
+        )
     )
 
 
@@ -330,6 +402,30 @@ def _batches(
 ) -> Iterable[tuple[LineageCandidate, ...]]:
     for index in range(0, len(candidates), max(1, size)):
         yield candidates[index : index + max(1, size)]
+
+
+def _report_progress(
+    callback: LineageAssessmentProgressCallback | None,
+    *,
+    processed_count: int,
+    total_count: int,
+    assessed_count: int,
+    failed_count: int,
+    batch_index: int,
+    batch_count: int,
+) -> None:
+    if callback is None:
+        return
+    callback(
+        LineageAssessmentProgress(
+            processed_count=processed_count,
+            total_count=total_count,
+            assessed_count=assessed_count,
+            failed_count=failed_count,
+            batch_index=batch_index,
+            batch_count=batch_count,
+        )
+    )
 
 
 def _required_text(raw: Mapping[str, object], key: str, *, limit: int) -> str:
