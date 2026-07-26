@@ -25,6 +25,13 @@ from enoch.commands import (
 from enoch.setup_tools import setup_command
 from enoch.operations.update_tools import schedule_daemon_restart as _schedule_daemon_restart
 from enoch.operations.updater import update_from_authoritative
+from enoch.private_state import (
+    PrivateStateError,
+    format_private_state_migration,
+    format_private_state_plan,
+    migrate_private_state,
+    plan_private_state,
+)
 
 
 @dataclass(frozen=True)
@@ -100,6 +107,12 @@ ADMIN_COMMANDS = (
         "Run Enoch's local health checks.",
         "doctor",
         "_admin_doctor",
+    ),
+    AdminCommand(
+        "state",
+        "Validate or migrate private runtime state.",
+        "state validate | state migrate [--dry-run]",
+        "_admin_state",
     ),
     AdminCommand(
         "update",
@@ -266,6 +279,23 @@ def _admin_learn(text: str, _identity: Identity, root: Path) -> str:
 
 def _admin_doctor(_text: str, _identity: Identity, root: Path) -> str:
     return _doctor_text(root)
+
+
+def _admin_state(text: str, _identity: Identity, root: Path) -> str:
+    parts = text.split()
+    action = parts[1].lower() if len(parts) >= 2 else "validate"
+    try:
+        if action == "validate" and len(parts) == 2:
+            return format_private_state_plan(plan_private_state(root))
+        if action == "migrate" and (
+            len(parts) == 2 or (len(parts) == 3 and parts[2] == "--dry-run")
+        ):
+            return format_private_state_migration(
+                migrate_private_state(root, dry_run="--dry-run" in parts[2:])
+            )
+    except PrivateStateError as error:
+        return f"Private state operation failed: {error}"
+    return "Use state validate or state migrate [--dry-run]."
 
 
 def _admin_update(_text: str, _identity: Identity, root: Path) -> str:

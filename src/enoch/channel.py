@@ -17,6 +17,7 @@ from enoch.state import StateCorruptionError, atomic_write, load_json_object
 
 
 MAX_IMAGE_BYTES = 20 * 1024 * 1024
+STATE_SCHEMA_VERSION = 1
 IMAGE_SUFFIXES = {
     "image/jpeg": ".jpg",
     "image/png": ".png",
@@ -55,7 +56,14 @@ def load_channel_cursor(name: str, root: Path | None = None) -> Cursor | None:
 
 def save_channel_cursor(name: str, cursor: Cursor, root: Path | None = None) -> None:
     path = channel_cursor_path(name, root)
-    atomic_write(path, json.dumps({"cursor": cursor}, indent=2) + "\n")
+    atomic_write(
+        path,
+        json.dumps(
+            {"schema_version": STATE_SCHEMA_VERSION, "cursor": cursor},
+            indent=2,
+        )
+        + "\n",
+    )
 
 
 def channel_cursor_path(name: str, root: Path | None = None) -> Path:
@@ -109,7 +117,11 @@ def save_channel_lifecycle(
     root: Path | None = None,
 ) -> None:
     path = channel_lifecycle_path(name, root)
-    atomic_write(path, json.dumps(data, indent=2) + "\n")
+    atomic_write(
+        path,
+        json.dumps({"schema_version": STATE_SCHEMA_VERSION, **data}, indent=2)
+        + "\n",
+    )
 
 
 def channel_lifecycle_path(name: str, root: Path | None = None) -> Path:

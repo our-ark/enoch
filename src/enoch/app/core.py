@@ -183,6 +183,7 @@ from enoch.prompt_append import (
     read_only_turn_prompt,
     startup_context_note,
 )
+from enoch.private_state import assert_private_state_supported
 from enoch.providers.contracts import (
     AgentRuntime,
     AgentRuntimeAccessUnavailable,
@@ -418,6 +419,7 @@ class EnochApplication:
         self.identity = identity
         self.root = root
         self.storage = storage_layout(root)
+        assert_private_state_supported(root)
         self.client = client
         self.channel_name = _chat_provider_name(client)
         self.daemon_epoch = daemon_epoch or begin_daemon_epoch(

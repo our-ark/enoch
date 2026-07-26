@@ -11,6 +11,7 @@ import tomllib
 from pathlib import Path
 
 from enoch.paths import enoch_home, repo_root, storage_layout
+from enoch.private_state import plan_private_state
 from enoch.providers.contracts import (
     AgentRuntimeError,
     ForgeProviderError,
@@ -512,7 +513,12 @@ def _memory_storage_check(root: Path) -> DoctorCheckResult:
         artifact_check.parent.mkdir(parents=True, exist_ok=True)
         artifact_check.write_text("ok\n", encoding="utf-8")
         artifact_check.unlink(missing_ok=True)
-        state_files = _validate_state_files(home, exclude=(layout.artifacts,))
+        state_plan = plan_private_state(root)
+        if not state_plan.valid:
+            raise StateCorruptionError(
+                home,
+                "; ".join(state_plan.errors),
+            )
         artifact_files = _validate_state_files(layout.artifacts)
     except (OSError, StateCorruptionError) as error:
         return DoctorCheckResult(
@@ -531,7 +537,7 @@ def _memory_storage_check(root: Path) -> DoctorCheckResult:
         category="operational readiness",
         summary=(
             f"{home} and {layout.artifacts} writable; "
-            f"{state_files} private state file(s) and "
+            f"{state_plan.files_checked} private state file(s) and "
             f"{artifact_files} artifact journal(s) readable"
         ),
     )

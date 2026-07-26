@@ -53,11 +53,48 @@ the corresponding pre-boundary files from `.enoch/`, with legacy records
 ordered before new records. Legacy files are not moved or deleted.
 
 This compatibility is deliberately read-only. Versioned private-state schemas,
-dry-run migration, validation, and unsupported-state failures are a separate
-contract; introducing storage ownership does not pretend that an old file was
-migrated.
+dry-run migration, validation, and unsupported-state failures use the manifest
+contract described below; introducing storage ownership does not pretend that
+an old file was migrated.
 
 Deleting artifact storage removes history and evidence but must not stop the
 queue from operating. Deleting private state resets local operation and must
 never modify the versioned software body. Neither private area belongs in
 source control.
+
+## Private-state schemas
+
+`.enoch/state_manifest.json` is the authoritative registry for Enoch-owned
+private-state schemas. The current manifest format is
+`PRIVATE_STATE_MANIFEST_SCHEMA_VERSION = 1`, and the current aggregate contract
+is `PRIVATE_STATE_VERSION = 1`.
+
+The registry versions queue, backlog, cron, evolution control, memory, runtime
+session, daemon epoch, channel cursor/lifecycle/inbox/notification, config, and
+pending-adoption state. Provider or profile files outside registered patterns
+remain owned by those extensions.
+
+Every application startup validates registered files before claiming a daemon
+epoch. Supported legacy versions may continue to run until explicitly
+migrated. Corrupt files, invalid shapes, future manifest versions, and future
+file schemas fail startup without rewriting or resetting state.
+
+Use the admin CLI to inspect and migrate:
+
+```text
+bin/enoch state validate
+bin/enoch state migrate --dry-run
+bin/enoch-daemon stop
+bin/enoch state migrate
+```
+
+Validation and dry-run are read-only. Apply refuses to run while the recorded
+daemon process is alive. Before changing any file, Enoch copies every migration
+target and the prior manifest into
+`.enoch/backups/state-v<version>-<timestamp>-<id>/`. Files are normalized and
+atomically replaced one at a time; the manifest is committed last. Any failure
+restores the original files, preserves the backup, and reports the rollback.
+Running the same migration again is a no-op.
+
+Artifact storage is never scanned, backed up, or rewritten by private-state
+migration.

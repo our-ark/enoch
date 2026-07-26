@@ -116,6 +116,11 @@ paths. Logs and retained task/evolution evidence use the separate
 `.enoch/artifacts/` namespace. Do not commit files from `.enoch/` or
 `.agent/instance.yaml`.
 
+Inspect private-state compatibility with `bin/enoch state validate`. Use
+`bin/enoch state migrate --dry-run` to preview an upgrade; stop the daemon
+before applying it with `bin/enoch state migrate`. Migrations back up affected
+files and never rewrite artifact/evidence storage.
+
 ## Run
 
 ```bash

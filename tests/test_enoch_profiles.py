@@ -31,6 +31,7 @@ from enoch.profiles import registry as profile_registry
 from enoch.providers import ChatEvent, ProviderHealth
 from enoch.tasks.events import load_task_events
 from enoch.tasks.queue import task_queue_status
+from enoch.private_state import UnsupportedPrivateStateError
 
 
 class _Chat:
@@ -100,6 +101,25 @@ class _EntryPoints(list):
 
 
 class EnochProfileTests(unittest.TestCase):
+    @patch(
+        "enoch.app.core.assert_private_state_supported",
+        side_effect=UnsupportedPrivateStateError("future state"),
+    )
+    def test_application_rejects_unsupported_private_state(self, validate) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+
+            with self.assertRaisesRegex(UnsupportedPrivateStateError, "future state"):
+                EnochApplication(
+                    load_identity(),
+                    root,
+                    _Chat(),
+                    runtime=_Runtime(),
+                )
+            self.assertFalse((root / ".enoch" / "daemon_epoch.json").exists())
+
+        validate.assert_called_once_with(root)
+
     def test_profile_command_can_queue_work_without_core_changes(self) -> None:
         storage_layouts = []
 

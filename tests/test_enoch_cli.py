@@ -47,6 +47,7 @@ class EnochCliTests(unittest.TestCase):
         self.assertNotIn("debug       Inspect prompts, logs, state files, and worktree health.", output)
         self.assertNotIn("mode        Show or set chat/work mode.", output)
         self.assertIn("doctor      Run Enoch's local health checks", output)
+        self.assertIn("state       Validate or migrate private runtime state.", output)
         self.assertIn(
             "update      Update from the authoritative repository, run doctor, and restart Enoch if safe.",
             output,
@@ -368,6 +369,33 @@ class EnochCliTests(unittest.TestCase):
         self.assertIn("- tests/test_enoch_cli.py", output)
         self.assertIn("Failed check: tests", output)
         self.assertIn("Check output:", output)
+
+    def test_state_command_validates_and_dry_runs_without_writing(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            output = _run_repl_commands(
+                "state validate",
+                "state migrate --dry-run",
+                "exit",
+                root=root,
+            )
+
+            self.assertFalse((root / ".enoch").exists())
+            self.assertIn("Private state validation passed.", output)
+            self.assertIn("Manifest: missing", output)
+            self.assertIn("Private state migration dry run.", output)
+
+    def test_state_command_applies_migration(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            output = _run_repl_commands("state migrate", "exit", root=root)
+
+            manifest = root / ".enoch" / "state_manifest.json"
+            self.assertTrue(manifest.exists())
+            self.assertIn("Private state migration completed.", output)
+            self.assertIn("Manifest: current", output)
 
 
 def _run_repl_commands(*commands: str, root: Path = ROOT) -> str:

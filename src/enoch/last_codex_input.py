@@ -9,6 +9,9 @@ from enoch.paths import private_state_path
 from enoch.state import load_json_object
 
 
+SCHEMA_VERSION = 1
+
+
 def last_codex_input_path(root: Path | None = None) -> Path:
     return private_state_path("last_codex_input.json", root)
 
@@ -23,6 +26,7 @@ def record_last_codex_input(
     resumed: bool,
 ) -> None:
     payload = {
+        "schema_version": SCHEMA_VERSION,
         "recorded_at": now(),
         "sandbox": sandbox,
         "persist_session": persist_session,

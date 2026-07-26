@@ -17,6 +17,7 @@ and validation boundary.
 | `enoch.app.inbox` | Durable chat receipts, redelivery suppression, and poison-event attempts |
 | `enoch.state` | Corruption-safe JSON loading, atomic writes, and interprocess transactions |
 | `enoch.storage` | Versioned software-body, private-state, and artifact ownership boundaries |
+| `enoch.private_state` | Manifest validation, supported-version checks, backup, migration, and rollback |
 | `enoch.tasks` | Task queue state, audit events, failure policy, configuration, and isolated worktrees |
 | `enoch.evolution` | Evolution state, candidate collection and ranking, event history, and governed lifecycle |
 | `enoch.evolution.sources` | Feedback, experience, and brainstorming evidence adapters |
