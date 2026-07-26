@@ -5,7 +5,7 @@ description = "GitHub forge provider for Our Ark agents."
 license = "Apache-2.0"
 requires-python = ">=3.11"
 dependencies = [
-  "our-ark-provider-kit @ git+https://github.com/our-ark/enoch.git@c440831f3b658d3dc9a74b6bf59e415cc9dacb29#subdirectory=libraries/provider-kit",
+  "our-ark-provider-kit @ git+https://github.com/our-ark/enoch.git@90377a3f266d9de9ea78908ad2cd7450c31830c6#subdirectory=libraries/provider-kit",
 ]
 
 [project.entry-points."our_ark.providers"]
