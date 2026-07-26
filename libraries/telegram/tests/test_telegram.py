@@ -90,6 +90,89 @@ class TelegramLibraryTests(ProviderContractConformanceMixin, unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "at least 1"):
             chunks("hello", 0)
 
+    def test_send_renders_html_only_in_transport_payload(self) -> None:
+        client = TelegramClient(TelegramConfig(token="test"))
+        calls = []
+
+        def fake_call(method, payload):
+            calls.append((method, payload))
+            return {"ok": True, "result": {"message_id": 9}}
+
+        client._call = fake_call
+        original = "Run `bin/enoch doctor` and keep <output>."
+
+        message_id = client.send_message(42, original)
+
+        self.assertEqual(message_id, 9)
+        self.assertEqual(original, "Run `bin/enoch doctor` and keep <output>.")
+        self.assertEqual(calls[0][0], "sendMessage")
+        self.assertEqual(calls[0][1]["chat_id"], 42)
+        self.assertEqual(calls[0][1]["parse_mode"], "HTML")
+        self.assertEqual(
+            calls[0][1]["text"],
+            "Run <code>bin/enoch doctor</code> and keep &lt;output&gt;.",
+        )
+
+    def test_edit_uses_the_same_display_only_renderer(self) -> None:
+        client = TelegramClient(TelegramConfig(token="test"))
+        calls = []
+
+        def fake_call(method, payload):
+            calls.append((method, payload))
+            return {"ok": True}
+
+        client._call = fake_call
+        client.edit_message(42, 9, "Status: **completed**")
+
+        self.assertEqual(
+            calls,
+            [
+                (
+                    "editMessageText",
+                    {
+                        "chat_id": 42,
+                        "message_id": 9,
+                        "text": "<b>Status:</b> <b>completed</b>",
+                        "parse_mode": "HTML",
+                    },
+                )
+            ],
+        )
+
+    def test_format_rejection_falls_back_to_original_plain_text(self) -> None:
+        client = TelegramClient(TelegramConfig(token="test"))
+        calls = []
+
+        def fake_call(method, payload):
+            calls.append((method, payload))
+            if payload.get("parse_mode"):
+                raise TelegramError("Bad Request: can't parse entities")
+            return {"ok": True, "result": {"message_id": 11}}
+
+        client._call = fake_call
+
+        message_id = client.send_message(42, "Run `doctor`.")
+
+        self.assertEqual(message_id, 11)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[1][1]["text"], "Run `doctor`.")
+        self.assertNotIn("parse_mode", calls[1][1])
+
+    def test_delivery_failure_is_not_retried_as_plain_text(self) -> None:
+        client = TelegramClient(TelegramConfig(token="test"))
+        calls = []
+
+        def fake_call(method, payload):
+            calls.append((method, payload))
+            raise TelegramError("Telegram API call sendMessage failed.")
+
+        client._call = fake_call
+
+        with self.assertRaisesRegex(TelegramError, "sendMessage failed"):
+            client.send_message(42, "**hello**")
+
+        self.assertEqual(len(calls), 1)
+
     @patch("our_ark_telegram.core.request.urlopen")
     def test_download_enforces_size_limit(self, urlopen: MagicMock) -> None:
         api_response = MagicMock()

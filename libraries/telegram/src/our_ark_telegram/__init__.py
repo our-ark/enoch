@@ -9,6 +9,11 @@ from our_ark_telegram.core import (
     telegram_event,
 )
 from our_ark_telegram.integration import load_config, setup_provider
+from our_ark_telegram.presentation import (
+    TelegramMessageChunk,
+    render_telegram_html,
+    telegram_message_chunks,
+)
 
 
 def create_provider(root=None):
@@ -35,9 +40,12 @@ __all__ = [
     "TelegramClient",
     "TelegramConfig",
     "TelegramError",
+    "TelegramMessageChunk",
     "create_provider",
     "load_config",
     "setup_provider",
     "chunks",
+    "render_telegram_html",
+    "telegram_message_chunks",
     "telegram_event",
 ]
