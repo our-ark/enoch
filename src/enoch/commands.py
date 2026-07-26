@@ -171,9 +171,15 @@ def thinking_command(
     runtime = runtime or _default_runtime(root)
     if model_summary_fn is model_summary:
         model_summary_fn = runtime.model_summary
+    reasoning_efforts = _runtime_reasoning_efforts(runtime, root)
     parts = text.split()
     if len(parts) == 1:
-        return thinking_status(root, model_summary_fn=model_summary_fn, prefix=prefix)
+        return thinking_status(
+            root,
+            model_summary_fn=model_summary_fn,
+            prefix=prefix,
+            reasoning_efforts=reasoning_efforts,
+        )
     choice = parts[1].strip().lower()
     if choice in {"default", "reset", "off"}:
         if allowed_chat_id is None:
@@ -183,11 +189,16 @@ def thinking_command(
             [
                 "Enoch cleared her local thinking override.",
                 "",
-                thinking_status(root, model_summary_fn=model_summary_fn, prefix=prefix),
+                thinking_status(
+                    root,
+                    model_summary_fn=model_summary_fn,
+                    prefix=prefix,
+                    reasoning_efforts=reasoning_efforts,
+                ),
             ]
         )
-    if choice not in REASONING_EFFORTS:
-        return thinking_usage(prefix=prefix)
+    if choice not in reasoning_efforts:
+        return thinking_usage(prefix=prefix, reasoning_efforts=reasoning_efforts)
     if allowed_chat_id is None:
         return thinking_lock_message()
     write_config(runtime.config_section, "reasoning_effort", choice, root)
@@ -195,7 +206,12 @@ def thinking_command(
         [
             f"Enoch thinking level set to {choice}.",
             "",
-            thinking_status(root, model_summary_fn=model_summary_fn, prefix=prefix),
+            thinking_status(
+                root,
+                model_summary_fn=model_summary_fn,
+                prefix=prefix,
+                reasoning_efforts=reasoning_efforts,
+            ),
         ]
     )
 
@@ -205,6 +221,7 @@ def thinking_status(
     *,
     model_summary_fn: ModelSummaryFn = model_summary,
     prefix: str = "/",
+    reasoning_efforts: tuple[str, ...] = REASONING_EFFORTS,
 ) -> str:
     command = f"{prefix}thinking"
     return "\n".join(
@@ -212,16 +229,22 @@ def thinking_status(
             "Enoch thinking status:",
             model_summary_fn(root),
             "",
-            f"Set with {command} low, {command} medium, {command} high, or {command} default.",
+            f"Set with {', '.join(f'{command} {choice}' for choice in reasoning_efforts)}, "
+            f"or {command} default.",
         ]
     )
 
 
-def thinking_usage(prefix: str = "/") -> str:
+def thinking_usage(
+    prefix: str = "/",
+    *,
+    reasoning_efforts: tuple[str, ...] = REASONING_EFFORTS,
+) -> str:
     command = f"{prefix}thinking"
+    choices = "|".join((*reasoning_efforts, "default"))
     return "\n".join(
         [
-            f"Use {command} low, {command} medium, {command} high, or {command} default.",
+            f"Use {command} <{choices}>.",
             f"Use {command} by itself to show the current setting.",
         ]
     )
@@ -390,11 +413,13 @@ def config_command(
         value = parts[2].strip().lower()
         section = runtime.config_section
         runtime_label = runtime.name.title()
+        reasoning_efforts = _runtime_reasoning_efforts(runtime, root)
         if value in {"default", "reset"}:
             write_section_value(section, "reasoning_effort", None, root)
             message = f"Enoch cleared her local {runtime_label} reasoning effort override."
-        elif value not in REASONING_EFFORTS:
-            return f"{runtime_label} reasoning effort must be low, medium, high, or default."
+        elif value not in reasoning_efforts:
+            choices = _format_choices((*reasoning_efforts, "default"))
+            return f"{runtime_label} reasoning effort must be {choices}."
         else:
             write_section_value(section, "reasoning_effort", value, root)
             message = f"Enoch {runtime_label} reasoning effort set to {value}."
@@ -437,12 +462,14 @@ def config_status(
         summary = str(runtime_config_summary(root)).strip()
         if summary:
             lines.append(summary)
+    reasoning_efforts = _runtime_reasoning_efforts(runtime, root)
+    reasoning_choices = "|".join(reasoning_efforts)
     lines.extend(
         [
             "",
             f"Use {command} model to see available models or set one with {command} model <name>.",
             (
-                f"Set reasoning with {command} reasoning-effort low|medium|high "
+                f"Set reasoning with {command} reasoning-effort {reasoning_choices} "
                 f"or {command} reasoning-effort default."
             ),
             f"Set task timeout with {command} task-timeout <duration> or {command} task-timeout default.",
@@ -576,6 +603,30 @@ def _model_name_from_summary(summary: str) -> str:
     )
 
 
+def _runtime_reasoning_efforts(
+    runtime: AgentRuntime,
+    root: Path,
+) -> tuple[str, ...]:
+    provider_choices = getattr(runtime, "reasoning_efforts", None)
+    if callable(provider_choices):
+        choices = tuple(
+            dict.fromkeys(
+                str(choice).strip().lower()
+                for choice in provider_choices(root)
+                if str(choice).strip()
+            )
+        )
+        if choices:
+            return choices
+    return REASONING_EFFORTS
+
+
+def _format_choices(choices: tuple[str, ...]) -> str:
+    if len(choices) == 1:
+        return choices[0]
+    return f"{', '.join(choices[:-1])}, or {choices[-1]}"
+
+
 def config_usage(prefix: str = "/") -> str:
     command = f"{prefix}config"
     return "\n".join(
@@ -592,7 +643,11 @@ def config_usage(prefix: str = "/") -> str:
             f"{command} model <name> - set a local runtime model override",
             f"{command} model default - inherit the runtime model",
             f"{command} reasoning-effort - show the effective reasoning effort",
-            f"{command} reasoning-effort low|medium|high - set local reasoning effort",
+            (
+                f"{command} reasoning-effort {'|'.join(REASONING_EFFORTS)} "
+                "- set local reasoning effort"
+            ),
+            "Available reasoning levels depend on the active runtime model.",
             f"{command} reasoning-effort default - inherit runtime reasoning effort",
             f"{command} task-timeout - show the task timeout",
             f"{command} task-timeout <duration> - set a timeout between 1m and 2h",

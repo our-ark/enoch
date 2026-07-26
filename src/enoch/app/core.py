@@ -26,6 +26,7 @@ from enoch.automatic_learning import record_learning_artifact
 from enoch.brain import (
     act_in_session,
     codex_model_options,
+    codex_reasoning_efforts,
     model_summary,
     reset_token_usage,
     respond,
@@ -433,6 +434,7 @@ class EnochApplication:
             model_summary_fn=lambda root=None: model_summary(root),
             model_options_fn=lambda: codex_model_options(),
             reset_usage_fn=lambda: reset_token_usage(),
+            reasoning_efforts_fn=lambda root=None: codex_reasoning_efforts(root),
         )
         self.forge = forge or FunctionForgeProvider(
             close_fn=lambda *args, **kwargs: close_pull_request(*args, **kwargs),

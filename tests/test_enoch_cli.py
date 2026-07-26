@@ -304,7 +304,10 @@ class EnochCliTests(unittest.TestCase):
 
         model_summary.assert_called_once_with(ROOT)
         self.assertIn("Enoch thinking status:", output)
-        self.assertIn("Set with thinking low, thinking medium, thinking high, or thinking default.", output)
+        self.assertIn("thinking xhigh", output)
+        self.assertIn("thinking max", output)
+        self.assertIn("thinking ultra", output)
+        self.assertIn("or thinking default.", output)
         self.assertNotIn("/thinking low", output)
 
     @patch("enoch.cli.run_immune_system")

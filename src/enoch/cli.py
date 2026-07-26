@@ -69,7 +69,7 @@ ADMIN_COMMANDS = (
     AdminCommand(
         "thinking",
         "Show or set Enoch's Codex thinking level.",
-        "thinking [low|medium|high|default]",
+        "thinking [low|medium|high|xhigh|max|ultra|default]",
         "_admin_thinking",
     ),
     AdminCommand(

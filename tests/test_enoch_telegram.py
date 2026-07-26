@@ -807,7 +807,10 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("/config profile <name|default>", reply)
         self.assertIn("/config model <name>", reply)
         self.assertIn("/config model default", reply)
-        self.assertIn("/config reasoning-effort low|medium|high", reply)
+        self.assertIn(
+            "/config reasoning-effort low|medium|high|xhigh|max|ultra",
+            reply,
+        )
         self.assertIn("/config reasoning-effort default", reply)
         self.assertIn("/config task-timeout <duration>", reply)
         self.assertIn("/config task-timeout default", reply)
@@ -1170,7 +1173,7 @@ class EnochTelegramTests(unittest.TestCase):
                     _message_update(
                         update_id=3,
                         chat_id=42,
-                        text="/config reasoning-effort high",
+                        text="/config reasoning-effort xhigh",
                     )
                 )
                 configured = read_section("codex", root)
@@ -1194,9 +1197,9 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("Reasoning effort: medium", client.sent[0][1])
         self.assertIn("AI model: gpt-enoch-local", client.sent[1][1])
         self.assertIn("Model source: Enoch config codex.model", client.sent[1][1])
-        self.assertIn("Reasoning effort: high", client.sent[2][1])
+        self.assertIn("Reasoning effort: xhigh", client.sent[2][1])
         self.assertEqual(configured["model"], "gpt-enoch-local")
-        self.assertEqual(configured["reasoning_effort"], "high")
+        self.assertEqual(configured["reasoning_effort"], "xhigh")
         self.assertIn("AI model: gpt-global", client.sent[3][1])
         self.assertIn("Reasoning effort: medium", client.sent[4][1])
         self.assertNotIn("model", reset)
@@ -1243,6 +1246,38 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertNotIn("gpt-5.5", reply)
         self.assertIn("Example: /config model gpt-5.6-sol", reply)
         self.assertIn("private or future Codex rollouts", reply)
+
+    def test_config_reasoning_rejects_level_unsupported_by_current_model(self) -> None:
+        runtime = FunctionAgentRuntime(
+            respond_fn=lambda *_args, **_kwargs: "",
+            act_in_session_fn=lambda *_args, **_kwargs: "",
+            model_summary_fn=lambda _root=None: "AI model: gpt-5.5",
+            model_options_fn=lambda: (),
+            reset_usage_fn=lambda: None,
+            reasoning_efforts_fn=lambda _root=None: (
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+            ),
+        )
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            client = FakeTelegramClient(allowed_chat_id=42)
+            bot = EnochApplication(load_identity(), root, client, runtime=runtime)
+
+            _handle_update(
+                bot,
+                _message_update(
+                    chat_id=42,
+                    text="/config reasoning-effort max",
+                ),
+            )
+
+        self.assertIn(
+            "Codex reasoning effort must be low, medium, high, xhigh, or default.",
+            client.sent[0][1],
+        )
 
     def test_help_inherit_shows_inherit_usage(self) -> None:
         client = FakeTelegramClient(allowed_chat_id=42)

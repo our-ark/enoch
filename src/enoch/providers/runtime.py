@@ -24,6 +24,7 @@ RespondFn = Callable[..., RuntimeResultLike]
 ActFn = Callable[..., RuntimeResultLike]
 SummaryFn = Callable[[Path | None], str]
 OptionsFn = Callable[[], tuple[Any, ...]]
+ReasoningEffortsFn = Callable[[Path | None], tuple[str, ...]]
 ResetFn = Callable[[], None]
 HealthFn = Callable[[Path | None], ProviderHealth]
 
@@ -36,6 +37,7 @@ class FunctionAgentRuntime:
     model_options_fn: OptionsFn
     reset_usage_fn: ResetFn
     health_fn: HealthFn | None = None
+    reasoning_efforts_fn: ReasoningEffortsFn | None = None
     name: str = "codex"
     provider_kind: str = "runtime"
     config_section: str = "codex"
@@ -119,6 +121,11 @@ class FunctionAgentRuntime:
     def model_options(self) -> tuple[Any, ...]:
         return self.model_options_fn()
 
+    def reasoning_efforts(self, root: Path | None = None) -> tuple[str, ...]:
+        if self.reasoning_efforts_fn is None:
+            return ()
+        return self.reasoning_efforts_fn(root)
+
     def reset_usage(self) -> None:
         self.reset_usage_fn()
 
@@ -141,6 +148,7 @@ class CodexRuntime(FunctionAgentRuntime):
         from enoch.brain import (
             act_in_session_result,
             codex_model_options,
+            codex_reasoning_efforts,
             model_summary,
             reset_token_usage,
             respond_result,
@@ -155,6 +163,9 @@ class CodexRuntime(FunctionAgentRuntime):
                 if option.slug == "gpt-5.6" or option.slug.startswith("gpt-5.6-")
             ),
             reset_usage_fn=reset_token_usage,
+            reasoning_efforts_fn=lambda reasoning_root=None: codex_reasoning_efforts(
+                reasoning_root or root
+            ),
             health_fn=lambda health_root=None: _codex_health(health_root or root),
         )
 
