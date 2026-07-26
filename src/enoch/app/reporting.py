@@ -95,9 +95,9 @@ def _format_task_list_item(job: TaskJob) -> str:
     details = []
     if job.parent_task_id is not None:
         details.append(f"retry of #{job.parent_task_id}")
-    if job.pr_urls:
-        label = "PR" if len(job.pr_urls) == 1 else "PRs"
-        details.append(f"{label}: {', '.join(job.pr_urls)}")
+    if job.review_urls:
+        label = "Review" if len(job.review_urls) == 1 else "Reviews"
+        details.append(f"{label}: {', '.join(job.review_urls)}")
     return f"{item} ({'; '.join(details)})" if details else item
 
 

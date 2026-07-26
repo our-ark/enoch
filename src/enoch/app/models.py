@@ -22,8 +22,16 @@ class WorkStatusMessage:
     task_id: int | None = None
     status: str = "queued"
     latest_update: str = "Queued."
-    prs: list[str] = field(default_factory=list)
+    reviews: list[str] = field(default_factory=list)
     context: str = ""
+
+    @property
+    def prs(self) -> list[str]:
+        return self.reviews
+
+    @prs.setter
+    def prs(self, value: list[str]) -> None:
+        self.reviews = value
 
 
 @dataclass(frozen=True)
@@ -75,13 +83,26 @@ class WorkOutcome:
     failure_class: str = ""
     retryable: bool = False
     completed_stages: tuple[str, ...] = ()
-    commit_sha: str = ""
-    remote_branch: str = ""
-    pr_url: str = ""
+    revision_id: str = ""
+    workspace_id: str = ""
+    review_id: str = ""
+    review_url: str = ""
 
     @property
     def failed(self) -> bool:
         return self.status != "completed"
+
+    @property
+    def commit_sha(self) -> str:
+        return self.revision_id
+
+    @property
+    def remote_branch(self) -> str:
+        return self.workspace_id
+
+    @property
+    def pr_url(self) -> str:
+        return self.review_url
 
     def __str__(self) -> str:
         return self.message
@@ -95,17 +116,19 @@ class WorkOutcome:
         message: str,
         *,
         completed_stages: tuple[str, ...] = (),
-        commit_sha: str = "",
-        remote_branch: str = "",
-        pr_url: str = "",
+        revision_id: str = "",
+        workspace_id: str = "",
+        review_id: str = "",
+        review_url: str = "",
     ) -> WorkOutcome:
         return cls(
             status="completed",
             message=message,
             completed_stages=completed_stages,
-            commit_sha=commit_sha,
-            remote_branch=remote_branch,
-            pr_url=pr_url,
+            revision_id=revision_id,
+            workspace_id=workspace_id,
+            review_id=review_id,
+            review_url=review_url,
         )
 
     @classmethod
@@ -118,8 +141,10 @@ class WorkOutcome:
         retryable: bool = False,
         status: WorkOutcomeStatus = "failed",
         completed_stages: tuple[str, ...] = (),
-        commit_sha: str = "",
-        remote_branch: str = "",
+        revision_id: str = "",
+        workspace_id: str = "",
+        review_id: str = "",
+        review_url: str = "",
     ) -> WorkOutcome:
         return cls(
             status=status,
@@ -128,6 +153,8 @@ class WorkOutcome:
             failure_class=failure_class,
             retryable=retryable,
             completed_stages=completed_stages,
-            commit_sha=commit_sha,
-            remote_branch=remote_branch,
+            revision_id=revision_id,
+            workspace_id=workspace_id,
+            review_id=review_id,
+            review_url=review_url,
         )

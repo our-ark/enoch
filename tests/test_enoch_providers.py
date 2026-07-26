@@ -1,4 +1,5 @@
 from dataclasses import replace
+import json
 from pathlib import Path
 import sys
 import threading
@@ -68,6 +69,7 @@ from enoch.tasks.queue import (
     TaskJob,
     enqueue_task,
     record_task_status_message,
+    task_queue_path,
     task_queue_status,
 )
 from enoch.tasks.worktree import TaskWorktree
@@ -407,11 +409,14 @@ class EnochProviderTests(unittest.TestCase):
             app._run_task_job(running)
 
             completed = app.workflow.inspect().history[-1]
+            persisted = json.loads(
+                task_queue_path(root).read_text(encoding="utf-8")
+            )["history"][-1]
 
         self.assertEqual(completed.id, queued.id)
         self.assertEqual(completed.status, "completed")
         self.assertEqual(completed.publish_stage, "review_published")
-        self.assertEqual(completed.commit_sha, "r1")
+        self.assertEqual(completed.revision_id, "r1")
         self.assertFalse(repository.repository_features.named_branches)
         self.assertFalse(repository.repository_features.staging_index)
         self.assertEqual(repository.workspaces, {})
@@ -419,8 +424,17 @@ class EnochProviderTests(unittest.TestCase):
         published = next(iter(review.reviews.values()))
         self.assertEqual(published.versions[-1].revision.id, "r1")
         self.assertNotEqual(published.identity.id, "r1")
-        self.assertEqual(completed.pr_url, published.identity.url)
-        self.assertEqual(runtime.workspaces, [Path(completed.worktree_path)])
+        self.assertEqual(completed.review_id, published.identity.id)
+        self.assertEqual(completed.review_url, published.identity.url)
+        self.assertEqual(completed.review_urls, (published.identity.url,))
+        self.assertEqual(runtime.workspaces, [Path(completed.workspace_path)])
+        self.assertEqual(persisted["workspace_id"], completed.workspace_id)
+        self.assertEqual(persisted["revision_id"], "r1")
+        self.assertEqual(persisted["review_id"], published.identity.id)
+        self.assertEqual(persisted["review_url"], published.identity.url)
+        self.assertNotIn("branch_name", persisted)
+        self.assertNotIn("commit_sha", persisted)
+        self.assertNotIn("pr_url", persisted)
         self.assertIn("Repository change captured.", completed.result)
         self.assertIn(f"Review {published.identity.id}", completed.result)
 
@@ -1028,11 +1042,10 @@ class EnochProviderTests(unittest.TestCase):
                     chat_id="room-1",
                     text="Retry review",
                     created_at="2026-07-25T00:00:00+00:00",
-                    worktree_path=str(workspace.path),
-                    branch_name=workspace.branch,
+                    workspace_path=str(workspace.path),
+                    workspace_id=workspace.workspace_id,
                     publish_stage="captured",
-                    commit_sha=first.commit_sha,
-                    remote_branch=first.remote_branch,
+                    revision_id=first.revision_id,
                 ),
             )
 

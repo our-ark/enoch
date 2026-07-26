@@ -82,6 +82,7 @@ from enoch.runtime import (
 from enoch.tasks.failures import classify_task_failure
 from enoch.tasks.queue import (
     TaskJob,
+    TaskPublicationState,
     record_task_result,
     record_task_runtime_result,
     task_queue_status,
@@ -179,10 +180,23 @@ class TaskWorkflowHost(Protocol):
         chat_id: ConversationId,
         request: str,
         allowed_files: tuple[str, ...],
-        **kwargs: Any,
+        *,
+        work_root: Path | None = None,
+        task_worktree: TaskWorktree | None = None,
+        validation_result: ImmuneResult | None = None,
+        resume_job: TaskJob | None = None,
     ) -> WorkOutcome: ...
 
-    def _record_current_publish_stage(self, stage: str, **kwargs: Any) -> None: ...
+    def _record_current_publish_stage(
+        self,
+        stage: str,
+        *,
+        revision_id: str = "",
+        workspace_id: str = "",
+        review_id: str = "",
+        review_url: str = "",
+        review_published: bool | None = None,
+    ) -> None: ...
 
     def _resident_branch_name(self, fallback: str = "") -> str: ...
 
@@ -191,7 +205,7 @@ class TaskWorkflowHost(Protocol):
         latest_update: str,
         *,
         status: str | None = None,
-        pr_url: str = "",
+        review_url: str = "",
     ) -> bool: ...
 
     def _safe_send_message_id(
@@ -271,7 +285,7 @@ class TaskWorkflow:
             task_worktree = app._prepare_task_worktree(request)
             work_root = task_worktree.path
             branch_note = (
-                f"Enoch prepared isolated workspace {task_worktree.branch} at "
+                f"Enoch prepared isolated workspace {task_worktree.workspace_id} at "
                 f"{work_root} from the latest authoritative revision."
             )
             app._send_step_update(chat_id, "Working.")
@@ -458,14 +472,14 @@ class TaskWorkflow:
             task_id=task_id,
             resident_branch=app._resident_branch_name(),
             created_at=job.created_at,
-            existing_path=job.worktree_path,
-            existing_workspace_id=job.branch_name,
+            existing_path=job.workspace_path,
+            existing_workspace_id=job.workspace_id,
         )
-        recorded = app.workflow.record_worktree(
+        recorded = app.workflow.record_workspace(
             task_id,
             worker_id,
             worktree.path,
-            worktree.branch,
+            worktree.workspace_id,
         )
         if recorded is None:
             raise VcsError(
@@ -577,7 +591,7 @@ class TaskWorkflow:
             )
             outputs.append(format_pr_result(pr))
             if pr.url:
-                app._update_work_status(pr_step_update(pr), pr_url=pr.url)
+                app._update_work_status(pr_step_update(pr), review_url=pr.url)
                 record_current_task_result(
                     "\n\n".join(outputs),
                     app.root,
@@ -641,13 +655,13 @@ class TaskWorkflow:
             task_id,
             branch,
             task_id=task_id,
-            existing_path=job.worktree_path,
+            existing_path=job.workspace_path,
         )
-        recorded = app.workflow.record_worktree(
+        recorded = app.workflow.record_workspace(
             task_id,
             worker_id,
             worktree.path,
-            worktree.branch,
+            worktree.workspace_id,
         )
         if recorded is None:
             raise VcsError(
@@ -673,9 +687,10 @@ class TaskWorkflow:
         stage = portable_publish_stage(
             resume_job.publish_stage if resume_job is not None else ""
         )
-        revision_id = resume_job.commit_sha if resume_job is not None else ""
-        workspace_id = resume_job.remote_branch if resume_job is not None else ""
-        review_url = resume_job.pr_url if resume_job is not None else ""
+        revision_id = resume_job.revision_id if resume_job is not None else ""
+        workspace_id = resume_job.workspace_id if resume_job is not None else ""
+        review_id = resume_job.review_id if resume_job is not None else ""
+        review_url = resume_job.review_url if resume_job is not None else ""
         review_published = stage == "review_published"
         completed_stages = [
             candidate
@@ -716,7 +731,11 @@ class TaskWorkflow:
                     task_worktree.repository_workspace.id
                     if task_worktree is not None
                     and task_worktree.repository_workspace is not None
-                    else (task_worktree.branch if task_worktree is not None else "")
+                    else (
+                        task_worktree.workspace_id
+                        if task_worktree is not None
+                        else ""
+                    )
                 )
                 capture_message = format_change_capture(capture)
                 outputs.append(capture_message)
@@ -724,8 +743,8 @@ class TaskWorkflow:
                 completed_stages.append("captured")
                 app._record_current_publish_stage(
                     "captured",
-                    commit_sha=revision_id,
-                    remote_branch=workspace_id,
+                    revision_id=revision_id,
+                    workspace_id=workspace_id,
                 )
                 require_captured_working_copy(
                     app.repository,
@@ -806,6 +825,7 @@ class TaskWorkflow:
                     chat_id,
                     review_step_update(review),
                 )
+                review_id = review.identity.id
                 review_url = review.identity.url
                 if bool(
                     getattr(app.review, "supports_remote_review", True)
@@ -824,21 +844,22 @@ class TaskWorkflow:
                         failure_class="transient",
                         retryable=True,
                         completed_stages=tuple(dict.fromkeys(completed_stages)),
-                        commit_sha=revision_id,
-                        remote_branch=workspace_id,
+                        revision_id=revision_id,
+                        workspace_id=workspace_id,
                     )
                 completed_stages.append("review_published")
                 app._record_current_publish_stage(
                     "review_published",
-                    commit_sha=revision_id,
-                    remote_branch=workspace_id,
-                    pr_url=review_url,
-                    published_remotely=bool(review_url),
+                    revision_id=revision_id,
+                    workspace_id=workspace_id,
+                    review_id=review_id,
+                    review_url=review_url,
+                    review_published=True,
                 )
                 if review_url:
                     app._update_work_status(
                         review_step_update(review),
-                        pr_url=review_url,
+                        review_url=review_url,
                     )
                     record_current_task_result(
                         "\n\n".join(outputs),
@@ -919,8 +940,10 @@ class TaskWorkflow:
                 ),
                 retryable=publish_started or classified.retryable,
                 completed_stages=tuple(dict.fromkeys(completed_stages)),
-                commit_sha=revision_id,
-                remote_branch=workspace_id,
+                revision_id=revision_id,
+                workspace_id=workspace_id,
+                review_id=review_id,
+                review_url=review_url,
             )
 
         action = (
@@ -949,33 +972,38 @@ class TaskWorkflow:
         return WorkOutcome.completed(
             reply,
             completed_stages=tuple(dict.fromkeys(completed_stages)),
-            commit_sha=revision_id,
-            remote_branch=workspace_id,
-            pr_url=review_url,
+            revision_id=revision_id,
+            workspace_id=workspace_id,
+            review_id=review_id,
+            review_url=review_url,
         )
 
     def record_current_publish_stage(
         self,
         stage: str,
         *,
-        commit_sha: str = "",
-        remote_branch: str = "",
-        pr_url: str = "",
-        published_remotely: bool | None = None,
+        revision_id: str = "",
+        workspace_id: str = "",
+        review_id: str = "",
+        review_url: str = "",
+        review_published: bool | None = None,
     ) -> None:
         app = self.application
         task_id = CURRENT_TASK_ID.get()
         worker_id = CURRENT_TASK_WORKER_ID.get()
         if task_id is None or not worker_id:
             return
-        recorded = app.workflow.record_publish_state(
+        recorded = app.workflow.record_publication(
             task_id,
             worker_id,
-            stage=stage,
-            commit_sha=commit_sha,
-            remote_branch=remote_branch,
-            pr_url=pr_url,
-            published_remotely=published_remotely,
+            TaskPublicationState(
+                stage=stage,
+                revision_id=revision_id,
+                workspace_id=workspace_id,
+                review_id=review_id,
+                review_url=review_url,
+                review_published=review_published,
+            ),
         )
         if recorded is None:
             raise VcsError(
@@ -985,7 +1013,7 @@ class TaskWorkflow:
 
     def resume_task_publish(self, job: TaskJob) -> WorkOutcome:
         app = self.application
-        if not job.worktree_path or not job.branch_name:
+        if not job.workspace_path or not job.workspace_id:
             return WorkOutcome.failure(
                 f"Task #{job.id} cannot resume publishing because its worktree "
                 "metadata is missing.",
@@ -993,8 +1021,8 @@ class TaskWorkflow:
             )
         worktree = TaskWorktree(
             task_id=job.id,
-            path=Path(job.worktree_path),
-            branch=job.branch_name,
+            path=Path(job.workspace_path),
+            workspace_id=job.workspace_id,
             created=False,
         )
         return app._publish_feature_pr(

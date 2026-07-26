@@ -4,10 +4,10 @@ from pathlib import Path
 from typing import Any, Literal, Protocol, runtime_checkable
 
 from enoch.providers.contracts import ConversationId, MessageId, RuntimeResult
-from enoch.tasks.queue import TaskJob, TaskQueueStatus
+from enoch.tasks.queue import TaskJob, TaskPublicationState, TaskQueueStatus
 
 
-WORKFLOW_API_VERSION = 1
+WORKFLOW_API_VERSION = 2
 EnqueueMode = Literal["queued", "front", "direct"]
 FinalTaskStatus = Literal["completed", "failed", "cancelled"]
 
@@ -107,21 +107,21 @@ class WorkflowEngine(Protocol):
         message_id: MessageId,
     ) -> None: ...
 
-    def record_worktree(
+    def record_workspace(
         self,
         task_id: int,
         worker_id: str,
-        worktree_path: Path,
-        branch_name: str,
+        workspace_path: Path,
+        workspace_id: str,
     ) -> TaskJob | None: ...
 
     def record_result(self, task_id: int, result: str) -> None: ...
 
-    def record_publish_state(
+    def record_publication(
         self,
         task_id: int,
         worker_id: str,
-        **state: Any,
+        state: TaskPublicationState,
     ) -> TaskJob | None: ...
 
     def record_runtime_result(
@@ -133,9 +133,6 @@ class WorkflowEngine(Protocol):
     ) -> None: ...
 
     def worker_is_active(self, job: TaskJob) -> bool: ...
-
-    def result_has_pull_request(self, result: str) -> bool: ...
-
 
 def validate_workflow_engine(engine: WorkflowEngine) -> WorkflowEngine:
     if not isinstance(engine, WorkflowEngine):

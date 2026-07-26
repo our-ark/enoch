@@ -27,6 +27,12 @@ a branch, parse a pull-request result, or require a review id to match a
 revision or workspace id. Git and GitHub preserve those implementation details
 inside their compatibility adapters.
 
+Task persistence uses the same semantic model. Queue and task-event records
+store opaque `workspace_id`, `revision_id`, `review_id`, and review URLs rather
+than branch, commit, or pull-request fields. Existing schema 11 queue data and
+schema 5 task events remain readable, while new writes use queue schema 12 and
+task-event schema 6.
+
 ## Repository contract
 
 `RepositoryProvider` operates on opaque `RepositoryRevision` values and typed

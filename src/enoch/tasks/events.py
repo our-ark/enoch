@@ -17,7 +17,7 @@ from enoch.memory.paths import clean_text, now as current_time
 from enoch.paths import artifact_path, artifact_read_paths
 
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 SUMMARY_LIMIT = 4000
 TASK_SOURCES = {
     "backlog",
@@ -55,9 +55,9 @@ class TaskLike(Protocol):
     started_at: str
     completed_at: str
     result: str
-    pr_urls: tuple[str, ...]
+    review_urls: tuple[str, ...]
     publish_stage: str
-    commit_sha: str
+    revision_id: str
     context_source: str
     source: str
     initiated_by: str
@@ -107,10 +107,10 @@ class TaskEvent:
     parent_candidate_id: str = ""
     source_task_id: int | None = None
     related_task_id: int | None = None
-    pr_urls: tuple[str, ...] = ()
+    review_urls: tuple[str, ...] = ()
     changed_files: tuple[str, ...] = ()
     publish_stage: str = ""
-    commit_sha: str = ""
+    revision_id: str = ""
     attempt: int = 0
     max_attempts: int = 3
     next_attempt_at: str = ""
@@ -124,6 +124,14 @@ class TaskEvent:
     runtime_event_types: tuple[str, ...] = ()
     runtime_output_refs: tuple[str, ...] = ()
     runtime_side_effects: tuple[str, ...] = ()
+
+    @property
+    def pr_urls(self) -> tuple[str, ...]:
+        return self.review_urls
+
+    @property
+    def commit_sha(self) -> str:
+        return self.revision_id
 
 
 def task_event_path(root: Path | None = None) -> Path:
@@ -175,10 +183,28 @@ def record_task_event(
         parent_candidate_id=clean_text(str(getattr(job, "parent_candidate_id", "") or "")),
         source_task_id=_positive_int(getattr(job, "source_task_id", None)),
         related_task_id=_positive_int(related_task_id),
-        pr_urls=_dedupe(tuple(getattr(job, "pr_urls", ()) or ())),
+        review_urls=_dedupe(
+            tuple(
+                getattr(
+                    job,
+                    "review_urls",
+                    getattr(job, "pr_urls", ()),
+                )
+                or ()
+            )
+        ),
         changed_files=_changed_files(summary),
         publish_stage=clean_text(str(getattr(job, "publish_stage", "") or "")).lower(),
-        commit_sha=clean_text(str(getattr(job, "commit_sha", "") or "")),
+        revision_id=clean_text(
+            str(
+                getattr(
+                    job,
+                    "revision_id",
+                    getattr(job, "commit_sha", ""),
+                )
+                or ""
+            )
+        ),
         attempt=max(0, _int(getattr(job, "attempt", 0))),
         max_attempts=max(1, _int(getattr(job, "max_attempts", 3), default=3)),
         next_attempt_at=str(getattr(job, "next_attempt_at", "") or "").strip(),
@@ -340,10 +366,14 @@ def _event_from_line(line: str) -> TaskEvent | None:
         parent_candidate_id=clean_text(str(raw.get("parent_candidate_id") or "")),
         source_task_id=_positive_int(raw.get("source_task_id")),
         related_task_id=_positive_int(raw.get("related_task_id")),
-        pr_urls=_string_tuple(raw.get("pr_urls")),
+        review_urls=_string_tuple(
+            raw.get("review_urls", raw.get("pr_urls"))
+        ),
         changed_files=_string_tuple(raw.get("changed_files")),
         publish_stage=clean_text(str(raw.get("publish_stage") or "")).lower(),
-        commit_sha=clean_text(str(raw.get("commit_sha") or "")),
+        revision_id=clean_text(
+            str(raw.get("revision_id", raw.get("commit_sha")) or "")
+        ),
         attempt=max(0, _int(raw.get("attempt"))),
         max_attempts=max(1, _int(raw.get("max_attempts"), default=3)),
         next_attempt_at=str(raw.get("next_attempt_at") or "").strip(),

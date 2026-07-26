@@ -43,10 +43,10 @@ returns the durable receipt for the original logical notification.
 ## Daemon effect fencing
 
 The same daemon epoch governs task mutations and external effects. Bounded
-operations such as worktree mutation, commit, push, pull-request creation or
-merge, and durable local learning run under the epoch lock. An obsolete daemon
-is rejected before the provider is called; a replacement daemon waits for an
-already-authorized bounded operation to finish before taking ownership.
+operations such as workspace mutation, revision capture, review publication or
+landing, and durable local learning run under the epoch lock. An obsolete
+daemon is rejected before the provider is called; a replacement daemon waits
+for an already-authorized bounded operation to finish before taking ownership.
 
 Runtime invocations may last minutes, so they do not hold the takeover lock.
 Enoch monitors the active epoch while the runtime executes and sets the
@@ -59,12 +59,14 @@ notification.
 
 Task results use `WorkOutcome`, separating status, failure code, retryability,
 artifacts, and completed stages from chat presentation text. Publication
-persists `validated`, `committed`, `pushed`, and `pr_opened` stages.
+persists `validated`, `captured`, and `review_published` stages with opaque
+workspace, revision, and review identities.
 
-If push, PR creation, or cleanup fails, the task retains its worktree, branch,
-commit, and last completed stage. Automatic retry resumes at that boundary
-instead of running the coding agent again. GitHub publication also reconciles
-an already-created open PR after an ambiguous `gh pr create` failure.
+If review publication or workspace cleanup fails, the task retains its
+workspace, captured revision, review evidence, and last completed stage.
+Automatic retry resumes at that boundary instead of running the coding agent
+again. Schema 11's `committed`, `pushed`, and `pr_opened` checkpoints remain
+readable and are normalized when a legacy Git/GitHub task resumes.
 
 ## Scheduled occurrences
 

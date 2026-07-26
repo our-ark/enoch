@@ -1021,8 +1021,8 @@ class EnochTelegramTests(unittest.TestCase):
                 created_at="2026-07-23T00:00:00+00:00",
                 status="pending",
                 parent_task_id=7,
-                worktree_path=str(state.path),
-                branch_name=state.branch,
+                workspace_path=str(state.path),
+                workspace_id=state.branch,
             ),
         )
         client = FakeTelegramClient(allowed_chat_id=42)
@@ -1444,7 +1444,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("Task #1", client.sent[0][1])
         self.assertIn("Status: queued", client.sent[0][1])
         self.assertIn("Latest update: Queued at position 1.", client.sent[0][1])
-        self.assertIn("PRs created:\n- none", client.sent[0][1])
+        self.assertIn("Reviews published:\n- none", client.sent[0][1])
         self.assertIn("Request:\nadd queued work", client.sent[0][1])
         self.assertEqual(data["pending"][0]["id"], 1)
         self.assertEqual(data["pending"][0]["chat_id"], 42)
@@ -1665,7 +1665,7 @@ class EnochTelegramTests(unittest.TestCase):
             created_at="2026-07-18T21:10:00+00:00",
             started_at="2026-07-18T21:10:01+00:00",
             status="failed",
-            branch_name="feature/pr-command",
+            workspace_id="feature/pr-command",
         )
         pull_request = _pull_request_info(
             number=14,
@@ -1911,7 +1911,7 @@ class EnochTelegramTests(unittest.TestCase):
 
         reply = client.sent[-1][1]
         self.assertIn("#1 [completed] add queued work", reply)
-        self.assertIn("PR: https://github.com/our-ark/enoch/pull/3", reply)
+        self.assertIn("Review: https://github.com/our-ark/enoch/pull/3", reply)
 
     @patch("enoch.app.core.ensure_long_term_memory")
     @patch("enoch.app.core.log_conversation_turn")
@@ -1982,7 +1982,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertNotIn("Done with the task.", client.edited[-1][2])
         self.assertIn("Task #1 final update", client.sent[-1][1])
         self.assertIn("Final status: completed", client.sent[-1][1])
-        self.assertIn("PR URL:\n- none", client.sent[-1][1])
+        self.assertIn("Review URL:\n- none", client.sent[-1][1])
         self.assertIn("Result summary:\nDone with the task.", client.sent[-1][1])
         self.assertEqual(run_direct_work.call_args.kwargs["context"], "Use the agreed task snapshot.")
         self.assertEqual(len(experiences), 1)
@@ -3605,7 +3605,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertNotIn("GH007", client.edited[-1][2])
         self.assertIn("Task #1 final update", client.sent[-1][1])
         self.assertIn("Final status: failed", client.sent[-1][1])
-        self.assertIn("PR URL:\n- none", client.sent[-1][1])
+        self.assertIn("Review URL:\n- none", client.sent[-1][1])
         self.assertIn("GH007", client.sent[-1][1])
         log_conversation_turn.assert_called()
 
@@ -3827,7 +3827,10 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("Latest update: Completed. Final summary sent below.", client.edited[-1][2])
         self.assertIn("Task #1 final update", client.sent[-1][1])
         self.assertIn("Final status: completed", client.sent[-1][1])
-        self.assertIn("PR URL:\n- https://github.com/our-ark/enoch/pull/3", client.sent[-1][1])
+        self.assertIn(
+            "Review URL:\n- https://github.com/our-ark/enoch/pull/3",
+            client.sent[-1][1],
+        )
         self.assertIn("Result summary:\nOpened pull request: https://github.com/our-ark/enoch/pull/3", client.sent[-1][1])
         log_conversation_turn.assert_called()
 
@@ -3858,12 +3861,15 @@ class EnochTelegramTests(unittest.TestCase):
                     ),
                 ]
             ),
-            pr_urls=("https://github.com/our-ark/enoch/pull/21",),
+            review_urls=("https://github.com/our-ark/enoch/pull/21",),
         )
 
         message = _format_task_final_message(job, "completed", "")
 
-        self.assertIn("PR URL:\n- https://github.com/our-ark/enoch/pull/21", message)
+        self.assertIn(
+            "Review URL:\n- https://github.com/our-ark/enoch/pull/21",
+            message,
+        )
         self.assertIn("Enoch committed this change.\nBranch: enoch/add-test4", message)
         self.assertIn("Files:\n- README.md", message)
         self.assertIn("Enoch opened a pull request.\nPR URL: https://github.com/our-ark/enoch/pull/21", message)
