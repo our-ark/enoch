@@ -210,6 +210,7 @@ def _doctor_result_from_payload(payload: object) -> ImmuneResult:
             output=str(raw.get("output") or ""),
             category=str(raw.get("category") or "code health"),
             summary=str(raw.get("summary") or ""),
+            skipped=raw.get("skipped") is True,
         )
         for raw in raw_checks
         if isinstance(raw, dict)
