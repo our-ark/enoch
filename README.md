@@ -240,6 +240,8 @@ provider is needed only for `bin/enoch-daemon` lifecycle management.
 Provider contracts, packaging examples, provider-specific settings, normalized
 chat events, typed runtime results, and migration compatibility are documented in
 [`docs/providers.md`](docs/providers.md).
+Reusable provider, runtime, workflow, and profile test suites are documented in
+[`docs/conformance.md`](docs/conformance.md).
 
 Downstream agent bodies can also add commands, prompt context, and lifecycle
 hooks through the versioned `AgentProfile` API without changing the core

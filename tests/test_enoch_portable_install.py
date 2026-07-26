@@ -169,6 +169,7 @@ class EnochPortableInstallTests(unittest.TestCase):
         self.assertEqual(result["profile"], "researcher")
         self.assertEqual(result["profile_version"], "0.0.1")
         self.assertEqual(result["workflow_api_version"], 1)
+        self.assertEqual(result["conformance_api_version"], 1)
         self.assertEqual(
             result["workflow_operations"],
             ["recover", "enqueue", "claim", "finalize:completed"],
@@ -540,6 +541,7 @@ _INSTALLED_TASK_SCRIPT = textwrap.dedent(
     import sys
 
     from enoch.app.core import EnochApplication
+    from enoch.conformance import CONFORMANCE_API_VERSION
     from enoch.identity import load_identity
     from enoch.profiles import load_profile
     from enoch.providers import ChatEvent, load_provider
@@ -657,6 +659,7 @@ _INSTALLED_TASK_SCRIPT = textwrap.dedent(
         "profile": profile.name,
         "profile_version": version("enoch-portable-researcher-profile"),
         "workflow_api_version": workflow.api_version,
+        "conformance_api_version": CONFORMANCE_API_VERSION,
         "workflow_operations": workflow.operations,
         "workflow_state_isolated": (
             workflow.root != root

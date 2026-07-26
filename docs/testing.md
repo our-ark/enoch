@@ -86,3 +86,17 @@ has stopped.
 
 This catches packaging metadata conflicts and source-checkout imports that unit
 tests can accidentally hide.
+
+## Extension conformance suites
+
+`our_ark_provider_kit.conformance` publishes reusable provider and runtime
+`unittest` mixins. `enoch.conformance` re-exports those and adds durable
+notification, workflow, and profile suites. Enoch applies them to its core implementations, while the
+Telegram, GitHub, launchd, and systemd reference packages apply the structural
+provider suite in their independent test jobs.
+
+Together they cover cancellation, timeout, stale fencing tokens, duplicate
+requests, restart recovery, and containment of partial failures. The portable
+installation E2E imports the conformance API from the built wheel so a release
+cannot expose it only from the source checkout. Usage and compatibility policy
+are documented in [`conformance.md`](conformance.md).

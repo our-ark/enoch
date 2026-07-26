@@ -10,7 +10,12 @@ PROVIDER_KIT = ROOT.parent / "provider-kit"
 sys.path.insert(0, str(PROVIDER_KIT / "src"))
 sys.path.insert(0, str(ROOT / "src"))
 
-from our_ark_provider_kit import Attachment, AttachmentProvider, ChatProvider
+from our_ark_provider_kit import (
+    Attachment,
+    AttachmentProvider,
+    ChatProvider,
+    ProviderContractConformanceMixin,
+)
 from our_ark_telegram import (
     TelegramClient,
     TelegramConfig,
@@ -20,7 +25,14 @@ from our_ark_telegram import (
 )
 
 
-class TelegramLibraryTests(unittest.TestCase):
+class TelegramLibraryTests(ProviderContractConformanceMixin, unittest.TestCase):
+    provider_kind = "chat"
+    provider_protocol = ChatProvider
+
+    def create_provider(self, root: Path) -> TelegramClient:
+        del root
+        return TelegramClient(TelegramConfig(token="conformance", allowed_chat_id=42))
+
     def test_client_implements_chat_provider_contract(self) -> None:
         client = TelegramClient(TelegramConfig(token="test", allowed_chat_id=42))
 

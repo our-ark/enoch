@@ -14,9 +14,16 @@ sys.path.insert(0, str(REPOSITORY / "libraries" / "provider-kit" / "src"))
 sys.path.insert(0, str(LIBRARY / "src"))
 
 from our_ark_launchd import LABEL, LaunchdServiceProvider, plist_bytes
+from our_ark_provider_kit import ProviderContractConformanceMixin, ServiceProvider
 
 
-class LaunchdServiceProviderTests(unittest.TestCase):
+class LaunchdServiceProviderTests(ProviderContractConformanceMixin, unittest.TestCase):
+    provider_kind = "service"
+    provider_protocol = ServiceProvider
+
+    def create_provider(self, root: Path) -> LaunchdServiceProvider:
+        return LaunchdServiceProvider(home=root / "home")
+
     def test_manifest_runs_enoch_agent_from_the_selected_root(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)

@@ -11,10 +11,17 @@ REPOSITORY = LIBRARY.parents[1]
 sys.path.insert(0, str(REPOSITORY / "libraries" / "provider-kit" / "src"))
 sys.path.insert(0, str(LIBRARY / "src"))
 
+from our_ark_provider_kit import ProviderContractConformanceMixin, ServiceProvider
 from our_ark_systemd import UNIT_NAME, SystemdServiceProvider, unit_text
 
 
-class SystemdServiceProviderTests(unittest.TestCase):
+class SystemdServiceProviderTests(ProviderContractConformanceMixin, unittest.TestCase):
+    provider_kind = "service"
+    provider_protocol = ServiceProvider
+
+    def create_provider(self, root: Path) -> SystemdServiceProvider:
+        return SystemdServiceProvider(home=root / "home")
+
     def test_manifest_runs_enoch_agent_as_a_resilient_user_service(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)

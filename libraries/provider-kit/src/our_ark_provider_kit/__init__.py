@@ -63,10 +63,16 @@ from our_ark_provider_kit.agent_context import (
     AgentContextError,
     agent_context,
 )
+from our_ark_provider_kit.conformance import (
+    CONFORMANCE_API_VERSION,
+    AgentRuntimeConformanceMixin,
+    ProviderContractConformanceMixin,
+)
 
 
 __all__ = [
     "CAPABILITY_CONTRACT_VERSION",
+    "CONFORMANCE_API_VERSION",
     "AgentContext",
     "AgentContextError",
     "AgentIdentity",
@@ -75,6 +81,7 @@ __all__ = [
     "AgentRuntimeCancelled",
     "AgentRuntimeError",
     "AgentRuntimeTimedOut",
+    "AgentRuntimeConformanceMixin",
     "AttachmentProvider",
     "Attachment",
     "AuthorizationDecision",
@@ -105,6 +112,7 @@ __all__ = [
     "PullRequestTarget",
     "ProgressCallback",
     "ProviderCapabilities",
+    "ProviderContractConformanceMixin",
     "ProviderHealth",
     "RUNTIME_CONTRACT_VERSION",
     "RUNTIME_EXECUTION_CONTRACT_VERSION",

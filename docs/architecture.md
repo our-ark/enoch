@@ -26,6 +26,7 @@ and validation boundary.
 | `enoch.providers.authorization` | Provider grants, persisted task requirements, and deny-only policy composition |
 | `enoch.profiles` | Versioned downstream-agent commands, prompt context, lifecycle hooks, and discovery |
 | `enoch.workflows` | Versioned queue lifecycle contract and fenced local engine |
+| `enoch.conformance` | Reusable provider, runtime, workflow, and profile contract tests |
 | `enoch.memory` | Durable memory paths, prompts, and storage |
 | `enoch.lineage` | Ancestor configuration, discovery, and adoption context |
 | `enoch.skills` | Skill catalog code and packaged skill assets |

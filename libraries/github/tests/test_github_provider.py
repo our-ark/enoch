@@ -17,9 +17,16 @@ for source in (
     sys.path.insert(0, str(source))
 
 from our_ark_github import OUR_ARK_PROVIDERS, GithubForgeProvider
+from our_ark_provider_kit import ForgeProvider, ProviderContractConformanceMixin
 
 
-class GithubProviderTests(unittest.TestCase):
+class GithubProviderTests(ProviderContractConformanceMixin, unittest.TestCase):
+    provider_kind = "forge"
+    provider_protocol = ForgeProvider
+
+    def create_provider(self, root: Path) -> GithubForgeProvider:
+        return GithubForgeProvider(gh="/usr/local/bin/gh", root=root)
+
     def test_descriptor_registers_forge_factory(self) -> None:
         descriptor = OUR_ARK_PROVIDERS[0]
 
