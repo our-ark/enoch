@@ -291,7 +291,7 @@ Genesis is open source at
 [`our-ark/genesis`](https://github.com/our-ark/genesis). The current stable
 public path pairs [Genesis
 v0.1.1](https://github.com/our-ark/genesis/releases/tag/v0.1.1) with [Enoch
-v0.2.0](https://github.com/our-ark/enoch/releases/tag/v0.2.0). The command below
+v0.3.0](https://github.com/our-ark/enoch/releases/tag/v0.3.0). The command below
 uses adjacent clean checkouts so the selected Enoch source is explicit.
 
 Enoch is a public Genesis-compatible reference body. Its `genesis.toml`
@@ -347,6 +347,3 @@ guidelines.
 ## License
 
 Enoch is licensed under the [Apache License 2.0](LICENSE).
-
-test
-test1
