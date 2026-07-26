@@ -5,7 +5,7 @@ description = "Linux systemd user service provider for Our Ark agents."
 license = "Apache-2.0"
 requires-python = ">=3.11"
 dependencies = [
-  "our-ark-provider-kit @ git+https://github.com/our-ark/enoch.git@96d6290edfc512955362b78ad4d3506661b20e79#subdirectory=libraries/provider-kit",
+  "our-ark-provider-kit @ git+https://github.com/our-ark/enoch.git@c440831f3b658d3dc9a74b6bf59e415cc9dacb29#subdirectory=libraries/provider-kit",
 ]
 
 [project.entry-points."our_ark.providers"]
