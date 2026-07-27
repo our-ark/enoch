@@ -100,7 +100,7 @@ Enoch has four candidate sources:
 
 - `feedback`: synthesized from feedback evidence;
 - `experience`: synthesized from task-history evidence;
-- `learning`: peer skill observations explicitly recorded through `/learn`;
+- `learning`: applicable immutable skill assessments created through `/learn`;
 - `brainstorming`: bounded ideas generated under the mission and theme.
 
 Backlog is not a source. Active cron jobs, generic task failures, repeated
@@ -125,8 +125,8 @@ Feedback/experience candidates from the retired hardcoded pathways are retained
 for audit but removed from the actionable pool when they lack evidence IDs.
 
 The other two pathways still create structured candidates directly: learning
-from peer observations and brainstorming from a dedicated bounded generation
-pass.
+from applicable immutable skill assessments and brainstorming from a dedicated
+bounded generation pass.
 
 ## Recommendation
 

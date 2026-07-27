@@ -17,7 +17,6 @@ from enoch.cron import cron_path
 from enoch.evolution.curation import curation_index_path
 from enoch.evolution.events import evolve_event_path
 from enoch.evolution.sources.brainstorming import brainstorm_index_path
-from enoch.learn import peer_learning_path
 from enoch.logs import conversation_log_dir, log_system_event
 from enoch.memory.paths import memory_dir
 from enoch.paths import (
@@ -106,7 +105,6 @@ class EnochStorageTests(unittest.TestCase):
                 curation_index_path(root),
                 evolve_event_path(root),
                 learning_dir(root),
-                peer_learning_path(root),
                 task_event_path(root),
             )
 

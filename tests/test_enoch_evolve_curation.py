@@ -652,7 +652,7 @@ def _candidate(source: str, index: int, *, title: str = "", score: int = 10) -> 
             else f"task:{max(1, index)}",
         )
     candidate_id = (
-        f"learning-peer-{index}"
+        f"learning-skill-{index}"
         if source == "learning"
         else f"{source}-{index}"
     )

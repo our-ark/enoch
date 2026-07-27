@@ -39,10 +39,10 @@ skills:
     version: 0.2.0
     path: src/enoch/skills/work
   - name: learn
-    version: 0.2.0
+    version: 0.3.0
     path: src/enoch/skills/learn
   - name: evolve
-    version: 0.7.0
+    version: 0.8.0
     path: src/enoch/skills/evolve
   - name: teach
     version: 0.1.0

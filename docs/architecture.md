@@ -21,7 +21,7 @@ and validation boundary.
 | `enoch.tasks` | Task queue state, audit events, failure policy, configuration, and isolated worktrees |
 | `enoch.evolution` | Semantic evidence scanning, candidate synthesis and ranking, event history, and governed lifecycle |
 | `enoch.evolution.evidence` | Durable feedback/task-history scan cursors, evidence journals, and evidence-to-candidate synthesis |
-| `enoch.evolution.sources` | Peer-learning and brainstorming candidate adapters |
+| `enoch.evolution.sources` | Theme-guided brainstorming candidate adapters |
 | `enoch.operations` | Background-service facade and software update lifecycle |
 | `enoch.providers` | Shared provider contracts, selection, and core adapters |
 | `enoch.providers.authorization` | Provider grants, persisted task requirements, and deny-only policy composition |
@@ -31,6 +31,7 @@ and validation boundary.
 | `enoch.memory` | Durable memory paths, prompts, and storage |
 | `enoch.lineage` | Ancestor discovery, durable background Codex assessments, explicit task linkage, and verified adoption |
 | `enoch.skills` | Skill catalog code and packaged skill assets |
+| `enoch.learn` | Immutable published-skill snapshots and structured applicability assessments |
 
 Small, cohesive capabilities such as backlog and cron remain single top-level
 modules. A directory is introduced only when a capability has multiple modules

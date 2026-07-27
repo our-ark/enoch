@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+import hashlib
 import json
 from pathlib import Path
 from typing import Callable, Iterable
@@ -18,6 +19,7 @@ from enoch.evolution.curation import (
     CurationGenerator,
     REMOVE_CLASSIFICATIONS,
     SemanticCuration,
+    candidate_scope_is_safe,
     curate_candidates,
     deterministic_fallback,
     load_curations,
@@ -42,7 +44,7 @@ from enoch.evolution.events import (
     linked_proposal_id,
     record_evolve_event,
 )
-from enoch.learn import PeerLearningObservation, load_peer_learning_observations
+from enoch.learn import LearningCandidateDraft, PublishedSkill
 from enoch.memory.paths import atomic_write, clean_text, now as current_time
 from enoch.paths import private_state_path
 from enoch.tasks.events import load_task_events
@@ -51,7 +53,7 @@ from enoch.state import StateCorruptionError, file_transaction, load_json_object
 
 
 SCHEMA_VERSION = 2
-CANDIDATE_SCHEMA_VERSION = 5
+CANDIDATE_SCHEMA_VERSION = 6
 MODE_DISABLED = "disabled"
 MODE_CO_EVOLVE = "co-evolve"
 MODE_AUTO_EVOLVE = "auto-evolve"
@@ -106,6 +108,12 @@ class EvolveCandidate:
     candidate_actor: str = "agent"
     parent_candidate_id: str = ""
     source_task_id: int | None = None
+    source_repository: str = ""
+    source_revision: str = ""
+    source_path: str = ""
+    source_version: str = ""
+    source_content_hash: str = ""
+    source_url: str = ""
     status: str = "candidate"
     score: int = 0
     base_score: int | None = None
@@ -573,6 +581,12 @@ def _candidate_curation_snapshot(candidate: EvolveCandidate) -> dict[str, object
             "candidate_actor": candidate.candidate_actor,
             "parent_candidate_id": candidate.parent_candidate_id,
             "source_task_id": candidate.source_task_id,
+            "source_repository": candidate.source_repository,
+            "source_revision": candidate.source_revision,
+            "source_path": candidate.source_path,
+            "source_version": candidate.source_version,
+            "source_content_hash": candidate.source_content_hash,
+            "source_url": candidate.source_url,
         },
     }
 
@@ -642,9 +656,64 @@ def collect_evolve_candidates(
     theme: str = "",
 ) -> tuple[EvolveCandidate, ...]:
     candidates: list[EvolveCandidate] = []
-    candidates.extend(_peer_learning_candidates(load_peer_learning_observations(root)))
     candidates.extend(_brainstorm_candidates(load_brainstorm_ideas(root, theme=theme)))
     return tuple(candidates)
+
+
+def create_learning_candidate(
+    skill: PublishedSkill,
+    draft: LearningCandidateDraft,
+    root: Path | None = None,
+    *,
+    theme: str = "",
+) -> tuple[EvolveCandidate, bool]:
+    draft_payload = {
+        "title": draft.title,
+        "rationale": draft.rationale,
+        "proposed_change": draft.proposed_change,
+        "expected_benefit": draft.expected_benefit,
+        "risk": draft.risk,
+        "test_plan": draft.test_plan,
+    }
+    if not candidate_scope_is_safe(draft_payload):
+        raise ValueError("Learning candidate has protected or dangerous scope.")
+    digest = hashlib.sha256(
+        (
+            f"{skill.repository}\0{skill.revision}\0{skill.path}\0"
+            f"{skill.content_hash}"
+        ).encode("utf-8")
+    ).hexdigest()[:16]
+    candidate_id = f"learning-skill-{digest}"
+    stored = {candidate.id: candidate for candidate in _load_all_evolve_candidates(root)}
+    existing = stored.get(candidate_id)
+    if existing is not None:
+        return _score_candidate(existing, theme=theme), False
+    candidate = EvolveCandidate(
+        id=candidate_id,
+        source="learning",
+        title=draft.title,
+        rationale=draft.rationale,
+        proposed_change=draft.proposed_change,
+        expected_benefit=draft.expected_benefit,
+        risk=draft.risk,
+        test_plan=draft.test_plan,
+        initiated_by="agent",
+        evidence_source="learning",
+        signal_actor="human",
+        candidate_actor="agent",
+        source_repository=skill.repository,
+        source_revision=skill.revision,
+        source_path=skill.path,
+        source_version=skill.version,
+        source_content_hash=skill.content_hash,
+        source_url=skill.url,
+        score=22,
+    )
+    stored[candidate.id] = candidate
+    ranked = rank_evolve_candidates(stored.values(), theme=theme)
+    _write_evolve_candidates(ranked, root)
+    saved = next(item for item in ranked if item.id == candidate.id)
+    return saved, True
 
 
 def synthesize_evolve_candidates_from_evidence(
@@ -786,6 +855,8 @@ def _candidate_retirement_reason(candidate: EvolveCandidate) -> str:
         return "inheritance-now-uses-its-own-human-governed-workflow"
     if candidate.source in {"feedback", "experience"} and not candidate.evidence_ids:
         return "legacy-hardcoded-evidence-pathway-retired"
+    if candidate.source == "learning" and candidate.id.startswith("learning-peer-"):
+        return "legacy-peer-learning-observation-retired"
     return ""
 
 
@@ -1266,6 +1337,12 @@ def _candidate_to_json(candidate: EvolveCandidate) -> dict[str, object]:
         "candidate_actor": candidate.candidate_actor,
         "parent_candidate_id": candidate.parent_candidate_id,
         "source_task_id": candidate.source_task_id,
+        "source_repository": candidate.source_repository,
+        "source_revision": candidate.source_revision,
+        "source_path": candidate.source_path,
+        "source_version": candidate.source_version,
+        "source_content_hash": candidate.source_content_hash,
+        "source_url": candidate.source_url,
         "evidence_ids": list(candidate.evidence_ids),
         "evidence_refs": list(candidate.evidence_refs),
         "status": candidate.status if candidate.status in CANDIDATE_STATUSES else "candidate",
@@ -1293,7 +1370,9 @@ def _candidate_from_json(raw: dict[str, object]) -> EvolveCandidate | None:
     source = clean_text(str(raw.get("source") or "unknown")) or "unknown"
     if source in {"task-history", "cron"}:
         source = "experience"
-    if source == "learning" and not candidate_id.startswith("learning-peer-"):
+    if source == "learning" and not candidate_id.startswith(
+        ("learning-peer-", "learning-skill-")
+    ):
         source = "experience"
     legacy_initiated_by = clean_text(str(raw.get("initiated_by") or "")).lower()
     if legacy_initiated_by not in {"human", "agent"}:
@@ -1334,6 +1413,14 @@ def _candidate_from_json(raw: dict[str, object]) -> EvolveCandidate | None:
         candidate_actor=candidate_actor,
         parent_candidate_id=clean_text(str(raw.get("parent_candidate_id") or "")),
         source_task_id=_positive_int(raw.get("source_task_id")),
+        source_repository=clean_text(str(raw.get("source_repository") or "")),
+        source_revision=clean_text(str(raw.get("source_revision") or "")),
+        source_path=clean_text(str(raw.get("source_path") or "")),
+        source_version=clean_text(str(raw.get("source_version") or "")),
+        source_content_hash=clean_text(
+            str(raw.get("source_content_hash") or "")
+        ),
+        source_url=clean_text(str(raw.get("source_url") or "")),
         status=status,
         score=score,
         base_score=_int(raw.get("base_score"), default=score),
@@ -1388,32 +1475,6 @@ def _candidate_signal_actor(source: str) -> str:
 def _provenance_actor(value: object, *, default: str) -> str:
     actor = clean_text(str(value or "")).lower()
     return actor if actor in {"human", "agent", "system"} else default
-
-
-def _peer_learning_candidates(items: Iterable[PeerLearningObservation]) -> list[EvolveCandidate]:
-    candidates = []
-    for item in items:
-        candidates.append(
-            EvolveCandidate(
-                id=f"learning-{item.id}",
-                source="learning",
-                title=f"Explore and adapt {item.agent}'s {item.skill} skill",
-                rationale=f"A non-parent agent skill was inspected from {item.agent} at {item.created_at or 'unknown time'}.",
-                proposed_change=(
-                    f"Re-inspect {item.agent}'s published {item.skill} skill, adapt only mission-relevant ideas, "
-                    "and preserve Enoch-specific behavior."
-                ),
-                expected_benefit="Allows horizontal capability learning without treating a peer as an ancestor.",
-                risk="The peer skill may be incompatible, stale, or too specific to the source agent.",
-                test_plan="Verify skill discovery and run focused tests for every adapted behavior.",
-                initiated_by="agent",
-                evidence_source="learning",
-                signal_actor="human",
-                candidate_actor="agent",
-                score=22,
-            )
-        )
-    return candidates
 
 
 def _brainstorm_candidates(items: Iterable[BrainstormIdea]) -> list[EvolveCandidate]:

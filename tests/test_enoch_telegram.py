@@ -62,6 +62,7 @@ from enoch.lineage.core import (
     load_inbox_candidates,
 )
 from enoch.logs import log_conversation_turn, log_system_event
+from enoch.learn import PublishedSkill
 from enoch.prompt_append import (
     EDIT_REQUEST_END,
     EDIT_REQUEST_START,
@@ -755,7 +756,10 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertNotIn("/memory", client.sent[0][1])
         self.assertIn("/skills [agent-or-path] - show declared skills", client.sent[0][1])
         self.assertNotIn("/teach", client.sent[0][1])
-        self.assertIn("/learn <skill> from <agent> - adapt a published skill from another agent", client.sent[0][1])
+        self.assertIn(
+            "/learn <skill> from <agent> - assess a published skill and propose an evolution candidate",
+            client.sent[0][1],
+        )
         self.assertIn("/do <request> - run work now instead of queueing it", client.sent[0][1])
         self.assertIn("/task <request> - queue background work for Enoch", client.sent[0][1])
         self.assertNotIn("/task cancel <id> - cancel a queued background task", client.sent[0][1])
@@ -4066,75 +4070,81 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("Teaching is automatic now.", client.sent[0][1])
         self.assertNotIn("Input tokens:", client.sent[0][1])
 
-    @patch("enoch.app.core.record_peer_learning_observation")
-    @patch("enoch.app.core.learn_skill_prompt", return_value="learn prompt")
-    @patch("enoch.app.core.respond", return_value="This skill does not fit Enoch yet.")
-    def test_learn_skill_uses_read_only_session(
+    @patch("enoch.app.core.load_published_skill", return_value=None)
+    @patch("enoch.app.core.respond")
+    def test_learn_skill_uses_isolated_assessment_to_create_candidate(
         self,
         respond: MagicMock,
-        learn_skill_prompt: MagicMock,
-        record_peer_learning_observation: MagicMock,
+        load_published_skill: MagicMock,
     ) -> None:
-        client = FakeTelegramClient(allowed_chat_id=42)
-        bot = EnochApplication(load_identity(), ROOT, client)
+        load_published_skill.return_value = _published_skill_snapshot()
+        respond.return_value = json.dumps(
+            {
+                "decision": "applicable",
+                "reason": "This adds a missing bounded teaching capability.",
+                "candidate": {
+                    "title": "Adapt peer teaching summaries",
+                    "rationale": "Enoch cannot currently package these summaries.",
+                    "proposed_change": "Add a focused teaching-summary adapter.",
+                    "expected_benefit": "Improves skill portability.",
+                    "risk": "Source assumptions may not fit Enoch.",
+                    "test_plan": "Add focused adapter tests.",
+                },
+            }
+        )
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            client = FakeTelegramClient(allowed_chat_id=42)
+            bot = EnochApplication(load_identity(), root, client)
 
-        _handle_update(bot, _message_update(chat_id=42, text="/learn teach from lucy"))
+            _handle_update(
+                bot,
+                _message_update(chat_id=42, text="/learn teach from lucy"),
+            )
+            candidates = load_evolve_candidates(root)
 
-        learn_skill_prompt.assert_called_once_with("/learn teach from lucy", root=ROOT)
-        record_peer_learning_observation.assert_called_once()
+        load_published_skill.assert_called_once_with("teach", "lucy", root=root)
         respond.assert_called_once()
-        self.assertEqual(respond.call_args.kwargs["session_key"], "telegram:42")
-        self.assertIn("learn prompt", respond.call_args.args[1])
-        self.assertIn("Enoch wrapper instructions:", respond.call_args.args[1])
-        self.assertIn("This skill does not fit Enoch yet.", client.sent[0][1])
+        self.assertEqual(respond.call_args.kwargs["session_key"], "")
+        self.assertIn("source_skill_snapshot", respond.call_args.args[1])
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0].source, "learning")
+        self.assertEqual(
+            candidates[0].proposed_change,
+            "Add a focused teaching-summary adapter.",
+        )
+        self.assertIn("assessed Lucy's teach skill as applicable", client.sent[0][1])
+        self.assertIn("Created learning candidate", client.sent[0][1])
 
-    def test_human_triggered_learning_work_is_tracked_with_learning_source(self) -> None:
+    @patch("enoch.app.core.load_published_skill", return_value=None)
+    @patch("enoch.app.core.respond")
+    def test_not_applicable_learning_assessment_terminates_without_candidate(
+        self,
+        respond: MagicMock,
+        load_published_skill: MagicMock,
+    ) -> None:
+        load_published_skill.return_value = _published_skill_snapshot()
+        respond.return_value = json.dumps(
+            {
+                "decision": "not_applicable",
+                "reason": "Enoch already has this capability.",
+                "candidate": None,
+            }
+        )
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
             bot = EnochApplication(load_identity(), root, client)
 
-            with patch.object(bot, "_run_direct_work", return_value="Adapted the skill."):
-                reply = bot._run_tracked_inline_work(
-                    42,
-                    "adapt the research skill",
-                    source="learning",
-                    initiated_by="human",
-                    trigger="/learn",
-                    session_key="telegram:42",
-                )
-            history = task_queue_status(root).history
-            events = load_task_events(root, task_id=1)
+            _handle_update(
+                bot,
+                _message_update(chat_id=42, text="/learn teach from lucy"),
+            )
+            candidates = load_evolve_candidates(root)
 
-        self.assertEqual(reply, "Adapted the skill.")
-        self.assertEqual(history[-1].source, "learning")
-        self.assertEqual(history[-1].initiated_by, "human")
-        self.assertEqual([event.event for event in events], ["created", "started", "completed"])
-        self.assertEqual(events[0].trigger, "/learn")
-
-    def test_tracked_inline_timeout_is_logged_as_system_failure(self) -> None:
-        with TemporaryDirectory() as temp:
-            root = Path(temp)
-            client = FakeTelegramClient(allowed_chat_id=42)
-            bot = EnochApplication(load_identity(), root, client)
-
-            with patch("enoch.app.core.threading.Timer", _ImmediateTimer):
-                with patch.object(bot, "_run_direct_work", return_value="Done."):
-                    reply = bot._run_tracked_inline_work(
-                        42,
-                        "adapt the research skill",
-                        source="learning",
-                        initiated_by="human",
-                        trigger="/learn",
-                        session_key="telegram:42",
-                    )
-            history = task_queue_status(root).history
-            events = load_task_events(root, task_id=1)
-
-        self.assertIn("configured 10m timeout", reply)
-        self.assertEqual(history[-1].status, "failed")
-        self.assertEqual(events[-1].event_actor, "system")
-        self.assertEqual(events[-1].trigger, "task-timeout")
+        self.assertEqual(candidates, ())
+        self.assertIn("assessed Lucy's teach skill as not applicable", client.sent[0][1])
+        self.assertIn("No evolution candidate was created", client.sent[0][1])
 
     @patch("enoch.app.core.model_summary", return_value="AI model: gpt-5-codex")
     def test_self_reports_identity_without_runtime_status(self, model_summary: MagicMock) -> None:
@@ -5665,6 +5675,28 @@ def _doctor_result():
             likely_files=[],
             suggested_action="No repair needed.",
         ),
+    )
+
+
+def _published_skill_snapshot() -> PublishedSkill:
+    revision = "a" * 40
+    return PublishedSkill(
+        name="teach",
+        version="0.1.0",
+        agent="lucy",
+        agent_name="Lucy",
+        repository="our-ark/lucy",
+        branch="main",
+        revision=revision,
+        path="src/lucy/skills/teach",
+        url=(
+            "https://github.com/our-ark/lucy/tree/"
+            f"{revision}/src/lucy/skills/teach"
+        ),
+        description="Package useful improvements.",
+        metadata="name: teach\nversion: 0.1.0\n",
+        instructions="# Teach\n\nPackage useful improvements.\n",
+        content_hash="b" * 64,
     )
 
 
