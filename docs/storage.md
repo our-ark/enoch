@@ -48,8 +48,8 @@ alias for the private-state root.
 ## Compatibility and retention
 
 New logs and append-only task, semantic evidence, evidence-scan, evolution,
-curation, brainstorming, compatibility experience, and learning records are
-written below `.enoch/artifacts/`. Semantic evolution evidence lives in
+curation, compatibility experience, and learning records are written below
+`.enoch/artifacts/`. Semantic evolution evidence lives in
 `evidence.jsonl`, while cursor/audit records live in `evidence_scans.jsonl`.
 Readers also load
 the corresponding pre-boundary files from `.enoch/`, with legacy records
@@ -102,3 +102,8 @@ Running the same migration again is a no-op.
 
 Artifact storage is never scanned, backed up, or rewritten by private-state
 migration.
+
+Brainstorming has no separate artifact journal. Validated drafts are stored
+directly as candidates in `.enoch/evolve_candidates.json`; scheduler cooldown
+claims live in `.enoch/evolve_brainstorm_schedule.json`. Both are operational
+private state covered by the private-state manifest.

@@ -5,15 +5,11 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 from pathlib import Path
-from typing import Callable, Iterable
+import re
+from typing import Iterable
 from uuid import uuid4
 
-from enoch.evolution.sources.brainstorming import (
-    BrainstormIdea,
-    brainstorm_idea,
-    load_brainstorm_ideas,
-    save_brainstorm_ideas,
-)
+from enoch.evolution.sources.brainstorming import BrainstormCandidateDraft
 from enoch.evolution.curation import (
     DEFAULT_CURATION_LIMIT,
     CurationGenerator,
@@ -26,7 +22,6 @@ from enoch.evolution.curation import (
     recent_completion_evidence,
     record_curation,
     sanitize_curation_text,
-    with_new_candidate_ids,
 )
 from enoch.evolution.evidence import (
     EvidenceCandidateDraft,
@@ -53,7 +48,7 @@ from enoch.state import StateCorruptionError, file_transaction, load_json_object
 
 
 SCHEMA_VERSION = 2
-CANDIDATE_SCHEMA_VERSION = 6
+CANDIDATE_SCHEMA_VERSION = 7
 MODE_DISABLED = "disabled"
 MODE_CO_EVOLVE = "co-evolve"
 MODE_AUTO_EVOLVE = "auto-evolve"
@@ -74,7 +69,6 @@ ACTIONABLE_CANDIDATE_STATUSES = {"candidate", "failed"}
 VISIBLE_CANDIDATE_STATUSES = {"candidate", "running", "failed"}
 AUTO_BRAINSTORM_COOLDOWN_SECONDS = 24 * 60 * 60
 FAILED_RETRY_SCORE_BONUS = 30
-BrainstormFallback = Callable[[str], Iterable[object]]
 
 
 @dataclass(frozen=True)
@@ -114,6 +108,9 @@ class EvolveCandidate:
     source_version: str = ""
     source_content_hash: str = ""
     source_url: str = ""
+    source_theme: str = ""
+    source_context_hash: str = ""
+    source_created_at: str = ""
     status: str = "candidate"
     score: int = 0
     base_score: int | None = None
@@ -138,15 +135,20 @@ class EvolveProposal:
     candidates: tuple[EvolveCandidate, ...]
     top_candidate: EvolveCandidate | None
     proposal_id: str = ""
-    brainstorm_attempted: bool = False
-    brainstorm_added: int = 0
-    brainstorm_skip_reason: str = ""
-    brainstorm_error: str = ""
     curation: SemanticCuration | None = None
-    new_candidates: tuple[EvolveCandidate, ...] = ()
+    scheduled_brainstorm_status: str = ""
+    scheduled_brainstorm_created: int = 0
+    scheduled_brainstorm_existing: int = 0
+    scheduled_brainstorm_error: str = ""
     evidence_scan_results: tuple[EvidenceScanResult, ...] = ()
     evidence_candidates_added: int = 0
     evidence_synthesis_error: str = ""
+
+
+@dataclass(frozen=True)
+class BrainstormCreation:
+    created: tuple[EvolveCandidate, ...]
+    existing: tuple[EvolveCandidate, ...]
 
 
 def evolve_state_path(root: Path | None = None) -> Path:
@@ -157,8 +159,8 @@ def evolve_candidates_path(root: Path | None = None) -> Path:
     return private_state_path("evolve_candidates.json", root)
 
 
-def evolve_brainstorm_fallback_path(root: Path | None = None) -> Path:
-    return private_state_path("evolve_brainstorm_fallback.json", root)
+def evolve_brainstorm_schedule_path(root: Path | None = None) -> Path:
+    return private_state_path("evolve_brainstorm_schedule.json", root)
 
 
 def load_evolve_state(root: Path | None = None) -> EvolveState:
@@ -441,11 +443,9 @@ def evolve_report(
 def propose_evolve(
     root: Path | None = None,
     *,
-    brainstormer: BrainstormFallback | None = None,
     curator: CurationGenerator | None = None,
     mission: str = "",
     curation_limit: int = DEFAULT_CURATION_LIMIT,
-    now: datetime | None = None,
 ) -> EvolveProposal:
     report = evolve_report(root)
     candidates = tuple(
@@ -453,35 +453,9 @@ def propose_evolve(
         for candidate in report.candidates
         if candidate.status in ACTIONABLE_CANDIDATE_STATUSES
     )
-    attempted = False
-    added = 0
-    skip_reason = ""
-    error = ""
-    if report.state.mode != MODE_DISABLED and not candidates:
-        if any(candidate.status == "running" for candidate in report.candidates):
-            skip_reason = "candidate-running"
-        elif not report.state.theme:
-            skip_reason = "theme-not-set"
-        elif brainstormer is None:
-            skip_reason = "brainstormer-unavailable"
-        elif not _claim_auto_brainstorm(report.state.theme, root, now=now):
-            skip_reason = "cooldown"
-        else:
-            attempted = True
-            try:
-                added = len(tuple(brainstormer(report.state.theme)))
-            except (OSError, RuntimeError, ValueError) as brainstorm_error:
-                error = clean_text(str(brainstorm_error)) or brainstorm_error.__class__.__name__
-            report = evolve_report(root)
-            candidates = tuple(
-                candidate
-                for candidate in report.candidates
-                if candidate.status in ACTIONABLE_CANDIDATE_STATUSES
-            )
     curation = None
-    new_candidates: tuple[EvolveCandidate, ...] = ()
     top_candidate = candidates[0] if candidates else None
-    if report.state.mode != MODE_DISABLED:
+    if report.state.mode != MODE_DISABLED and candidates:
         bounded = _select_curation_candidates(candidates, limit=curation_limit)
         snapshots = tuple(_candidate_curation_snapshot(candidate) for candidate in bounded)
         if curator is None:
@@ -517,25 +491,6 @@ def propose_evolve(
                         reason=reason,
                         evidence_refs=refs,
                     )
-        if curation.status == "llm" and curation.new_candidates:
-            ideas = tuple(
-                brainstorm_idea(
-                    theme=report.state.theme or "mission-aligned",
-                    mission=mission,
-                    **suggestion.__dict__,
-                )
-                for suggestion in curation.new_candidates
-            )
-            save_brainstorm_ideas(ideas, root)
-            report = evolve_report(root)
-            candidates = tuple(
-                candidate
-                for candidate in report.candidates
-                if candidate.status in ACTIONABLE_CANDIDATE_STATUSES
-            )
-            new_ids = tuple(idea.id for idea in ideas)
-            new_candidates = tuple(candidate for candidate in candidates if candidate.id in new_ids)
-            curation = with_new_candidate_ids(curation, new_ids)
         if curation.recommendation is None:
             top_candidate = None
         else:
@@ -552,12 +507,7 @@ def propose_evolve(
         report=report,
         candidates=candidates,
         top_candidate=top_candidate,
-        brainstorm_attempted=attempted,
-        brainstorm_added=added,
-        brainstorm_skip_reason=skip_reason,
-        brainstorm_error=error,
         curation=curation,
-        new_candidates=new_candidates,
     )
 
 
@@ -587,6 +537,9 @@ def _candidate_curation_snapshot(candidate: EvolveCandidate) -> dict[str, object
             "source_version": candidate.source_version,
             "source_content_hash": candidate.source_content_hash,
             "source_url": candidate.source_url,
+            "source_theme": candidate.source_theme,
+            "source_context_hash": candidate.source_context_hash,
+            "source_created_at": candidate.source_created_at,
         },
     }
 
@@ -615,7 +568,7 @@ def _bounded_curation_text(value: str, *, limit: int = 1200) -> str:
     return sanitize_curation_text(value, limit=limit)
 
 
-def _claim_auto_brainstorm(
+def claim_scheduled_brainstorm(
     theme: str,
     root: Path | None = None,
     *,
@@ -624,7 +577,7 @@ def _claim_auto_brainstorm(
     normalized_theme = clean_text(theme).casefold()
     if not normalized_theme:
         return False
-    path = evolve_brainstorm_fallback_path(root)
+    path = evolve_brainstorm_schedule_path(root)
     with file_transaction(path):
         raw = load_json_object(path)
         raw_attempts = raw.get("attempts") if raw else None
@@ -650,14 +603,89 @@ def _claim_auto_brainstorm(
         return True
 
 
-def collect_evolve_candidates(
+def create_brainstorm_candidates(
+    drafts: Iterable[BrainstormCandidateDraft],
     root: Path | None = None,
     *,
-    theme: str = "",
-) -> tuple[EvolveCandidate, ...]:
-    candidates: list[EvolveCandidate] = []
-    candidates.extend(_brainstorm_candidates(load_brainstorm_ideas(root, theme=theme)))
-    return tuple(candidates)
+    theme: str,
+    context_hash: str,
+    created_at: str = "",
+) -> BrainstormCreation:
+    normalized_theme = clean_text(theme)
+    normalized_context_hash = clean_text(context_hash).lower()
+    if not normalized_theme:
+        raise ValueError("Brainstorming candidates require a theme.")
+    if not re.fullmatch(r"[0-9a-f]{64}", normalized_context_hash):
+        raise ValueError("Brainstorming candidates require a valid context hash.")
+    prepared = tuple(drafts)
+    if not prepared:
+        return BrainstormCreation(created=(), existing=())
+    for draft in prepared:
+        if not candidate_scope_is_safe(draft.__dict__):
+            raise ValueError(
+                "Brainstorming candidate has protected or dangerous scope."
+            )
+    path = evolve_candidates_path(root)
+    with file_transaction(path):
+        stored = {
+            candidate.id: candidate
+            for candidate in _load_all_evolve_candidates(root)
+        }
+        stored_by_change = {
+            _candidate_change_fingerprint(candidate.proposed_change): candidate.id
+            for candidate in stored.values()
+            if _candidate_change_fingerprint(candidate.proposed_change)
+        }
+        created_ids: list[str] = []
+        existing_ids: list[str] = []
+        source_created_at = clean_text(created_at) or current_time()
+        for draft in prepared:
+            change_fingerprint = _candidate_change_fingerprint(
+                draft.proposed_change
+            )
+            matching_id = stored_by_change.get(change_fingerprint)
+            if matching_id is not None:
+                existing_ids.append(matching_id)
+                continue
+            candidate_id = _brainstorm_candidate_id(
+                normalized_theme,
+                draft.proposed_change,
+            )
+            if candidate_id in stored:
+                existing_ids.append(candidate_id)
+                continue
+            candidate = EvolveCandidate(
+                id=candidate_id,
+                source="brainstorming",
+                title=draft.title,
+                rationale=draft.rationale,
+                proposed_change=draft.proposed_change,
+                expected_benefit=draft.expected_benefit,
+                risk=draft.risk,
+                test_plan=draft.test_plan,
+                initiated_by="agent",
+                evidence_source="brainstorming",
+                signal_actor="agent",
+                candidate_actor="agent",
+                source_theme=normalized_theme,
+                source_context_hash=normalized_context_hash,
+                source_created_at=source_created_at,
+                score=16,
+            )
+            stored[candidate.id] = candidate
+            stored_by_change[change_fingerprint] = candidate.id
+            created_ids.append(candidate.id)
+        ranked = rank_evolve_candidates(
+            stored.values(),
+            theme=normalized_theme,
+        )
+        if created_ids:
+            _write_evolve_candidates(ranked, root)
+    by_id = {candidate.id: candidate for candidate in ranked}
+    return BrainstormCreation(
+        created=tuple(by_id[candidate_id] for candidate_id in created_ids),
+        existing=tuple(by_id[candidate_id] for candidate_id in existing_ids),
+    )
 
 
 def create_learning_candidate(
@@ -813,26 +841,14 @@ def _candidate_from_evidence_draft(
 
 def sync_evolve_candidates(root: Path | None = None, *, theme: str = "") -> tuple[EvolveCandidate, ...]:
     stored = {candidate.id: candidate for candidate in _load_all_evolve_candidates(root)}
-    collected = collect_evolve_candidates(root, theme=theme)
-    collected_ids = {candidate.id for candidate in collected}
     merged: dict[str, EvolveCandidate] = {}
     retired: list[tuple[EvolveCandidate, str]] = []
     for candidate_id, candidate in stored.items():
-        if (
-            candidate.source == "brainstorming"
-            and candidate.status in VISIBLE_CANDIDATE_STATUSES
-            and candidate_id not in collected_ids
-        ):
-            continue
         retirement_reason = _candidate_retirement_reason(candidate)
         if retirement_reason and candidate.status in ACTIONABLE_CANDIDATE_STATUSES:
             candidate = EvolveCandidate(**{**candidate.__dict__, "status": "removed"})
             retired.append((candidate, retirement_reason))
         merged[candidate_id] = candidate
-    for candidate in collected:
-        previous = stored.get(candidate.id)
-        status = previous.status if previous is not None else candidate.status
-        merged[candidate.id] = EvolveCandidate(**{**candidate.__dict__, "status": status})
     ranked = rank_evolve_candidates(merged.values(), theme=theme)
     _write_evolve_candidates(ranked, root)
     for candidate, reason in retired:
@@ -1343,6 +1359,9 @@ def _candidate_to_json(candidate: EvolveCandidate) -> dict[str, object]:
         "source_version": candidate.source_version,
         "source_content_hash": candidate.source_content_hash,
         "source_url": candidate.source_url,
+        "source_theme": candidate.source_theme,
+        "source_context_hash": candidate.source_context_hash,
+        "source_created_at": candidate.source_created_at,
         "evidence_ids": list(candidate.evidence_ids),
         "evidence_refs": list(candidate.evidence_refs),
         "status": candidate.status if candidate.status in CANDIDATE_STATUSES else "candidate",
@@ -1421,6 +1440,11 @@ def _candidate_from_json(raw: dict[str, object]) -> EvolveCandidate | None:
             str(raw.get("source_content_hash") or "")
         ),
         source_url=clean_text(str(raw.get("source_url") or "")),
+        source_theme=clean_text(str(raw.get("source_theme") or "")),
+        source_context_hash=clean_text(
+            str(raw.get("source_context_hash") or "")
+        ),
+        source_created_at=clean_text(str(raw.get("source_created_at") or "")),
         status=status,
         score=score,
         base_score=_int(raw.get("base_score"), default=score),
@@ -1477,25 +1501,18 @@ def _provenance_actor(value: object, *, default: str) -> str:
     return actor if actor in {"human", "agent", "system"} else default
 
 
-def _brainstorm_candidates(items: Iterable[BrainstormIdea]) -> list[EvolveCandidate]:
-    return [
-        EvolveCandidate(
-            id=item.id,
-            source="brainstorming",
-            title=item.title,
-            rationale=f"Theme-guided LLM idea for '{item.theme}'. {item.rationale}",
-            proposed_change=item.proposed_change,
-            expected_benefit=item.expected_benefit,
-            risk=item.risk,
-            test_plan=item.test_plan,
-            initiated_by="agent",
-            evidence_source="brainstorming",
-            signal_actor="agent",
-            candidate_actor="agent",
-            score=16,
-        )
-        for item in items
-    ]
+def _brainstorm_candidate_id(theme: str, proposed_change: str) -> str:
+    digest = hashlib.sha256(
+        (
+            f"{clean_text(theme).casefold()}\0"
+            f"{clean_text(proposed_change).casefold()}"
+        ).encode("utf-8")
+    ).hexdigest()[:16]
+    return f"brainstorm-{digest}"
+
+
+def _candidate_change_fingerprint(proposed_change: str) -> str:
+    return clean_text(proposed_change).casefold()
 
 
 def _score_candidate(candidate: EvolveCandidate, *, theme: str) -> EvolveCandidate:
@@ -1507,7 +1524,14 @@ def _score_candidate(candidate: EvolveCandidate, *, theme: str) -> EvolveCandida
     score = base_score + 25
     text = " ".join([candidate.title, candidate.rationale, candidate.proposed_change]).lower()
     theme_words = {word for word in clean_text(theme).lower().split() if len(word) >= 4}
-    if theme_words and any(word in text for word in theme_words):
+    normalized_theme = clean_text(theme).casefold()
+    exact_source_theme = bool(
+        normalized_theme
+        and clean_text(candidate.source_theme).casefold() == normalized_theme
+    )
+    if exact_source_theme or (
+        theme_words and any(word in text for word in theme_words)
+    ):
         score += 20
     if candidate.source == "experience":
         score += 12

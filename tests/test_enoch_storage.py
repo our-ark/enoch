@@ -15,8 +15,8 @@ from enoch.automatic_learning import learning_dir
 from enoch.config import config_path
 from enoch.cron import cron_path
 from enoch.evolution.curation import curation_index_path
+from enoch.evolution.core import evolve_brainstorm_schedule_path
 from enoch.evolution.events import evolve_event_path
-from enoch.evolution.sources.brainstorming import brainstorm_index_path
 from enoch.logs import conversation_log_dir, log_system_event
 from enoch.memory.paths import memory_dir
 from enoch.paths import (
@@ -98,9 +98,9 @@ class EnochStorageTests(unittest.TestCase):
                 cron_path(root),
                 memory_dir(root),
                 task_queue_path(root),
+                evolve_brainstorm_schedule_path(root),
             )
             artifact_paths = (
-                brainstorm_index_path(root),
                 conversation_log_dir(root),
                 curation_index_path(root),
                 evolve_event_path(root),

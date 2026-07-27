@@ -21,8 +21,9 @@ themselves.
 - `auto-evolve`: schedule the same semantic proposal flow, but still wait for
   human approval before queueing, removing, or merging anything.
 
-The default is `co-evolve`. The current theme guides synthesis, curation, and
-deterministic fallback ranking; it is context, not an evidence source.
+The default is `co-evolve`. The current theme guides synthesis, brainstorming,
+curation, and deterministic fallback ranking; it is context, not an evidence
+source.
 
 ## Evidence pathways
 
@@ -124,9 +125,32 @@ Candidate records preserve `evidence_ids` and original `evidence_refs`.
 Feedback/experience candidates from the retired hardcoded pathways are retained
 for audit but removed from the actionable pool when they lack evidence IDs.
 
-The other two pathways still create structured candidates directly: learning
-from applicable immutable skill assessments and brainstorming from a dedicated
+The other two pathways create structured candidates directly: learning from
+applicable immutable skill assessments and brainstorming from one dedicated
 bounded generation pass.
+
+### Brainstorming
+
+`/evolve brainstorm [theme]` starts one fresh stateless, read-only Codex
+session. It receives Enoch's mission, the selected theme, declared skills, up
+to 30 existing candidates, and up to 12 recent completed-work summaries. It may
+inspect the repository read-only to check novelty.
+
+The session must return an exact JSON array containing zero to three complete
+candidate drafts. Enoch then validates required fields, field bounds,
+protected scope, dangerous actions, and duplicates before writing candidates
+directly to `.enoch/evolve_candidates.json`. There is no brainstorming
+artifact or later conversion pass.
+
+Brainstorm candidates retain their source theme, a hash of the bounded context,
+and their creation time. They remain visible after the theme changes; an exact
+theme match only improves current ranking.
+
+`/evolve propose` never starts brainstorming implicitly. In `co-evolve`,
+brainstorming is explicit only. A scheduled `auto-evolve` check first scans
+evidence and performs evidence-to-candidate synthesis. If no visible candidate
+then exists, it may invoke this same brainstorming pathway at most once per
+theme every 24 hours. It still only proposes the result for human approval.
 
 ## Recommendation
 
@@ -134,11 +158,10 @@ After synthesis, semantic curation is a third fresh stateless reasoning
 invocation. Deterministic scoring only bounds and orders its input and supplies
 an explicitly labelled fallback.
 
-The curator can recommend one known candidate, suggest bounded brainstorming
-candidates, or suggest that a human remove an item as duplicate, superseded,
-obsolete, already resolved, context-only, or not actionable. It cannot approve,
-queue, retry, remove, merge, deploy, change permissions, or mutate mission or
-identity.
+The curator can recommend one known candidate or suggest that a human remove an
+item as duplicate, superseded, obsolete, already resolved, context-only, or not
+actionable. It cannot invent candidates, approve, queue, retry, remove, merge,
+deploy, change permissions, or mutate mission or identity.
 
 Curations are appended to `.enoch/evolve_curations.jsonl`. Candidates are
 stored in `.enoch/evolve_candidates.json`, and lifecycle decisions are appended

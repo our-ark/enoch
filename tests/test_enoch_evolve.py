@@ -12,13 +12,14 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from enoch.backlog import add_backlog_item
-from enoch.evolution.sources.brainstorming import generate_brainstorm_ideas
+from enoch.evolution.sources.brainstorming import BrainstormCandidateDraft
 from enoch.evolution.core import (
     MODE_DISABLED,
     cancel_evolve_candidate_for_task,
     claim_due_evolve_schedule,
+    claim_scheduled_brainstorm,
     acknowledge_evolve_schedule,
-    collect_evolve_candidates,
+    create_brainstorm_candidates,
     disable_evolve_schedule,
     evolve_report,
     complete_evolve_candidate_for_task,
@@ -62,7 +63,7 @@ class EnochEvolveTests(unittest.TestCase):
             add_backlog_item(42, "improve Telegram work UX", root, priority="p0")
             _write_lineage_candidate(root, _lineage_candidate())
 
-            candidates = collect_evolve_candidates(root)
+            candidates = sync_evolve_candidates(root)
         self.assertEqual(candidates, ())
 
     def test_task_failures_are_pending_evidence_not_hardcoded_candidates(self) -> None:
@@ -73,7 +74,7 @@ class EnochEvolveTests(unittest.TestCase):
             assert running is not None
             fail_task(queued.id, root, result="Tests failed in Telegram workflow.")
 
-            candidates = collect_evolve_candidates(root)
+            candidates = sync_evolve_candidates(root)
             report = evolve_report(root)
 
         self.assertEqual(candidates, ())
@@ -86,7 +87,7 @@ class EnochEvolveTests(unittest.TestCase):
             _write_task_events(root, task_id=1, status="completed")
             _write_task_events(root, task_id=2, status="completed")
 
-            candidates = collect_evolve_candidates(root)
+            candidates = sync_evolve_candidates(root)
 
         self.assertEqual(candidates, ())
 
@@ -95,23 +96,11 @@ class EnochEvolveTests(unittest.TestCase):
             root = Path(temp)
             _write_task_events(root, task_id=3, status="cancelled")
 
-            candidates = collect_evolve_candidates(root)
+            candidates = sync_evolve_candidates(root)
 
         self.assertNotIn("task-3", {candidate.id for candidate in candidates})
 
     def test_direct_pathways_remain_separate_candidate_sources(self) -> None:
-        brainstorm_response = json.dumps(
-            [
-                {
-                    "title": "Make provenance visible",
-                    "rationale": "The theme emphasizes accountability.",
-                    "proposed_change": "Show source details in candidate reports.",
-                    "expected_benefit": "Improves review quality.",
-                    "risk": "Adds output.",
-                    "test_plan": "Add report tests.",
-                }
-            ]
-        )
         with TemporaryDirectory() as temp:
             root = Path(temp)
             add_backlog_item(42, "improve Telegram work UX", root, priority="p0")
@@ -128,16 +117,26 @@ class EnochEvolveTests(unittest.TestCase):
                 ),
                 root,
             )
-            generate_brainstorm_ideas(
-                "accountable evolution",
+            brainstorming = create_brainstorm_candidates(
+                (
+                    BrainstormCandidateDraft(
+                        title="Make provenance visible",
+                        rationale="The theme emphasizes accountability.",
+                        proposed_change="Show source details in candidate reports.",
+                        expected_benefit="Improves review quality.",
+                        risk="Adds output.",
+                        test_plan="Add report tests.",
+                    ),
+                ),
                 root,
-                mission="Evolve safely",
-                generator=lambda _prompt: brainstorm_response,
+                theme="accountable evolution",
+                context_hash="c" * 64,
             )
 
             candidates = evolve_report(root).candidates
 
         self.assertTrue(created)
+        self.assertEqual(len(brainstorming.created), 1)
         self.assertEqual(learning.source_revision, "a" * 40)
         self.assertEqual(
             {candidate.source for candidate in candidates},
@@ -233,32 +232,32 @@ class EnochEvolveTests(unittest.TestCase):
         self.assertEqual(candidate.source_task_id, queued.id)
         self.assertEqual(candidate.evidence_ids, (scan.evidence[0].id,))
 
-    def test_brainstorm_candidates_are_scoped_to_current_theme(self) -> None:
-        response = json.dumps(
-            [
-                {
-                    "title": "Improve audit trail",
-                    "rationale": "Useful for theme A.",
-                    "proposed_change": "Show provenance.",
-                    "expected_benefit": "Better review.",
-                    "risk": "More output.",
-                    "test_plan": "Add formatting tests.",
-                }
-            ]
+    def test_brainstorm_candidates_remain_visible_across_theme_changes(self) -> None:
+        draft = BrainstormCandidateDraft(
+            title="Improve audit trail",
+            rationale="Useful for theme A.",
+            proposed_change="Show provenance.",
+            expected_benefit="Better review.",
+            risk="More output.",
+            test_plan="Add formatting tests.",
         )
         with TemporaryDirectory() as temp:
             root = Path(temp)
-            generate_brainstorm_ideas(
-                "theme A",
+            creation = create_brainstorm_candidates(
+                (draft,),
                 root,
-                mission="Evolve safely",
-                generator=lambda _prompt: response,
+                theme="auditability",
+                context_hash="d" * 64,
             )
-            first = sync_evolve_candidates(root, theme="theme A")
-            second = sync_evolve_candidates(root, theme="theme B")
+            first = sync_evolve_candidates(root, theme="auditability")
+            second = sync_evolve_candidates(root, theme="runtime latency")
 
+        self.assertEqual(len(creation.created), 1)
         self.assertEqual({candidate.source for candidate in first}, {"brainstorming"})
-        self.assertEqual(second, ())
+        self.assertEqual({candidate.id for candidate in second}, {first[0].id})
+        self.assertGreater(first[0].score, second[0].score)
+        self.assertEqual(first[0].source_theme, "auditability")
+        self.assertEqual(first[0].source_context_hash, "d" * 64)
 
     def test_disabled_mode_does_not_collect_candidates(self) -> None:
         with TemporaryDirectory() as temp:
@@ -392,86 +391,82 @@ class EnochEvolveTests(unittest.TestCase):
         self.assertEqual(proposal.top_candidate.id, first.id)
         self.assertEqual(proposal.top_candidate.status, "candidate")
 
-    def test_proposal_does_not_brainstorm_when_candidate_exists(self) -> None:
+    def test_empty_proposal_does_not_curate_or_invent_candidates(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
-            _feedback_candidate(root, "I want clearer existing work.")
-            calls = []
 
-            proposal = propose_evolve(root, brainstormer=lambda theme: calls.append(theme) or ())
+            proposal = propose_evolve(
+                root,
+                curator=lambda _prompt: self.fail(
+                    "curation should not run without candidates"
+                ),
+            )
 
-        self.assertEqual(calls, [])
-        self.assertFalse(proposal.brainstorm_attempted)
-        self.assertEqual(proposal.top_candidate.source, "feedback")
+        self.assertEqual(proposal.candidates, ())
+        self.assertIsNone(proposal.top_candidate)
+        self.assertIsNone(proposal.curation)
 
-    def test_proposal_does_not_brainstorm_while_candidate_is_running(self) -> None:
+    def test_brainstorm_candidate_deduplicates_change_across_themes(self) -> None:
+        draft = BrainstormCandidateDraft(
+            title="Improve telemetry",
+            rationale="Telemetry is hard to inspect.",
+            proposed_change="Add a bounded telemetry summary.",
+            expected_benefit="Improves debugging.",
+            risk="Adds output.",
+            test_plan="Add focused formatting tests.",
+        )
         with TemporaryDirectory() as temp:
             root = Path(temp)
-            candidate = _feedback_candidate(root, "I want clearer running evolve work.")
-            set_evolve_theme("reliable evolution", root)
-            run_evolve_candidate(candidate.id, root, theme="reliable evolution")
-            calls = []
+            first = create_brainstorm_candidates(
+                (draft,),
+                root,
+                theme="reliable task telemetry",
+                context_hash="e" * 64,
+            )
+            second = create_brainstorm_candidates(
+                (replace(draft, title="Clarify telemetry"),),
+                root,
+                theme="operational visibility",
+                context_hash="f" * 64,
+            )
 
-            proposal = propose_evolve(root, brainstormer=lambda theme: calls.append(theme) or ())
+        self.assertEqual(len(first.created), 1)
+        self.assertEqual(second.created, ())
+        self.assertEqual(
+            [candidate.id for candidate in second.existing],
+            [first.created[0].id],
+        )
 
-        self.assertEqual(calls, [])
-        self.assertFalse(proposal.brainstorm_attempted)
-        self.assertEqual(proposal.brainstorm_skip_reason, "candidate-running")
-
-    def test_empty_proposal_requires_theme_before_fallback_brainstorm(self) -> None:
+    def test_scheduled_brainstorm_claim_is_theme_scoped_and_cooled_down(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
-            calls = []
-
-            proposal = propose_evolve(root, brainstormer=lambda theme: calls.append(theme) or ())
-
-        self.assertEqual(calls, [])
-        self.assertFalse(proposal.brainstorm_attempted)
-        self.assertEqual(proposal.brainstorm_skip_reason, "theme-not-set")
-
-    def test_empty_proposal_brainstorms_once_per_theme_per_day(self) -> None:
-        with TemporaryDirectory() as temp:
-            root = Path(temp)
-            set_evolve_theme("reliable task telemetry", root)
-            calls = []
-
-            def brainstorm(theme: str):
-                calls.append(theme)
-                title = f"Improve telemetry fallback {len(calls)}"
-                response = json.dumps(
-                    [
-                        {
-                            "title": title,
-                            "rationale": "No stronger candidate exists.",
-                            "proposed_change": "Add a bounded telemetry improvement.",
-                            "expected_benefit": "Keeps evolution moving.",
-                            "risk": "The idea may be speculative.",
-                            "test_plan": "Add focused tests.",
-                        }
-                    ]
-                )
-                return generate_brainstorm_ideas(
-                    theme,
-                    root,
-                    mission="Evolve safely",
-                    generator=lambda _prompt: response,
-                )
-
             start = datetime(2026, 7, 18, 9, 0, tzinfo=timezone.utc)
-            first = propose_evolve(root, brainstormer=brainstorm, now=start)
-            assert first.top_candidate is not None
-            remove_evolve_candidate(first.top_candidate.id, root, theme="reliable task telemetry")
-            second = propose_evolve(root, brainstormer=brainstorm, now=start + timedelta(hours=1))
-            third = propose_evolve(root, brainstormer=brainstorm, now=start + timedelta(hours=25))
 
-        self.assertTrue(first.brainstorm_attempted)
-        self.assertEqual(first.brainstorm_added, 1)
-        self.assertEqual(first.top_candidate.source, "brainstorming")
-        self.assertEqual(first.top_candidate.initiated_by, "agent")
-        self.assertFalse(second.brainstorm_attempted)
-        self.assertEqual(second.brainstorm_skip_reason, "cooldown")
-        self.assertTrue(third.brainstorm_attempted)
-        self.assertEqual(len(calls), 2)
+            first = claim_scheduled_brainstorm(
+                "reliable task telemetry",
+                root,
+                now=start,
+            )
+            second = claim_scheduled_brainstorm(
+                "reliable task telemetry",
+                root,
+                now=start + timedelta(hours=1),
+            )
+            other_theme = claim_scheduled_brainstorm(
+                "clear reports",
+                root,
+                now=start + timedelta(hours=1),
+            )
+            after_cooldown = claim_scheduled_brainstorm(
+                "reliable task telemetry",
+                root,
+                now=start + timedelta(hours=25),
+            )
+
+        self.assertTrue(first)
+        self.assertFalse(second)
+        self.assertTrue(other_theme)
+        self.assertTrue(after_cooldown)
 
     def test_completed_evolve_task_marks_candidate_done(self) -> None:
         with TemporaryDirectory() as temp:
@@ -573,10 +568,7 @@ class EnochEvolveTests(unittest.TestCase):
             fail_task(running.id, root, result="Transient branch setup failure.")
             failed = fail_evolve_candidate_for_task(running, root, reason=running.result)
 
-            proposal = propose_evolve(
-                root,
-                brainstormer=lambda _theme: self.fail("failed candidate should prevent fallback brainstorming"),
-            )
+            proposal = propose_evolve(root)
             failed_task = latest_failed_evolve_task(candidate.id, root)
             retried = retry_evolve_candidate(candidate.id, root)
 
@@ -585,7 +577,6 @@ class EnochEvolveTests(unittest.TestCase):
         assert failed_task is not None
         self.assertEqual(proposal.top_candidate.id, candidate.id)
         self.assertEqual(proposal.top_candidate.status, "failed")
-        self.assertFalse(proposal.brainstorm_attempted)
         self.assertEqual(failed_task.id, queued.id)
         self.assertEqual(retried.status, "running")
 

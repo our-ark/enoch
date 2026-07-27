@@ -11,11 +11,10 @@ conversation turns                 task event histories
                            |
                     durable evidence
                            |
-                semantic candidate synthesis
-                           |
-                         candidate pool ------ assessed learning
-                           |
-                 bounded semantic curation
+semantic candidate synthesis -----+
+assessed learning -----------------+--> candidate pool
+validated brainstorm drafts -------+          |
+                                      bounded semantic curation
                            |
                    human approve/remove
                            |
@@ -38,8 +37,8 @@ whether to run or remove them. This is the default.
 authority and does not bypass human approval for candidate execution, retries,
 or removal.
 
-The evolution theme supplies direction to synthesis, curation, and deterministic
-fallback scoring. It is not evidence and is not a candidate source.
+The evolution theme supplies direction to synthesis, brainstorming, curation,
+and deterministic fallback scoring. It is not evidence.
 
 ## Why evidence is separate from candidates
 
@@ -139,7 +138,8 @@ Manual and proposal triggers are different:
   batch for the selected source.
 - `/evolve propose` forces and drains both sources, synthesizes candidates from
   unlinked evidence, then curates the candidate pool.
-- A scheduled evolve check uses that same proposal flow.
+- A scheduled evolve check uses that same evidence-first proposal flow and, in
+  `auto-evolve` only, may brainstorm when no visible candidate remains.
 
 A valid empty array means “this batch contained no evidence” and advances the
 cursor. Malformed JSON, prose around JSON, an invalid schema, unknown
@@ -229,12 +229,40 @@ sources do not all enter at the same stage:
 4. `brainstorming` — direct bounded ideas generated under mission and theme.
 
 The feedback and experience pathways now use the new evidence layer.
-Learning and brainstorming still bypass the evidence layer. `/learn` validates
+Learning and brainstorming bypass the evidence layer. `/learn` validates
 one immutable source snapshot, asks one fresh read-only Codex session for an
 applicability decision and candidate contents, and persists only applicable
 results. Backlog and inheritance have both been removed as sources. Inheritance
 now uses its own Codex-assessed inbox and explicit `/inherit <change_id>` task
 workflow.
+
+## Brainstorming
+
+`/evolve brainstorm [theme]` invokes one fresh stateless, read-only Codex
+session. The bounded context contains:
+
+- Enoch's mission and selected theme;
+- up to 50 declared skills;
+- up to 30 existing candidates, including source-theme metadata; and
+- up to 12 privacy-cleaned recent completed-work summaries.
+
+The session may inspect the repository read-only to determine whether an idea
+already exists. It must return only an exact JSON array containing zero to three
+complete candidate drafts. Enoch validates the schema, length bounds, protected
+scope, dangerous actions, and within-response duplicates. Valid drafts are
+deduplicated against stored candidates and written directly to
+`.enoch/evolve_candidates.json`.
+
+There is no intermediate brainstorm artifact and no later collection pass.
+Each stored brainstorm candidate records the source theme, SHA-256 hash of the
+bounded input context, and creation timestamp. Theme changes do not delete
+brainstorm candidates; an exact theme match is a ranking bonus.
+
+`/evolve propose` never brainstorms. In `co-evolve`, brainstorming is explicit.
+On a scheduled `auto-evolve` run, feedback and experience scans plus evidence
+synthesis run first. Only when that leaves no visible candidate may the same
+brainstorming pathway run, with one claim per theme per 24 hours. A generated
+candidate still waits for human approval.
 
 ## Candidate curation
 
@@ -247,9 +275,12 @@ immutable provenance, mission, theme, and privacy-cleaned completion evidence.
 It may:
 
 - recommend one known candidate with scope/risk/test guidance;
-- suggest up to three new bounded brainstorming candidates; or
 - suggest that a human remove candidates as duplicate, superseded, obsolete,
   already resolved, context-only, or not actionable.
+
+It cannot invent a candidate. New agent-authored ideas must pass through the
+dedicated brainstorming pathway so their input context and provenance remain
+auditable.
 
 Unknown IDs, unsafe scope, invalid resolution evidence, or malformed output
 produce an explicitly labeled deterministic fallback. Suggestions never mutate

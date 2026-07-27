@@ -580,25 +580,28 @@ def _evolve_check_reason(proposal: EvolveProposal) -> str:
     if proposal.curation is not None:
         parts.append(proposal.curation.status)
         parts.append(f"curation-{proposal.curation.id}")
-    if proposal.brainstorm_attempted:
-        parts.append(f"fallback-brainstorm-added-{proposal.brainstorm_added}")
-    elif proposal.brainstorm_skip_reason:
-        parts.append(f"fallback-{proposal.brainstorm_skip_reason}")
-    if proposal.brainstorm_error:
-        parts.append(f"fallback-error-{proposal.brainstorm_error}")
+    if proposal.scheduled_brainstorm_status:
+        parts.append(
+            f"scheduled-brainstorm-{proposal.scheduled_brainstorm_status}"
+        )
+    if proposal.scheduled_brainstorm_error:
+        parts.append(
+            f"scheduled-brainstorm-error-{proposal.scheduled_brainstorm_error}"
+        )
     return "; ".join(parts)
 
 
 def _evolve_skip_reason(proposal: EvolveProposal) -> str:
     if proposal.curation is not None and proposal.curation.status == "llm":
-        if proposal.curation.remove_suggestions or proposal.new_candidates:
+        if proposal.curation.remove_suggestions:
             return "curation-suggestions-only"
-    if proposal.brainstorm_error:
-        return f"brainstorm-failed: {proposal.brainstorm_error}"
-    if proposal.brainstorm_skip_reason:
-        return proposal.brainstorm_skip_reason
-    if proposal.brainstorm_attempted:
-        return "no-candidate-after-brainstorm"
+    if proposal.scheduled_brainstorm_error:
+        return (
+            "scheduled-brainstorm-failed: "
+            f"{proposal.scheduled_brainstorm_error}"
+        )
+    if proposal.scheduled_brainstorm_status:
+        return f"scheduled-brainstorm-{proposal.scheduled_brainstorm_status}"
     return "no-candidate"
 
 
@@ -612,24 +615,10 @@ def _format_evolve_proposal(proposal: EvolveProposal) -> str:
     candidate = proposal.top_candidate
     curation = proposal.curation
     if candidate is None and not (
-        curation is not None and (curation.remove_suggestions or proposal.new_candidates)
+        curation is not None and curation.remove_suggestions
     ):
-        if proposal.brainstorm_skip_reason == "candidate-running":
-            message = "Enoch found no new evolve candidate because evolve work is already running."
-        elif proposal.brainstorm_skip_reason == "theme-not-set":
-            message = (
-                "Enoch found no new evolve candidate. Set a theme with "
-                "/evolve config theme <text> to enable fallback brainstorming."
-            )
-        elif proposal.brainstorm_skip_reason == "cooldown":
-            message = "Enoch found no new evolve candidate. Fallback brainstorming for this theme is on a 24-hour cooldown."
-        elif proposal.brainstorm_error:
-            message = f"Enoch found no new evolve candidate. Fallback brainstorming failed: {proposal.brainstorm_error}"
-        elif proposal.brainstorm_attempted:
-            message = "Enoch found no new evolve candidate after fallback brainstorming."
-        else:
-            message = "Enoch found no new evolve candidate to propose."
-        activity = _format_proposal_evidence_activity(proposal)
+        message = "Enoch found no new evolve candidate to propose."
+        activity = _format_proposal_activity(proposal)
         return message + (f"\n\n{activity}" if activity else "")
     lines = [
         "Enoch proposes:",
@@ -637,11 +626,9 @@ def _format_evolve_proposal(proposal: EvolveProposal) -> str:
         f"Ranked {len(proposal.candidates)} actionable candidate(s) from the evolution pathways.",
         "Deterministic ranking was used only for bounded input ordering and fallback.",
     ]
-    evidence_activity = _format_proposal_evidence_activity(proposal)
-    if evidence_activity:
-        lines.extend(["", evidence_activity])
-    if proposal.brainstorm_attempted:
-        lines.append(f"Fallback brainstorm added {proposal.brainstorm_added} candidate(s).")
+    proposal_activity = _format_proposal_activity(proposal)
+    if proposal_activity:
+        lines.extend(["", proposal_activity])
     lines.append("")
     if curation is not None and curation.status == "llm":
         lines.append("LLM recommended candidate:")
@@ -683,16 +670,11 @@ def _format_evolve_proposal(proposal: EvolveProposal) -> str:
             lines.append(
                 f"  Human action: /evolve remove {suggestion.candidate_id} {suggestion.classification}"
             )
-    if proposal.new_candidates:
-        lines.extend(["", "New bounded candidates suggested by LLM (brainstorming/agent provenance):"])
-        for new_candidate in proposal.new_candidates:
-            lines.extend(_format_evolve_candidate(new_candidate))
-            lines.append(f"  Human action: /evolve approve {new_candidate.id}")
     lines.extend(["", "No recommendation or remove suggestion changes state without human action."])
     return "\n".join(lines)
 
 
-def _format_proposal_evidence_activity(proposal: EvolveProposal) -> str:
+def _format_proposal_activity(proposal: EvolveProposal) -> str:
     lines: list[str] = []
     if proposal.evidence_scan_results:
         lines.append(_format_evidence_scan_results(proposal.evidence_scan_results))
@@ -705,7 +687,54 @@ def _format_proposal_evidence_activity(proposal: EvolveProposal) -> str:
             "Evidence synthesis failed without consuming evidence: "
             f"{_clip_activity_text(proposal.evidence_synthesis_error, limit=180)}"
         )
+    brainstorm = _format_scheduled_brainstorm(proposal)
+    if brainstorm:
+        lines.append(brainstorm)
     return "\n".join(lines)
+
+
+def _format_scheduled_brainstorm(proposal: EvolveProposal) -> str:
+    status = proposal.scheduled_brainstorm_status
+    if not status:
+        return ""
+    if status == "created":
+        detail = (
+            f"created {proposal.scheduled_brainstorm_created} candidate(s)"
+        )
+        if proposal.scheduled_brainstorm_existing:
+            detail += (
+                f"; skipped {proposal.scheduled_brainstorm_existing} existing"
+            )
+        return f"Scheduled brainstorming: {detail}."
+    if status == "existing":
+        return (
+            "Scheduled brainstorming: all returned candidates already exist."
+        )
+    if status == "no-ideas":
+        return (
+            "Scheduled brainstorming: no sufficiently novel bounded idea found."
+        )
+    if status == "cooldown":
+        return (
+            "Scheduled brainstorming: 24-hour theme cooldown is active."
+        )
+    if status == "theme-not-set":
+        return "Scheduled brainstorming: skipped because no theme is set."
+    if status == "explicit-only":
+        return (
+            "Scheduled brainstorming: disabled in co-evolve mode; "
+            "use /evolve brainstorm explicitly."
+        )
+    if status == "not-needed":
+        return (
+            "Scheduled brainstorming: not needed because candidates already exist."
+        )
+    if status == "failed":
+        return (
+            "Scheduled brainstorming failed: "
+            f"{_clip_activity_text(proposal.scheduled_brainstorm_error, limit=180)}"
+        )
+    return f"Scheduled brainstorming: {status}."
 
 
 def _format_evolve_report(report: EvolveReport) -> str:
@@ -796,6 +825,12 @@ def _format_evolve_candidate(candidate: EvolveCandidate) -> list[str]:
         location = f":{candidate.source_path}" if candidate.source_path else ""
         lines.append(
             f"  Source: {candidate.source_repository}{revision}{location}"
+        )
+    if candidate.source_theme:
+        lines.append(f"  Brainstorm theme: {candidate.source_theme}")
+    if candidate.source_context_hash:
+        lines.append(
+            f"  Brainstorm context: {candidate.source_context_hash[:12]}"
         )
     return lines
 

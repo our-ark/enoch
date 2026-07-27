@@ -31,7 +31,11 @@ from enoch.brain import (
     reset_token_usage,
     respond,
 )
-from enoch.evolution.sources.brainstorming import generate_brainstorm_ideas
+from enoch.evolution.sources.brainstorming import (
+    BrainstormError,
+    parse_brainstorm_response,
+    prepare_brainstorm_request,
+)
 from enoch.channel import (
     ChannelAttachmentError,
     begin_channel_lifecycle,
@@ -54,13 +58,17 @@ from enoch.cron import (
     record_cron_task,
 )
 from enoch.evolution.core import (
+    MODE_AUTO_EVOLVE,
     MODE_DISABLED,
+    BrainstormCreation,
     EvolveCandidate,
     EvolveProposal,
     acknowledge_evolve_schedule,
     cancel_evolve_candidate_for_task,
     claim_due_evolve_schedule,
+    claim_scheduled_brainstorm,
     complete_evolve_candidate_for_task,
+    create_brainstorm_candidates,
     create_learning_candidate,
     disable_evolve_schedule,
     evolve_report,
@@ -95,6 +103,7 @@ from enoch.evolution.curation import (
     REMOVE_CLASSIFICATIONS,
     curation_evidence_refs,
     latest_remove_suggestion,
+    recent_completion_evidence,
 )
 from enoch.evolution.events import (
     EvolveEvent,
@@ -2596,16 +2605,44 @@ class EnochApplication:
             if rest.strip():
                 state = set_evolve_theme(theme, self.root)
             try:
-                ideas = generate_brainstorm_ideas(
+                creation = self._generate_brainstorm_candidates(
+                    chat_id,
                     theme,
-                    self.root,
-                    mission=self.identity.mission,
-                    generator=lambda prompt: self._respond_read_only_turn(chat_id, prompt),
                 )
-            except (AgentRuntimeError, OSError, ValueError) as error:
+            except (
+                AgentRuntimeError,
+                BrainstormError,
+                CapabilityAuthorizationError,
+                OSError,
+                RuntimeError,
+                SkillsError,
+                TypeError,
+                ValueError,
+            ) as error:
                 return f"Enoch could not brainstorm evolution candidates: {error}"
-            report = evolve_report(self.root, refresh=True)
-            return f"Added {len(ideas)} theme-guided brainstorming candidate(s).\n\n" + _format_evolve_report(report)
+            report = evolve_report(self.root, refresh=False)
+            if not creation.created:
+                if creation.existing:
+                    result = (
+                        "Brainstorming found only candidate(s) that already exist: "
+                        + ", ".join(candidate.id for candidate in creation.existing)
+                        + "."
+                    )
+                else:
+                    result = (
+                        "Brainstorming found no sufficiently novel bounded "
+                        "candidate for this theme."
+                    )
+            else:
+                result = (
+                    f"Created {len(creation.created)} theme-guided "
+                    "brainstorming candidate(s)."
+                )
+                if creation.existing:
+                    result += (
+                        f" Skipped {len(creation.existing)} existing candidate(s)."
+                    )
+            return result + "\n\n" + _format_evolve_report(report)
         if subcommand == "remove":
             if not rest.strip():
                 return "Use /evolve remove <id> [reason] to remove a self-evolution candidate."
@@ -2731,10 +2768,73 @@ class EnochApplication:
             evolve_report(self.root, refresh=False)
         )
 
+    def _generate_brainstorm_candidates(
+        self,
+        chat_id: int,
+        theme: str,
+    ) -> BrainstormCreation:
+        skills = load_agent_skills(root=self.root)
+        candidates = load_evolve_candidates(
+            self.root,
+            include_inactive=True,
+            theme=theme,
+        )
+        candidate_context = tuple(
+            {
+                "id": candidate.id,
+                "source": candidate.source,
+                "status": candidate.status,
+                "title": candidate.title,
+                "proposed_change": candidate.proposed_change,
+                "theme": candidate.source_theme,
+                "provenance": {
+                    "source_task_id": candidate.source_task_id,
+                },
+            }
+            for candidate in candidates[:30]
+        )
+        completed_work = recent_completion_evidence(
+            candidate_context,
+            self.root,
+        )
+        request = prepare_brainstorm_request(
+            theme,
+            self.identity.mission,
+            current_skills=(
+                {
+                    "name": skill.name,
+                    "version": skill.version,
+                    "summary": skill.summary or skill.description,
+                }
+                for skill in skills.skills
+            ),
+            existing_candidates=candidate_context,
+            recent_completed_work=completed_work,
+        )
+        response = self._respond_isolated_evidence_turn(
+            chat_id,
+            request.prompt,
+            phase="brainstorming",
+        )
+        drafts = parse_brainstorm_response(
+            response,
+            limit=request.limit,
+        )
+        return create_brainstorm_candidates(
+            drafts,
+            self.root,
+            theme=request.theme,
+            context_hash=request.context_hash,
+        )
+
     def _propose_evolve(self, chat_id: int, *, trigger: str) -> EvolveProposal:
         scan_results: tuple[EvidenceScanResult, ...] = ()
         evidence_candidates: tuple[EvolveCandidate, ...] = ()
         synthesis_error = ""
+        brainstorm_status = ""
+        brainstorm_created = 0
+        brainstorm_existing = 0
+        brainstorm_error = ""
         if load_evolve_state(self.root).mode != MODE_DISABLED:
             scan_results = self._scan_evidence_sources(
                 chat_id,
@@ -2768,6 +2868,48 @@ class EnochApplication:
                 ValueError,
             ) as error:
                 synthesis_error = clean_text(str(error)) or error.__class__.__name__
+        if trigger == "evolve-scheduler":
+            scheduled_state = load_evolve_state(self.root)
+            available = evolve_report(self.root).candidates
+            if scheduled_state.mode != MODE_AUTO_EVOLVE:
+                brainstorm_status = "explicit-only"
+            elif available:
+                brainstorm_status = "not-needed"
+            elif not scheduled_state.theme:
+                brainstorm_status = "theme-not-set"
+            elif not claim_scheduled_brainstorm(
+                scheduled_state.theme,
+                self.root,
+            ):
+                brainstorm_status = "cooldown"
+            else:
+                try:
+                    creation = self._generate_brainstorm_candidates(
+                        chat_id,
+                        scheduled_state.theme,
+                    )
+                    brainstorm_created = len(creation.created)
+                    brainstorm_existing = len(creation.existing)
+                    if creation.created:
+                        brainstorm_status = "created"
+                    elif creation.existing:
+                        brainstorm_status = "existing"
+                    else:
+                        brainstorm_status = "no-ideas"
+                except (
+                    AgentRuntimeError,
+                    BrainstormError,
+                    CapabilityAuthorizationError,
+                    OSError,
+                    RuntimeError,
+                    SkillsError,
+                    TypeError,
+                    ValueError,
+                ) as error:
+                    brainstorm_status = "failed"
+                    brainstorm_error = (
+                        clean_text(str(error)) or error.__class__.__name__
+                    )
         proposal = propose_evolve(
             self.root,
             mission=self.identity.mission,
@@ -2782,6 +2924,10 @@ class EnochApplication:
             evidence_scan_results=scan_results,
             evidence_candidates_added=len(evidence_candidates),
             evidence_synthesis_error=synthesis_error,
+            scheduled_brainstorm_status=brainstorm_status,
+            scheduled_brainstorm_created=brainstorm_created,
+            scheduled_brainstorm_existing=brainstorm_existing,
+            scheduled_brainstorm_error=brainstorm_error,
         )
         event_actor = "system" if trigger == "evolve-scheduler" else "human"
         event_trigger = (
@@ -4666,6 +4812,9 @@ def _evolve_task_request(candidate: EvolveCandidate, theme: str) -> str:
         f"Source version: {candidate.source_version or 'none'}",
         f"Source content hash: {candidate.source_content_hash or 'none'}",
         f"Source URL: {candidate.source_url or 'none'}",
+        f"Source theme: {candidate.source_theme or 'none'}",
+        f"Source context hash: {candidate.source_context_hash or 'none'}",
+        f"Source created at: {candidate.source_created_at or 'none'}",
         f"Proposed change: {candidate.proposed_change}",
         f"Expected benefit: {candidate.expected_benefit}",
         f"Risk: {candidate.risk}",
@@ -4697,6 +4846,9 @@ def _evolve_task_context(candidate: EvolveCandidate) -> str:
             f"Source version: {candidate.source_version or 'none'}",
             f"Source content hash: {candidate.source_content_hash or 'none'}",
             f"Source URL: {candidate.source_url or 'none'}",
+            f"Source theme: {candidate.source_theme or 'none'}",
+            f"Source context hash: {candidate.source_context_hash or 'none'}",
+            f"Source created at: {candidate.source_created_at or 'none'}",
             f"Score: {candidate.score}",
             f"Rationale: {candidate.rationale}",
             f"Proposed change: {candidate.proposed_change}",
