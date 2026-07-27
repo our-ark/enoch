@@ -1,6 +1,6 @@
 name: learn
-version: 0.2.0
-summary: Adapt a published skill from another trusted Our-Ark agent into Enoch's own body.
+version: 0.3.0
+summary: Assess an immutable published skill snapshot and create a bounded evolution candidate when applicable.
 owner: Enoch
 catalog_implementation: shared-library
 catalog_library_owner: Enoch
@@ -8,20 +8,21 @@ catalog_library_package: our-ark-skill-catalog
 catalog_library_contract: skill-catalog/v1
 catalog_library_commit: 946ff26f93bff3f6eefeb5deb81ca4db1127266f
 status: active
-mode: workspace-write
+mode: read-only-assessment
 entrypoint: src/enoch/learn.py
 permissions:
   filesystem:
     read:
       - published_agent_skills
+      - enoch_software_body
     write:
-      - approved_actions
+      - .enoch/evolve_candidates.json
   git:
     status: true
     diff: true
-    branch: approved_action
-    commit: approved_action
-    push: approved_action
+    branch: false
+    commit: false
+    push: false
     merge: false
 validation:
-  command: python3 -m unittest discover -s tests
+  command: python3 -m unittest discover -s tests -t .

@@ -13,7 +13,7 @@ conversation turns                 task event histories
                            |
                 semantic candidate synthesis
                            |
-                         candidate pool ------ peer learning
+                         candidate pool ------ assessed learning
                            |
                  bounded semantic curation
                            |
@@ -224,14 +224,17 @@ sources do not all enter at the same stage:
 
 1. `feedback` — semantic evidence, then candidate synthesis.
 2. `experience` — semantic evidence, then candidate synthesis.
-3. `learning` — direct candidates from peer observations explicitly recorded
-   through `/learn`.
+3. `learning` — direct candidates authored by a fresh Codex session after it
+   assesses an immutable published skill snapshot as applicable.
 4. `brainstorming` — direct bounded ideas generated under mission and theme.
 
 The feedback and experience pathways now use the new evidence layer.
-Learning and brainstorming still use direct candidate adapters. Backlog and
-inheritance have both been removed as sources. Inheritance now uses its own
-Codex-assessed inbox and explicit `/inherit <change_id>` task workflow.
+Learning and brainstorming still bypass the evidence layer. `/learn` validates
+one immutable source snapshot, asks one fresh read-only Codex session for an
+applicability decision and candidate contents, and persists only applicable
+results. Backlog and inheritance have both been removed as sources. Inheritance
+now uses its own Codex-assessed inbox and explicit `/inherit <change_id>` task
+workflow.
 
 ## Candidate curation
 

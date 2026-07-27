@@ -22,6 +22,7 @@ from enoch.evolution.core import (
     disable_evolve_schedule,
     evolve_report,
     complete_evolve_candidate_for_task,
+    create_learning_candidate,
     fail_evolve_candidate_for_task,
     latest_failed_evolve_task,
     load_evolve_candidates,
@@ -41,7 +42,7 @@ from enoch.evolution.core import (
 )
 from enoch.evolution.evidence import scan_evidence
 from enoch.evolution.events import load_evolve_events
-from enoch.learn import LearnRequest, record_peer_learning_observation
+from enoch.learn import LearningCandidateDraft, PublishedSkill
 from enoch.lineage.core import LineageCandidate
 from enoch.tasks.events import record_task_event
 from enoch.tasks.queue import TaskJob, begin_next_task, enqueue_task, fail_task
@@ -98,7 +99,7 @@ class EnochEvolveTests(unittest.TestCase):
 
         self.assertNotIn("task-3", {candidate.id for candidate in candidates})
 
-    def test_nonsemantic_pathways_remain_separate_candidate_sources(self) -> None:
+    def test_direct_pathways_remain_separate_candidate_sources(self) -> None:
         brainstorm_response = json.dumps(
             [
                 {
@@ -115,7 +116,18 @@ class EnochEvolveTests(unittest.TestCase):
             root = Path(temp)
             add_backlog_item(42, "improve Telegram work UX", root, priority="p0")
             _write_lineage_candidate(root, _lineage_candidate())
-            record_peer_learning_observation(LearnRequest(skill="research", agent="enosh"), root)
+            learning, created = create_learning_candidate(
+                _learning_skill(),
+                LearningCandidateDraft(
+                    title="Adapt peer research summaries",
+                    rationale="Enosh has a portable research synthesis capability.",
+                    proposed_change="Add a bounded research summary adapter.",
+                    expected_benefit="Improves research handoffs.",
+                    risk="Source assumptions may not fit Enoch.",
+                    test_plan="Add focused adapter tests.",
+                ),
+                root,
+            )
             generate_brainstorm_ideas(
                 "accountable evolution",
                 root,
@@ -123,8 +135,10 @@ class EnochEvolveTests(unittest.TestCase):
                 generator=lambda _prompt: brainstorm_response,
             )
 
-            candidates = collect_evolve_candidates(root, theme="accountable evolution")
+            candidates = evolve_report(root).candidates
 
+        self.assertTrue(created)
+        self.assertEqual(learning.source_revision, "a" * 40)
         self.assertEqual(
             {candidate.source for candidate in candidates},
             {"learning", "brainstorming"},
@@ -136,6 +150,35 @@ class EnochEvolveTests(unittest.TestCase):
         self.assertEqual(signals["brainstorming"], "agent")
         self.assertTrue(all(candidate.candidate_actor == "agent" for candidate in candidates))
         self.assertTrue(all(candidate.evidence_source == candidate.source for candidate in candidates))
+
+    def test_learning_candidate_deduplicates_exact_skill_snapshot(self) -> None:
+        draft = LearningCandidateDraft(
+            title="Adapt peer research summaries",
+            rationale="The capability is missing.",
+            proposed_change="Add a bounded research summary adapter.",
+            expected_benefit="Improves research handoffs.",
+            risk="Source assumptions may differ.",
+            test_plan="Add focused adapter tests.",
+        )
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+
+            first, first_created = create_learning_candidate(
+                _learning_skill(),
+                draft,
+                root,
+            )
+            second, second_created = create_learning_candidate(
+                _learning_skill(),
+                draft,
+                root,
+            )
+
+        self.assertTrue(first_created)
+        self.assertFalse(second_created)
+        self.assertEqual(first.id, second.id)
+        self.assertEqual(first.source_repository, "our-ark/enosh")
+        self.assertEqual(first.source_path, "src/enosh/skills/research")
 
     def test_semantic_experience_candidate_keeps_task_causal_chain(self) -> None:
         with TemporaryDirectory() as temp:
@@ -752,6 +795,28 @@ def _write_stored_candidate(root: Path, *, candidate_id: str, source: str) -> No
             }
         ),
         encoding="utf-8",
+    )
+
+
+def _learning_skill() -> PublishedSkill:
+    revision = "a" * 40
+    return PublishedSkill(
+        name="research",
+        version="0.1.0",
+        agent="enosh",
+        agent_name="Enosh",
+        repository="our-ark/enosh",
+        branch="main",
+        revision=revision,
+        path="src/enosh/skills/research",
+        url=(
+            "https://github.com/our-ark/enosh/tree/"
+            f"{revision}/src/enosh/skills/research"
+        ),
+        description="Synthesize research.",
+        metadata="name: research\nversion: 0.1.0\n",
+        instructions="# Research\n\nSynthesize research.\n",
+        content_hash="b" * 64,
     )
 
 

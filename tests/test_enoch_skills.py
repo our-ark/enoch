@@ -10,10 +10,12 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from enoch.identity import _parse_enoch_yaml
 from enoch.skills import (
+    PublishedSource,
     SkillsError,
     _parse_simple_yaml,
     _published_text,
     load_agent_skills,
+    resolve_published_source,
     skills_command,
 )
 
@@ -36,7 +38,7 @@ class EnochSkillsTests(unittest.TestCase):
         work = next(skill for skill in agent.skills if skill.name == "work")
         self.assertIn("persistent work", work.summary)
         learn = next(skill for skill in agent.skills if skill.name == "learn")
-        self.assertIn("Adapt a published skill", learn.summary)
+        self.assertIn("Assess an immutable published skill snapshot", learn.summary)
         evolve = next(skill for skill in agent.skills if skill.name == "evolve")
         self.assertIn("self-evolution", evolve.summary)
         teach = next(skill for skill in agent.skills if skill.name == "teach")
@@ -74,7 +76,7 @@ class EnochSkillsTests(unittest.TestCase):
         self.assertIn("teach", names)
         learn = next(skill for skill in agent.skills if skill.name == "learn")
         self.assertTrue(learn.version)
-        self.assertIn("Adapt a published skill", learn.summary)
+        self.assertIn("Assess an immutable published skill snapshot", learn.summary)
 
     @unittest.skipUnless(
         (ROOT / "libraries" / "telegram-vision").is_dir(),
@@ -156,13 +158,24 @@ class EnochSkillsTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "instances" / "enoch-gary"
-            with patch("enoch.skills.catalog._published_text", side_effect=published_text):
-                output = skills_command("skills lucy", root, prefix="")
+            with patch(
+                "enoch.skills.catalog.resolve_published_source",
+                return_value=_published_source("lucy"),
+            ):
+                with patch(
+                    "enoch.skills.catalog._published_text",
+                    side_effect=published_text,
+                ):
+                    output = skills_command("skills lucy", root, prefix="")
 
         self.assertIn("Lucy skills:", output)
-        self.assertIn("Root: our-ark/lucy@main", output)
+        self.assertIn(f"Root: our-ark/lucy@{_published_source('lucy').revision}", output)
         self.assertIn("teach", output)
         self.assertIn("Package Lucy lessons.", output)
+        self.assertIn(
+            f"Link: https://github.com/our-ark/lucy/tree/{_published_source('lucy').revision}/src/lucy/skills/teach",
+            output,
+        )
 
     def test_skills_command_reads_any_named_agent_from_github_main(self) -> None:
         def published_text(agent: str, path: str, **_kwargs) -> str:
@@ -183,11 +196,21 @@ class EnochSkillsTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "instances" / "enoch-gary"
-            with patch("enoch.skills.catalog._published_text", side_effect=published_text):
-                output = skills_command("skills adam", root, prefix="")
+            with patch(
+                "enoch.skills.catalog.resolve_published_source",
+                return_value=_published_source("adam"),
+            ):
+                with patch(
+                    "enoch.skills.catalog._published_text",
+                    side_effect=published_text,
+                ):
+                    output = skills_command("skills adam", root, prefix="")
 
         self.assertIn("Adam skills:", output)
-        self.assertIn("Root: our-ark/adam@main", output)
+        self.assertIn(
+            "Root: our-ark/adam@bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            output,
+        )
         self.assertIn("inherit", output)
 
     def test_skills_command_reports_missing_published_agent(self) -> None:
@@ -237,8 +260,15 @@ class EnochSkillsTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            with patch("enoch.skills.catalog._published_text", side_effect=published_text):
-                output = skills_command("skills adam", enoch, prefix="")
+            with patch(
+                "enoch.skills.catalog.resolve_published_source",
+                return_value=_published_source("adam"),
+            ):
+                with patch(
+                    "enoch.skills.catalog._published_text",
+                    side_effect=published_text,
+                ):
+                    output = skills_command("skills adam", enoch, prefix="")
 
         self.assertIn("Adam skills:", output)
         self.assertIn("github-main", output)
@@ -258,6 +288,36 @@ class EnochSkillsTests(unittest.TestCase):
             "src/lucy/identity.yaml",
             "main",
         )
+
+    @patch("enoch.skills.catalog.load_provider")
+    def test_resolves_immutable_revision_and_compatible_github_link(
+        self,
+        load_provider,
+    ) -> None:
+        provider = load_provider.return_value
+        provider.name = "github"
+        provider.latest_commit.return_value = "c" * 40
+        provider.browse_url = None
+
+        source = resolve_published_source("lucy")
+
+        self.assertEqual(source.revision, "c" * 40)
+        self.assertEqual(
+            source.browse_url,
+            f"https://github.com/our-ark/lucy/tree/{'c' * 40}",
+        )
+        provider.latest_commit.assert_called_once_with("our-ark/lucy", "main")
+
+
+def _published_source(agent: str) -> PublishedSource:
+    revision = ("a" if agent == "lucy" else "b") * 40
+    return PublishedSource(
+        agent=agent,
+        repository=f"our-ark/{agent}",
+        branch="main",
+        revision=revision,
+        browse_url=f"https://github.com/our-ark/{agent}/tree/{revision}",
+    )
 
 
 if __name__ == "__main__":

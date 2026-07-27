@@ -54,7 +54,7 @@ checkpoints or a fictional family tree.
 | [`code`](src/enoch/skills/code/SKILL.md) | Inspect, modify, test, and explain changes to her local code body. |
 | [`work`](src/enoch/skills/work/SKILL.md) | Run leased tasks in isolated worktrees through a queue, backlog, schedules, retries, and recovery. |
 | [`evolve`](src/enoch/skills/evolve/SKILL.md) | Semantically scan feedback and task history for durable evidence, propose bounded self-evolution, and track work through human review, promotion, and adoption. |
-| [`learn`](src/enoch/skills/learn/SKILL.md) | Adapt a published skill from another trusted OurArk agent instead of copying it blindly. |
+| [`learn`](src/enoch/skills/learn/SKILL.md) | Assess an immutable published skill snapshot and propose a bounded evolution candidate when applicable. |
 | [`inherit`](src/enoch/skills/inherit/SKILL.md) | Discover direct-ancestor skills and changes for selective inheritance. |
 | [`skill-library`](src/enoch/skills/skill-library/SKILL.md) | Package reusable, agent-neutral skill implementations as immutable libraries with thin adapters. |
 

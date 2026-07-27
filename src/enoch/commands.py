@@ -1029,7 +1029,7 @@ CORE_COMMANDS = (
         "learn",
         "Learn",
         "<skill> from <agent>",
-        "adapt a published skill from another agent",
+        "assess a published skill and propose an evolution candidate",
     ),
     CoreCommand(
         "evolve",

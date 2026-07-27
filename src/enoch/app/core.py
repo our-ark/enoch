@@ -61,6 +61,7 @@ from enoch.evolution.core import (
     cancel_evolve_candidate_for_task,
     claim_due_evolve_schedule,
     complete_evolve_candidate_for_task,
+    create_learning_candidate,
     disable_evolve_schedule,
     evolve_report,
     fail_evolve_candidate_for_task,
@@ -164,10 +165,11 @@ from enoch.instance import instance_branch
 from enoch.immune import ImmuneResult, run_immune_system
 from enoch.learn import (
     LearnError,
+    learning_assessment_prompt,
     learn_command,
-    learn_skill_prompt,
+    load_published_skill,
     parse_learn_request,
-    record_peer_learning_observation,
+    parse_learning_assessment,
 )
 from enoch.lineage.core import (
     ASSESSMENT_ASSESSED,
@@ -255,6 +257,7 @@ from enoch.providers.runtime import (
     FunctionAgentRuntime,
     invoke_runtime_respond,
 )
+from enoch.skills import SkillsError, load_agent_skills
 from enoch.profiles import (
     AgentProfile,
     CommandContext,
@@ -1969,35 +1972,93 @@ class EnochApplication:
         if request is None:
             return learn_command(text, self.root)
         try:
-            prompt = learn_skill_prompt(text, root=self.root)
-        except LearnError as error:
-            return f"Enoch could not inspect that skill: {error}"
+            skill = load_published_skill(
+                request.skill,
+                request.agent,
+                root=self.root,
+            )
+            local_skills = load_agent_skills(root=self.root)
+            state = load_evolve_state(self.root)
+            existing = load_evolve_candidates(
+                self.root,
+                include_inactive=True,
+                theme=state.theme,
+            )
+            prompt = learning_assessment_prompt(
+                skill,
+                mission=self.identity.mission,
+                current_skills=(
+                    {
+                        "name": item.name,
+                        "version": item.version,
+                        "summary": item.summary or item.description,
+                    }
+                    for item in local_skills.skills
+                ),
+                existing_candidates=(
+                    {
+                        "id": item.id,
+                        "source": item.source,
+                        "title": item.title,
+                        "proposed_change": item.proposed_change,
+                        "status": item.status,
+                    }
+                    for item in existing[:20]
+                ),
+            )
+            raw = self._respond_isolated_evidence_turn(
+                chat_id,
+                prompt,
+                phase="learning-assessment",
+            )
+            assessment = parse_learning_assessment(raw)
+        except (
+            AgentRuntimeError,
+            CapabilityAuthorizationError,
+            LearnError,
+            SkillsError,
+            OSError,
+            TypeError,
+            ValueError,
+        ) as error:
+            return f"Enoch could not assess that skill: {error}"
+
+        if not assessment.applicable:
+            return "\n".join(
+                [
+                    f"Enoch assessed {skill.agent_name}'s {skill.name} skill as not applicable.",
+                    f"Reason: {assessment.reason}",
+                    "No evolution candidate was created.",
+                ]
+            )
+
+        assert assessment.candidate is not None
         try:
-            record_peer_learning_observation(request, self.root)
-        except (OSError, ValueError):
-            pass
-
-        reply = self._respond_read_only_turn(chat_id, prompt)
-        memory_result = extract_memory_requests(reply)
-        reply = memory_result.visible_reply
-        memory_note = self._save_memory_requests(memory_result.requests)
-        edit_request = extract_edit_request(reply)
-        if edit_request is None:
-            return "\n\n".join(part for part in [reply, memory_note] if part)
-
-        visible = edit_request.visible_reply
-        if not self._action_allowed():
-            return "\n\n".join(part for part in [visible, memory_note, self._action_lock_message()] if part)
-
-        edit_result = self._run_tracked_inline_work(
-            chat_id,
-            edit_request.request,
-            source="learning",
-            initiated_by="human",
-            trigger="/learn",
-            session_key=self._session_key(chat_id),
+            candidate, created = create_learning_candidate(
+                skill,
+                assessment.candidate,
+                self.root,
+                theme=state.theme,
+            )
+        except (OSError, ValueError) as error:
+            return f"Enoch could not save that learning candidate: {error}"
+        action = (
+            f"Created learning candidate {candidate.id}."
+            if created
+            else f"Learning candidate {candidate.id} already exists."
         )
-        return "\n\n".join(part for part in [visible, memory_note, edit_result] if part)
+        return "\n\n".join(
+            [
+                (
+                    f"Enoch assessed {skill.agent_name}'s {skill.name} skill "
+                    "as applicable."
+                ),
+                f"Reason: {assessment.reason}",
+                action,
+                "\n".join(_format_evolve_candidate(candidate)),
+                f"Next: /evolve approve {candidate.id}",
+            ]
+        )
 
     def _task(self, chat_id: int, text: str) -> str:
         command, argument = _parse_chat_command(text)
@@ -4599,6 +4660,12 @@ def _evolve_task_request(candidate: EvolveCandidate, theme: str) -> str:
         f"Evidence IDs: {', '.join(candidate.evidence_ids) or 'none'}",
         f"Evidence refs: {', '.join(candidate.evidence_refs) or 'none'}",
         f"Theme: {theme or 'not set'}",
+        f"Source repository: {candidate.source_repository or 'none'}",
+        f"Source revision: {candidate.source_revision or 'none'}",
+        f"Source path: {candidate.source_path or 'none'}",
+        f"Source version: {candidate.source_version or 'none'}",
+        f"Source content hash: {candidate.source_content_hash or 'none'}",
+        f"Source URL: {candidate.source_url or 'none'}",
         f"Proposed change: {candidate.proposed_change}",
         f"Expected benefit: {candidate.expected_benefit}",
         f"Risk: {candidate.risk}",
@@ -4624,6 +4691,12 @@ def _evolve_task_context(candidate: EvolveCandidate) -> str:
             f"Evidence refs: {', '.join(candidate.evidence_refs) or 'none'}",
             f"Parent candidate: {candidate.parent_candidate_id or 'none'}",
             f"Source task: {f'#{candidate.source_task_id}' if candidate.source_task_id is not None else 'none'}",
+            f"Source repository: {candidate.source_repository or 'none'}",
+            f"Source revision: {candidate.source_revision or 'none'}",
+            f"Source path: {candidate.source_path or 'none'}",
+            f"Source version: {candidate.source_version or 'none'}",
+            f"Source content hash: {candidate.source_content_hash or 'none'}",
+            f"Source URL: {candidate.source_url or 'none'}",
             f"Score: {candidate.score}",
             f"Rationale: {candidate.rationale}",
             f"Proposed change: {candidate.proposed_change}",

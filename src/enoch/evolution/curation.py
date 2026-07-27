@@ -382,6 +382,30 @@ def _prompt_candidate(candidate: Mapping[str, object]) -> dict[str, object]:
                 200,
             ),
             "source_task_id": _positive_int(provenance.get("source_task_id")),
+            "source_repository": _clip(
+                clean_text(str(provenance.get("source_repository") or "")),
+                300,
+            ),
+            "source_revision": _clip(
+                clean_text(str(provenance.get("source_revision") or "")),
+                200,
+            ),
+            "source_path": _clip(
+                clean_text(str(provenance.get("source_path") or "")),
+                500,
+            ),
+            "source_version": _clip(
+                clean_text(str(provenance.get("source_version") or "")),
+                100,
+            ),
+            "source_content_hash": _clip(
+                clean_text(str(provenance.get("source_content_hash") or "")),
+                200,
+            ),
+            "source_url": _clip(
+                clean_text(str(provenance.get("source_url") or "")),
+                1000,
+            ),
         },
     }
 

@@ -789,6 +789,14 @@ def _format_evolve_candidate(candidate: EvolveCandidate) -> list[str]:
         lines.append(f"  Evidence IDs: {', '.join(candidate.evidence_ids)}")
     if candidate.evidence_refs:
         lines.append(f"  Evidence refs: {', '.join(candidate.evidence_refs)}")
+    if candidate.source_url:
+        lines.append(f"  Source: {candidate.source_url}")
+    elif candidate.source_repository:
+        revision = f"@{candidate.source_revision}" if candidate.source_revision else ""
+        location = f":{candidate.source_path}" if candidate.source_path else ""
+        lines.append(
+            f"  Source: {candidate.source_repository}{revision}{location}"
+        )
     return lines
 
 

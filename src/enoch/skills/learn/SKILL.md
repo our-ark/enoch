@@ -2,37 +2,44 @@
 
 ## Purpose
 
-Use this skill when Enoch should adapt and integrate a published skill from Lucy, Adam, Enoch, a descendant, or another trusted OurArk agent.
+Assess whether a visible skill published by a non-parent Our-Ark agent offers a
+bounded capability that Enoch should adapt. An applicable assessment creates an
+evolution candidate; it never edits Enoch directly.
 
 ## Use When
 
-- The human asks Enoch to learn a named skill from another agent with `/learn <skill> from <agent>`.
-- The source agent publishes that skill on the configured forge under `our-ark/<agent>`.
-- Enoch should translate the useful idea into her own body instead of copying another agent blindly.
-
-## Do Not Use When
-
-- The human wants a direct dependency update, branch merge, or parent inheritance.
-- The source is untrusted or the lesson depends on secrets.
-- The skill has no clear portable improvement for Enoch.
+- The human selects a named skill with `/learn <skill> from <agent>`.
+- The source agent publishes the skill through the configured forge.
+- Enoch should evaluate a portable capability rather than inherit a direct-parent
+  change.
 
 ## Procedure
 
-1. Inspect the published skill with `/learn <skill> from <agent>`.
-2. Read the source agent's declared skill metadata and `SKILL.md` from the configured forge's authoritative branch.
-3. Decide whether Enoch should adapt the idea.
-4. If adapting, express a concise repository edit request.
-5. Let Enoch's normal edit workflow create a branch, modify files, run doctor, commit, push, and open a PR.
-6. Preserve human review as the absorption boundary.
+1. Resolve the source agent's current `main` revision to an immutable commit.
+2. Read `identity.yaml`, `skill.yaml`, and `SKILL.md` from that same commit.
+3. Reject hidden, missing, inconsistent, oversized, unsafe-path, self, and
+   direct-parent packages deterministically.
+4. Build a temporary in-memory snapshot containing the source commit, package
+   contents, version, link, and content hash.
+5. Give that snapshot, Enoch's mission and declared skills, and a bounded list
+   of current candidates to one fresh read-only Codex session.
+6. Require one structured result: `applicable` with complete candidate fields,
+   or `not_applicable` with a reason and no candidate.
+7. Validate the returned scope and schema in deterministic code.
+8. Persist an applicable result as a `learning` evolution candidate with the
+   immutable source provenance attached.
+9. Notify the human and leave execution to `/evolve approve <candidate-id>`.
 
 ## Boundary
 
-Learning is not synchronization or inheritance. Enoch should adapt published skills into her own structure and identity, not overwrite herself with another agent's body.
+Learning is assessment, not synchronization, inheritance, or execution. Codex
+authors the candidate contents, while Enoch validates and persists them. A
+not-applicable result creates no candidate or separate assessment record.
 
 ## Validation
 
 Run:
 
 ```bash
-python3 -m unittest discover -s tests
+python3 -m unittest discover -s tests -t .
 ```
