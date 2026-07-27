@@ -1,62 +1,26 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from html import escape
-import re
 from urllib.parse import urlsplit
 
+from our_ark_telegram.presentation.model import (
+    TelegramBlock,
+    TelegramMessageChunk,
+)
+from our_ark_telegram.presentation.records import structured_text_blocks
+from our_ark_telegram.presentation.syntax import (
+    FENCE_RE,
+    HEADING_RE,
+    HELP_COMMAND_RE,
+    LABEL_RE,
+    LIST_RE,
+    PATH_RE,
+    QUOTE_RE,
+    RECORD_IDENTIFIER_RE,
+    TITLE_RE,
+)
 
-_FENCE_RE = re.compile(
-    r"^[ \t]*```(?P<language>[A-Za-z0-9_+.-]*)[ \t]*(?:\r?\n)?$"
-)
-_HEADING_RE = re.compile(r"^[ \t]{0,3}#{1,6}[ \t]+(?P<text>.*?)[ \t]*#*[ \t]*$")
-_QUOTE_RE = re.compile(r"^(?P<indent>[ \t]*)>[ \t]?(?P<text>.*)$")
-_LIST_RE = re.compile(
-    r"^(?P<indent>[ \t]*)(?P<marker>[-+*]|\d+[.)])(?P<space>[ \t]+)(?P<text>.*)$"
-)
-_HELP_COMMAND_RE = re.compile(
-    r"^(?P<indent>[ \t]*)(?P<command>/[A-Za-z][\w-]*(?:[ \t]+.*?)*?)"
-    r"(?P<separator>[ \t]+-[ \t]+)(?P<description>.+)$"
-)
-_LABEL_RE = re.compile(
-    r"^(?P<label>[A-Za-z][A-Za-z0-9 _()/.-]{0,47}:)"
-    r"(?P<space>[ \t]*)(?P<value>.*)$"
-)
-_PATH_RE = re.compile(
-    r"""
-    (?<![\w:/])
-    (
-        (?!\d+/\d+\b)
-        (?:~?/|\./|\.\./)
-        [^\s<>()\[\]{}"']*
-        [A-Za-z0-9_./~-]
-        (?::\d+)?
-      |
-        (?!\d+/\d+\b)
-        (?:[A-Za-z0-9_.-]+/)+
-        [A-Za-z0-9_.-]+
-        (?::\d+)?
-      |
-        \b[A-Za-z0-9_.-]+\.
-        (?:py|md|toml|ya?ml|jsonl?|txt|sh|bash|zsh|js|jsx|ts|tsx|rs|go|java|rb|lock)
-        (?::\d+)?
-    )
-    """,
-    re.VERBOSE | re.IGNORECASE,
-)
-_TITLE_RE = re.compile(
-    r"^(?:"
-    r"Task #\d+\b|"
-    r"Doctor\b|"
-    r"Enoch\b|"
-    r"Open pull requests\b|"
-    r"Pull request #\d+\b|"
-    r"Work status\b|"
-    r"Task worktrees\b|"
-    r"Tasks:|Cron:|Backlog:"
-    r")",
-    re.IGNORECASE,
-)
+
 _CODE_VALUE_LABELS = {
     "authoritative",
     "branch",
@@ -83,20 +47,6 @@ _FORMATTING_ERROR_MARKERS = (
 )
 
 
-@dataclass(frozen=True)
-class TelegramMessageChunk:
-    """One safe Telegram HTML payload and its plain-text fallback."""
-
-    html: str
-    plain: str
-
-
-@dataclass(frozen=True)
-class _Block:
-    kind: str
-    text: str
-
-
 def render_telegram_html(text: str) -> str:
     """Render a conservative Markdown-like subset as Telegram-safe HTML."""
 
@@ -119,8 +69,8 @@ def telegram_message_chunks(
     if not blocks:
         return [TelegramMessageChunk(html="", plain="")]
 
-    groups: list[list[_Block]] = []
-    current: list[_Block] = []
+    groups: list[list[TelegramBlock]] = []
+    current: list[TelegramBlock] = []
     current_size = 0
     for block in blocks:
         block_size = len(block.text)
@@ -149,21 +99,21 @@ def is_formatting_error(error: BaseException) -> bool:
     return any(marker in message for marker in _FORMATTING_ERROR_MARKERS)
 
 
-def _parse_blocks(text: str) -> list[_Block]:
+def _parse_blocks(text: str) -> list[TelegramBlock]:
     lines = text.splitlines(keepends=True)
     if not lines and text:
         lines = [text]
-    blocks: list[_Block] = []
+    blocks: list[TelegramBlock] = []
     regular: list[str] = []
     index = 0
 
     def flush_regular() -> None:
         if regular:
-            blocks.append(_Block("text", "".join(regular)))
+            blocks.extend(structured_text_blocks("".join(regular)))
             regular.clear()
 
     while index < len(lines):
-        opening = _FENCE_RE.fullmatch(lines[index])
+        opening = FENCE_RE.fullmatch(lines[index])
         if opening is None:
             regular.append(lines[index])
             index += 1
@@ -174,7 +124,7 @@ def _parse_blocks(text: str) -> list[_Block]:
         code_lines: list[str] = []
         closing_line = ""
         while index < len(lines):
-            if _FENCE_RE.fullmatch(lines[index]):
+            if FENCE_RE.fullmatch(lines[index]):
                 closing_line = lines[index]
                 index += 1
                 break
@@ -184,19 +134,25 @@ def _parse_blocks(text: str) -> list[_Block]:
         code = "".join(code_lines)
         if closing_line:
             code = _remove_one_trailing_newline(code)
-        blocks.append(_Block("code", code))
+        blocks.append(TelegramBlock("code", code))
         if closing_line.endswith(("\n", "\r")) and index < len(lines):
-            blocks.append(_Block("text", "\n"))
+            blocks.append(TelegramBlock("text", "\n"))
 
     flush_regular()
     return blocks
 
 
-def _split_block(block: _Block, size: int) -> list[_Block]:
+def _split_block(block: TelegramBlock, size: int) -> list[TelegramBlock]:
     if len(block.text) <= size:
         return [block]
     parts = _split_text(block.text, size, prefer_paragraphs=block.kind == "text")
-    return [_Block(block.kind, part) for part in parts]
+    return [
+        TelegramBlock(
+            "text" if block.kind == "record" and index > 0 else block.kind,
+            part,
+        )
+        for index, part in enumerate(parts)
+    ]
 
 
 def _split_text(text: str, size: int, *, prefer_paragraphs: bool) -> list[str]:
@@ -228,10 +184,91 @@ def _split_text(text: str, size: int, *, prefer_paragraphs: bool) -> list[str]:
     return parts
 
 
-def _render_block(block: _Block) -> str:
+def _render_block(block: TelegramBlock) -> str:
     if block.kind == "code":
         return f"<pre><code>{escape(block.text, quote=False)}</code></pre>"
+    if block.kind == "record":
+        return _render_record(block.text)
     return _render_text(block.text)
+
+
+def _render_record(text: str) -> str:
+    """Render one structured list entry as a visually separate Telegram card."""
+
+    lines = text.splitlines(keepends=True)
+    if not lines:
+        return ""
+
+    header, header_ending = _line_and_ending(lines[0])
+    listed = LIST_RE.fullmatch(header)
+    if listed is None:
+        return _render_text(text)
+
+    rendered_header = "".join(
+        [
+            escape(listed.group("indent"), quote=False),
+            escape(listed.group("marker"), quote=False),
+            escape(listed.group("space"), quote=False),
+            _render_record_header(listed.group("text")),
+        ]
+    )
+    details: list[str] = []
+    trailing: list[str] = []
+    for raw_line in lines[1:]:
+        line, ending = _line_and_ending(raw_line)
+        if not line.strip():
+            trailing.append(ending or "\n")
+            continue
+        if trailing:
+            details.extend(trailing)
+            trailing.clear()
+        details.append(_render_line(_remove_record_indent(line)))
+        details.append(ending)
+
+    rendered_details = "".join(details).rstrip("\r\n")
+    if not rendered_details:
+        return rendered_header + header_ending
+    return (
+        f"{rendered_header}{header_ending}"
+        f"<blockquote>{rendered_details}</blockquote>"
+        "\n\n"
+    )
+
+
+def _render_record_header(text: str) -> str:
+    identifier = RECORD_IDENTIFIER_RE.fullmatch(text)
+    if identifier is None:
+        return _render_bold_with_paths(text)
+    return "".join(
+        [
+            f"<code>{escape(identifier.group('identifier'), quote=False)}</code>",
+            escape(identifier.group("space"), quote=False),
+            _render_bold_with_paths(identifier.group("rest")),
+        ]
+    )
+
+
+def _render_bold_with_paths(text: str) -> str:
+    rendered: list[str] = []
+    position = 0
+    for match in PATH_RE.finditer(text):
+        if match.start() > position:
+            rendered.append(
+                f"<b>{escape(text[position:match.start()], quote=False)}</b>"
+            )
+        rendered.append(f"<code>{escape(match.group(0), quote=False)}</code>")
+        position = match.end()
+    if position < len(text):
+        rendered.append(f"<b>{escape(text[position:], quote=False)}</b>")
+    return "".join(rendered) or "<b></b>"
+
+
+def _remove_record_indent(line: str) -> str:
+    if line.startswith("\t"):
+        return line[1:]
+    if line.startswith("  "):
+        return line[2:]
+    return line.lstrip(" ")
 
 
 def _render_text(text: str) -> str:
@@ -250,18 +287,18 @@ def _render_line(line: str) -> str:
     if not stripped:
         return escape(line, quote=False)
 
-    heading = _HEADING_RE.fullmatch(line)
+    heading = HEADING_RE.fullmatch(line)
     if heading is not None:
         return f"<b>{escape(heading.group('text'), quote=False)}</b>"
 
-    quote = _QUOTE_RE.fullmatch(line)
+    quote = QUOTE_RE.fullmatch(line)
     if quote is not None:
         return (
             f"{escape(quote.group('indent'), quote=False)}"
             f"<blockquote>{escape(quote.group('text'), quote=False)}</blockquote>"
         )
 
-    help_command = _HELP_COMMAND_RE.fullmatch(line)
+    help_command = HELP_COMMAND_RE.fullmatch(line)
     if help_command is not None:
         return "".join(
             [
@@ -272,7 +309,7 @@ def _render_line(line: str) -> str:
             ]
         )
 
-    listed = _LIST_RE.fullmatch(line)
+    listed = LIST_RE.fullmatch(line)
     if listed is not None:
         content = _render_labeled_text(
             listed.group("text"),
@@ -287,7 +324,7 @@ def _render_line(line: str) -> str:
             ]
         )
 
-    if len(stripped) <= 80 and _TITLE_RE.match(stripped):
+    if len(stripped) <= 80 and TITLE_RE.match(stripped):
         prefix = line[: len(line) - len(line.lstrip())]
         return (
             f"{escape(prefix, quote=False)}"
@@ -304,7 +341,7 @@ def _render_line(line: str) -> str:
 
 
 def _render_labeled_text(text: str, *, allow_lowercase: bool) -> str | None:
-    match = _LABEL_RE.fullmatch(text)
+    match = LABEL_RE.fullmatch(text)
     if match is None:
         return None
     label = match.group("label")
@@ -415,7 +452,7 @@ def _render_inline(text: str) -> str:
 def _render_plain(text: str) -> str:
     rendered: list[str] = []
     position = 0
-    for match in _PATH_RE.finditer(text):
+    for match in PATH_RE.finditer(text):
         rendered.append(escape(text[position:match.start()], quote=False))
         rendered.append(f"<code>{escape(match.group(0), quote=False)}</code>")
         position = match.end()
