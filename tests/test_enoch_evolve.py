@@ -468,6 +468,50 @@ class EnochEvolveTests(unittest.TestCase):
         self.assertTrue(other_theme)
         self.assertTrue(after_cooldown)
 
+    def test_scheduled_brainstorm_preserves_legacy_cooldown_attempts(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            state = root / ".enoch" / "evolve_brainstorm_fallback.json"
+            state.parent.mkdir(parents=True)
+            state.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "attempts": {
+                            "reliable task telemetry": (
+                                "2026-07-18T09:00:00+00:00"
+                            ),
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            blocked = claim_scheduled_brainstorm(
+                "reliable task telemetry",
+                root,
+                now=datetime(2026, 7, 18, 10, 0, tzinfo=timezone.utc),
+            )
+            claimed = claim_scheduled_brainstorm(
+                "reliable task telemetry",
+                root,
+                now=datetime(2026, 7, 19, 10, 0, tzinfo=timezone.utc),
+            )
+            migrated = json.loads(
+                (
+                    root
+                    / ".enoch"
+                    / "evolve_brainstorm_schedule.json"
+                ).read_text(encoding="utf-8")
+            )
+
+        self.assertFalse(blocked)
+        self.assertTrue(claimed)
+        self.assertIn(
+            "reliable task telemetry",
+            migrated["attempts"],
+        )
+
     def test_completed_evolve_task_marks_candidate_done(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
