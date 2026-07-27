@@ -163,6 +163,12 @@ def evolve_brainstorm_schedule_path(root: Path | None = None) -> Path:
     return private_state_path("evolve_brainstorm_schedule.json", root)
 
 
+def _legacy_evolve_brainstorm_schedule_path(
+    root: Path | None = None,
+) -> Path:
+    return private_state_path("evolve_brainstorm_fallback.json", root)
+
+
 def load_evolve_state(root: Path | None = None) -> EvolveState:
     with file_transaction(evolve_state_path(root)):
         return _load_evolve_state_unlocked(root)
@@ -580,6 +586,10 @@ def claim_scheduled_brainstorm(
     path = evolve_brainstorm_schedule_path(root)
     with file_transaction(path):
         raw = load_json_object(path)
+        if not path.exists():
+            raw = load_json_object(
+                _legacy_evolve_brainstorm_schedule_path(root)
+            )
         raw_attempts = raw.get("attempts") if raw else None
         if raw_attempts is not None and not isinstance(raw_attempts, dict):
             raise StateCorruptionError(path, "expected attempts to be an object")

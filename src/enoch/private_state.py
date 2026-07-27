@@ -24,6 +24,9 @@ PRIVATE_STATE_MANIFEST_SCHEMA_VERSION = 1
 PRIVATE_STATE_VERSION = 1
 MANIFEST_NAME = "state_manifest.json"
 BACKUP_DIRECTORY = "backups"
+LEGACY_STATE_SCHEMA_ALIASES = {
+    "evolve_brainstorm_fallback.json": "evolve_brainstorm_schedule.json",
+}
 
 
 class PrivateStateError(RuntimeError):
@@ -427,7 +430,11 @@ def _manifest_status(root: Path | None) -> tuple[str, tuple[str, ...]]:
         or schemas != expected
     ):
         for pattern, version in schemas.items():
-            expected_version = expected.get(pattern)
+            canonical_pattern = LEGACY_STATE_SCHEMA_ALIASES.get(
+                pattern,
+                pattern,
+            )
+            expected_version = expected.get(canonical_pattern)
             if expected_version is None:
                 return (
                     "invalid",

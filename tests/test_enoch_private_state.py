@@ -116,6 +116,41 @@ class EnochPrivateStateTests(unittest.TestCase):
         self.assertFalse(second.applied)
         self.assertFalse(second.plan.migration_required)
 
+    def test_renamed_brainstorm_schema_is_a_migratable_manifest_alias(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            migrate_private_state(root)
+            manifest_path = private_state_manifest_path(root)
+            legacy = json.loads(manifest_path.read_text(encoding="utf-8"))
+            brainstorm_version = legacy["schemas"].pop(
+                "evolve_brainstorm_schedule.json"
+            )
+            legacy["schemas"]["evolve_brainstorm_fallback.json"] = (
+                brainstorm_version
+            )
+            manifest_path.write_text(
+                json.dumps(legacy),
+                encoding="utf-8",
+            )
+
+            plan = assert_private_state_supported(root)
+            result = migrate_private_state(root)
+            migrated = json.loads(
+                manifest_path.read_text(encoding="utf-8")
+            )
+
+        self.assertTrue(plan.valid)
+        self.assertEqual(plan.manifest_status, "outdated")
+        self.assertTrue(result.applied)
+        self.assertIn(
+            "evolve_brainstorm_schedule.json",
+            migrated["schemas"],
+        )
+        self.assertNotIn(
+            "evolve_brainstorm_fallback.json",
+            migrated["schemas"],
+        )
+
     def test_future_file_schema_is_rejected_without_mutation(self) -> None:
         with TemporaryDirectory() as directory:
             root = Path(directory)
