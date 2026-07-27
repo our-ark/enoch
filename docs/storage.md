@@ -78,6 +78,10 @@ cursor/lifecycle/inbox/notification, config, and pending-adoption state.
 Provider or profile files outside registered patterns remain owned by those
 extensions.
 
+The legacy pending-adoption schema remains readable so old private state does
+not block an upgrade. Current evolution hands approved candidates to the normal
+task lifecycle and no longer writes that file.
+
 Every application startup validates registered files before claiming a daemon
 epoch. Supported legacy versions may continue to run until explicitly
 migrated. Corrupt files, invalid shapes, future manifest versions, and future

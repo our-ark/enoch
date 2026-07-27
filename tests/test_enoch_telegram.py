@@ -1396,7 +1396,8 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertNotIn("/evolve run <id>", reply)
         self.assertNotIn("/evolve reject <id>", reply)
         self.assertIn("/evolve approve <id>", reply)
-        self.assertIn("/evolve retry <id>", reply)
+        self.assertNotIn("/evolve retry <id>", reply)
+        self.assertNotIn("/evolve reconcile <id>", reply)
         self.assertIn("/evolve remove <id>", reply)
         self.assertIn("/evolve config schedule <text>", reply)
         self.assertNotIn("/evolve schedule off - stop scheduled evolve checks", reply)
@@ -1731,7 +1732,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn(f"Reconciled existing review {published.identity.id}", result)
         self.assertIn(published.identity.url, result)
 
-    def test_task_retry_restores_linked_evolve_candidate(self) -> None:
+    def test_task_retry_keeps_evolve_candidate_archived(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
             _add_feedback_evolve_candidate(root, "retry evolve work")
@@ -1747,7 +1748,7 @@ class EnochTelegramTests(unittest.TestCase):
                 bot._run_task_job(original)
             self.assertEqual(
                 get_evolve_candidate("feedback-1", root).status,
-                "failed",
+                "approved",
             )
             client.sent.clear()
             client.edited.clear()
@@ -1759,13 +1760,13 @@ class EnochTelegramTests(unittest.TestCase):
             candidate = get_evolve_candidate("feedback-1", root)
             evolve_events = load_evolve_events(root, candidate_id="feedback-1")
 
-        self.assertEqual(candidate.status, "running")
+        self.assertEqual(candidate.status, "approved")
         self.assertEqual(status.pending[0].candidate_id, "feedback-1")
         self.assertEqual(status.pending[0].parent_task_id, 1)
         self.assertEqual(status.pending[0].approval_actor, "human")
         self.assertEqual(evolve_events[-1].event, "queued")
-        self.assertEqual(evolve_events[-1].trigger, "/task retry")
-        self.assertEqual(evolve_events[-1].retry_of_task_id, 1)
+        self.assertEqual(evolve_events[-1].trigger, "/evolve approve")
+        self.assertIsNone(evolve_events[-1].retry_of_task_id)
 
     @patch(
         "enoch.app.core.respond",
@@ -2468,16 +2469,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("feedback-1 [candidate feedback] improve Telegram work UX", reply)
         self.assertIn("wait for human approval", reply)
 
-    @patch(
-        "enoch.app.core.format_reconcile_result",
-        return_value="Recorded governed promotion.",
-    )
-    @patch("enoch.app.core.reconcile_evolve_candidate")
-    def test_evolve_reconcile_supports_explicit_backfill(
-        self,
-        reconcile_evolve_candidate: MagicMock,
-        _format_reconcile_result: MagicMock,
-    ) -> None:
+    def test_evolve_reconcile_is_not_a_command(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
@@ -2490,14 +2482,8 @@ class EnochTelegramTests(unittest.TestCase):
                 )
             )
 
-        reconcile_evolve_candidate.assert_called_once_with(
-            "feedback-c3ed71fd1d2d",
-            root,
-            recording_mode="backfill",
-            repository=ANY,
-            review=ANY,
-        )
-        self.assertEqual(client.sent[0][1], "Recorded governed promotion.")
+        self.assertIn("Use /evolve approve <id>", client.sent[0][1])
+        self.assertNotIn("/evolve reconcile", client.sent[0][1])
 
     def test_evolve_evidence_feedback_shows_pending_unscanned_messages(self) -> None:
         with TemporaryDirectory() as temp:
@@ -2799,7 +2785,10 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual(events[-1].trigger, "/evolve remove")
 
     def test_removed_evolve_commands_no_longer_change_candidates(self) -> None:
-        for index, command in enumerate(("select", "run", "reject"), start=1):
+        for index, command in enumerate(
+            ("select", "run", "reject", "retry", "reconcile"),
+            start=1,
+        ):
             with self.subTest(command=command), TemporaryDirectory() as temp:
                 root = Path(temp)
                 _add_feedback_evolve_candidate(root, "keep this candidate")
@@ -2828,8 +2817,12 @@ class EnochTelegramTests(unittest.TestCase):
             events = load_evolve_events(root)
 
         self.assertEqual(queued.pending_count, 1)
-        self.assertIn("Approved evolve candidate feedback-1 and queued task #1.", client.sent[0][1])
-        self.assertIn("feedback-1 [running feedback] ship evolve approval", client.sent[0][1])
+        self.assertIn(
+            "Approved evolve candidate feedback-1 and handed it off to task #1.",
+            client.sent[0][1],
+        )
+        self.assertIn("Use /tasks to follow it", client.sent[0][1])
+        self.assertIn("feedback-1 [approved feedback] ship evolve approval", client.sent[0][1])
         self.assertIn("Evolve candidate feedback-1", queued.pending[0].text)
         self.assertIn("open a ready-for-review PR", queued.pending[0].text)
         self.assertNotIn("Open a PR for human review", queued.pending[0].text)
@@ -2927,7 +2920,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("cannot be approved from status removed", client.sent[1][1])
         self.assertEqual(queued.pending_count, 0)
 
-    def test_queued_evolve_task_cancellation_is_journaled(self) -> None:
+    def test_queued_evolve_task_cancellation_stays_in_task_journal(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
             _add_feedback_evolve_candidate(root, "cancel queued evolution")
@@ -2938,15 +2931,15 @@ class EnochTelegramTests(unittest.TestCase):
             _handle_update(bot, _message_update(update_id=2, chat_id=42, text="/task cancel 1"))
             events = load_evolve_events(root, candidate_id="feedback-1")
             candidate = load_evolve_candidates(root, include_inactive=True)[0]
+            task_events = load_task_events(root, task_id=1)
 
-        self.assertEqual([event.event for event in events], ["selected", "queued", "cancelled"])
-        self.assertEqual(events[-1].event_actor, "human")
-        self.assertEqual(events[-1].trigger, "/task cancel")
-        self.assertEqual(candidate.status, "cancelled")
+        self.assertEqual([event.event for event in events], ["selected", "queued"])
+        self.assertEqual([event.event for event in task_events][-1], "cancelled")
+        self.assertEqual(candidate.status, "approved")
 
     @patch("enoch.app.core.ensure_long_term_memory")
     @patch("enoch.app.core.log_conversation_turn")
-    def test_evolve_approved_candidate_is_marked_done_after_task_completion(
+    def test_evolve_approved_candidate_stays_archived_after_task_completion(
         self,
         _log_conversation_turn: MagicMock,
         _update_memory: MagicMock,
@@ -2967,12 +2960,12 @@ class EnochTelegramTests(unittest.TestCase):
 
         self.assertNotIn("feedback-1", {candidate.id for candidate in visible})
         self.assertEqual(all_candidates[0].id, "feedback-1")
-        self.assertEqual(all_candidates[0].status, "done")
+        self.assertEqual(all_candidates[0].status, "approved")
         self.assertIn("Final status: completed", client.sent[-1][1])
 
     @patch("enoch.app.core.ensure_long_term_memory")
     @patch("enoch.app.core.log_conversation_turn")
-    def test_selected_proposal_tracks_task_completion_and_funnel(
+    def test_selected_proposal_stops_at_task_handoff(
         self,
         _log_conversation_turn: MagicMock,
         _update_memory: MagicMock,
@@ -3007,12 +3000,12 @@ class EnochTelegramTests(unittest.TestCase):
         ]
         self.assertEqual(
             tracked,
-            ["proposed", "selected", "queued", "completed"],
+            ["proposed", "selected", "queued"],
         )
 
     @patch("enoch.app.core.ensure_long_term_memory")
     @patch("enoch.app.core.log_conversation_turn")
-    def test_evolve_approved_candidate_is_marked_failed_after_task_failure(
+    def test_evolve_approved_candidate_stays_archived_after_task_failure(
         self,
         _log_conversation_turn: MagicMock,
         _update_memory: MagicMock,
@@ -3032,16 +3025,16 @@ class EnochTelegramTests(unittest.TestCase):
             all_candidates = load_evolve_candidates(root, include_inactive=True)
             report = evolve_report(root)
 
-        self.assertIn("feedback-1", {candidate.id for candidate in visible})
+        self.assertNotIn("feedback-1", {candidate.id for candidate in visible})
         statuses = {candidate.id: candidate.status for candidate in all_candidates}
-        self.assertEqual(statuses["feedback-1"], "failed")
+        self.assertEqual(statuses["feedback-1"], "approved")
         self.assertNotIn("experience", report.counts_by_source)
         self.assertGreaterEqual(report.pending_evidence["experience"], 1)
         self.assertIn("Final status: failed", client.sent[-1][1])
 
     @patch("enoch.app.core.ensure_long_term_memory")
     @patch("enoch.app.core.log_conversation_turn")
-    def test_propose_suggests_retry_and_retry_links_new_task_to_failure(
+    def test_failed_evolve_task_retries_through_standard_task_command(
         self,
         _log_conversation_turn: MagicMock,
         _update_memory: MagicMock,
@@ -3068,22 +3061,20 @@ class EnochTelegramTests(unittest.TestCase):
                 _message_update(
                     update_id=3,
                     chat_id=42,
-                    text="/evolve retry feedback-1",
+                    text="/task retry 1",
                 )
             )
             queued = task_queue_status(root)
-            candidates = load_evolve_candidates(root)
+            candidates = load_evolve_candidates(root, include_inactive=True)
             task_events = load_task_events(root, task_id=2)
             evolve_events = load_evolve_events(root, candidate_id="feedback-1")
 
-        self.assertIn("feedback-1 [failed feedback]", proposal_reply)
-        self.assertIn("Retry with /evolve retry feedback-1.", proposal_reply)
-        self.assertNotIn("Approve with /evolve approve feedback-1.", proposal_reply)
+        self.assertIn("no new evolve candidate", proposal_reply.lower())
         self.assertEqual(queued.pending_count, 1)
         self.assertEqual(queued.pending[0].id, 2)
         self.assertEqual(queued.pending[0].candidate_id, "feedback-1")
         self.assertEqual(queued.pending[0].parent_task_id, failed_job.id)
-        self.assertEqual(queued.pending[0].context_source, "evolve-retry")
+        self.assertEqual(queued.pending[0].context_source, "evolve-approve")
         worker_context = telegram._task_worker_context(queued.pending[0])
         self.assertIn("- Candidate: `feedback-1`", worker_context)
         self.assertIn("- Evidence source: feedback", worker_context)
@@ -3092,25 +3083,21 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("- Approval actor: human", worker_context)
         self.assertIn("- Task: #2", worker_context)
         self.assertIn("- Retry of task: #1", worker_context)
-        self.assertEqual(candidates[0].status, "running")
+        self.assertEqual(candidates[0].status, "approved")
         self.assertEqual([event.parent_task_id for event in task_events], [1, 1])
-        self.assertEqual([event.trigger for event in task_events], ["/evolve retry", "/evolve retry"])
+        self.assertEqual([event.trigger for event in task_events], ["/task retry", "/task retry"])
         self.assertEqual(
-            [event.event for event in evolve_events[-3:]],
-            ["proposed", "selected", "queued"],
+            [event.event for event in evolve_events],
+            ["selected", "queued"],
         )
-        self.assertEqual(evolve_events[-1].task_id, 2)
-        self.assertEqual(evolve_events[-1].retry_of_task_id, 1)
+        self.assertEqual(evolve_events[-1].task_id, 1)
+        self.assertIsNone(evolve_events[-1].retry_of_task_id)
         self.assertEqual(evolve_events[-1].approval_actor, "human")
-        self.assertEqual(evolve_events[-1].reason, "retry-of-task-1")
-        self.assertIn(
-            "Retrying evolve candidate feedback-1 as task #2, linked to failed task #1.",
-            client.sent[-1][1],
-        )
+        self.assertNotIn("evolve retry", client.sent[-1][1].lower())
 
     @patch("enoch.app.core.ensure_long_term_memory")
     @patch("enoch.app.core.log_conversation_turn")
-    def test_evolve_task_regression_and_resolution_are_journaled(
+    def test_evolve_task_regression_and_resolution_stay_in_task_journal(
         self,
         _log_conversation_turn: MagicMock,
         _update_memory: MagicMock,
@@ -3144,6 +3131,7 @@ class EnochTelegramTests(unittest.TestCase):
                     )
                 )
             events = load_evolve_events(root, candidate_id="feedback-1")
+            task_events = load_task_events(root, task_id=1)
             candidate = next(
                 item
                 for item in load_evolve_candidates(root, include_inactive=True)
@@ -3151,10 +3139,14 @@ class EnochTelegramTests(unittest.TestCase):
             )
 
         self.assertEqual(
-            [event.event for event in events[-3:]],
+            [event.event for event in events],
+            ["selected", "queued"],
+        )
+        self.assertEqual(
+            [event.event for event in task_events][-3:],
             ["completed", "regressed", "reverted"],
         )
-        self.assertEqual(candidate.status, "reverted")
+        self.assertEqual(candidate.status, "approved")
 
     def test_evolve_can_set_theme_and_mode(self) -> None:
         with TemporaryDirectory() as temp:
@@ -3422,7 +3414,7 @@ class EnochTelegramTests(unittest.TestCase):
 
     @patch("enoch.app.core.ensure_long_term_memory")
     @patch("enoch.app.core.log_conversation_turn")
-    def test_due_auto_evolve_proposes_failed_candidate_without_automatic_retry(
+    def test_due_auto_evolve_does_not_reopen_failed_handoff(
         self,
         _log_conversation_turn: MagicMock,
         _update_memory: MagicMock,
@@ -3455,9 +3447,8 @@ class EnochTelegramTests(unittest.TestCase):
 
         self.assertIsNone(retry_job)
         self.assertEqual(queued.pending_count, 0)
-        self.assertIn("Retry with /evolve retry feedback-1.", client.sent[0][1])
-        self.assertEqual(events[-1].event, "skipped")
-        self.assertEqual(events[-1].reason, "retry-requires-human")
+        self.assertIn("no new evolve candidate", client.sent[0][1].lower())
+        self.assertEqual([event.event for event in events], ["selected", "queued"])
 
     def test_due_auto_evolve_schedule_does_not_requeue_running_candidate(self) -> None:
         with TemporaryDirectory() as temp:
@@ -3777,7 +3768,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual(events[-1].event_actor, "system")
         self.assertEqual(events[-1].trigger, "task-timeout")
 
-    def test_evolve_task_timeout_is_journaled_as_system_failure(self) -> None:
+    def test_evolve_task_timeout_stays_in_task_journal(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
             _add_feedback_evolve_candidate(root, "time out evolution safely")
@@ -3791,13 +3782,15 @@ class EnochTelegramTests(unittest.TestCase):
                 with patch.object(bot, "_run_direct_work", return_value="Done."):
                     bot._run_task_job(job)
             events = load_evolve_events(root, task_id=job.id)
+            task_events = load_task_events(root, task_id=job.id)
 
-        self.assertEqual([event.event for event in events], ["queued", "failed"])
-        self.assertEqual(events[-1].event_actor, "system")
-        self.assertEqual(events[-1].trigger, "task-timeout")
-        self.assertIn("configured 10m timeout", events[-1].reason)
+        self.assertEqual([event.event for event in events], ["queued"])
+        self.assertEqual(task_events[-1].event, "failed")
+        self.assertEqual(task_events[-1].event_actor, "system")
+        self.assertEqual(task_events[-1].trigger, "task-timeout")
+        self.assertIn("configured 10m timeout", task_events[-1].result_summary)
 
-    def test_evolve_task_pause_and_resume_keep_candidate_running(self) -> None:
+    def test_evolve_task_pause_and_resume_keep_candidate_archived(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
             _add_feedback_evolve_candidate(root, "pause evolution safely")
@@ -3823,6 +3816,7 @@ class EnochTelegramTests(unittest.TestCase):
                     ),
                 )
             events = load_evolve_events(root, task_id=job.id)
+            task_events = load_task_events(root, task_id=job.id)
             candidate = next(
                 item
                 for item in load_evolve_candidates(root, include_inactive=True)
@@ -3831,11 +3825,12 @@ class EnochTelegramTests(unittest.TestCase):
 
         self.assertEqual(
             [event.event for event in events],
-            ["queued", "paused", "resumed"],
+            ["queued"],
         )
-        self.assertEqual(events[-2].event_actor, "system")
-        self.assertEqual(events[-1].event_actor, "human")
-        self.assertEqual(candidate.status, "running")
+        self.assertEqual([event.event for event in task_events][-2:], ["paused", "resumed"])
+        self.assertEqual(task_events[-2].event_actor, "system")
+        self.assertEqual(task_events[-1].event_actor, "human")
+        self.assertEqual(candidate.status, "approved")
 
     @patch("enoch.app.core.ensure_long_term_memory")
     @patch("enoch.app.core.log_conversation_turn")

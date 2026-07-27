@@ -127,37 +127,6 @@ class EnochUpdaterTests(unittest.TestCase):
         )
 
     @patch(
-        "enoch.operations.updater.stage_promoted_evolve_adoptions",
-        return_value=(MagicMock(),),
-    )
-    @patch(
-        "enoch.operations.updater.promotions_pending_adoption",
-        return_value=(MagicMock(),),
-    )
-    @patch("enoch.operations.updater.run_update_doctor")
-    def test_update_verifies_pending_adoption_even_when_code_is_current(
-        self,
-        run_update_doctor: MagicMock,
-        _pending_adoption: MagicMock,
-        stage_adoptions: MagicMock,
-    ) -> None:
-        repository = BranchlessRepositoryFixture()
-        run_update_doctor.return_value = _doctor_result()
-
-        result = update_from_authoritative(ROOT, repository=repository)
-
-        run_update_doctor.assert_called_once_with(ROOT)
-        stage_adoptions.assert_called_once_with(
-            ROOT,
-            "r0",
-            health_check="passed",
-            repository=repository,
-        )
-        self.assertTrue(result.restart_required)
-        self.assertIn("adoption checks passed", result.message)
-        self.assertIn("verified adoption after restart", result.message)
-
-    @patch(
         "enoch.operations.updater._load_channel_lifecycle_state",
         return_value={
             "status": "running",

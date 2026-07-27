@@ -130,7 +130,7 @@ STATE_FILE_SCHEMAS = (
     ),
     StateFileSchema(
         "evolve_candidates.json",
-        7,
+        8,
         (("candidates", []),),
         (("candidates", (list,)),),
     ),

@@ -1,1 +1,1 @@
-"""Self-evolution state, candidate selection, and lifecycle tracking."""
+"""Self-evolution evidence, candidate decisions, and task handoff."""

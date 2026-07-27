@@ -19,7 +19,7 @@ and validation boundary.
 | `enoch.storage` | Versioned software-body, private-state, and artifact ownership boundaries |
 | `enoch.private_state` | Manifest validation, supported-version checks, backup, migration, and rollback |
 | `enoch.tasks` | Task queue state, audit events, failure policy, configuration, and isolated worktrees |
-| `enoch.evolution` | Semantic evidence scanning, candidate synthesis and ranking, event history, and governed lifecycle |
+| `enoch.evolution` | Semantic evidence scanning, candidate synthesis and ranking, decision history, and task handoff |
 | `enoch.evolution.evidence` | Durable feedback/task-history scan cursors, evidence journals, and evidence-to-candidate synthesis |
 | `enoch.evolution.sources` | Read-only brainstorming context, strict output validation, and candidate drafts |
 | `enoch.operations` | Background-service facade and software update lifecycle |

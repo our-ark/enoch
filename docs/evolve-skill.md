@@ -18,11 +18,11 @@ validated brainstorm drafts -------+          |
                            |
                    human approve/remove
                            |
-             task -> worktree -> commit -> PR
+              archived handoff record
                            |
-                human merge -> promotion
+       normal task -> worktree -> commit -> PR
                            |
-                  update -> adoption
+                normal task/PR lifecycle
 ```
 
 ## Modes and direction
@@ -284,29 +284,24 @@ auditable.
 
 Unknown IDs, unsafe scope, invalid resolution evidence, or malformed output
 produce an explicitly labeled deterministic fallback. Suggestions never mutate
-state. Approval, retry, and removal require explicit commands.
+state. Approval and removal require explicit commands.
 
 Curations are appended to `.enoch/evolve_curations.jsonl`. Candidate state is
-stored in `.enoch/evolve_candidates.json`, and lifecycle decisions are appended
-to `.enoch/artifacts/evolve_events.jsonl`.
+stored in `.enoch/evolve_candidates.json`, and proposal, decision, and handoff
+events are appended to `.enoch/artifacts/evolve_events.jsonl`.
 
-## Work, promotion, and adoption
+## Candidate-to-task handoff
 
 `/evolve approve <id>` queues a normal isolated task with candidate and evidence
-provenance. The task then follows Enoch's standard workspace, validation,
-revision capture, and review-publication workflow.
+provenance, archives the candidate as `approved`, and appends an immutable
+candidate-to-task event. The candidate immediately leaves the active pool.
 
-Task completion means the worker finished and, when configured, published
-reviewable work. It does not prove that the review was landed or that the
-resident daemon runs it.
-
-`/evolve reconcile <id>` verifies human-approved review landing and confirms
-that its immutable revision is contained by the refreshed authoritative
-revision before recording `promoted`. The event stores `review_id`,
-`review_urls`, `revision_id`, `authoritative_revision_id`, and
-`authoritative_name`; schema-6 Git/PR fields remain readable. The `backfill`
-form marks historical reconstruction explicitly. After `/update`, doctor,
-restart, and version confirmation, the change can be recorded as `adopted`.
+From that boundary onward, the task is the sole owner of queued, running,
+paused, completed, failed, cancelled, retry, worktree, commit, push, and review
+state. Use `/tasks` to inspect it and `/task retry <task_id>` after a failure.
+Evolution does not mirror those states and does not require reconciliation
+after the handoff. `/evolve candidates all` retains the archived candidate
+snapshot for provenance and deduplication.
 
 ## Command surface
 
@@ -318,8 +313,6 @@ restart, and version confirmation, the change can be recorded as `adopted`.
 /evolve propose
 /evolve brainstorm [theme]
 /evolve approve <id>
-/evolve retry <id>
-/evolve reconcile <id> [backfill]
 /evolve remove <id> [reason]
 /evolve config
 /evolve config mode <disabled|co-evolve|auto-evolve>

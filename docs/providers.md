@@ -419,7 +419,7 @@ indexes are optional implementation features used by the Git compatibility
 adapter. Providers may also expose a sync summary for startup diagnostics.
 `run(args, root)` remains a compatibility escape hatch implemented by the
 built-in Git provider, not a required provider contract. Enoch's task, update,
-and evolution lifecycles do not depend on that optional capability.
+and evolution handoff paths do not depend on that optional capability.
 
 ## Provider-owned setup
 
@@ -438,8 +438,8 @@ immediate `ProviderError` naming the incomplete provider and missing members,
 instead of failing later in a task.
 
 Review providers own typed review publication, inspection, closure, and
-authorized landing. Task retry, `/pr`, and evolution promotion use opaque
-review identities and verified landed revisions. Legacy forge providers are
-adapted behind that contract. Published skill reads and lineage discovery are
-separate compatibility capabilities until their own provider boundary is
-introduced.
+authorized landing. Task retry and `/pr` use opaque review identities and
+verified landed revisions. Approved evolution candidates use that same normal
+task/review path. Legacy forge providers are adapted behind that contract.
+Published skill reads and lineage discovery are separate compatibility
+capabilities until their own provider boundary is introduced.

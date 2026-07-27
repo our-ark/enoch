@@ -33,9 +33,10 @@ the code that runs her, implement it in an isolated worktree, validate it, and
 publish it for human review.
 
 This is not unrestricted self-modification. Every evolution remains traceable
-from evidence to candidate, task, pull request, human review and merge, and
-verified adoption. Enoch can evolve her code while people retain authority over
-what becomes part of the running agent.
+from evidence to an archived candidate-to-task handoff, then through the normal
+task, pull request, human review, merge, and update workflow. Enoch can evolve
+her code while people retain authority over what becomes part of the running
+agent.
 
 ## Lineage
 
@@ -53,7 +54,7 @@ checkpoints or a fictional family tree.
 | --- | --- |
 | [`code`](src/enoch/skills/code/SKILL.md) | Inspect, modify, test, and explain changes to her local code body. |
 | [`work`](src/enoch/skills/work/SKILL.md) | Run leased tasks in isolated worktrees through a queue, backlog, schedules, retries, and recovery. |
-| [`evolve`](src/enoch/skills/evolve/SKILL.md) | Semantically scan feedback and task history for durable evidence, propose bounded self-evolution, and track work through human review, promotion, and adoption. |
+| [`evolve`](src/enoch/skills/evolve/SKILL.md) | Semantically scan feedback and task history for durable evidence, propose bounded self-evolution, and hand approved candidates to the normal task workflow. |
 | [`learn`](src/enoch/skills/learn/SKILL.md) | Assess an immutable published skill snapshot and propose a bounded evolution candidate when applicable. |
 | [`inherit`](src/enoch/skills/inherit/SKILL.md) | Discover direct-ancestor skills and changes for selective inheritance. |
 | [`skill-library`](src/enoch/skills/skill-library/SKILL.md) | Package reusable, agent-neutral skill implementations as immutable libraries with thin adapters. |

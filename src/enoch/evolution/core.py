@@ -43,12 +43,11 @@ from enoch.learn import LearningCandidateDraft, PublishedSkill
 from enoch.memory.paths import atomic_write, clean_text, now as current_time
 from enoch.paths import private_state_path
 from enoch.tasks.events import load_task_events
-from enoch.tasks.queue import TaskJob, task_queue_status
 from enoch.state import StateCorruptionError, file_transaction, load_json_object
 
 
 SCHEMA_VERSION = 2
-CANDIDATE_SCHEMA_VERSION = 7
+CANDIDATE_SCHEMA_VERSION = 8
 MODE_DISABLED = "disabled"
 MODE_CO_EVOLVE = "co-evolve"
 MODE_AUTO_EVOLVE = "auto-evolve"
@@ -56,19 +55,12 @@ MODES = {MODE_DISABLED, MODE_CO_EVOLVE, MODE_AUTO_EVOLVE}
 DEFAULT_MODE = MODE_CO_EVOLVE
 CANDIDATE_STATUSES = {
     "candidate",
-    "running",
-    "done",
-    "failed",
-    "cancelled",
-    "regressed",
-    "reverted",
-    "forward-fixed",
+    "approved",
     "removed",
 }
-ACTIONABLE_CANDIDATE_STATUSES = {"candidate", "failed"}
-VISIBLE_CANDIDATE_STATUSES = {"candidate", "running", "failed"}
+ACTIONABLE_CANDIDATE_STATUSES = {"candidate"}
+VISIBLE_CANDIDATE_STATUSES = {"candidate"}
 AUTO_BRAINSTORM_COOLDOWN_SECONDS = 24 * 60 * 60
-FAILED_RETRY_SCORE_BONUS = 30
 
 
 @dataclass(frozen=True)
@@ -962,285 +954,19 @@ def remove_evolve_candidate(
     return removed
 
 
-def run_evolve_candidate(candidate_id: str, root: Path | None = None, *, theme: str = "") -> EvolveCandidate:
-    candidate = get_evolve_candidate(candidate_id, root, theme=theme)
-    if candidate.status != "candidate":
-        raise ValueError(f"Evolve candidate {candidate.id} cannot run from status {candidate.status}.")
-    return _set_candidate_status(candidate.id, "running", root, theme=theme)
-
-
-def retry_evolve_candidate(candidate_id: str, root: Path | None = None, *, theme: str = "") -> EvolveCandidate:
-    candidate = get_evolve_candidate(candidate_id, root, theme=theme)
-    if candidate.status != "failed":
-        raise ValueError(f"Evolve candidate {candidate.id} cannot retry from status {candidate.status}.")
-    return _set_candidate_status(candidate.id, "running", root, theme=theme)
-
-
-def latest_failed_evolve_task(
+def approve_evolve_candidate(
     candidate_id: str,
     root: Path | None = None,
-) -> TaskJob | None:
-    normalized_id = candidate_id.strip().lower().lstrip("#")
-    matches = [
-        job
-        for job in task_queue_status(root).history
-        if job.status == "failed"
-        and _evolve_candidate_id_from_task(job).lower() == normalized_id
-    ]
-    return max(matches, key=lambda job: job.id, default=None)
-
-
-def complete_evolve_candidate(candidate_id: str, root: Path | None = None, *, theme: str = "") -> EvolveCandidate:
-    return _set_candidate_status(candidate_id, "done", root, theme=theme)
-
-
-def fail_evolve_candidate(candidate_id: str, root: Path | None = None, *, theme: str = "") -> EvolveCandidate:
-    return _set_candidate_status(candidate_id, "failed", root, theme=theme)
-
-
-def cancel_evolve_candidate(candidate_id: str, root: Path | None = None, *, theme: str = "") -> EvolveCandidate:
-    return _set_candidate_status(candidate_id, "cancelled", root, theme=theme)
-
-
-def complete_evolve_candidate_for_task(
-    job: TaskJob,
-    root: Path | None = None,
     *,
     theme: str = "",
-    event_actor: str = "agent",
-    trigger: str = "task-runner",
-    reason: str = "",
-) -> EvolveCandidate | None:
-    candidate_id = _evolve_candidate_id_from_task(job)
-    if not candidate_id:
-        return None
-    try:
-        candidate = complete_evolve_candidate(candidate_id, root, theme=theme)
-    except ValueError:
-        return None
-    _record_candidate_event_safely(
-        "completed",
-        candidate,
-        root,
-        event_actor=event_actor,
-        trigger=trigger,
-        theme=theme,
-        task_id=job.id,
-        retry_of_task_id=job.parent_task_id,
-        reason=reason,
-        runtime_task=job,
-    )
-    return candidate
-
-
-def fail_evolve_candidate_for_task(
-    job: TaskJob,
-    root: Path | None = None,
-    *,
-    theme: str = "",
-    event_actor: str = "agent",
-    trigger: str = "task-runner",
-    reason: str = "",
-) -> EvolveCandidate | None:
-    candidate_id = _evolve_candidate_id_from_task(job)
-    if not candidate_id:
-        return None
-    try:
-        candidate = fail_evolve_candidate(candidate_id, root, theme=theme)
-    except ValueError:
-        return None
-    _record_candidate_event_safely(
-        "failed",
-        candidate,
-        root,
-        event_actor=event_actor,
-        trigger=trigger,
-        theme=theme,
-        task_id=job.id,
-        retry_of_task_id=job.parent_task_id,
-        reason=reason,
-        runtime_task=job,
-    )
-    return candidate
-
-
-def cancel_evolve_candidate_for_task(
-    job: TaskJob,
-    root: Path | None = None,
-    *,
-    theme: str = "",
-    event_actor: str = "human",
-    trigger: str = "/stop",
-    reason: str = "",
-) -> EvolveCandidate | None:
-    candidate_id = _evolve_candidate_id_from_task(job)
-    if not candidate_id:
-        return None
-    try:
-        candidate = cancel_evolve_candidate(candidate_id, root, theme=theme)
-    except ValueError:
-        return None
-    _record_candidate_event_safely(
-        "cancelled",
-        candidate,
-        root,
-        event_actor=event_actor,
-        trigger=trigger,
-        theme=theme,
-        task_id=job.id,
-        retry_of_task_id=job.parent_task_id,
-        reason=reason,
-        runtime_task=job,
-    )
-    return candidate
-
-
-def pause_evolve_candidate_for_task(
-    job: TaskJob,
-    root: Path | None = None,
-    *,
-    theme: str = "",
-    event_actor: str = "system",
-    trigger: str = "codex-unavailable",
-    reason: str = "",
-) -> EvolveCandidate | None:
-    return _record_evolve_candidate_task_event(
-        job,
-        "paused",
-        root,
-        theme=theme,
-        event_actor=event_actor,
-        trigger=trigger,
-        reason=reason,
-    )
-
-
-def resume_evolve_candidate_for_task(
-    job: TaskJob,
-    root: Path | None = None,
-    *,
-    theme: str = "",
-    event_actor: str = "human",
-    trigger: str = "/task resume",
-    reason: str = "",
-) -> EvolveCandidate | None:
-    return _record_evolve_candidate_task_event(
-        job,
-        "resumed",
-        root,
-        theme=theme,
-        event_actor=event_actor,
-        trigger=trigger,
-        reason=reason,
-    )
-
-
-def _record_evolve_candidate_task_event(
-    job: TaskJob,
-    event: str,
-    root: Path | None,
-    *,
-    theme: str,
-    event_actor: str,
-    trigger: str,
-    reason: str,
-) -> EvolveCandidate | None:
-    candidate_id = _evolve_candidate_id_from_task(job)
-    if not candidate_id:
-        return None
-    try:
-        candidate = get_evolve_candidate(candidate_id, root, theme=theme)
-    except ValueError:
-        return None
-    _record_candidate_event_safely(
-        event,
-        candidate,
-        root,
-        event_actor=event_actor,
-        trigger=trigger,
-        theme=theme,
-        task_id=job.id,
-        retry_of_task_id=job.parent_task_id,
-        reason=reason,
-        runtime_task=job,
-    )
-    return candidate
-
-
-def regress_evolve_candidate_for_task(
-    job: TaskJob,
-    root: Path | None = None,
-    *,
-    theme: str = "",
-    event_actor: str = "agent",
-    trigger: str = "agent-regression-signal",
-    reason: str = "",
-) -> EvolveCandidate | None:
-    return _transition_evolve_candidate_for_task(
-        job,
-        "regressed",
-        root,
-        theme=theme,
-        event_actor=event_actor,
-        trigger=trigger,
-        reason=reason,
-    )
-
-
-def resolve_evolve_candidate_regression_for_task(
-    job: TaskJob,
-    resolution: str,
-    root: Path | None = None,
-    *,
-    theme: str = "",
-    event_actor: str = "agent",
-    trigger: str = "agent-regression-signal",
-    reason: str = "",
-) -> EvolveCandidate | None:
-    normalized_resolution = resolution.strip().lower()
-    if normalized_resolution not in {"reverted", "forward-fixed"}:
-        raise ValueError("Evolve regression resolution must be reverted or forward-fixed.")
-    return _transition_evolve_candidate_for_task(
-        job,
-        normalized_resolution,
-        root,
-        theme=theme,
-        event_actor=event_actor,
-        trigger=trigger,
-        reason=reason,
-    )
-
-
-def _transition_evolve_candidate_for_task(
-    job: TaskJob,
-    status: str,
-    root: Path | None,
-    *,
-    theme: str,
-    event_actor: str,
-    trigger: str,
-    reason: str,
-) -> EvolveCandidate | None:
-    candidate_id = _evolve_candidate_id_from_task(job)
-    if not candidate_id:
-        return None
-    try:
-        candidate = _set_candidate_status(candidate_id, status, root, theme=theme)
-    except ValueError:
-        return None
-    _record_candidate_event_safely(
-        status,
-        candidate,
-        root,
-        event_actor=event_actor,
-        trigger=trigger,
-        theme=theme,
-        task_id=job.id,
-        retry_of_task_id=job.parent_task_id,
-        reason=reason,
-        runtime_task=job,
-    )
-    return candidate
+) -> EvolveCandidate:
+    candidate = get_evolve_candidate(candidate_id, root, theme=theme)
+    if candidate.status != "candidate":
+        raise ValueError(
+            f"Evolve candidate {candidate.id} cannot be approved from status "
+            f"{candidate.status}."
+        )
+    return _set_candidate_status(candidate.id, "approved", root, theme=theme)
 
 
 def _record_candidate_event_safely(
@@ -1258,7 +984,7 @@ def _record_candidate_event_safely(
     curation_id: str = "",
     removal_classification: str = "",
     evidence_refs: tuple[str, ...] = (),
-    runtime_task: TaskJob | None = None,
+    runtime_task: object | None = None,
 ) -> None:
     state = load_evolve_state(root)
     linked_id = proposal_id or linked_proposal_id(
@@ -1394,6 +1120,16 @@ def _candidate_from_json(raw: dict[str, object]) -> EvolveCandidate | None:
         status = "candidate"
     if status == "rejected":
         status = "removed"
+    if status in {
+        "running",
+        "done",
+        "failed",
+        "cancelled",
+        "regressed",
+        "reverted",
+        "forward-fixed",
+    }:
+        status = "approved"
     if status not in CANDIDATE_STATUSES:
         status = "candidate"
     source = clean_text(str(raw.get("source") or "unknown")) or "unknown"
@@ -1468,30 +1204,12 @@ def _candidate_matches_id(candidate: EvolveCandidate, candidate_id: str) -> bool
     return candidate.id.lower() == normalized or candidate.id.lower().split("-", 1)[-1] == normalized
 
 
-def _evolve_candidate_id_from_task(job: TaskJob) -> str:
-    if job.candidate_id:
-        return job.candidate_id
-    if job.context_source not in {"evolve-approve", "evolve-retry", "evolve-run", "evolve-scheduler"}:
-        return ""
-    for raw_line in job.context.splitlines():
-        label, separator, value = raw_line.partition(":")
-        if separator and label.strip().lower() == "id":
-            return clean_text(value)
-    return ""
-
-
 def _candidate_status_order(status: str) -> int:
     return {
-        "running": 0,
-        "candidate": 1,
-        "done": 2,
-        "failed": 1,
-        "cancelled": 4,
-        "regressed": 5,
-        "reverted": 6,
-        "forward-fixed": 7,
-        "removed": 8,
-    }.get(status, 1)
+        "candidate": 0,
+        "approved": 1,
+        "removed": 2,
+    }.get(status, 0)
 
 
 def _candidate_initiator(source: str) -> str:
@@ -1551,8 +1269,6 @@ def _score_candidate(candidate: EvolveCandidate, *, theme: str) -> EvolveCandida
         score += 10
     if candidate.source == "brainstorming":
         score += 4
-    if candidate.status == "failed":
-        score += FAILED_RETRY_SCORE_BONUS
     return EvolveCandidate(
         **{
             **candidate.__dict__,
