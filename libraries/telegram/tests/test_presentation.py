@@ -113,6 +113,94 @@ class TelegramPresentationTests(unittest.TestCase):
             ["first paragraph\n\n", "second paragraph"],
         )
 
+    def test_structured_list_entries_render_as_distinct_cards(self) -> None:
+        rendered = render_telegram_html(
+            "\n".join(
+                [
+                    "Evolve candidates:",
+                    "- feedback-6638cc3d6422 [candidate feedback] Improve output",
+                    "  Provenance: evidence feedback",
+                    "  Score: 106",
+                    "  Rationale: Records are difficult to scan.",
+                    "- task-4 [candidate experience] Improve reliability",
+                    "  Provenance: evidence experience",
+                    "  Score: 104",
+                    "  Rationale: Validation failed.",
+                ]
+            )
+        )
+
+        self.assertIn("<b>Evolve candidates:</b>", rendered)
+        self.assertIn("<code>feedback-6638cc3d6422</code>", rendered)
+        self.assertIn("<code>task-4</code>", rendered)
+        self.assertEqual(rendered.count("<blockquote>"), 2)
+        self.assertEqual(rendered.count("</blockquote>"), 2)
+        self.assertIn(
+            "<blockquote><b>Provenance:</b> evidence feedback\n"
+            "<b>Score:</b> 106\n"
+            "<b>Rationale:</b> Records are difficult to scan.</blockquote>",
+            rendered,
+        )
+        self.assertIn("</blockquote>\n\n- <code>task-4</code>", rendered)
+
+    def test_chunking_keeps_structured_entries_together(self) -> None:
+        message = "\n".join(
+            [
+                "Items:",
+                "- candidate-one First",
+                "  Score: 1",
+                "  Rationale: first",
+                "- candidate-two Second",
+                "  Score: 2",
+                "  Rationale: second",
+            ]
+        )
+
+        chunks = telegram_message_chunks(message, 80)
+
+        self.assertEqual(len(chunks), 2)
+        self.assertIn("candidate-one", chunks[0].plain)
+        self.assertNotIn("candidate-two", chunks[0].plain)
+        self.assertIn("candidate-two", chunks[1].plain)
+        self.assertEqual("".join(chunk.plain for chunk in chunks), message)
+        self.assertTrue(all(chunk.html.count("<blockquote>") == 1 for chunk in chunks))
+
+    def test_ordinary_bullets_do_not_render_as_cards(self) -> None:
+        rendered = render_telegram_html(
+            "\n".join(
+                [
+                    "Ideas:",
+                    "- make the output easier to scan",
+                    "  without changing its content",
+                    "  or assuming a particular schema",
+                    "- preserve ordinary prose",
+                ]
+            )
+        )
+
+        self.assertNotIn("<blockquote>", rendered)
+        self.assertIn("- make the output easier to scan", rendered)
+
+    def test_worktree_cards_distinguish_branches_and_paths(self) -> None:
+        rendered = render_telegram_html(
+            "\n".join(
+                [
+                    "Task worktrees (1):",
+                    "- task path #9 [clean] enoch/main-task-9-change",
+                    "  Tasks: #9 [completed]",
+                    "  Path: /Users/iceberg/.enoch-task-worktrees/enoch/task-9",
+                ]
+            )
+        )
+
+        self.assertIn("<code>enoch/main-task-9-change</code>", rendered)
+        self.assertIn(
+            "<b>Path:</b> "
+            "<code>/Users/iceberg/.enoch-task-worktrees/enoch/task-9</code>",
+            rendered,
+        )
+        self.assertEqual(rendered.count("<blockquote>"), 1)
+
 
 if __name__ == "__main__":
     unittest.main()
