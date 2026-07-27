@@ -127,7 +127,7 @@ STATE_FILE_SCHEMAS = (
     ),
     StateFileSchema(
         "evolve_candidates.json",
-        5,
+        7,
         (("candidates", []),),
         (("candidates", (list,)),),
     ),
@@ -144,7 +144,7 @@ STATE_FILE_SCHEMAS = (
         ),
     ),
     StateFileSchema(
-        "evolve_brainstorm_fallback.json",
+        "evolve_brainstorm_schedule.json",
         1,
         (("attempts", {}),),
         (("attempts", (dict,)),),

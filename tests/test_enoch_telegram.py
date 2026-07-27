@@ -2621,7 +2621,6 @@ class EnochTelegramTests(unittest.TestCase):
                             "evidence_refs": ["task:17"],
                         }
                     ],
-                    "new_candidates": [],
                 }
             )
             client = FakeTelegramClient(allowed_chat_id=42)
@@ -2716,7 +2715,6 @@ class EnochTelegramTests(unittest.TestCase):
                             "evidence_refs": ["task:17", "merge:e536d32"],
                         }
                     ],
-                    "new_candidates": [],
                 }
             )
             evidence = (
@@ -2757,43 +2755,20 @@ class EnochTelegramTests(unittest.TestCase):
             "Task 17 was merged into the authoritative body.",
         )
 
-    def test_propose_curator_suggests_bounded_candidate_when_pool_is_empty(self) -> None:
-        response = json.dumps(
-            {
-                "recommended_candidate_id": None,
-                "recommendation_reason": "",
-                "scope_guidance": "",
-                "risk_guidance": "",
-                "test_plan_guidance": "",
-                "remove_suggestions": [],
-                "new_candidates": [
-                {
-                    "title": "Improve curation observability",
-                    "rationale": "No stronger candidate exists.",
-                    "proposed_change": "Expose semantic curation outcomes.",
-                    "expected_benefit": "Makes proposals easier to audit.",
-                    "risk": "Adds output.",
-                    "test_plan": "Add proposal tests.",
-                }
-                ],
-            }
-        )
+    def test_propose_does_not_silently_brainstorm_when_pool_is_empty(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
             set_evolve_theme("proposal observability", root)
             client = FakeTelegramClient(allowed_chat_id=42)
             bot = EnochApplication(load_identity(), root, client)
 
-            with patch.object(bot, "_respond_isolated_evidence_turn", return_value=response) as respond:
+            with patch.object(bot, "_respond_isolated_evidence_turn") as respond:
                 _handle_update(bot, _message_update(chat_id=42, text="/evolve propose"))
             candidates = load_evolve_candidates(root)
 
-        self.assertIn("New bounded candidates suggested by LLM", client.sent[0][1])
-        self.assertEqual(candidates[0].source, "brainstorming")
-        self.assertEqual(candidates[0].signal_actor, "agent")
-        self.assertIn("[candidate brainstorming] Improve curation observability", client.sent[0][1])
-        self.assertEqual(candidates[0].initiated_by, "agent")
-        self.assertEqual(respond.call_args.kwargs["phase"], "candidate-curation")
+        self.assertIn("found no new evolve candidate", client.sent[0][1])
+        self.assertEqual(candidates, ())
+        respond.assert_not_called()
 
     def test_evolve_can_list_and_remove_candidates(self) -> None:
         with TemporaryDirectory() as temp:
@@ -3208,9 +3183,8 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("Evolve theme:\nimprove recovery", client.sent[2][1])
         self.assertIn("Set with /evolve config theme <text>.", client.sent[2][1])
 
-    @patch(
-        "enoch.app.core.respond",
-        return_value=json.dumps(
+    def test_evolve_brainstorm_generates_candidate_under_theme(self) -> None:
+        response = json.dumps(
             [
                 {
                     "title": "Expose candidate provenance",
@@ -3221,29 +3195,47 @@ class EnochTelegramTests(unittest.TestCase):
                     "test_plan": "Add report tests.",
                 }
             ]
-        ),
-    )
-    def test_evolve_brainstorm_generates_candidate_under_theme(self, respond: MagicMock) -> None:
+        )
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
             bot = EnochApplication(load_identity(), root, client)
 
             _handle_update(bot, _message_update(chat_id=42, text="/evolve config theme auditable evolution"))
-            _handle_update(bot, _message_update(update_id=2, chat_id=42, text="/evolve brainstorm"))
+            with patch.object(
+                bot,
+                "_respond_isolated_evidence_turn",
+                return_value=response,
+            ) as respond:
+                _handle_update(
+                    bot,
+                    _message_update(
+                        update_id=2,
+                        chat_id=42,
+                        text="/evolve brainstorm",
+                    ),
+                )
+            candidate = load_evolve_candidates(root)[0]
 
-        self.assertIn("Added 1 theme-guided brainstorming candidate", client.sent[1][1])
+        self.assertIn("Created 1 theme-guided brainstorming candidate", client.sent[1][1])
         self.assertIn("brainstorming: 1", client.sent[1][1])
-        self.assertIn("Current evolution theme: auditable evolution", respond.call_args.args[1])
+        self.assertEqual(candidate.source_theme, "auditable evolution")
+        self.assertEqual(len(candidate.source_context_hash), 64)
+        self.assertEqual(respond.call_args.kwargs["phase"], "brainstorming")
+        self.assertIn(
+            '"theme": "auditable evolution"',
+            respond.call_args.args[1],
+        )
+        self.assertIn("read-only reasoning turn", respond.call_args.args[1])
 
-    @patch("enoch.app.core.respond")
-    def test_evolve_brainstorm_requires_theme(self, respond: MagicMock) -> None:
+    def test_evolve_brainstorm_requires_theme(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
             bot = EnochApplication(load_identity(), root, client)
 
-            _handle_update(bot, _message_update(chat_id=42, text="/evolve brainstorm"))
+            with patch.object(bot, "_respond_isolated_evidence_turn") as respond:
+                _handle_update(bot, _message_update(chat_id=42, text="/evolve brainstorm"))
 
         self.assertIn("Set a theme", client.sent[0][1])
         respond.assert_not_called()
@@ -3375,11 +3367,14 @@ class EnochTelegramTests(unittest.TestCase):
             client = FakeTelegramClient(allowed_chat_id=42)
             bot = EnochApplication(load_identity(), root, client)
 
-            job = bot._run_due_evolve_schedule()
+            with patch.object(bot, "_generate_brainstorm_candidates") as brainstorm:
+                job = bot._run_due_evolve_schedule()
             events = load_evolve_events(root)
 
         self.assertIsNone(job)
+        brainstorm.assert_not_called()
         self.assertIn("Scheduled evolve check", client.sent[0][1])
+        self.assertIn("disabled in co-evolve mode", client.sent[0][1])
         self.assertIn("Enoch proposes:", client.sent[0][1])
         self.assertIn("Ranked 1 actionable candidate(s) from the evolution pathways.", client.sent[0][1])
         self.assertIn("feedback-1 [candidate feedback] improve Telegram work UX", client.sent[0][1])
@@ -3484,15 +3479,8 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual(queued.pending_count, 1)
 
     def test_due_auto_evolve_schedule_suggests_new_candidate_without_queueing(self) -> None:
-        response = json.dumps(
-            {
-                "recommended_candidate_id": None,
-                "recommendation_reason": "",
-                "scope_guidance": "",
-                "risk_guidance": "",
-                "test_plan_guidance": "",
-                "remove_suggestions": [],
-                "new_candidates": [
+        brainstorm_response = json.dumps(
+            [
                 {
                     "title": "Improve scheduled curation",
                     "rationale": "The scheduled proposal had no candidate.",
@@ -3501,7 +3489,16 @@ class EnochTelegramTests(unittest.TestCase):
                     "risk": "The idea is speculative.",
                     "test_plan": "Add scheduler tests.",
                 }
-                ],
+            ]
+        )
+        curation_response = json.dumps(
+            {
+                "recommended_candidate_id": None,
+                "recommendation_reason": "",
+                "scope_guidance": "",
+                "risk_guidance": "",
+                "test_plan_guidance": "",
+                "remove_suggestions": [],
             }
         )
         with TemporaryDirectory() as temp:
@@ -3512,7 +3509,11 @@ class EnochTelegramTests(unittest.TestCase):
             client = FakeTelegramClient(allowed_chat_id=42)
             bot = EnochApplication(load_identity(), root, client)
 
-            with patch.object(bot, "_respond_isolated_evidence_turn", return_value=response) as respond:
+            with patch.object(
+                bot,
+                "_respond_isolated_evidence_turn",
+                side_effect=[brainstorm_response, curation_response],
+            ) as respond:
                 job = bot._run_due_evolve_schedule()
             queued = task_queue_status(root)
             candidate = load_evolve_candidates(root)[0]
@@ -3524,8 +3525,11 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual(candidate.initiated_by, "agent")
         self.assertEqual(candidate.signal_actor, "agent")
         self.assertEqual([event.event for event in evolve_events], ["checked", "skipped"])
-        self.assertIn("New bounded candidates suggested by LLM", client.sent[0][1])
-        self.assertEqual(respond.call_args.kwargs["phase"], "candidate-curation")
+        self.assertIn("Scheduled brainstorming: created 1 candidate", client.sent[0][1])
+        self.assertEqual(
+            [call.kwargs["phase"] for call in respond.call_args_list],
+            ["brainstorming", "candidate-curation"],
+        )
 
     @patch("enoch.app.core.ensure_long_term_memory")
     @patch("enoch.app.core.log_conversation_turn")

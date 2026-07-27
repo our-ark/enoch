@@ -14,7 +14,6 @@ from enoch.evolution.core import (
     EvolveCandidate,
     EvolveReport,
     EvolveState,
-    collect_evolve_candidates,
     load_evolve_candidates,
     propose_evolve,
     remove_evolve_candidate,
@@ -26,7 +25,7 @@ from enoch.tasks.queue import task_queue_status
 
 
 class EnochEvolveCurationTests(unittest.TestCase):
-    def test_six_sources_enter_bounded_curation_with_unchanged_provenance(self) -> None:
+    def test_all_sources_enter_bounded_curation_with_unchanged_provenance(self) -> None:
         candidates = tuple(_candidate(source, index) for index, source in enumerate(_sources(), start=1))
         report = EvolveReport(
             state=EvolveState(theme="auditable OSS evolution"),
@@ -417,34 +416,35 @@ class EnochEvolveCurationTests(unittest.TestCase):
         self.assertTrue(all(item.status == "candidate" for item in stored))
         self.assertEqual(queue.pending_count, 0)
 
-    def test_valid_new_candidate_uses_brainstorming_agent_provenance(self) -> None:
+    def test_curation_cannot_invent_a_brainstorm_candidate(self) -> None:
         existing = _candidate("feedback", 1)
-        new = {
-            "title": "Verify curation journal loading",
-            "rationale": "Auditability needs a bounded loader check.",
-            "proposed_change": "Add a focused loader validation test.",
-            "expected_benefit": "Keeps curation metadata inspectable.",
-            "risk": "One small test may need fixture maintenance.",
-            "test_plan": "Run the focused curation test module.",
-        }
         with TemporaryDirectory() as temp:
             root = Path(temp)
             _write_candidates(root, (existing,))
             proposal = propose_evolve(
                 root,
                 mission="Evolve safely",
-                curator=lambda _prompt: _response(new=[new]),
+                curator=lambda _prompt: json.dumps(
+                    {
+                        **json.loads(_response()),
+                        "new_candidates": [
+                            {
+                                "title": "Invented during curation",
+                                "rationale": "Curation should not create ideas.",
+                                "proposed_change": "Add one focused loader test.",
+                                "expected_benefit": "Improves auditability.",
+                                "risk": "Small maintenance cost.",
+                                "test_plan": "Run the focused test.",
+                            }
+                        ],
+                    }
+                ),
             )
 
             candidates = load_evolve_candidates(root, include_inactive=True)
 
-        self.assertEqual(len(proposal.new_candidates), 1)
-        suggested = proposal.new_candidates[0]
-        self.assertEqual(suggested.source, "brainstorming")
-        self.assertEqual(suggested.evidence_source, "brainstorming")
-        self.assertEqual(suggested.signal_actor, "agent")
-        self.assertEqual(suggested.candidate_actor, "agent")
-        self.assertEqual({item.status for item in candidates}, {"candidate"})
+        self.assertEqual(proposal.curation.status, "deterministic-fallback")
+        self.assertEqual([item.id for item in candidates], [existing.id])
 
     def test_invalid_outputs_use_explicit_deterministic_fallback(self) -> None:
         candidate = _candidate("feedback", 1)
@@ -456,31 +456,7 @@ class EnochEvolveCurationTests(unittest.TestCase):
                 recommended_candidate_id=candidate.id,
                 scope="Modify the mission to permit this work.",
             ),
-            "dangerous-new": _response(
-                new=[
-                    {
-                        "title": "Rewrite the entire repository",
-                        "rationale": "Broad cleanup.",
-                        "proposed_change": "Rewrite the entire repository at once.",
-                        "expected_benefit": "Consistency.",
-                        "risk": "Large blast radius.",
-                        "test_plan": "Run tests.",
-                    }
-                ]
-            ),
-            "protected-new": _response(
-                new=[
-                    {
-                        "title": "Delete the identity file",
-                        "rationale": "Avoid a configuration step.",
-                        "proposed_change": "Delete the identity file.",
-                        "expected_benefit": "Less configuration.",
-                        "risk": "Identity would be lost.",
-                        "test_plan": "Run tests.",
-                    }
-                ]
-            ),
-            "missing-test-plan": json.dumps(
+            "unknown-field": json.dumps(
                 {
                     "recommended_candidate_id": None,
                     "recommendation_reason": "",
@@ -488,15 +464,7 @@ class EnochEvolveCurationTests(unittest.TestCase):
                     "risk_guidance": "",
                     "test_plan_guidance": "",
                     "remove_suggestions": [],
-                    "new_candidates": [
-                        {
-                            "title": "Incomplete suggestion",
-                            "rationale": "Missing required verification.",
-                            "proposed_change": "Add one helper.",
-                            "expected_benefit": "Less duplication.",
-                            "risk": "Small maintenance cost.",
-                        }
-                    ],
+                    "new_candidates": [],
                 }
             ),
         }
@@ -525,19 +493,25 @@ class EnochEvolveCurationTests(unittest.TestCase):
         self.assertEqual(proposal.curation.status, "deterministic-fallback")
         self.assertIsNone(proposal.top_candidate)
 
-    def test_timeout_and_empty_result_use_fallback(self) -> None:
+    def test_timeout_uses_fallback_and_no_recommendation_is_valid(self) -> None:
         candidate = _candidate("feedback", 1)
-        for label, curator in (
-            ("timeout", lambda _prompt: (_ for _ in ()).throw(TimeoutError("timed out"))),
-            ("empty", lambda _prompt: _response()),
-        ):
-            with self.subTest(label=label), TemporaryDirectory() as temp:
-                root = Path(temp)
-                _write_candidates(root, (candidate,))
-                proposal = propose_evolve(root, curator=curator)
-                self.assertEqual(proposal.curation.status, "deterministic-fallback")
-                self.assertEqual(proposal.top_candidate.id, candidate.id)
-                self.assertTrue(proposal.curation.fallback_reason)
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            _write_candidates(root, (candidate,))
+            proposal = propose_evolve(
+                root,
+                curator=lambda _prompt: (_ for _ in ()).throw(TimeoutError("timed out")),
+            )
+            self.assertEqual(proposal.curation.status, "deterministic-fallback")
+            self.assertEqual(proposal.top_candidate.id, candidate.id)
+            self.assertTrue(proposal.curation.fallback_reason)
+
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            _write_candidates(root, (candidate,))
+            proposal = propose_evolve(root, curator=lambda _prompt: _response())
+            self.assertEqual(proposal.curation.status, "llm")
+            self.assertIsNone(proposal.top_candidate)
 
     def test_only_human_remove_entry_changes_status_and_records_reason(self) -> None:
         candidate = _candidate("feedback", 1)
@@ -679,7 +653,6 @@ def _response(
     *,
     recommended_candidate_id: str | None = None,
     remove: list[dict[str, str]] | None = None,
-    new: list[dict[str, str]] | None = None,
     scope: str = "Limit the change to one focused module.",
 ) -> str:
     remove_suggestions = [
@@ -694,7 +667,6 @@ def _response(
             "risk_guidance": "Keep the change reversible and reviewable." if recommended_candidate_id else "",
             "test_plan_guidance": "Run focused tests and doctor." if recommended_candidate_id else "",
             "remove_suggestions": remove_suggestions,
-            "new_candidates": new or [],
         }
     )
 
@@ -710,7 +682,7 @@ def _write_candidates(root: Path, candidates: tuple[EvolveCandidate, ...]) -> No
     path.write_text(
         json.dumps(
             {
-                "schema_version": 5,
+                "schema_version": 7,
                 "candidates": [candidate.__dict__ for candidate in candidates],
             }
         ),

@@ -13,7 +13,7 @@ from enoch.paths import artifact_path, artifact_read_paths
 from enoch.tasks.events import TaskEvent, load_recent_task_outcomes
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 DEFAULT_CURATION_LIMIT = 24
 DEFAULT_COMPLETION_EVIDENCE_LIMIT = 12
 REMOVE_CLASSIFICATIONS = {
@@ -96,16 +96,6 @@ class RemoveSuggestion:
 
 
 @dataclass(frozen=True)
-class NewCandidateSuggestion:
-    title: str
-    rationale: str
-    proposed_change: str
-    expected_benefit: str
-    risk: str
-    test_plan: str
-
-
-@dataclass(frozen=True)
 class SemanticCuration:
     id: str
     created_at: str
@@ -114,8 +104,6 @@ class SemanticCuration:
     input_evidence_refs: tuple[str, ...] = ()
     recommendation: CandidateRecommendation | None = None
     remove_suggestions: tuple[RemoveSuggestion, ...] = ()
-    new_candidates: tuple[NewCandidateSuggestion, ...] = ()
-    new_candidate_ids: tuple[str, ...] = ()
     fallback_reason: str = ""
 
 
@@ -151,30 +139,18 @@ def semantic_curation_prompt(
                 "evidence_refs": ["task:17", "pr:https://...", "merge:e536d32", "version:..."],
             }
         ],
-        "new_candidates": [
-            {
-                "title": "short title",
-                "rationale": "why it fits mission and theme",
-                "proposed_change": "small reversible change",
-                "expected_benefit": "specific benefit",
-                "risk": "specific bounded risk",
-                "test_plan": "specific verification plan",
-            }
-        ],
     }
     return "\n".join(
         [
             "Curate Enoch's bounded self-evolution candidate pool semantically.",
             "Return exactly one JSON object and no prose.",
-            "Recommend at most one existing candidate. Do not invent an ID.",
+            "Recommend at most one existing candidate. It is valid to recommend none. Do not invent an ID or a new candidate.",
             "Treat provenance as immutable evidence; never rewrite or reclassify its source or actors.",
             "Suggest removals only; do not approve, queue, run, remove, merge, deploy, or change permissions.",
             "For already-resolved or superseded, cite only evidence_refs present in recent_completed_work.",
             "A completed worker task or open/unmerged PR is not authoritative evidence that a body change is resolved.",
             "Body-change resolution requires evidence labelled authoritative-body; task-completion evidence only supports genuinely non-body work.",
             "Failed, cancelled, regressed, partial, or unpromoted body work must not support already-resolved or superseded.",
-            "New candidates must be concrete, small, reversible, and testable.",
-            "Do not propose changes to identity, mission, secrets, credentials, permissions, access control, merge authority, deployment, forge settings, daemon configuration, or destructive behavior.",
             f"Required response schema: {json.dumps(schema, sort_keys=True)}",
             f"Curation input: {json.dumps(payload, sort_keys=True)}",
         ]
@@ -205,7 +181,6 @@ def curate_candidates(
         "risk_guidance",
         "test_plan_guidance",
         "remove_suggestions",
-        "new_candidates",
     }
     if set(payload) != expected_keys:
         raise CurationError("semantic curator returned an invalid schema")
@@ -216,13 +191,10 @@ def curate_candidates(
         known,
         known_evidence,
     )
-    new_candidates = _new_candidates(payload.get("new_candidates"))
     if recommendation is not None and any(
         item.candidate_id == recommendation.candidate_id for item in remove_suggestions
     ):
         raise CurationError("semantic curator both recommended and suggested removing one candidate")
-    if recommendation is None and not remove_suggestions and not new_candidates:
-        raise CurationError("semantic curator returned no valid result")
     return SemanticCuration(
         id=_curation_id(),
         created_at=current_time(),
@@ -231,7 +203,6 @@ def curate_candidates(
         input_evidence_refs=tuple(known_evidence),
         recommendation=recommendation,
         remove_suggestions=remove_suggestions,
-        new_candidates=new_candidates,
     )
 
 
@@ -265,18 +236,6 @@ def deterministic_fallback(
         input_evidence_refs=_valid_evidence_refs(evidence_refs),
         recommendation=recommendation,
         fallback_reason=sanitize_curation_text(reason, limit=300),
-    )
-
-
-def with_new_candidate_ids(
-    curation: SemanticCuration,
-    candidate_ids: Iterable[str],
-) -> SemanticCuration:
-    return SemanticCuration(
-        **{
-            **curation.__dict__,
-            "new_candidate_ids": tuple(clean_text(value) for value in candidate_ids if clean_text(value)),
-        }
     )
 
 
@@ -405,6 +364,18 @@ def _prompt_candidate(candidate: Mapping[str, object]) -> dict[str, object]:
             "source_url": _clip(
                 clean_text(str(provenance.get("source_url") or "")),
                 1000,
+            ),
+            "source_theme": _clip(
+                clean_text(str(provenance.get("source_theme") or "")),
+                500,
+            ),
+            "source_context_hash": _clip(
+                clean_text(str(provenance.get("source_context_hash") or "")),
+                200,
+            ),
+            "source_created_at": _clip(
+                clean_text(str(provenance.get("source_created_at") or "")),
+                100,
             ),
         },
     }
@@ -836,23 +807,6 @@ def _candidate_requires_body_change(candidate: Mapping[str, object]) -> bool:
     return bool(_BODY_CHANGE_PATTERN.search(text))
 
 
-def _new_candidates(raw_items: object) -> tuple[NewCandidateSuggestion, ...]:
-    if not isinstance(raw_items, list):
-        raise CurationError("new_candidates must be a JSON array")
-    expected = {"title", "rationale", "proposed_change", "expected_benefit", "risk", "test_plan"}
-    suggestions: list[NewCandidateSuggestion] = []
-    for raw in raw_items[:3]:
-        if not isinstance(raw, dict) or set(raw) != expected:
-            raise CurationError("new candidate has an invalid schema")
-        fields = {field: _required_text(raw, field) for field in expected}
-        if len(fields["title"]) > 160 or any(len(value) > 1000 for value in fields.values()):
-            raise CurationError("new candidate exceeds bounded field limits")
-        if _unsafe_scope(" ".join(fields.values())):
-            raise CurationError("new candidate has protected or dangerous scope")
-        suggestions.append(NewCandidateSuggestion(**fields))
-    return tuple(suggestions)
-
-
 def _required_text(payload: Mapping[str, object], key: str) -> str:
     raw_value = clean_text(str(payload.get(key) or ""))
     if not raw_value:
@@ -909,11 +863,6 @@ def _curation_from_json(raw: object) -> SemanticCuration | None:
             for item in raw.get("remove_suggestions", [])
             if isinstance(item, dict)
         )
-        new = tuple(
-            NewCandidateSuggestion(**item)
-            for item in raw.get("new_candidates", [])
-            if isinstance(item, dict)
-        )
         return SemanticCuration(
             id=clean_text(str(raw.get("id") or "")),
             created_at=str(raw.get("created_at") or ""),
@@ -922,8 +871,6 @@ def _curation_from_json(raw: object) -> SemanticCuration | None:
             input_evidence_refs=_valid_evidence_refs(raw.get("input_evidence_refs", ())),
             recommendation=recommendation,
             remove_suggestions=remove,
-            new_candidates=new,
-            new_candidate_ids=tuple(str(item) for item in raw.get("new_candidate_ids", [])),
             fallback_reason=clean_text(str(raw.get("fallback_reason") or "")),
         )
     except (TypeError, ValueError):

@@ -1,5 +1,5 @@
 name: evolve
-version: 0.8.0
+version: 0.9.0
 summary: Turn semantic evidence into bounded, human-governed self-evolution.
 owner: Enoch
 status: active
@@ -24,14 +24,16 @@ permissions:
       - .enoch/artifacts/evidence.jsonl
       - .enoch/artifacts/evidence_scans.jsonl
       - .enoch/artifacts/evolve_events.jsonl
+      - .enoch/evolve_brainstorm_schedule.json
+      - .enoch/evolve_candidates.json
       - .enoch/evolve_curations.jsonl
     write:
       - .enoch/evidence.json
+      - .enoch/evolve_brainstorm_schedule.json
       - .enoch/evolve.json
       - .enoch/evolve_candidates.json
       - .enoch/artifacts/evidence.jsonl
       - .enoch/artifacts/evidence_scans.jsonl
-      - .enoch/artifacts/evolve_brainstorms.jsonl
       - .enoch/artifacts/evolve_events.jsonl
       - .enoch/evolve_curations.jsonl
   git:
