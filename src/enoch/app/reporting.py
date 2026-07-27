@@ -351,81 +351,20 @@ def _format_experience_report(root: Path) -> str:
         proposal_sources = Counter({source: 0 for source in EVOLVE_SOURCES})
         proposal_sources.update(event.source for event in proposals.values())
         proposal_triggers = Counter(event.trigger or "unknown" for event in proposals.values())
-        selected_outcomes = Counter(
-            {
-                "pending": 0,
-                "completed": 0,
-                "failed": 0,
-                "cancelled": 0,
-                "regressed": 0,
-                "reverted": 0,
-                "forward-fixed": 0,
-                "queue-failed": 0,
-            }
-        )
-        for proposal_id, disposition in proposal_dispositions.items():
-            if disposition != "selected":
-                continue
-            proposal_events = [
-                event
-                for event in evolve_events
-                if event.proposal_id == proposal_id
-            ]
-            outcome = next(
-                (
-                    event.event
-                    for event in reversed(proposal_events)
-                    if event.event
-                    in {
-                        "completed",
-                        "failed",
-                        "cancelled",
-                        "regressed",
-                        "reverted",
-                        "forward-fixed",
-                    }
-                ),
-                "pending",
-            )
-            if outcome == "pending" and any(
-                event.event == "skipped" and event.reason == "queue-failed"
-                for event in proposal_events
-            ):
-                outcome = "queue-failed"
-            selected_outcomes[outcome] += 1
-        queued = [event for event in evolve_events if event.event == "queued"]
-        outcomes = Counter(
-            event.event
-            for event in evolve_events
-            if event.event
-            in {
-                "completed",
-                "failed",
-                "cancelled",
-                "regressed",
-                "reverted",
-                "forward-fixed",
-            }
-        )
+        handoffs = [event for event in evolve_events if event.event == "queued"]
         signal_actors = Counter({"human": 0, "agent": 0, "system": 0})
-        signal_actors.update(event.signal_actor for event in queued if event.signal_actor)
+        signal_actors.update(event.signal_actor for event in handoffs if event.signal_actor)
         candidate_actors = Counter({"human": 0, "agent": 0, "system": 0})
-        candidate_actors.update(event.candidate_actor for event in queued if event.candidate_actor)
+        candidate_actors.update(event.candidate_actor for event in handoffs if event.candidate_actor)
         approval_actors = Counter({"human": 0, "agent": 0, "system": 0})
-        approval_actors.update(event.approval_actor for event in queued if event.approval_actor)
+        approval_actors.update(event.approval_actor for event in handoffs if event.approval_actor)
         autonomous = sum(
             event.event_actor == "system" and event.trigger == "evolve-scheduler"
-            for event in queued
+            for event in handoffs
         )
         human_approved = sum(
             event.event_actor == "human" and event.trigger == "/evolve approve"
-            for event in queued
-        )
-        lifecycle = Counter({"promoted": 0, "adopted": 0})
-        lifecycle.update(
-            event.event
-            for event in evolve_events
-            if event.event in {"promoted", "adopted"}
+            for event in handoffs
         )
         lines.extend(
             [
@@ -438,16 +377,14 @@ def _format_experience_report(root: Path) -> str:
                 ),
                 f"- Proposal sources: {_format_counter(proposal_sources)}",
                 f"- Proposal triggers: {_format_counter(proposal_triggers)}",
-                f"- Selected proposal outcomes: {_format_counter(selected_outcomes)}",
                 (
-                    f"- Queued: {len(queued)} "
+                    f"- Task handoffs: {len(handoffs)} "
                     f"(autonomous {autonomous}, human-approved {human_approved})"
                 ),
-                f"- Queued signal actors: {_format_counter(signal_actors)}",
-                f"- Queued candidate actors: {_format_counter(candidate_actors)}",
-                f"- Queued approval actors: {_format_counter(approval_actors)}",
-                f"- Outcomes: {_format_counter(outcomes)}",
-                f"- Governed lifecycle: {_format_counter(lifecycle)}",
+                f"- Handoff signal actors: {_format_counter(signal_actors)}",
+                f"- Handoff candidate actors: {_format_counter(candidate_actors)}",
+                f"- Handoff approval actors: {_format_counter(approval_actors)}",
+                "- Post-handoff outcomes are owned by the task journal.",
             ]
         )
     else:
@@ -650,10 +587,7 @@ def _format_evolve_proposal(proposal: EvolveProposal) -> str:
                 ]
             )
         lines.append("")
-        if candidate.status == "failed":
-            lines.append(f"Retry with /evolve retry {candidate.id}.")
-        else:
-            lines.append(f"Approve with /evolve approve {candidate.id}.")
+        lines.append(f"Approve with /evolve approve {candidate.id}.")
         lines.append(f"Remove with /evolve remove {candidate.id}.")
     if curation is not None and curation.remove_suggestions:
         lines.extend(["", "LLM remove suggestions (no status changed):"])
@@ -855,8 +789,6 @@ def _evolve_next_action(report: EvolveReport) -> str:
         return "disabled; Enoch will not collect or rank self-evolution candidates."
     if report.top_candidate is None:
         return "no candidate yet."
-    if report.top_candidate.status == "failed":
-        return "propose retrying this failed candidate and wait for explicit human approval."
     if report.state.mode == MODE_AUTO_EVOLVE:
         return "propose this candidate and wait for explicit human approval; scheduling does not queue it."
     return "propose this candidate and wait for human approval before changing code."

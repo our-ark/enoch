@@ -146,15 +146,14 @@ These adapters provide coexistence, not reverse emulation. A branchless
 repository is not forced to implement the old branch API, and a review service
 without pull requests is not forced to manufacture PR fields. Core task,
 publication, existing-reference handoff, retry reconciliation, `/pr`, update,
-and evolution promotion/adoption flows now use the semantic contracts. The
-legacy protocols remain adapter inputs for existing Git and GitHub provider
-packages, not application workflow requirements.
+and approved evolution work now use the semantic contracts. The legacy
+protocols remain adapter inputs for existing Git and GitHub provider packages,
+not application workflow requirements.
 
 Review records carry verified landing evidence as `landed_revision` and
 `landed_at`. A legacy forge adapter obtains that evidence by inspecting the
-landed review after requesting the merge. Evolution promotion therefore checks
-an opaque landed revision against the repository's refreshed authoritative
-revision without parsing Git or GitHub result fields.
+landed review after requesting the merge without exposing Git- or
+GitHub-specific result fields to callers.
 
 The provider registry accepts either `RepositoryProvider` or
 `VersionControlProvider` for `vcs`, and either `ReviewProvider` or

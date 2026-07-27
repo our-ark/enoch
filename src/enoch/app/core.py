@@ -64,27 +64,18 @@ from enoch.evolution.core import (
     EvolveCandidate,
     EvolveProposal,
     acknowledge_evolve_schedule,
-    cancel_evolve_candidate_for_task,
+    approve_evolve_candidate,
     claim_due_evolve_schedule,
     claim_scheduled_brainstorm,
-    complete_evolve_candidate_for_task,
     create_brainstorm_candidates,
     create_learning_candidate,
     disable_evolve_schedule,
     evolve_report,
-    fail_evolve_candidate_for_task,
     get_evolve_candidate,
-    latest_failed_evolve_task,
     load_evolve_candidates,
     load_evolve_state,
-    pause_evolve_candidate_for_task,
     propose_evolve,
-    regress_evolve_candidate_for_task,
     remove_evolve_candidate,
-    retry_evolve_candidate,
-    resolve_evolve_candidate_regression_for_task,
-    resume_evolve_candidate_for_task,
-    run_evolve_candidate,
     set_evolve_cron_schedule,
     set_evolve_daily_schedule,
     set_evolve_schedule,
@@ -110,12 +101,6 @@ from enoch.evolution.events import (
     close_open_proposals,
     latest_open_proposal_id,
     record_evolve_event,
-)
-from enoch.evolution.lifecycle import (
-    EvolveLifecycleError,
-    finalize_promoted_evolve_adoptions,
-    format_reconcile_result,
-    reconcile_evolve_candidate,
 )
 from enoch.app.epoch import (
     DaemonEpoch,
@@ -1530,14 +1515,6 @@ class EnochApplication:
                     trigger="runtime-unavailable",
                     worker_id=worker_id,
                 )
-                if finished_job is not None:
-                    pause_evolve_candidate_for_task(
-                        finished_job,
-                        self.root,
-                        event_actor="system",
-                        trigger="runtime-unavailable",
-                        reason=reply,
-                    )
             else:
                 finished_job = self.workflow.finalize(
                     job.id,
@@ -2087,13 +2064,6 @@ class EnochApplication:
             cancelled = self.workflow.cancel(cancel_id)
             if cancelled is None:
                 return f"Enoch could not cancel task #{cancel_id}. It may be running, completed, or missing."
-            cancel_evolve_candidate_for_task(
-                cancelled,
-                self.root,
-                event_actor="human",
-                trigger="/task cancel",
-                reason="Cancelled before running.",
-            )
             message_id = self._work_status_messages.pop(cancelled.id, cancelled.status_message_id)
             if message_id is not None:
                 cancelled_status = WorkStatusMessage(
@@ -2170,24 +2140,6 @@ class EnochApplication:
 
     def _retry_task(self, task_id: int) -> str:
         original = self.workflow.find(task_id)
-        candidate = None
-        proposal_id = ""
-        if original is not None and original.candidate_id:
-            state = evolve_report(self.root).state
-            try:
-                candidate = get_evolve_candidate(
-                    original.candidate_id,
-                    self.root,
-                    theme=state.theme,
-                )
-            except ValueError as error:
-                return f"Enoch could not retry task #{task_id}: {error}"
-            if candidate.status != "failed":
-                return (
-                    f"Enoch could not retry task #{task_id}: evolve candidate "
-                    f"{candidate.id} is in status {candidate.status}, not failed."
-                )
-            proposal_id = latest_open_proposal_id(candidate.id, self.root)
         try:
             reconciled_result = (
                 _reconciled_retry_result(original, self.root, review=self.review)
@@ -2200,35 +2152,6 @@ class EnochApplication:
             )
         except (OSError, ReviewProviderError, TaskRetryError) as error:
             return f"Enoch could not retry task #{task_id}: {error}"
-        if candidate is not None:
-            self._record_evolve_event(
-                "selected",
-                event_actor="human",
-                trigger="/task retry",
-                candidate=candidate,
-                approval_actor="human",
-                proposal_id=proposal_id,
-            )
-            try:
-                candidate = retry_evolve_candidate(
-                    candidate.id,
-                    self.root,
-                    theme=evolve_report(self.root).state.theme,
-                )
-            except ValueError as error:
-                self.workflow.cancel(job.id)
-                return f"Enoch could not retry task #{task_id}: {error}"
-            self._record_evolve_event(
-                "queued",
-                event_actor="human",
-                trigger="/task retry",
-                candidate=candidate,
-                task_id=job.id,
-                approval_actor="human",
-                retry_of_task_id=task_id,
-                reason=f"retry-of-task-{task_id}",
-                proposal_id=proposal_id,
-            )
         position = self.workflow.inspect().pending_count
         message = self._format_work_status(
             WorkStatusMessage(
@@ -2337,13 +2260,6 @@ class EnochApplication:
                 return f"Task #{task_id} is not paused."
             return "No tasks are paused for agent runtime access."
         for job in resumed:
-            resume_evolve_candidate_for_task(
-                job,
-                self.root,
-                event_actor="human",
-                trigger=trigger,
-                reason="User resumed after restoring agent runtime access.",
-            )
             message_id = self._work_status_messages.get(job.id) or job.status_message_id
             if message_id is not None:
                 self._work_status_messages[job.id] = message_id
@@ -2398,13 +2314,6 @@ class EnochApplication:
                 )
                 if task is None:
                     continue
-                regress_evolve_candidate_for_task(
-                    task,
-                    self.root,
-                    event_actor="agent",
-                    trigger="agent-regression-signal",
-                    reason=signal.reason,
-                )
             elif task.status != "regressed":
                 continue
             if not allow_resolution or not signal.resolution:
@@ -2412,26 +2321,13 @@ class EnochApplication:
             related_task_id = signal.fix_task_id
             if signal.resolution == "forward-fixed" and related_task_id is None:
                 related_task_id = current_task_id
-            resolved = self.workflow.resolve_regression(
+            self.workflow.resolve_regression(
                 signal.task_id,
                 signal.resolution,
                 result=signal.reason,
                 event_actor="agent",
                 trigger="agent-regression-signal",
                 related_task_id=related_task_id,
-            )
-            if resolved is None:
-                continue
-            reason = signal.reason
-            if signal.resolution == "forward-fixed" and related_task_id is not None:
-                reason = f"Forward-fixed by task #{related_task_id}. {reason}"
-            resolve_evolve_candidate_regression_for_task(
-                resolved,
-                signal.resolution,
-                self.root,
-                event_actor="agent",
-                trigger="agent-regression-signal",
-                reason=reason,
             )
 
     def _stop_running_job(self) -> str:
@@ -2687,38 +2583,6 @@ class EnochApplication:
             if not rest.strip():
                 return "Use /evolve approve <id> to approve and queue a self-evolution candidate."
             return self._evolve_approve(rest)
-        if subcommand == "retry":
-            if not rest.strip():
-                return "Use /evolve retry <id> to retry a failed self-evolution candidate."
-            return self._evolve_retry(rest)
-        if subcommand == "reconcile":
-            reconcile_parts = rest.split()
-            recording_mode = "realtime"
-            if reconcile_parts and reconcile_parts[-1].lower() in {
-                "backfill",
-                "--backfill",
-            }:
-                recording_mode = "backfill"
-                reconcile_parts.pop()
-            if len(reconcile_parts) != 1:
-                return (
-                    "Use /evolve reconcile <id> [backfill] to verify human promotion "
-                    "of a completed candidate."
-                )
-            try:
-                result = self.effect_fence.run_authorized(
-                    "evolve.reconcile",
-                    ("forge.inspect", "vcs.authoritative", "vcs.ancestry"),
-                    reconcile_evolve_candidate,
-                    reconcile_parts[0],
-                    self.root,
-                    recording_mode=recording_mode,
-                    repository=self.repository,
-                    review=self.review,
-                )
-            except (EvolveLifecycleError, CapabilityAuthorizationError) as error:
-                return f"Enoch could not reconcile evolution promotion: {error}"
-            return format_reconcile_result(result)
         return _evolve_usage()
 
     def _evolve_config(self, argument: str) -> str:
@@ -3070,7 +2934,11 @@ class EnochApplication:
                 proposal_id=proposal_id,
             )
             return "Enoch could not approve and queue that evolve candidate."
-        candidate = run_evolve_candidate(candidate.id, self.root, theme=state.theme)
+        candidate = approve_evolve_candidate(
+            candidate.id,
+            self.root,
+            theme=state.theme,
+        )
         self._record_evolve_event(
             "queued",
             event_actor="human",
@@ -3080,81 +2948,10 @@ class EnochApplication:
             approval_actor="human",
             proposal_id=proposal_id,
         )
-        return f"Approved evolve candidate {candidate.id} and queued task #{job.id}.\n\n" + "\n".join(
-            _format_evolve_candidate(candidate)
-        )
-
-    def _evolve_retry(self, candidate_id: str) -> str:
-        chat_id = _allowed_conversation_id(self.client)
-        if chat_id is None:
-            return f"Enoch needs a locked {provider_label(self.channel_name)} conversation before retrying evolve work."
-        state = evolve_report(self.root).state
-        try:
-            candidate = get_evolve_candidate(candidate_id, self.root, theme=state.theme)
-        except ValueError as error:
-            return str(error)
-        if candidate.status != "failed":
-            return f"Evolve candidate {candidate.id} cannot retry from status {candidate.status}."
-        failed_job = latest_failed_evolve_task(candidate.id, self.root)
-        if failed_job is None:
-            return f"Enoch could not find a failed task to retry for evolve candidate {candidate.id}."
-        proposal_id = latest_open_proposal_id(candidate.id, self.root)
-        self._record_evolve_event(
-            "selected",
-            event_actor="human",
-            trigger="/evolve retry",
-            candidate=candidate,
-            approval_actor="human",
-            proposal_id=proposal_id,
-        )
-        try:
-            job = self.workflow.enqueue(
-                chat_id,
-                _evolve_task_request(candidate, state.theme),
-                context=_evolve_task_context(candidate),
-                context_source="evolve-retry",
-                source=candidate.source,
-                initiated_by="human",
-                event_actor="human",
-                trigger="/evolve retry",
-                candidate_id=candidate.id,
-                parent_task_id=failed_job.id,
-                evidence_source=candidate.evidence_source or candidate.source,
-                signal_actor=candidate.signal_actor,
-                candidate_actor=candidate.candidate_actor,
-                approval_actor="human",
-                parent_candidate_id=candidate.parent_candidate_id,
-                source_task_id=candidate.source_task_id,
-                idempotency_key=_event_idempotency_key(
-                    f"evolve-retry:{candidate.id}"
-                ),
-                **self._profile_task_options(),
-            )
-        except (OSError, ValueError):
-            self._record_evolve_event(
-                "skipped",
-                event_actor="human",
-                trigger="/evolve retry",
-                candidate=candidate,
-                reason="queue-failed",
-                proposal_id=proposal_id,
-            )
-            return "Enoch could not retry and queue that evolve candidate."
-        candidate = retry_evolve_candidate(candidate.id, self.root, theme=state.theme)
-        self._record_evolve_event(
-            "queued",
-            event_actor="human",
-            trigger="/evolve retry",
-            candidate=candidate,
-            task_id=job.id,
-            approval_actor="human",
-            retry_of_task_id=failed_job.id,
-            reason=f"retry-of-task-{failed_job.id}",
-            proposal_id=proposal_id,
-        )
         return (
-            f"Retrying evolve candidate {candidate.id} as task #{job.id}, "
-            f"linked to failed task #{failed_job.id}.\n\n"
+            f"Approved evolve candidate {candidate.id} and handed it off to "
+            f"task #{job.id}.\n"
+            f"Use /tasks to follow it and /task retry {job.id} if it fails.\n\n"
             + "\n".join(_format_evolve_candidate(candidate))
         )
 
@@ -3530,18 +3327,13 @@ class EnochApplication:
             return None
         proposal = self._propose_evolve(chat_id, trigger="evolve-scheduler")
         if proposal.top_candidate is not None:
-            wait_reason = (
-                "retry-requires-human"
-                if proposal.top_candidate.status == "failed"
-                else "awaiting-human-approval"
-            )
             self._record_evolve_event(
                 "skipped",
                 event_actor="system",
                 trigger="evolve-scheduler",
                 proposal=proposal,
                 candidate=proposal.top_candidate,
-                reason=wait_reason,
+                reason="awaiting-human-approval",
             )
         self._safe_send_message(
             chat_id,
@@ -3735,15 +3527,6 @@ class EnochApplication:
                     trigger="task-runner-cancelled",
                     worker_id=worker_id,
                 )
-                if finished_job is not None:
-                    self.effect_fence.run(
-                        cancel_evolve_candidate_for_task,
-                        finished_job,
-                        self.root,
-                        event_actor="human",
-                        trigger="/stop",
-                        reason=reply,
-                    )
             elif completed_status == "failed":
                 failure_actor = "system" if deadline.expired.is_set() else "agent"
                 failure_trigger = "task-timeout" if deadline.expired.is_set() else "task-runner"
@@ -3773,15 +3556,6 @@ class EnochApplication:
                         failure_class=failure.failure_class,
                         retryable=False,
                     )
-                if finished_job is not None and completed_status == "failed":
-                    self.effect_fence.run(
-                        fail_evolve_candidate_for_task,
-                        finished_job,
-                        self.root,
-                        event_actor=failure_actor,
-                        trigger=failure_trigger,
-                        reason=reply,
-                    )
             elif completed_status == "paused":
                 finished_job = self.workflow.pause(
                     job.id,
@@ -3790,15 +3564,6 @@ class EnochApplication:
                     trigger="runtime-unavailable",
                     worker_id=worker_id,
                 )
-                if finished_job is not None:
-                    self.effect_fence.run(
-                        pause_evolve_candidate_for_task,
-                        finished_job,
-                        self.root,
-                        event_actor="system",
-                        trigger="runtime-unavailable",
-                        reason=reply,
-                    )
             else:
                 finished_job = self.workflow.finalize(
                     job.id,
@@ -3806,15 +3571,6 @@ class EnochApplication:
                     result=reply,
                     worker_id=worker_id,
                 )
-                if finished_job is not None:
-                    self.effect_fence.run(
-                        complete_evolve_candidate_for_task,
-                        finished_job,
-                        self.root,
-                        event_actor="agent",
-                        trigger="task-runner",
-                        reason=reply,
-                    )
         authoritative_job = finished_job or self.workflow.find(job.id)
         expected_status = "pending" if completed_status == "retrying" else completed_status
         if authoritative_job is None or authoritative_job.status != expected_status:
@@ -4383,17 +4139,12 @@ def main(chat_provider_name: str = "") -> None:
     selected_channel = _chat_provider_name(chat_provider)
     daemon_epoch = begin_daemon_epoch(root, provider=selected_channel)
     previous_shutdown_warning = _begin_lifecycle_run(root, provider=selected_channel)
-    try:
-        adopted = finalize_promoted_evolve_adoptions(root)
-    except (OSError, ValueError, VcsError, EvolveLifecycleError):
-        adopted = ()
     _record_system_event(
         "startup",
         root,
         details={
             "identity": identity.name,
             "previous_shutdown_warning": previous_shutdown_warning,
-            "adopted_evolutions": [event.candidate_id for event in adopted],
         },
     )
     bot = EnochApplication(
@@ -4653,39 +4404,20 @@ def _recover_running_task_from_direct_action_log(
     if not result:
         return None
     if _work_reply_failed(result):
-        recovered = workflow.finalize(
+        return workflow.finalize(
             running.id,
             "failed",
             result=result,
             event_actor="system",
             trigger="recovery",
         )
-        if recovered is not None:
-            fail_evolve_candidate_for_task(
-                recovered,
-                root,
-                event_actor="system",
-                trigger="recovery",
-                reason=result,
-            )
-        return recovered
-    else:
-        recovered = workflow.finalize(
-            running.id,
-            "completed",
-            result=result,
-            event_actor="system",
-            trigger="recovery",
-        )
-        if recovered is not None:
-            complete_evolve_candidate_for_task(
-                recovered,
-                root,
-                event_actor="system",
-                trigger="recovery",
-                reason=result,
-            )
-        return recovered
+    return workflow.finalize(
+        running.id,
+        "completed",
+        result=result,
+        event_actor="system",
+        trigger="recovery",
+    )
 
 
 def _cleanup_completed_task_worktree(job: TaskJob | None, root: Path) -> None:

@@ -87,7 +87,7 @@ class EnochEvolutionEndToEndTests(unittest.TestCase):
         candidate_id = self._add_feedback_candidate("Improve evolve reliability")
 
         reply = self._command(f"/evolve approve {candidate_id}")
-        self.assertIn("queued task #1", reply)
+        self.assertIn("handed it off to task #1", reply)
         self.client.clear()
 
         completed = self._run_next_task()
@@ -130,7 +130,7 @@ class EnochEvolutionEndToEndTests(unittest.TestCase):
         self.assertIn("## Evolution provenance", prompt)
         self.assertIn(f"- Candidate: `{candidate_id}`", prompt)
 
-    def test_evolve_retry_keeps_failed_history_and_links_new_task(self) -> None:
+    def test_task_retry_keeps_failed_history_and_evolve_provenance(self) -> None:
         candidate_id = self._add_feedback_candidate("Add a retry guardrail")
         self._command(f"/evolve approve {candidate_id}")
         self.client.clear()
@@ -140,11 +140,11 @@ class EnochEvolutionEndToEndTests(unittest.TestCase):
 
         self.assertEqual(failed.status, "failed")
         self.assertTrue(Path(failed.worktree_path).is_dir())
-        self.assertEqual(get_evolve_candidate(candidate_id, self.instance).status, "failed")
+        self.assertEqual(get_evolve_candidate(candidate_id, self.instance).status, "approved")
 
         self._set_codex_mode("success")
-        reply = self._command(f"/evolve retry {candidate_id}")
-        self.assertIn("linked to failed task #1", reply)
+        reply = self._command("/task retry 1")
+        self.assertIn("Retry of failed task #1 queued", reply)
         self.client.clear()
 
         completed = self._run_next_task()
@@ -152,10 +152,9 @@ class EnochEvolutionEndToEndTests(unittest.TestCase):
         history = task_queue_status(self.instance).history
         self.assertEqual([(job.id, job.status) for job in history], [(1, "failed"), (2, "completed")])
         self.assertEqual(completed.parent_task_id, 1)
-        self.assertNotEqual(completed.worktree_path, failed.worktree_path)
-        self.assertTrue(Path(failed.worktree_path).is_dir())
+        self.assertEqual(completed.worktree_path, failed.worktree_path)
         self.assertFalse(Path(completed.worktree_path).exists())
-        self.assertEqual(get_evolve_candidate(candidate_id, self.instance).status, "done")
+        self.assertEqual(get_evolve_candidate(candidate_id, self.instance).status, "approved")
         body = _argument_value(self._latest_gh_call(), "--body")
         self.assertIn("- Task: #2", body)
         self.assertIn("- Retry of task: #1", body)
@@ -185,7 +184,7 @@ class EnochEvolutionEndToEndTests(unittest.TestCase):
 
         self.assertEqual(completed.id, 1)
         self.assertEqual(completed.status, "completed")
-        self.assertEqual(get_evolve_candidate(candidate_id, self.instance).status, "done")
+        self.assertEqual(get_evolve_candidate(candidate_id, self.instance).status, "approved")
         events = [event.event for event in load_task_events(self.instance, task_id=1)]
         self.assertIn("paused", events)
         self.assertIn("resumed", events)
@@ -226,7 +225,7 @@ class EnochEvolutionEndToEndTests(unittest.TestCase):
 
         self._set_codex_mode("success")
         reply = self._command(f"/evolve approve {experience.id}")
-        self.assertIn("queued task #2", reply)
+        self.assertIn("handed it off to task #2", reply)
         self.client.clear()
         completed = self._run_next_task()
         self.assertEqual(completed.status, "completed")

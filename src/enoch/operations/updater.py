@@ -8,10 +8,6 @@ import subprocess
 import sys
 
 from enoch.channel import load_channel_lifecycle, provider_label
-from enoch.evolution.lifecycle import (
-    promotions_pending_adoption,
-    stage_promoted_evolve_adoptions,
-)
 from enoch.formatting import format_doctor_result
 from enoch.immune import DoctorCheckResult, DoctorDiagnosis, ImmuneResult
 from enoch.providers import as_repository_provider
@@ -92,55 +88,6 @@ def update_from_authoritative(
         )
     )
     if previous_head == updated_head:
-        pending_promotions = promotions_pending_adoption(
-            root,
-            updated_head,
-            repository=repository,
-        )
-        if pending_promotions:
-            doctor = run_update_doctor(root)
-            if not doctor.passed:
-                return _message(
-                    "\n\n".join(
-                        [
-                            "Enoch is already up to date, but adoption verification failed.",
-                            format_doctor_result(doctor),
-                            "No adoption event was staged.",
-                        ]
-                    )
-                )
-            staged_note = _stage_adoptions(
-                root,
-                updated_head,
-                repository=repository,
-            )
-            formatted_doctor = format_doctor_result(doctor)
-            return UpdateResult(
-                message="\n\n".join(
-                    part
-                    for part in [
-                        "Enoch is already up to date and adoption checks passed.",
-                        formatted_doctor,
-                        staged_note,
-                        "Restarting now so the running instance can verify adoption.",
-                    ]
-                    if part
-                ),
-                direct_action_result="\n\n".join(
-                    part
-                    for part in [
-                        update_summary,
-                        formatted_doctor,
-                        staged_note,
-                        f"Restarting into {updated_head[:7]}.",
-                    ]
-                    if part
-                ),
-                restart_required=True,
-                previous_revision_id=previous_head,
-                revision_id=updated_head,
-                authoritative_name=authoritative.name,
-            )
         restart_note = _running_commit_restart_note(root, updated_head)
         return UpdateResult(
             message="\n\n".join(part for part in ["Enoch is already up to date.", restart_note] if part),
@@ -171,18 +118,12 @@ def update_from_authoritative(
         )
 
     formatted_doctor = format_doctor_result(doctor)
-    staged_note = _stage_adoptions(
-        root,
-        updated_head,
-        repository=repository,
-    )
     return UpdateResult(
         message="\n\n".join(
             part
             for part in [
                 f"Enoch updated to latest {authoritative_name} and doctor passed.",
                 formatted_doctor,
-                staged_note,
                 "Restarting now. The startup notification will confirm Enoch came back.",
             ]
             if part
@@ -192,7 +133,6 @@ def update_from_authoritative(
             for part in [
                 update_summary,
                 formatted_doctor,
-                staged_note,
                 f"Restarting into {updated_head[:7]}.",
             ]
             if part
@@ -306,26 +246,6 @@ def _doctor_runner_failure(detail: str) -> ImmuneResult:
         ),
         checks=[check],
     )
-
-
-def _stage_adoptions(
-    root: Path,
-    version: str,
-    *,
-    repository: RepositoryProvider,
-) -> str:
-    try:
-        staged = stage_promoted_evolve_adoptions(
-            root,
-            version,
-            health_check="passed",
-            repository=repository,
-        )
-    except OSError as error:
-        return f"Could not stage evolution adoption evidence: {error}"
-    if not staged:
-        return ""
-    return f"Staged {len(staged)} promoted evolution(s) for verified adoption after restart."
 
 
 def _running_commit_restart_note(root: Path, current: str) -> str:

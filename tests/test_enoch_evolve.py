@@ -15,24 +15,19 @@ from enoch.backlog import add_backlog_item
 from enoch.evolution.sources.brainstorming import BrainstormCandidateDraft
 from enoch.evolution.core import (
     MODE_DISABLED,
-    cancel_evolve_candidate_for_task,
+    approve_evolve_candidate,
     claim_due_evolve_schedule,
     claim_scheduled_brainstorm,
     acknowledge_evolve_schedule,
     create_brainstorm_candidates,
     disable_evolve_schedule,
     evolve_report,
-    complete_evolve_candidate_for_task,
     create_learning_candidate,
-    fail_evolve_candidate_for_task,
-    latest_failed_evolve_task,
     load_evolve_candidates,
     load_evolve_state,
     propose_evolve,
     rank_evolve_candidates,
     remove_evolve_candidate,
-    retry_evolve_candidate,
-    run_evolve_candidate,
     set_evolve_cron_schedule,
     set_evolve_daily_schedule,
     set_evolve_schedule,
@@ -365,24 +360,26 @@ class EnochEvolveTests(unittest.TestCase):
         self.assertEqual(candidate.candidate_actor, "agent")
         self.assertEqual(candidate.initiated_by, "agent")
 
-    def test_run_candidate_marks_it_running(self) -> None:
+    def test_approve_candidate_archives_it(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
-            candidate = _feedback_candidate(root, "I want a clearer evolve run.")
+            candidate = _feedback_candidate(root, "I want a clearer evolve handoff.")
 
-            running = run_evolve_candidate(candidate.id, root)
+            approved = approve_evolve_candidate(candidate.id, root)
             visible = load_evolve_candidates(root)
+            archived = load_evolve_candidates(root, include_inactive=True)
 
-        self.assertEqual(running.status, "running")
-        self.assertEqual(visible[0].id, candidate.id)
-        self.assertEqual(visible[0].status, "running")
+        self.assertEqual(approved.status, "approved")
+        self.assertEqual(visible, ())
+        self.assertEqual(archived[0].id, candidate.id)
+        self.assertEqual(archived[0].status, "approved")
 
-    def test_proposal_skips_running_candidate(self) -> None:
+    def test_proposal_skips_approved_candidate(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
             first = _feedback_candidate(root, "I want a clearer lower priority candidate.")
             second = _feedback_candidate(root, "I want a clearer highest priority candidate.")
-            run_evolve_candidate(second.id, root)
+            approve_evolve_candidate(second.id, root)
 
             proposal = propose_evolve(root)
 
@@ -512,93 +509,12 @@ class EnochEvolveTests(unittest.TestCase):
             migrated["attempts"],
         )
 
-    def test_completed_evolve_task_marks_candidate_done(self) -> None:
+    def test_task_outcomes_do_not_mutate_approved_candidate(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
             candidate = _feedback_candidate(root, "I want clearer evolve completion.")
-            run_evolve_candidate(candidate.id, root)
+            approved = approve_evolve_candidate(candidate.id, root)
             job = enqueue_task(
-                42,
-                f"Evolve approved candidate {candidate.id}",
-                root,
-                context="\n".join(["Evolve candidate context:", f"ID: {candidate.id}"]),
-                context_source="evolve-approve",
-            )
-            job = replace(
-                job,
-                runtime_provider="codex",
-                runtime_session_id="session-7",
-                runtime_completion_reason="completed",
-                runtime_usage={"input_tokens": 100, "output_tokens": 25},
-                runtime_event_types=("turn.completed",),
-            )
-
-            completed = complete_evolve_candidate_for_task(job, root)
-            visible = load_evolve_candidates(root)
-            all_candidates = load_evolve_candidates(root, include_inactive=True)
-            events = load_evolve_events(root, task_id=job.id)
-
-        assert completed is not None
-        self.assertEqual(completed.status, "done")
-        self.assertNotIn(candidate.id, {item.id for item in visible})
-        self.assertEqual(all_candidates[0].id, candidate.id)
-        self.assertEqual(all_candidates[0].status, "done")
-        self.assertEqual([event.event for event in events], ["completed"])
-        self.assertEqual(events[0].event_actor, "agent")
-        self.assertEqual(events[0].trigger, "task-runner")
-        self.assertEqual(events[0].runtime_provider, "codex")
-        self.assertEqual(events[0].runtime_session_id, "session-7")
-        self.assertEqual(events[0].runtime_usage["output_tokens"], 25)
-
-    def test_failed_candidate_stays_retryable_while_cancelled_candidate_is_inactive(self) -> None:
-        with TemporaryDirectory() as temp:
-            root = Path(temp)
-            failed_candidate = _feedback_candidate(root, "I want clearer failing evolve work.")
-            cancelled_candidate = _feedback_candidate(root, "I want clearer cancelled evolve work.")
-            run_evolve_candidate(failed_candidate.id, root)
-            run_evolve_candidate(cancelled_candidate.id, root)
-            failed_job = enqueue_task(
-                42,
-                f"Evolve approved candidate {failed_candidate.id}",
-                root,
-                context="\n".join(["Evolve candidate context:", f"ID: {failed_candidate.id}"]),
-                context_source="evolve-approve",
-            )
-            cancelled_job = enqueue_task(
-                42,
-                f"Evolve approved candidate {cancelled_candidate.id}",
-                root,
-                context="\n".join(["Evolve candidate context:", f"ID: {cancelled_candidate.id}"]),
-                context_source="evolve-approve",
-            )
-
-            failed = fail_evolve_candidate_for_task(failed_job, root)
-            cancelled = cancel_evolve_candidate_for_task(cancelled_job, root)
-            visible = load_evolve_candidates(root)
-            all_candidates = load_evolve_candidates(root, include_inactive=True)
-            failed_events = load_evolve_events(root, task_id=failed_job.id)
-            cancelled_events = load_evolve_events(root, task_id=cancelled_job.id)
-
-        assert failed is not None
-        assert cancelled is not None
-        self.assertEqual(failed.status, "failed")
-        self.assertEqual(cancelled.status, "cancelled")
-        self.assertEqual(
-            [(candidate.id, candidate.status) for candidate in visible],
-            [(failed_candidate.id, "failed")],
-        )
-        statuses = {candidate.id: candidate.status for candidate in all_candidates}
-        self.assertEqual(statuses[failed_candidate.id], "failed")
-        self.assertEqual(statuses[cancelled_candidate.id], "cancelled")
-        self.assertEqual(failed_events[0].event, "failed")
-        self.assertEqual(cancelled_events[0].event, "cancelled")
-
-    def test_failed_candidate_remains_proposable_and_can_retry(self) -> None:
-        with TemporaryDirectory() as temp:
-            root = Path(temp)
-            candidate = _feedback_candidate(root, "I want clearer retryable evolve work.")
-            run_evolve_candidate(candidate.id, root)
-            queued = enqueue_task(
                 42,
                 f"Evolve approved candidate {candidate.id}",
                 root,
@@ -609,20 +525,59 @@ class EnochEvolveTests(unittest.TestCase):
             )
             running = begin_next_task(root)
             assert running is not None
-            fail_task(running.id, root, result="Transient branch setup failure.")
-            failed = fail_evolve_candidate_for_task(running, root, reason=running.result)
-
-            proposal = propose_evolve(root)
-            failed_task = latest_failed_evolve_task(candidate.id, root)
-            retried = retry_evolve_candidate(candidate.id, root)
+            failed = fail_task(job.id, root, result="Validation failed.")
+            visible = load_evolve_candidates(root)
+            all_candidates = load_evolve_candidates(root, include_inactive=True)
 
         assert failed is not None
-        assert proposal.top_candidate is not None
-        assert failed_task is not None
-        self.assertEqual(proposal.top_candidate.id, candidate.id)
-        self.assertEqual(proposal.top_candidate.status, "failed")
-        self.assertEqual(failed_task.id, queued.id)
-        self.assertEqual(retried.status, "running")
+        self.assertEqual(approved.status, "approved")
+        self.assertEqual(failed.status, "failed")
+        self.assertNotIn(candidate.id, {item.id for item in visible})
+        self.assertEqual(all_candidates[0].id, candidate.id)
+        self.assertEqual(all_candidates[0].status, "approved")
+
+    def test_legacy_execution_statuses_migrate_to_approved_archive(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            path = root / ".enoch" / "evolve_candidates.json"
+            path.parent.mkdir(parents=True)
+            path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 7,
+                        "candidates": [
+                            {
+                                "id": f"legacy-{status}",
+                                "source": "feedback",
+                                "title": f"Legacy {status}",
+                                "status": status,
+                            }
+                            for status in (
+                                "running",
+                                "done",
+                                "failed",
+                                "cancelled",
+                                "regressed",
+                                "reverted",
+                                "forward-fixed",
+                            )
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            visible = sync_evolve_candidates(root)
+            archived = load_evolve_candidates(root, include_inactive=True)
+            migrated = json.loads(path.read_text(encoding="utf-8"))
+
+        self.assertEqual(visible, ())
+        self.assertEqual({item.status for item in archived}, {"approved"})
+        self.assertEqual(migrated["schema_version"], 8)
+        self.assertEqual(
+            {item["status"] for item in migrated["candidates"]},
+            {"approved"},
+        )
 
     def test_schedule_can_be_set_claimed_and_disabled(self) -> None:
         with TemporaryDirectory() as temp:

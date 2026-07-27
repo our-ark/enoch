@@ -8,7 +8,7 @@ task runner:
 
 ```text
 records -> evidence -> candidate -> recommendation -> human approval
-        -> isolated task -> review -> promotion -> adoption
+        -> archived handoff -> normal task and review lifecycle
 ```
 
 Backlog entries are ordinary deferred work and are never evolution evidence by
@@ -160,31 +160,26 @@ an explicitly labelled fallback.
 
 The curator can recommend one known candidate or suggest that a human remove an
 item as duplicate, superseded, obsolete, already resolved, context-only, or not
-actionable. It cannot invent candidates, approve, queue, retry, remove, merge,
-deploy, change permissions, or mutate mission or identity.
+actionable. It cannot invent candidates, approve, queue, remove, merge, deploy,
+change permissions, or mutate mission or identity.
 
 Curations are appended to `.enoch/evolve_curations.jsonl`. Candidates are
-stored in `.enoch/evolve_candidates.json`, and lifecycle decisions are appended
-to `.enoch/artifacts/evolve_events.jsonl`.
+stored in `.enoch/evolve_candidates.json`, and proposal, decision, and handoff
+events are appended to `.enoch/artifacts/evolve_events.jsonl`.
 
-## Governed lifecycle
+## Candidate-to-task handoff
 
-Candidate status and body adoption are separate:
+Candidates have only a decision lifecycle:
 
-- `candidate`: available for proposal and human approval.
-- `running`: linked work is active.
-- `done`: the task completed; this alone does not prove the change was merged.
-- `failed`: available for an explicit human retry.
-- `removed`, `cancelled`, `regressed`, `reverted`, or `forward-fixed`: retained
-  lifecycle state.
-- `promoted`: a human landed the review and Enoch verified its revision in the
-  trusted authoritative history.
-- `adopted`: an update passed doctor, restarted, and confirmed a version that
-  contains the promotion.
+- `candidate`: active and available for proposal, approval, or removal.
+- `approved`: archived after a normal task was successfully queued.
+- `removed`: archived after a human removal decision.
 
-`/evolve reconcile <id>` verifies realtime promotion.
-`/evolve reconcile <id> backfill` records equivalent historical evidence
-without pretending it was observed in realtime.
+Approval copies the full candidate context and provenance into the task and
+records an immutable candidate-to-task link. The task then exclusively owns
+execution, retries, worktrees, commits, reviews, and outcomes. Use `/tasks` and
+`/task retry <task_id>` after handoff. `/evolve candidates` shows only active
+candidates; `/evolve candidates all` includes the archive.
 
 ## Commands
 
@@ -195,8 +190,6 @@ without pretending it was observed in realtime.
 - `/evolve propose`
 - `/evolve brainstorm [theme]`
 - `/evolve approve <id>`
-- `/evolve retry <id>`
-- `/evolve reconcile <id> [backfill]`
 - `/evolve remove <id> [reason]`
 - `/evolve config`
 - `/evolve config mode <disabled|co-evolve|auto-evolve>`
