@@ -278,6 +278,9 @@ from enoch.commands import (
     config_command,
     core_command,
     core_command_names,
+    core_command_sections,
+    core_commands_in_section,
+    core_section_topic,
     doctor_command,
     help_message as _help_message,
     identity_summary,
@@ -699,7 +702,8 @@ class EnochApplication:
     def _dispatch_chat_event(self, event: ChatEvent) -> tuple[str, str]:
         chat_id = event.conversation_id
         text = event.text.strip()
-        self._safe_send_read_ack(chat_id, event.message_id)
+        if self._interaction_reply_target(event) is None:
+            self._safe_send_read_ack(chat_id, event.message_id)
         try:
             self.authorization.require(
                 "runtime.reset-usage",
@@ -741,16 +745,30 @@ class EnochApplication:
         return reply, logged_input
 
     def _finish_chat_event(self, event: ChatEvent, receipt: InboxReceipt) -> None:
+        edit_target = self._interaction_reply_target(event)
         if not receipt.reply_sent:
-            delivery = (
-                self._deliver_message(
-                    event.conversation_id,
-                    receipt.reply,
-                    notification_key=f"inbox:{receipt.key}:reply",
-                )
-                if receipt.reply
-                else NotificationResult(delivered=True)
+            presentation_prepared = self._prepare_help_navigation(
+                receipt.logged_input
             )
+            try:
+                if receipt.reply and edit_target is not None:
+                    delivery = self._deliver_message_edit(
+                        event.conversation_id,
+                        edit_target,
+                        receipt.reply,
+                        notification_key=f"inbox:{receipt.key}:reply",
+                    )
+                elif receipt.reply:
+                    delivery = self._deliver_message(
+                        event.conversation_id,
+                        receipt.reply,
+                        notification_key=f"inbox:{receipt.key}:reply",
+                    )
+                else:
+                    delivery = NotificationResult(delivered=True)
+            finally:
+                if presentation_prepared:
+                    self._clear_help_navigation()
             if not delivery.delivered:
                 details = {
                     "provider": self.channel_name,
@@ -768,12 +786,13 @@ class EnochApplication:
                 )
                 if not delivery.terminal:
                     return
-            self._record_turn(
-                event.conversation_id,
-                receipt.logged_input,
-                receipt.reply,
-            )
-            self._flush_session_syncs()
+            if edit_target is None:
+                self._record_turn(
+                    event.conversation_id,
+                    receipt.logged_input,
+                    receipt.reply,
+                )
+                self._flush_session_syncs()
             mark_reply_sent(self.channel_name, receipt.key, self.root)
         self._remember_update_offset(event.cursor)
         acknowledge_event(self.channel_name, receipt.key, self.root)
@@ -824,6 +843,60 @@ class EnochApplication:
             ),
         ]
         return "\n\n".join([core_help, "\n".join(profile_help)])
+
+    def _prepare_help_navigation(self, logged_input: str) -> bool:
+        prepare = getattr(self.client, "prepare_help_navigation", None)
+        if not callable(prepare):
+            return False
+        command, argument = _parse_chat_command(logged_input.strip())
+        if command.lstrip("/").lower() != "help":
+            return False
+
+        topic = argument.strip().lower().lstrip("/")
+        if not topic:
+            entries = tuple(
+                (section, core_section_topic(section))
+                for section in core_command_sections()
+            )
+            prepare("overview", entries)
+            return True
+
+        first_topic = topic.split(maxsplit=1)[0]
+        explicit_section = first_topic.startswith("section:")
+        section_topic = (
+            first_topic.partition(":")[2]
+            if explicit_section
+            else first_topic
+        )
+        section_commands = core_commands_in_section(section_topic)
+        if section_commands and (
+            explicit_section or core_command(first_topic) is None
+        ):
+            prepare(
+                "section",
+                tuple(
+                    (candidate.command, candidate.name)
+                    for candidate in section_commands
+                ),
+            )
+            return True
+
+        prepare("command", ())
+        return True
+
+    def _clear_help_navigation(self) -> None:
+        clear = getattr(self.client, "clear_help_navigation", None)
+        if callable(clear):
+            clear()
+
+    def _interaction_reply_target(
+        self,
+        event: ChatEvent,
+    ) -> MessageId | None:
+        resolve = getattr(self.client, "interaction_reply_target", None)
+        if not callable(resolve):
+            return None
+        return normalize_message_id(resolve(event))
 
     def _run_core_command(
         self,
@@ -1843,6 +1916,33 @@ class EnochApplication:
         try:
             return self.notifications.send(
                 chat_id,
+                message,
+                idempotency_key=key,
+            )
+        except (OSError, ChatProviderError, CapabilityAuthorizationError) as error:
+            return NotificationResult(
+                delivered=False,
+                error=str(error),
+            )
+
+    def _deliver_message_edit(
+        self,
+        chat_id: ConversationId,
+        message_id: MessageId,
+        message: str,
+        *,
+        notification_key: str = "",
+    ) -> NotificationResult:
+        key = notification_key or self._notification_key(
+            "edit",
+            chat_id,
+            message,
+            message_id=message_id,
+        )
+        try:
+            return self.notifications.edit(
+                chat_id,
+                message_id,
                 message,
                 idempotency_key=key,
             )
