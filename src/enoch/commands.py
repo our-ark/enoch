@@ -763,28 +763,9 @@ def help_message(topic: str = "", *, chat_provider: str = "chat") -> str:
     del chat_provider
     normalized_topic = _normalize_help_topic(topic)
     if normalized_topic:
-        explicit_section = normalized_topic.startswith("section:")
-        section_topic = (
-            normalized_topic.partition(":")[2]
-            if explicit_section
-            else normalized_topic
-        )
         command = core_command(normalized_topic)
-        if command is not None and not explicit_section:
+        if command is not None:
             return command.usage_message("/")
-        section_commands = core_commands_in_section(section_topic)
-        if section_commands:
-            section = section_commands[0].section
-            return "\n".join(
-                [
-                    f"{section} commands:",
-                    "",
-                    *(command.summary_line("/") for command in section_commands),
-                    "",
-                    "Use /help <command> for detailed usage and subcommands.",
-                    "Use /help to return to every command.",
-                ]
-            )
         return "\n".join(
             [
                 f"No help found for /{normalized_topic}.",
@@ -802,7 +783,8 @@ def help_message(topic: str = "", *, chat_provider: str = "chat") -> str:
     standalone = [command for command in CORE_COMMANDS if not command.section]
     if standalone:
         lines.extend(["", *(command.summary_line("/") for command in standalone)])
-    for section in core_command_sections():
+    sections = tuple(dict.fromkeys(command.section for command in CORE_COMMANDS if command.section))
+    for section in sections:
         lines.extend(
             [
                 "",
@@ -1099,9 +1081,6 @@ CORE_COMMANDS = (
 _CORE_COMMAND_INDEX = {command.name: command for command in CORE_COMMANDS}
 if len(_CORE_COMMAND_INDEX) != len(CORE_COMMANDS):
     raise RuntimeError("Core command registry contains duplicate command names.")
-_CORE_COMMAND_SECTIONS = tuple(
-    dict.fromkeys(command.section for command in CORE_COMMANDS if command.section)
-)
 
 
 def core_command(name: str) -> CoreCommand | None:
@@ -1111,20 +1090,3 @@ def core_command(name: str) -> CoreCommand | None:
 
 def core_command_names() -> frozenset[str]:
     return frozenset(_CORE_COMMAND_INDEX)
-
-
-def core_command_sections() -> tuple[str, ...]:
-    return _CORE_COMMAND_SECTIONS
-
-
-def core_section_topic(section: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "_", section.strip().lower()).strip("_")
-
-
-def core_commands_in_section(section: str) -> tuple[CoreCommand, ...]:
-    normalized = core_section_topic(section)
-    return tuple(
-        command
-        for command in CORE_COMMANDS
-        if core_section_topic(command.section) == normalized
-    )
