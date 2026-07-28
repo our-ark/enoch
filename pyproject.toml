@@ -1,6 +1,6 @@
 [project]
 name = "enoch"
-version = "0.3.0"
+version = "0.3.1"
 description = "Enoch is a Genesis-created local agent."
 readme = "README.md"
 license = "Apache-2.0"
@@ -13,8 +13,8 @@ dependencies = [
 
 [project.optional-dependencies]
 reference = [
-  "our-ark-telegram @ git+https://github.com/our-ark/enoch.git@5a7e430dc600b2d761cd66236c87292bd0675ef4#subdirectory=libraries/telegram",
-  "our-ark-github @ git+https://github.com/our-ark/enoch.git@5a7e430dc600b2d761cd66236c87292bd0675ef4#subdirectory=libraries/github",
+  "our-ark-telegram @ git+https://github.com/our-ark/enoch.git@9257a57a140950db2b3b3c242c7d2bbc622e26e1#subdirectory=libraries/telegram",
+  "our-ark-github @ git+https://github.com/our-ark/enoch.git@54e6f5525380cf0f3b1275992b9d73bd2f44774e#subdirectory=libraries/github",
   "our-ark-launchd @ git+https://github.com/our-ark/enoch.git@5a7e430dc600b2d761cd66236c87292bd0675ef4#subdirectory=libraries/launchd",
   "our-ark-systemd @ git+https://github.com/our-ark/enoch.git@5a7e430dc600b2d761cd66236c87292bd0675ef4#subdirectory=libraries/systemd",
   "our-ark-telegram-vision @ git+https://github.com/our-ark/enoch.git@6d894d9beb882af7e5f57900b2323361510262de#subdirectory=libraries/telegram-vision",

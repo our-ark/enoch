@@ -7,11 +7,11 @@ authors:
     given-names: Gary
   - family-names: Zhao
     given-names: Roy
-version: 0.3.0
-date-released: 2026-07-26
+version: 0.3.1
+date-released: 2026-07-27
 license: Apache-2.0
 repository-code: "https://github.com/our-ark/enoch"
-url: "https://github.com/our-ark/enoch/releases/tag/v0.3.0"
+url: "https://github.com/our-ark/enoch/releases/tag/v0.3.1"
 keywords:
   - agent-owned software
   - personal agents
