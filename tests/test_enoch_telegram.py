@@ -796,30 +796,6 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("/restart - restart Enoch's chat daemon from the locked conversation", client.sent[0][1])
         self.assertNotIn("/shutdown", client.sent[0][1])
         self.assertIn("say the request naturally", client.sent[0][1])
-        self.assertEqual(client.help_navigation[0][0], "overview")
-        self.assertIn(("Work", "work"), client.help_navigation[0][1])
-
-    def test_help_button_edits_message_without_logging_a_conversation_turn(self) -> None:
-        client = FakeTelegramClient(allowed_chat_id=42)
-        bot = EnochApplication(load_identity(), ROOT, client)
-        self.log_conversation_turn.reset_mock()
-
-        _handle_update(
-            bot,
-            _help_callback_update(
-                data="enoch:help:s:work",
-                message_id=71,
-            ),
-        )
-
-        self.assertEqual(client.sent, [])
-        self.assertEqual(len(client.edited), 1)
-        self.assertEqual(client.edited[0][0:2], (42, 71))
-        self.assertIn("Work commands:", client.edited[0][2])
-        self.assertEqual(client.help_navigation[0][0], "section")
-        self.assertIn(("/cron", "cron"), client.help_navigation[0][1])
-        self.assertEqual(client.acks, [])
-        self.log_conversation_turn.assert_not_called()
 
     def test_every_registered_core_command_has_a_dispatch_handler(self) -> None:
         client = FakeTelegramClient(allowed_chat_id=42)
@@ -5681,8 +5657,6 @@ class FakeTelegramClient:
         self.updates = []
         self.offsets = []
         self.downloads = []
-        self.help_navigation = []
-        self.current_help_navigation = None
 
     def get_updates(self, offset=None):
         self.offsets.append(offset)
@@ -5710,19 +5684,6 @@ class FakeTelegramClient:
     def download_file(self, file_id, destination, *, max_bytes):
         self.downloads.append((file_id, max_bytes))
         destination.write_bytes(b"\xff\xd8\xfftelegram-photo")
-
-    def prepare_help_navigation(self, mode, entries):
-        navigation = (mode, tuple(entries))
-        self.current_help_navigation = navigation
-        self.help_navigation.append(navigation)
-
-    def clear_help_navigation(self):
-        self.current_help_navigation = None
-
-    def interaction_reply_target(self, event):
-        if isinstance(event.raw.get("callback_query"), dict):
-            return event.message_id
-        return None
 
 
 class FailingTelegramClient(FakeTelegramClient):
@@ -5782,27 +5743,6 @@ def _message_update(update_id=1, chat_id=42, text="hello", reply_text=None):
     return {
         "update_id": update_id,
         "message": message,
-    }
-
-
-def _help_callback_update(
-    *,
-    update_id=1,
-    chat_id=42,
-    message_id=1001,
-    data="enoch:help:h",
-):
-    return {
-        "update_id": update_id,
-        "callback_query": {
-            "id": f"callback-{update_id}",
-            "data": data,
-            "message": {
-                "message_id": message_id,
-                "chat": {"id": chat_id},
-                "text": "Enoch commands:",
-            },
-        },
     }
 
 

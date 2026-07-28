@@ -16,8 +16,6 @@ from our_ark_provider_kit import (
 from our_ark_telegram.presentation import (
     is_formatting_error,
     render_telegram_html,
-    telegram_help_callback_command,
-    telegram_help_reply_markup,
     telegram_message_chunks,
 )
 
@@ -46,29 +44,17 @@ class TelegramClient:
 
     def __init__(self, config: TelegramConfig) -> None:
         self.config = config
-        self._help_navigation: tuple[
-            str,
-            tuple[tuple[str, str], ...],
-        ] | None = None
 
     @property
     def allowed_conversation_id(self) -> ConversationId | None:
         return self.config.allowed_chat_id
 
     def receive(self, cursor: int | None = None) -> list[ChatEvent]:
-        events: list[ChatEvent] = []
-        for update in self.get_updates(cursor):
-            event = telegram_event(update)
-            if event is None:
-                continue
-            callback_id = _help_callback_id(update)
-            if callback_id:
-                self._call(
-                    "answerCallbackQuery",
-                    {"callback_query_id": callback_id},
-                )
-            events.append(event)
-        return events
+        return [
+            event
+            for update in self.get_updates(cursor)
+            if (event := telegram_event(update)) is not None
+        ]
 
     def get_updates(self, offset: int | None = None) -> list[dict[str, Any]]:
         payload: dict[str, Any] = {"timeout": self.config.poll_timeout}
@@ -82,29 +68,15 @@ class TelegramClient:
         conversation_id: ConversationId,
         text: str,
     ) -> MessageId | None:
-        navigation = self._take_help_navigation()
-        reply_markup = (
-            telegram_help_reply_markup(*navigation)
-            if navigation is not None
-            else None
-        )
         first_message_id: int | None = None
-        message_chunks = telegram_message_chunks(text, MAX_TELEGRAM_MESSAGE)
-        for index, chunk in enumerate(message_chunks):
-            payload: dict[str, Any] = {
-                "chat_id": conversation_id,
-                "text": chunk.html,
-                "parse_mode": "HTML",
-            }
-            if reply_markup is not None and index == len(message_chunks) - 1:
-                payload["reply_markup"] = json.dumps(
-                    reply_markup,
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                )
+        for chunk in telegram_message_chunks(text, MAX_TELEGRAM_MESSAGE):
             data = self._call_with_plain_fallback(
                 "sendMessage",
-                payload,
+                {
+                    "chat_id": conversation_id,
+                    "text": chunk.html,
+                    "parse_mode": "HTML",
+                },
                 plain_text=chunk.plain,
             )
             message_id = _message_id(data)
@@ -151,43 +123,16 @@ class TelegramClient:
         message_id: MessageId,
         text: str,
     ) -> None:
-        navigation = self._take_help_navigation()
-        payload: dict[str, Any] = {
-            "chat_id": conversation_id,
-            "message_id": message_id,
-            "text": render_telegram_html(text),
-            "parse_mode": "HTML",
-        }
-        if navigation is not None:
-            payload["reply_markup"] = json.dumps(
-                telegram_help_reply_markup(*navigation),
-                ensure_ascii=False,
-                separators=(",", ":"),
-            )
-        try:
-            self._call_with_plain_fallback(
-                "editMessageText",
-                payload,
-                plain_text=text,
-            )
-        except TelegramError as error:
-            if "message is not modified" not in str(error).lower():
-                raise
-
-    def prepare_help_navigation(
-        self,
-        mode: str,
-        entries: tuple[tuple[str, str], ...],
-    ) -> None:
-        self._help_navigation = (mode, tuple(entries))
-
-    def clear_help_navigation(self) -> None:
-        self._help_navigation = None
-
-    def interaction_reply_target(self, event: ChatEvent) -> MessageId | None:
-        if _help_callback_id(event.raw):
-            return event.message_id
-        return None
+        self._call_with_plain_fallback(
+            "editMessageText",
+            {
+                "chat_id": conversation_id,
+                "message_id": message_id,
+                "text": render_telegram_html(text),
+                "parse_mode": "HTML",
+            },
+            plain_text=text,
+        )
 
     def send_read_ack(
         self,
@@ -206,13 +151,6 @@ class TelegramClient:
                 "reaction": reaction,
             },
         )
-
-    def _take_help_navigation(
-        self,
-    ) -> tuple[str, tuple[tuple[str, str], ...]] | None:
-        navigation = self._help_navigation
-        self._help_navigation = None
-        return navigation
 
     def _call(self, method: str, payload: dict[str, Any]) -> dict[str, Any]:
         url = f"{TELEGRAM_API}/bot{self.config.token}/{method}"
@@ -247,23 +185,11 @@ class TelegramClient:
 
 def telegram_event(update: dict[str, Any]) -> ChatEvent | None:
     update_id = update.get("update_id")
-    callback = update.get("callback_query")
-    callback_command = (
-        telegram_help_callback_command(str(callback.get("data") or ""))
-        if isinstance(callback, dict)
-        else None
-    )
-    message = (
-        callback.get("message") or {}
-        if callback_command is not None and isinstance(callback, dict)
-        else update.get("message") or {}
-    )
+    message = update.get("message") or {}
     chat = message.get("chat") or {}
     chat_id = chat.get("id")
     message_id = message.get("message_id")
-    text = callback_command or str(
-        message.get("text") or message.get("caption") or ""
-    ).strip()
+    text = str(message.get("text") or message.get("caption") or "").strip()
     attachments = _attachments(message)
     has_supported_image = any(
         item.kind == "image" and item.file_id for item in attachments
@@ -283,16 +209,6 @@ def telegram_event(update: dict[str, Any]) -> ChatEvent | None:
         raw=update,
         attachments=attachments,
     )
-
-
-def _help_callback_id(update: dict[str, Any]) -> str:
-    callback = update.get("callback_query")
-    if not isinstance(callback, dict):
-        return ""
-    if telegram_help_callback_command(str(callback.get("data") or "")) is None:
-        return ""
-    callback_id = callback.get("id")
-    return callback_id if isinstance(callback_id, str) else ""
 
 
 def chunks(text: str, size: int = MAX_TELEGRAM_MESSAGE) -> list[str]:
