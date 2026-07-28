@@ -3551,6 +3551,34 @@ class EnochTelegramTests(unittest.TestCase):
 
     @patch("enoch.app.core.ensure_long_term_memory")
     @patch("enoch.app.core.log_conversation_turn")
+    def test_cron_command_does_not_ignore_unavailable_context_snapshot(
+        self,
+        _log_conversation_turn: MagicMock,
+        _update_memory: MagicMock,
+    ) -> None:
+        self.resolve_task_context_snapshot.return_value = TaskContextSnapshot(
+            codex_unavailable_reason="Codex authentication is unavailable.",
+        )
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            client = FakeTelegramClient(allowed_chat_id=42)
+            bot = EnochApplication(load_identity(), root, client)
+
+            _handle_update(
+                bot,
+                _message_update(
+                    chat_id=42,
+                    text="/cron every 10m run scheduled cleanup",
+                ),
+            )
+            status = cron_status(root)
+
+        self.assertEqual(status.active, ())
+        self.assertIn("no cron job was created", client.sent[0][1])
+        self.assertIn("Codex authentication is unavailable", client.sent[0][1])
+
+    @patch("enoch.app.core.ensure_long_term_memory")
+    @patch("enoch.app.core.log_conversation_turn")
     def test_cron_command_can_cancel_and_report(
         self,
         _log_conversation_turn: MagicMock,
@@ -3606,6 +3634,91 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual(cron_after.active[0].last_task_id, queued.pending[0].id)
         self.assertIn("Task #1", client.sent[0][1])
         self.assertIn("Latest update: Scheduled by cron #1.", client.sent[0][1])
+
+    def test_due_cron_runs_at_front_with_only_one_outstanding_task(self) -> None:
+        start = datetime(2020, 1, 1, tzinfo=timezone.utc)
+        first_due = datetime(2020, 1, 1, 0, 1, tzinfo=timezone.utc)
+        second_due = datetime(2020, 1, 1, 0, 2, tzinfo=timezone.utc)
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            client = FakeTelegramClient(allowed_chat_id=42)
+            bot = EnochApplication(load_identity(), root, client)
+            ordinary = enqueue_task(42, "ordinary queued work", root)
+            cron = add_cron_job(
+                42,
+                "scheduled cleanup",
+                60,
+                root,
+                now=start,
+            )
+
+            with patch("enoch.cron._utc_now", return_value=first_due):
+                first = bot._enqueue_due_cron_jobs()
+            first_queue = task_queue_status(root)
+
+            with patch("enoch.cron._utc_now", return_value=second_due):
+                duplicate = bot._enqueue_due_cron_jobs()
+            blocked_queue = task_queue_status(root)
+
+            running = begin_next_task(root)
+            assert running is not None
+            complete_task(running.id, root, result="Done.")
+            with patch(
+                "enoch.cron._utc_now",
+                return_value=datetime(2020, 1, 1, 0, 2, 30, tzinfo=timezone.utc),
+            ):
+                second = bot._enqueue_due_cron_jobs()
+            resumed_queue = task_queue_status(root)
+            cron_after = cron_status(root).active[0]
+
+        self.assertEqual([job.id for job in first], [ordinary.id + 1])
+        self.assertEqual(
+            [job.id for job in first_queue.pending],
+            [first[0].id, ordinary.id],
+        )
+        self.assertEqual(duplicate, ())
+        self.assertEqual(
+            [job.id for job in blocked_queue.pending],
+            [first[0].id, ordinary.id],
+        )
+        self.assertEqual([job.id for job in second], [first[0].id + 1])
+        self.assertEqual(
+            [job.id for job in resumed_queue.pending],
+            [second[0].id, ordinary.id],
+        )
+        self.assertEqual(cron_after.id, cron.id)
+        self.assertEqual(cron_after.last_task_id, second[0].id)
+        self.assertEqual(cron_after.last_scheduled_at, "2020-01-01T00:02:00+00:00")
+        self.assertEqual(cron_after.next_run_at, "2020-01-01T00:03:00+00:00")
+
+    def test_cron_scheduler_runs_independently_of_chat_polling(self) -> None:
+        scheduled = threading.Event()
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            client = FakeTelegramClient(allowed_chat_id=42)
+            bot = EnochApplication(load_identity(), root, client)
+            add_cron_job(
+                42,
+                "scheduled cleanup",
+                60,
+                root,
+                now=datetime(2020, 1, 1, tzinfo=timezone.utc),
+            )
+
+            try:
+                with patch.object(
+                    bot,
+                    "_maybe_start_task_worker",
+                    side_effect=scheduled.set,
+                ):
+                    bot._start_cron_scheduler()
+                    self.assertTrue(scheduled.wait(timeout=2.0))
+            finally:
+                bot._stop_cron_scheduler(timeout_seconds=1.0)
+            queued = task_queue_status(root)
+
+        self.assertEqual(queued.pending_count, 1)
+        self.assertEqual(queued.pending[0].trigger, "cron:1")
 
     @patch("enoch.app.core.ensure_long_term_memory")
     @patch("enoch.app.core.log_conversation_turn")

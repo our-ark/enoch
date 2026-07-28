@@ -116,6 +116,40 @@ class EnochPrivateStateTests(unittest.TestCase):
         self.assertFalse(second.applied)
         self.assertFalse(second.plan.migration_required)
 
+    def test_cron_state_migration_adds_fixed_rate_timing_metadata(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            state = root / ".enoch"
+            state.mkdir()
+            cron = state / "cron.json"
+            cron.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 3,
+                        "next_id": 2,
+                        "active": [
+                            {
+                                "id": 1,
+                                "chat_id": 42,
+                                "text": "scheduled work",
+                                "interval_seconds": 600,
+                                "created_at": "2026-07-25T00:00:00+00:00",
+                                "next_run_at": "2026-07-25T00:10:00+00:00",
+                            }
+                        ],
+                        "history": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            result = migrate_private_state(root)
+            migrated = json.loads(cron.read_text(encoding="utf-8"))
+
+        self.assertTrue(result.applied)
+        self.assertEqual(migrated["schema_version"], 4)
+        self.assertEqual(migrated["active"][0]["last_scheduled_at"], "")
+
     def test_renamed_brainstorm_schema_is_a_migratable_manifest_alias(self) -> None:
         with TemporaryDirectory() as directory:
             root = Path(directory)

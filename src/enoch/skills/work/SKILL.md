@@ -36,7 +36,12 @@ When work is queued:
    failed, elapsed time, latest update, and review URLs.
 4. Run queued work through the same authorized repository workflow as foreground `/do` work.
 5. Promote backlog items only when the task queue is idle.
-6. Claim due cron jobs atomically before enqueueing them, so one due event creates one task.
+6. Run cron checks in an independent scheduler rather than after chat polling.
+   Claim due occurrences atomically and enqueue them at the front of the task
+   queue. Keep at most one pending, running, or paused task per schedule.
+   Interval targets are fixed-rate: after downtime, coalesce missed targets
+   into one immediate task and advance to the first anchored target still in
+   the future.
 7. When agent runtime authentication, quota, or rate limits are unavailable, move the
    active task to `paused`, stop the worker before it consumes later tasks, and
    warn the human. `/task resume <id|all>` moves selected paused tasks back to

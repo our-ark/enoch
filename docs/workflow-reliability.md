@@ -76,6 +76,20 @@ succeed; only then does Enoch acknowledge the claim and advance the schedule.
 After a crash, the same claim is returned and its idempotency key prevents a
 duplicate task.
 
+Task cron runs from an independent scheduler thread, so blocked or failed chat
+polling does not delay due checks. A due cron task is inserted at the front of
+the pending task queue without interrupting the running task. Each schedule may
+have at most one pending, running, or paused task; an additional due occurrence
+remains claimed until that task reaches a terminal state.
+
+Task cron intervals use fixed-rate UTC targets. `next_run_at` is the next
+anchored target, `last_scheduled_at` is the target represented by the latest
+admitted task, and `last_run_at` is when that task was handed to the queue.
+After daemon downtime, all missed targets are coalesced into one task that is
+admitted as soon as the scheduler starts. The following target is the first
+anchored interval strictly in the future, preventing acknowledgement-time
+drift and unbounded catch-up work.
+
 ## State safety
 
 All replace-style JSON writes use a unique sibling temporary file, `fsync`, and

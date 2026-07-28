@@ -13,7 +13,7 @@ from enoch.providers.contracts import ConversationId, normalize_conversation_id
 from enoch.state import StateCorruptionError, file_transaction, load_json_object
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 _INTERVAL_PATTERN = re.compile(
     r"^\s*(?P<count>\d+)\s*(?P<unit>s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hrs|hour|hours|d|day|days)\s*$",
     re.IGNORECASE,
@@ -22,12 +22,21 @@ _INTERVAL_PATTERN = re.compile(
 
 @dataclass(frozen=True)
 class CronJob:
+    """A fixed-rate recurring task schedule.
+
+    ``next_run_at`` is the next anchored target time. ``last_scheduled_at`` is
+    the target represented by the most recently admitted occurrence, while
+    ``last_run_at`` is when that occurrence was actually handed to the task
+    queue. Missed target times are coalesced into one immediate occurrence.
+    """
+
     id: int
     chat_id: ConversationId
     text: str
     interval_seconds: int
     created_at: str
     next_run_at: str
+    last_scheduled_at: str = ""
     last_run_at: str = ""
     completed_at: str = ""
     status: str = "active"
@@ -184,6 +193,13 @@ def record_cron_task(
     claim_id: str = "",
     now: datetime | None = None,
 ) -> CronJob | None:
+    """Acknowledge one claimed occurrence after its task is durable.
+
+    Interval schedules are fixed-rate rather than fixed-delay: the following
+    target is calculated from the acknowledged occurrence's scheduled target,
+    skipping missed slots until the first target strictly after ``now``.
+    """
+
     current = _coerce_utc(now) if now is not None else _utc_now()
     with _cron_transaction(root):
         data = _load_cron(root)
@@ -196,11 +212,21 @@ def record_cron_task(
                     continue
                 changes: dict[str, object] = {"last_task_id": task_id}
                 if job.claim_id and claim_id:
+                    scheduled_for = _parse_time(job.next_run_at)
                     changes.update(
                         {
-                            "last_run_at": job.claimed_at or _iso(current),
+                            "last_scheduled_at": (
+                                _iso(scheduled_for)
+                                if scheduled_for is not None
+                                else job.next_run_at
+                            ),
+                            "last_run_at": _iso(current),
                             "next_run_at": _iso(
-                                current + timedelta(seconds=job.interval_seconds)
+                                _next_interval_run(
+                                    scheduled_for,
+                                    job.interval_seconds,
+                                    current,
+                                )
                             ),
                             "claim_id": "",
                             "claimed_at": "",
@@ -225,6 +251,33 @@ def cron_status(root: Path | None = None) -> CronStatus:
             active=active,
             history=tuple(_history_jobs(data)),
         )
+
+
+def cron_scheduler_wait_seconds(
+    root: Path | None = None,
+    *,
+    now: datetime | None = None,
+    max_wait_seconds: float = 5.0,
+    claimed_retry_seconds: float = 1.0,
+) -> float:
+    """Return a bounded independent-scheduler sleep interval."""
+
+    if max_wait_seconds <= 0 or claimed_retry_seconds <= 0:
+        raise ValueError("Cron scheduler wait intervals must be greater than zero.")
+    current = _coerce_utc(now) if now is not None else _utc_now()
+    waits: list[float] = []
+    for job in cron_status(root).active:
+        if job.claim_id:
+            waits.append(claimed_retry_seconds)
+            continue
+        next_run_at = _parse_time(job.next_run_at)
+        if next_run_at is None:
+            waits.append(claimed_retry_seconds)
+            continue
+        waits.append(max(0.0, (next_run_at - current).total_seconds()))
+    if not waits:
+        return max_wait_seconds
+    return max(0.05, min(max_wait_seconds, *waits))
 
 
 def _load_cron(root: Path | None = None) -> dict:
@@ -288,6 +341,7 @@ def _parse_job(raw: object) -> CronJob | None:
     interval_seconds = _int(raw.get("interval_seconds"))
     created_at = str(raw.get("created_at") or "").strip()
     next_run_at = str(raw.get("next_run_at") or "").strip()
+    last_scheduled_at = str(raw.get("last_scheduled_at") or "").strip()
     last_run_at = str(raw.get("last_run_at") or "").strip()
     completed_at = str(raw.get("completed_at") or "").strip()
     status = str(raw.get("status") or "").strip() or "active"
@@ -306,6 +360,7 @@ def _parse_job(raw: object) -> CronJob | None:
         interval_seconds=interval_seconds,
         created_at=created_at,
         next_run_at=next_run_at,
+        last_scheduled_at=last_scheduled_at,
         last_run_at=last_run_at,
         completed_at=completed_at,
         status=status,
@@ -328,6 +383,7 @@ def _job_to_dict(job: CronJob | None) -> dict:
         "interval_seconds": job.interval_seconds,
         "created_at": job.created_at,
         "next_run_at": job.next_run_at,
+        "last_scheduled_at": job.last_scheduled_at,
         "last_run_at": job.last_run_at,
         "completed_at": job.completed_at,
         "status": job.status,
@@ -348,6 +404,7 @@ def _replace_job(job: CronJob, **changes: object) -> CronJob:
         "interval_seconds": job.interval_seconds,
         "created_at": job.created_at,
         "next_run_at": job.next_run_at,
+        "last_scheduled_at": job.last_scheduled_at,
         "last_run_at": job.last_run_at,
         "completed_at": job.completed_at,
         "status": job.status,
@@ -370,6 +427,23 @@ def _parse_time(value: str) -> datetime | None:
     except ValueError:
         return None
     return _coerce_utc(parsed)
+
+
+def _next_interval_run(
+    scheduled_for: datetime | None,
+    interval_seconds: int,
+    current: datetime,
+) -> datetime:
+    """Return the first anchored interval target strictly after ``current``."""
+
+    current = _coerce_utc(current)
+    if scheduled_for is None:
+        return current + timedelta(seconds=interval_seconds)
+    candidate = _coerce_utc(scheduled_for) + timedelta(seconds=interval_seconds)
+    if candidate > current:
+        return candidate
+    missed = int((current - candidate).total_seconds() // interval_seconds) + 1
+    return candidate + timedelta(seconds=missed * interval_seconds)
 
 
 def _utc_now() -> datetime:

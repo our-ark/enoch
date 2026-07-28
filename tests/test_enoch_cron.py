@@ -12,6 +12,7 @@ from enoch.cron import (
     add_cron_job,
     cancel_cron_job,
     claim_due_cron_jobs,
+    cron_scheduler_wait_seconds,
     cron_status,
     format_cron_interval,
     parse_cron_interval,
@@ -76,8 +77,52 @@ class EnochCronTests(unittest.TestCase):
         self.assertEqual(still_claimed[0].claim_id, claimed[0].claim_id)
         self.assertIsNotNone(recorded)
         self.assertEqual(after_ack, ())
+        self.assertEqual(status.active[0].last_scheduled_at, "2026-06-30T12:10:00+00:00")
         self.assertEqual(status.active[0].last_run_at, "2026-06-30T12:10:00+00:00")
         self.assertEqual(status.active[0].next_run_at, "2026-06-30T12:20:00+00:00")
+
+    def test_missed_runs_coalesce_and_preserve_fixed_rate_anchor(self) -> None:
+        start = datetime(2026, 6, 30, 12, 0, tzinfo=timezone.utc)
+        restarted = datetime(2026, 6, 30, 12, 37, tzinfo=timezone.utc)
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            job = add_cron_job(42, "run scheduled work", 600, root, now=start)
+
+            claimed = claim_due_cron_jobs(root, now=restarted)
+            recorded = record_cron_task(
+                job.id,
+                7,
+                root,
+                claim_id=claimed[0].claim_id,
+                now=restarted,
+            )
+
+        assert recorded is not None
+        self.assertEqual(recorded.last_scheduled_at, "2026-06-30T12:10:00+00:00")
+        self.assertEqual(recorded.last_run_at, "2026-06-30T12:37:00+00:00")
+        self.assertEqual(recorded.next_run_at, "2026-06-30T12:40:00+00:00")
+
+    def test_scheduler_wait_is_bounded_by_next_target_and_claim_retry(self) -> None:
+        start = datetime(2026, 6, 30, 12, 0, tzinfo=timezone.utc)
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            add_cron_job(42, "run scheduled work", 10, root, now=start)
+
+            before_due = cron_scheduler_wait_seconds(
+                root,
+                now=datetime(2026, 6, 30, 12, 0, 8, tzinfo=timezone.utc),
+            )
+            claim_due_cron_jobs(
+                root,
+                now=datetime(2026, 6, 30, 12, 0, 10, tzinfo=timezone.utc),
+            )
+            claimed = cron_scheduler_wait_seconds(
+                root,
+                now=datetime(2026, 6, 30, 12, 0, 10, tzinfo=timezone.utc),
+            )
+
+        self.assertEqual(before_due, 2.0)
+        self.assertEqual(claimed, 1.0)
 
     def test_cancel_and_record_last_task(self) -> None:
         with TemporaryDirectory() as temp:
