@@ -50,9 +50,11 @@ from enoch.channel import (
     temporary_image_attachment,
 )
 from enoch.cron import (
+    CronJob,
     add_cron_job,
     cancel_cron_job,
     claim_due_cron_jobs,
+    cron_scheduler_wait_seconds,
     format_cron_interval,
     parse_cron_interval,
     record_cron_task,
@@ -510,7 +512,12 @@ class EnochApplication:
         self._restart_after_reply = False
         self._pending_session_syncs: list[tuple[int, str]] = []
         self._task_worker: threading.Thread | None = None
+        self._task_worker_lock = threading.Lock()
         self._direct_workers: dict[int, threading.Thread] = {}
+        self._cron_scheduler_thread: threading.Thread | None = None
+        self._cron_scheduler_lock = threading.Lock()
+        self._cron_scheduler_stop = threading.Event()
+        self._cron_scheduler_wake = threading.Event()
         self._lineage_worker: threading.Thread | None = None
         self._lineage_worker_lock = threading.Lock()
         self._task_cancellations: dict[int, threading.Event] = {}
@@ -561,16 +568,20 @@ class EnochApplication:
         return load_provider(kind, self.root)
 
     def run_forever(self) -> None:
-        while True:
-            try:
-                self.run_once()
-            except ShutdownRequested:
-                raise
-            except StaleDaemonEpoch:
-                raise
-            except Exception as error:
-                print(f"Enoch {provider_label(self.channel_name)} polling error: {error}")
-                time.sleep(5)
+        self._start_cron_scheduler()
+        try:
+            while True:
+                try:
+                    self.run_once()
+                except ShutdownRequested:
+                    raise
+                except StaleDaemonEpoch:
+                    raise
+                except Exception as error:
+                    print(f"Enoch {provider_label(self.channel_name)} polling error: {error}")
+                    time.sleep(5)
+        finally:
+            self._stop_cron_scheduler()
 
     def notify_startup(self) -> None:
         chat_id = _allowed_conversation_id(self.client)
@@ -631,7 +642,6 @@ class EnochApplication:
             )
             for event in self.client.receive(self.offset):
                 self.handle_event(event)
-            self._enqueue_due_cron_jobs()
             self._run_due_evidence_scans()
             self._run_due_evolve_schedule()
             self._maybe_start_task_worker()
@@ -1607,8 +1617,63 @@ class EnochApplication:
             failure_prefix=f"Enoch could not complete direct task #{job.id}",
         )
 
+    def _start_cron_scheduler(self) -> None:
+        with self._cron_scheduler_lock:
+            if self._stopping:
+                return
+            if (
+                self._cron_scheduler_thread is not None
+                and self._cron_scheduler_thread.is_alive()
+            ):
+                return
+            self._cron_scheduler_stop.clear()
+            self._cron_scheduler_wake.clear()
+            self._cron_scheduler_thread = threading.Thread(
+                target=self._run_cron_scheduler,
+                name="enoch-cron-scheduler",
+                daemon=True,
+            )
+            self._cron_scheduler_thread.start()
+
+    def _stop_cron_scheduler(self, timeout_seconds: float = 7.0) -> None:
+        self._cron_scheduler_stop.set()
+        self._cron_scheduler_wake.set()
+        with self._cron_scheduler_lock:
+            worker = self._cron_scheduler_thread
+        if (
+            worker is not None
+            and worker is not threading.current_thread()
+            and worker.is_alive()
+        ):
+            worker.join(timeout=max(0.0, timeout_seconds))
+        with self._cron_scheduler_lock:
+            if (
+                self._cron_scheduler_thread is worker
+                and (worker is None or not worker.is_alive())
+            ):
+                self._cron_scheduler_thread = None
+
+    def _run_cron_scheduler(self) -> None:
+        while not self._stopping and not self._cron_scheduler_stop.is_set():
+            self._cron_scheduler_wake.clear()
+            try:
+                require_current_daemon_epoch(self.daemon_epoch, self.root)
+                self._enqueue_due_cron_jobs()
+                self._maybe_start_task_worker()
+                wait_seconds = cron_scheduler_wait_seconds(self.root)
+            except StaleDaemonEpoch:
+                return
+            except Exception as error:
+                print(f"Enoch cron scheduler error: {error}")
+                wait_seconds = 1.0
+            self._cron_scheduler_wake.wait(timeout=wait_seconds)
+
     def stop_workers(self, timeout_seconds: float = 7.0) -> None:
         self._stopping = True
+        deadline = time.monotonic() + max(0.0, timeout_seconds)
+        self._stop_cron_scheduler(
+            timeout_seconds=max(0.0, deadline - time.monotonic())
+        )
         for cancellation in tuple(self._task_cancellations.values()):
             cancellation.set()
         current = threading.current_thread()
@@ -1617,7 +1682,6 @@ class EnochApplication:
             workers.append(self._task_worker)
         if self._lineage_worker is not None:
             workers.append(self._lineage_worker)
-        deadline = time.monotonic() + max(0.0, timeout_seconds)
         for worker in workers:
             if worker is current or not worker.is_alive():
                 continue
@@ -3062,6 +3126,7 @@ class EnochApplication:
             cancelled = cancel_cron_job(job_id, self.root)
             if cancelled is None:
                 return f"Enoch could not cancel cron #{job_id}. It may already be cancelled or missing."
+            self._cron_scheduler_wake.set()
             return f"Cancelled cron #{cancelled.id}."
         if subcommand != "every":
             return _cron_usage()
@@ -3074,6 +3139,11 @@ class EnochApplication:
         except ValueError as error:
             return str(error)
         snapshot = self._resolve_task_context_snapshot(chat_id, request)
+        if snapshot.codex_unavailable_reason:
+            return (
+                "Enoch could not prepare conversation context for that scheduled "
+                f"job, so no cron job was created: {snapshot.codex_unavailable_reason}"
+            )
         if snapshot.error:
             return f"Enoch could not prepare conversation context for that scheduled job yet: {snapshot.error}"
         if snapshot.clarification:
@@ -3090,6 +3160,7 @@ class EnochApplication:
             )
         except (OSError, ValueError):
             return "Enoch could not schedule that cron job."
+        self._cron_scheduler_wake.set()
         return "\n".join(
             [
                 f"Cron #{job.id} scheduled every {format_cron_interval(job.interval_seconds)}.",
@@ -3098,21 +3169,22 @@ class EnochApplication:
         )
 
     def _maybe_start_task_worker(self) -> None:
-        if self._stopping:
-            return
-        if self._task_worker is not None and self._task_worker.is_alive():
-            return
-        status = self.workflow.inspect()
-        if status.running is not None or status.paused_count:
-            return
-        if status.pending_count == 0 and self._promote_next_backlog_if_idle() is None:
-            return
-        self._task_worker = threading.Thread(
-            target=self._run_task_worker,
-            name="enoch-task-worker",
-            daemon=True,
-        )
-        self._task_worker.start()
+        with self._task_worker_lock:
+            if self._stopping:
+                return
+            if self._task_worker is not None and self._task_worker.is_alive():
+                return
+            status = self.workflow.inspect()
+            if status.running is not None or status.paused_count:
+                return
+            if status.pending_count == 0 and self._promote_next_backlog_if_idle() is None:
+                return
+            self._task_worker = threading.Thread(
+                target=self._run_task_worker,
+                name="enoch-task-worker",
+                daemon=True,
+            )
+            self._task_worker.start()
 
     def _run_task_worker(self) -> None:
         try:
@@ -3125,6 +3197,11 @@ class EnochApplication:
                     if job is None:
                         return
                 self._run_task_job(job)
+                self._cron_scheduler_wake.set()
+                try:
+                    self._enqueue_due_cron_jobs()
+                except Exception as error:
+                    print(f"Enoch cron scheduler error after task completion: {error}")
                 if self.workflow.inspect().paused_count:
                     return
         except StaleDaemonEpoch:
@@ -3184,12 +3261,24 @@ class EnochApplication:
         return job
 
     def _enqueue_due_cron_jobs(self) -> tuple[TaskJob, ...]:
-        jobs: list[TaskJob] = []
-        for cron in claim_due_cron_jobs(self.root):
+        claimed = tuple(
+            sorted(
+                claim_due_cron_jobs(self.root),
+                key=lambda cron: (cron.next_run_at, cron.id),
+            )
+        )
+        eligible = tuple(
+            cron
+            for cron in claimed
+            if not self._cron_task_is_outstanding(cron)
+        )
+        enqueued: dict[int, TaskJob] = {}
+        for cron in reversed(eligible):
             try:
                 job = self.workflow.enqueue(
                     cron.chat_id,
                     cron.text,
+                    mode="front",
                     context=cron.context,
                     context_source=f"cron:{cron.context_source}" if cron.context_source else "cron",
                     source="task",
@@ -3207,6 +3296,13 @@ class EnochApplication:
                 self.root,
                 claim_id=cron.claim_id,
             )
+            enqueued[cron.id] = job
+
+        jobs: list[TaskJob] = []
+        for cron in eligible:
+            job = enqueued.get(cron.id)
+            if job is None:
+                continue
             jobs.append(job)
             message = self._format_work_status(
                 WorkStatusMessage(
@@ -3229,6 +3325,12 @@ class EnochApplication:
                 self._work_status_messages[job.id] = message_id
                 self.workflow.record_status_message(job.id, message_id)
         return tuple(jobs)
+
+    def _cron_task_is_outstanding(self, cron: CronJob) -> bool:
+        if cron.last_task_id is None:
+            return False
+        task = self.workflow.find(cron.last_task_id)
+        return task is not None and task.status in {"pending", "running", "paused"}
 
     def _scan_evidence_sources(
         self,

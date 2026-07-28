@@ -118,9 +118,9 @@ actual histories justify it.
 
 ## Scan timing and cursor rules
 
-The daemon checks thresholds on each event-loop pass after receiving chat
-updates and enqueueing due cron work, but before the evolve scheduler and task
-worker start.
+The chat event loop checks thresholds after receiving chat updates but before
+the evolve scheduler and task worker start. Task cron due checks run
+independently and may enqueue work concurrently.
 
 An automatic threshold scan runs only when:
 

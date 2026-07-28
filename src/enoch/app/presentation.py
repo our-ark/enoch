@@ -209,6 +209,8 @@ def cron_usage() -> str:
         [
             "Use /cron every <interval> <request> to schedule recurring work.",
             "Intervals can be like 10m, 2h, or 1d.",
+            "Intervals stay anchored; missed runs coalesce into one run as soon as Enoch returns.",
+            "A schedule keeps at most one task outstanding, and due work goes to the front of the queue.",
             "Use /cron cancel <id> to cancel a scheduled job.",
             "Use /cron to show scheduled jobs.",
         ]
