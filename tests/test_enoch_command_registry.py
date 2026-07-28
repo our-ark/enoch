@@ -55,6 +55,29 @@ class CoreCommandRegistryTests(unittest.TestCase):
         )
         self.assertIn("Example: /help worktree", overview)
 
+    def test_help_section_lists_only_commands_from_that_registry_section(self) -> None:
+        work = help_message("work")
+
+        self.assertTrue(work.startswith("Work commands:"))
+        self.assertIn("/do <request> - run work now instead of queueing it", work)
+        self.assertIn("/cron - show scheduled jobs", work)
+        self.assertNotIn("/status - show identity", work)
+        self.assertIn(
+            "Use /help <command> for detailed usage and subcommands.",
+            work,
+        )
+        self.assertIn("Use /help to return to every command.", work)
+
+        inherit = help_message("section:inherit")
+        self.assertIn(
+            "/ancestors - show ancestor chain and ancestor skills",
+            inherit,
+        )
+        self.assertNotIn(
+            "/ancestors - show ancestor chain and ancestor skills",
+            help_message("inherit"),
+        )
+
     def test_evolve_help_exposes_only_the_consolidated_surface(self) -> None:
         usage = help_message("evolve")
 
