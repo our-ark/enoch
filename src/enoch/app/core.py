@@ -265,6 +265,16 @@ from enoch.profiles import (
     load_profile,
 )
 from enoch.profiles.contracts import extend_prompt
+from enoch.extensions import (
+    DomainCommandContext,
+    DomainCommandSpec,
+    DomainExtension,
+    DomainExtensionError,
+    DomainLifecycleContext,
+    ExtensionWorkflow,
+    extension_storage,
+    load_extensions,
+)
 from enoch.runtime import DEFAULT_BRANCH
 from enoch.tasks.queue import (
     TaskJob,
@@ -452,6 +462,7 @@ class EnochApplication:
         repository: RepositoryProvider | None = None,
         review: ReviewProvider | None = None,
         profile: AgentProfile | None = None,
+        extensions: tuple[DomainExtension, ...] = (),
         daemon_epoch: DaemonEpoch | None = None,
         workflow: WorkflowEngine | None = None,
         authorization_policy: AuthorizationPolicy | None = None,
@@ -480,6 +491,7 @@ class EnochApplication:
         self.repository = repository or as_repository_provider(load_provider("vcs", root))
         self.review = review or as_review_provider(selected_forge)
         self.profile = profile or AgentProfile(name="enoch")
+        self.extensions = tuple(extensions)
         policies = tuple(
             policy
             for policy in (self.profile.authorization, authorization_policy)
@@ -507,6 +519,7 @@ class EnochApplication:
             workflow or LocalWorkflowEngine(root, epoch=self.daemon_epoch)
         )
         self._validate_profile_commands()
+        self._validate_extension_commands()
         self.previous_shutdown_warning = previous_shutdown_warning
         self.offset: Cursor | None = _load_provider_cursor(self.channel_name, root)
         self._restart_after_reply = False
@@ -555,6 +568,7 @@ class EnochApplication:
         )
         self.notifications.recover()
         self._run_profile_hook("on_initialize")
+        self._run_extension_hooks("on_initialize")
 
     def _provider_for_authorization(self, kind: str) -> object:
         if kind == "chat":
@@ -609,8 +623,10 @@ class EnochApplication:
             effect_fence=self.effect_fence,
         )
         self._run_profile_hook("on_startup")
+        self._run_extension_hooks("on_startup")
 
     def notify_shutdown(self, reason: str) -> None:
+        self._run_extension_hooks("on_shutdown", reverse=True)
         self._run_profile_hook("on_shutdown")
         _record_system_event("shutdown", self.root, details={"reason": reason})
         chat_id = _allowed_conversation_id(self.client)
@@ -628,6 +644,7 @@ class EnochApplication:
         require_current_daemon_epoch(self.daemon_epoch, self.root)
         self._maybe_start_lineage_worker()
         self._run_profile_hook("before_run")
+        self._run_extension_hooks("before_run")
         try:
             recovered = _recover_running_task_from_direct_action_log(
                 self.root,
@@ -647,6 +664,7 @@ class EnochApplication:
             self._maybe_start_task_worker()
             self._maybe_start_lineage_worker()
         finally:
+            self._run_extension_hooks("after_run", reverse=True)
             self._run_profile_hook("after_run")
 
     def handle_event(self, event: ChatEvent) -> None:
@@ -725,9 +743,19 @@ class EnochApplication:
             provider_name=_chat_provider_name(self.client),
         )
         profile_command = self.profile.command(command) if command else None
+        extension_command = self._extension_command(command) if command else None
         registered_command = core_command(command) if command else None
         if profile_command is not None:
             reply = self._run_profile_command(profile_command, event, command, argument)
+        elif extension_command is not None:
+            extension, spec = extension_command
+            reply = self._run_extension_command(
+                extension,
+                spec,
+                event,
+                command,
+                argument,
+            )
         elif registered_command is not None:
             reply = self._run_core_command(
                 registered_command,
@@ -807,23 +835,79 @@ class EnochApplication:
                 f"Profile {self.profile.name} conflicts with core commands: {commands}."
             )
 
+    def _validate_extension_commands(self) -> None:
+        seen_names: set[str] = set()
+        seen_commands = set(core_command_names())
+        seen_commands.update(spec.name for spec in self.profile.commands)
+        for extension in self.extensions:
+            if extension.name in seen_names:
+                raise DomainExtensionError(
+                    f"Duplicate domain extension {extension.name!r}."
+                )
+            seen_names.add(extension.name)
+            conflicts = sorted(
+                spec.name
+                for spec in extension.commands
+                if spec.name in seen_commands
+            )
+            if conflicts:
+                commands = ", ".join(f"/{name}" for name in conflicts)
+                raise DomainExtensionError(
+                    f"Domain extension {extension.name} conflicts with registered "
+                    f"commands: {commands}."
+                )
+            seen_commands.update(spec.name for spec in extension.commands)
+
+    def _extension_command(
+        self,
+        command: str,
+    ) -> tuple[DomainExtension, DomainCommandSpec] | None:
+        for extension in self.extensions:
+            spec = extension.command(command)
+            if spec is not None:
+                return extension, spec
+        return None
+
     def _help(self, topic: str) -> str:
         profile_command = self.profile.command(topic) if topic.strip() else None
         if profile_command is not None:
             return profile_command.usage or (
                 f"{profile_command.command} - {profile_command.summary}"
             )
+        extension_command = self._extension_command(topic) if topic.strip() else None
+        if extension_command is not None:
+            _, spec = extension_command
+            return spec.usage or f"{spec.command} - {spec.summary}"
         core_help = _help_message(topic, chat_provider=self.channel_name)
-        if topic.strip() or not self.profile.commands:
+        if topic.strip():
             return core_help
-        profile_help = [
-            f"{self.profile.help_heading}:",
-            *(
-                f"{spec.command} - {spec.summary}"
-                for spec in self.profile.commands
-            ),
-        ]
-        return "\n\n".join([core_help, "\n".join(profile_help)])
+        sections = [core_help]
+        if self.profile.commands:
+            sections.append(
+                "\n".join(
+                    [
+                        f"{self.profile.help_heading}:",
+                        *(
+                            f"{spec.command} - {spec.summary}"
+                            for spec in self.profile.commands
+                        ),
+                    ]
+                )
+            )
+        sections.extend(
+            "\n".join(
+                [
+                    f"{extension.help_heading}:",
+                    *(
+                        f"{spec.command} - {spec.summary}"
+                        for spec in extension.commands
+                    ),
+                ]
+            )
+            for extension in self.extensions
+            if extension.commands
+        )
+        return "\n\n".join(sections)
 
     def _run_core_command(
         self,
@@ -971,6 +1055,58 @@ class EnochApplication:
             )
             return f"Profile command {command} failed: {error}"
 
+    def _extension_workflow(self, extension: DomainExtension) -> ExtensionWorkflow:
+        return ExtensionWorkflow.from_engine(
+            extension_name=extension.name,
+            engine=self.workflow,
+            task_options=self._profile_task_options(),
+        )
+
+    def _run_extension_command(
+        self,
+        extension: DomainExtension,
+        spec: DomainCommandSpec,
+        event: ChatEvent,
+        command: str,
+        argument: str,
+    ) -> str:
+        context = DomainCommandContext(
+            identity=self.identity,
+            root=self.root,
+            storage=extension_storage(self.storage, extension.name),
+            conversation_id=event.conversation_id,
+            event=event,
+            command=command,
+            argument=argument,
+            runtime=self.runtime,
+            repository=self.repository,
+            review=self.review,
+            workflow=self._extension_workflow(extension),
+        )
+        try:
+            self.authorization.require(
+                f"extension-command:{extension.name}:{spec.name}",
+                spec.required_capabilities,
+                metadata={
+                    "extension": extension.name,
+                    "command": command,
+                },
+            )
+            return str(spec.handler(context))
+        except CapabilityAuthorizationError as error:
+            return str(error)
+        except Exception as error:
+            _record_system_event(
+                "domain_extension_command_failed",
+                self.root,
+                details={
+                    "extension": extension.name,
+                    "command": command,
+                    "error": str(error),
+                },
+            )
+            return f"Extension command {command} failed: {error}"
+
     def _profile_task_options(
         self,
         extra_capabilities: tuple[str, ...] = (),
@@ -1080,6 +1216,36 @@ class EnochApplication:
                     "error": str(error),
                 },
             )
+
+    def _run_extension_hooks(self, name: str, *, reverse: bool = False) -> None:
+        extensions = reversed(self.extensions) if reverse else self.extensions
+        for extension in extensions:
+            hook = getattr(extension.lifecycle, name)
+            if hook is None:
+                continue
+            try:
+                hook(
+                    DomainLifecycleContext(
+                        identity=self.identity,
+                        root=self.root,
+                        storage=extension_storage(self.storage, extension.name),
+                        chat=self.client,
+                        runtime=self.runtime,
+                        repository=self.repository,
+                        review=self.review,
+                        workflow=self._extension_workflow(extension),
+                    )
+                )
+            except Exception as error:
+                _record_system_event(
+                    "domain_extension_lifecycle_failed",
+                    self.root,
+                    details={
+                        "extension": extension.name,
+                        "hook": name,
+                        "error": str(error),
+                    },
+                )
 
     def _session_key(self, chat_id: ConversationId) -> str:
         provider = _chat_provider_name(self.client)
@@ -4235,7 +4401,13 @@ def main(chat_provider_name: str = "") -> None:
         runtime_provider = load_provider("runtime", root)
         forge_provider = load_provider("forge", root)
         profile = load_profile(root)
-    except (ProviderError, ChatProviderError, ProfileError) as error:
+        extensions = load_extensions(root)
+    except (
+        ProviderError,
+        ChatProviderError,
+        ProfileError,
+        DomainExtensionError,
+    ) as error:
         print(str(error))
         raise SystemExit(1) from error
     selected_channel = _chat_provider_name(chat_provider)
@@ -4247,6 +4419,7 @@ def main(chat_provider_name: str = "") -> None:
         details={
             "identity": identity.name,
             "previous_shutdown_warning": previous_shutdown_warning,
+            "extensions": [extension.name for extension in extensions],
         },
     )
     bot = EnochApplication(
@@ -4257,6 +4430,7 @@ def main(chat_provider_name: str = "") -> None:
         runtime=runtime_provider,
         forge=forge_provider,
         profile=profile,
+        extensions=extensions,
         daemon_epoch=daemon_epoch,
     )
     _install_shutdown_handlers()
