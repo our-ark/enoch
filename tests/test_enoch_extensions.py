@@ -14,12 +14,14 @@ from enoch.app.core import EnochApplication
 from enoch.extensions import (
     AGENT_EXTENSION_API_VERSION,
     ExtensionCommandSpec,
+    ExtensionTaskEvent,
     AgentExtension,
     AgentExtensionError,
     ExtensionLifecycleHooks,
     load_extensions,
     register_extension,
 )
+from enoch.extensions.events import load_extension_task_event_receipts
 from enoch.extensions import registry as extension_registry
 from enoch.identity import load_identity
 from enoch.profiles import AgentProfile, CommandSpec, LifecycleHooks
@@ -282,6 +284,10 @@ class EnochExtensionTests(unittest.TestCase):
                 "extension:manager:project:one:video",
             ),
         )
+        self.assertEqual(
+            tuple(job.context_source for job in pending),
+            ("extension:manager", "extension:manager"),
+        )
 
     def test_status_reports_active_extension_api_versions(self) -> None:
         extension = AgentExtension(name="manager")
@@ -301,6 +307,112 @@ class EnochExtensionTests(unittest.TestCase):
             "Agent extensions: manager (API v1)",
             chat.sent[-1][1],
         )
+
+    def test_extension_receives_durable_task_events_once_in_order(self) -> None:
+        delivered: list[ExtensionTaskEvent] = []
+
+        def queue(context):
+            job = context.enqueue_task("Create the project artifact")
+            return f"Queued task #{job.id}."
+
+        extension = AgentExtension(
+            name="manager",
+            commands=(
+                ExtensionCommandSpec("project", "queue project work", queue),
+            ),
+            lifecycle=ExtensionLifecycleHooks(
+                on_task_event=lambda _context, event: delivered.append(event),
+            ),
+        )
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            app = EnochApplication(
+                load_identity(),
+                root,
+                _Chat(),
+                runtime=_Runtime(),
+                extensions=(extension,),
+            )
+            app.handle_event(_event("/project"))
+            app.start()
+            running = app.workflow.start_next()
+            assert running is not None
+            app.workflow.finalize(
+                running.id,
+                "completed",
+                result="Created artifact.txt",
+            )
+            with patch.object(app, "_maybe_start_task_worker"):
+                app.run_once()
+                app.run_once()
+            receipts = load_extension_task_event_receipts(
+                app._extension_lifecycle_context(extension).storage
+            )
+
+        self.assertEqual(
+            tuple(event.event for event in delivered),
+            ("queued", "started", "completed"),
+        )
+        self.assertTrue(
+            all(event.extension_name == "manager" for event in delivered)
+        )
+        self.assertEqual(delivered[-1].result_summary, "Created artifact.txt")
+        self.assertEqual(len(receipts), 3)
+        self.assertEqual(
+            delivered[-1].delivery_key,
+            f"extension:manager:task-event:{delivered[-1].id}",
+        )
+
+    def test_failed_extension_task_event_is_replayed_after_restart(self) -> None:
+        attempts: list[str] = []
+        fail = True
+
+        def queue(context):
+            context.enqueue_task("Retry event delivery")
+            return "Queued."
+
+        def receive(_context, event):
+            nonlocal fail
+            attempts.append(event.id)
+            if fail:
+                fail = False
+                raise RuntimeError("injected delivery failure")
+
+        extension = AgentExtension(
+            name="manager",
+            commands=(
+                ExtensionCommandSpec("project", "queue project work", queue),
+            ),
+            lifecycle=ExtensionLifecycleHooks(on_task_event=receive),
+        )
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            first = EnochApplication(
+                load_identity(),
+                root,
+                _Chat(),
+                runtime=_Runtime(),
+                extensions=(extension,),
+            )
+            first.handle_event(_event("/project"))
+            first.start()
+
+            restarted = EnochApplication(
+                load_identity(),
+                root,
+                _Chat(),
+                runtime=_Runtime(),
+                extensions=(extension,),
+            )
+            restarted.start()
+            restarted.start()
+            receipts = load_extension_task_event_receipts(
+                restarted._extension_lifecycle_context(extension).storage
+            )
+
+        self.assertEqual(len(attempts), 2)
+        self.assertEqual(attempts[0], attempts[1])
+        self.assertEqual(receipts, frozenset({attempts[0]}))
 
     def test_extension_cannot_shadow_core_profile_or_peer_commands(self) -> None:
         cases = (

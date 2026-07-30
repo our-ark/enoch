@@ -275,6 +275,10 @@ from enoch.extensions import (
     extension_storage,
     load_extensions,
 )
+from enoch.extensions.events import (
+    acknowledge_extension_task_event,
+    undelivered_extension_task_events,
+)
 from enoch.runtime import DEFAULT_BRANCH
 from enoch.tasks.queue import (
     TaskJob,
@@ -533,6 +537,7 @@ class EnochApplication:
         self._cron_scheduler_wake = threading.Event()
         self._startup_hook_lock = threading.Lock()
         self._startup_hooks_ran = False
+        self._extension_task_event_lock = threading.Lock()
         self._lineage_worker: threading.Thread | None = None
         self._lineage_worker_lock = threading.Lock()
         self._task_cancellations: dict[int, threading.Event] = {}
@@ -630,14 +635,18 @@ class EnochApplication:
     def start(self) -> None:
         """Run process-start hooks once, independently of chat notification."""
 
+        run_hooks = False
         with self._startup_hook_lock:
-            if self._startup_hooks_ran:
-                return
-            self._startup_hooks_ran = True
-        self._run_profile_hook("on_startup")
-        self._run_extension_hooks("on_startup")
+            if not self._startup_hooks_ran:
+                self._startup_hooks_ran = True
+                run_hooks = True
+        if run_hooks:
+            self._run_profile_hook("on_startup")
+            self._run_extension_hooks("on_startup")
+        self._drain_extension_task_events()
 
     def notify_shutdown(self, reason: str) -> None:
+        self._drain_extension_task_events()
         self._run_extension_hooks("on_shutdown", reverse=True)
         self._run_profile_hook("on_shutdown")
         _record_system_event("shutdown", self.root, details={"reason": reason})
@@ -676,6 +685,7 @@ class EnochApplication:
             self._maybe_start_task_worker()
             self._maybe_start_lineage_worker()
         finally:
+            self._drain_extension_task_events()
             self._run_extension_hooks("after_run", reverse=True)
             self._run_profile_hook("after_run")
 
@@ -1236,18 +1246,7 @@ class EnochApplication:
             if hook is None:
                 continue
             try:
-                hook(
-                    ExtensionLifecycleContext(
-                        identity=self.identity,
-                        root=self.root,
-                        storage=extension_storage(self.storage, extension.name),
-                        chat=self.client,
-                        runtime=self.runtime,
-                        repository=self.repository,
-                        review=self.review,
-                        workflow=self._extension_workflow(extension),
-                    )
-                )
+                hook(self._extension_lifecycle_context(extension))
             except Exception as error:
                 _record_system_event(
                     "agent_extension_lifecycle_failed",
@@ -1258,6 +1257,68 @@ class EnochApplication:
                         "error": str(error),
                     },
                 )
+
+    def _drain_extension_task_events(self) -> None:
+        if not self._extension_task_event_lock.acquire(blocking=False):
+            return
+        try:
+            for extension in self.extensions:
+                hook = extension.lifecycle.on_task_event
+                if hook is None:
+                    continue
+                storage = extension_storage(self.storage, extension.name)
+                for event in undelivered_extension_task_events(
+                    self.workflow.root,
+                    storage,
+                    extension.name,
+                ):
+                    try:
+                        require_current_daemon_epoch(
+                            self.daemon_epoch,
+                            self.root,
+                        )
+                        hook(
+                            self._extension_lifecycle_context(extension),
+                            event,
+                        )
+                        require_current_daemon_epoch(
+                            self.daemon_epoch,
+                            self.root,
+                        )
+                        acknowledge_extension_task_event(storage, event)
+                    except StaleDaemonEpoch:
+                        raise
+                    except Exception as error:
+                        _record_system_event(
+                            "agent_extension_task_event_failed",
+                            self.root,
+                            status="failed",
+                            details={
+                                "extension": extension.name,
+                                "event_id": event.id,
+                                "task_id": event.task_id,
+                                "task_event": event.event,
+                                "error": str(error),
+                            },
+                        )
+                        break
+        finally:
+            self._extension_task_event_lock.release()
+
+    def _extension_lifecycle_context(
+        self,
+        extension: AgentExtension,
+    ) -> ExtensionLifecycleContext:
+        return ExtensionLifecycleContext(
+            identity=self.identity,
+            root=self.root,
+            storage=extension_storage(self.storage, extension.name),
+            chat=self.client,
+            runtime=self.runtime,
+            repository=self.repository,
+            review=self.review,
+            workflow=self._extension_workflow(extension),
+        )
 
     def _session_key(self, chat_id: ConversationId) -> str:
         provider = _chat_provider_name(self.client)

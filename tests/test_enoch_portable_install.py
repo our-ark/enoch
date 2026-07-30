@@ -188,7 +188,15 @@ class EnochPortableInstallTests(unittest.TestCase):
         self.assertEqual(result["review_contract_version"], 1)
         self.assertEqual(
             result["workflow_operations"],
-            ["recover", "enqueue", "claim", "finalize:completed", "enqueue"],
+            [
+                "recover",
+                "enqueue",
+                "claim",
+                "finalize:completed",
+                "enqueue",
+                "finalize:completed",
+                "recover",
+            ],
         )
         self.assertTrue(result["workflow_state_isolated"])
         self.assertEqual(result["profile_trigger"], "/research")
@@ -207,6 +215,7 @@ class EnochPortableInstallTests(unittest.TestCase):
         self.assertIn("/notes <topic>", result["extension_help"])
         self.assertIn("Queued portable notes task #2", result["extension_reply"])
         self.assertTrue(result["extension_state_namespaced"])
+        self.assertEqual(result["extension_last_event"], "completed")
         self.assertIn("Agent extensions: notes (API v1)", result["extension_status"])
         self.assertEqual(result["runtime_provider"], "codex")
         self.assertEqual(result["runtime_session_id"], "portable-session")
@@ -588,6 +597,7 @@ def _write_extension_package(root: Path) -> None:
             from enoch.extensions import (
                 AgentExtension,
                 ExtensionCommandSpec,
+                ExtensionLifecycleHooks,
             )
 
 
@@ -605,6 +615,12 @@ def _write_extension_package(root: Path) -> None:
                 return f"Queued portable notes task #{job.id}."
 
 
+            def task_event(context, event):
+                path = context.storage.private_path("last-event.txt")
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(event.event + "\\n", encoding="utf-8")
+
+
             def create_extension(root=None):
                 return AgentExtension(
                     name="notes",
@@ -616,6 +632,9 @@ def _write_extension_package(root: Path) -> None:
                             usage="/notes <topic> - queue portable notes",
                             handler=notes,
                         ),
+                    ),
+                    lifecycle=ExtensionLifecycleHooks(
+                        on_task_event=task_event,
                     ),
                 )
             """
@@ -755,6 +774,14 @@ _INSTALLED_TASK_SCRIPT = textwrap.dedent(
     )
     extension_job = workflow.inspect().pending[-1]
     extension_reply = chat.sent[-1][1]
+    extension_running = workflow.start_next()
+    assert extension_running is not None and extension_running.id == extension_job.id
+    workflow.finalize(
+        extension_running.id,
+        "completed",
+        result="Portable notes completed.",
+    )
+    app.run_once()
     app.handle_event(
         ChatEvent(
             cursor="extension-status",
@@ -817,6 +844,9 @@ _INSTALLED_TASK_SCRIPT = textwrap.dedent(
         "extension_state_namespaced": (
             root / ".enoch" / "extensions" / "notes" / "notes.txt"
         ).is_file(),
+        "extension_last_event": (
+            root / ".enoch" / "extensions" / "notes" / "last-event.txt"
+        ).read_text(encoding="utf-8").strip(),
         "extension_status": extension_status,
         "runtime_provider": completed.runtime_provider,
         "runtime_session_id": completed.runtime_session_id,

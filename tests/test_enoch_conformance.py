@@ -158,6 +158,9 @@ class AgentExtensionConformanceTests(
                 on_initialize=lambda _context: self.lifecycle_events.append(
                     "initialize"
                 ),
+                on_task_event=lambda _context, _event: self.lifecycle_events.append(
+                    "task-event"
+                ),
                 on_shutdown=lambda _context: self.lifecycle_events.append("shutdown"),
             ),
         )
@@ -175,7 +178,10 @@ class AgentExtensionConformanceTests(
     def test_lifecycle_hooks_were_exercised_by_extension_conformance(self) -> None:
         self.test_conformance_extension_lifecycle_accepts_isolated_context()
 
-        self.assertEqual(self.lifecycle_events, ["initialize", "shutdown"])
+        self.assertEqual(
+            self.lifecycle_events,
+            ["initialize", "shutdown", "task-event"],
+        )
 
 
 class DurableNotificationConformanceTests(

@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 import re
-from typing import Callable
+from typing import Callable, Literal
 
 from enoch.identity import Identity
 from enoch.providers.contracts import (
@@ -21,10 +21,51 @@ from enoch.workflows import WorkflowEngine
 
 
 AGENT_EXTENSION_API_VERSION = 1
+ExtensionTaskEventType = Literal[
+    "queued",
+    "started",
+    "completed",
+    "failed",
+    "cancelled",
+]
 
 
 class AgentExtensionError(RuntimeError):
     pass
+
+
+@dataclass(frozen=True)
+class ExtensionTaskEvent:
+    """A durable workflow event routed back to its originating extension."""
+
+    id: str
+    extension_name: str
+    task_id: int
+    event: ExtensionTaskEventType
+    occurred_at: str
+    request: str
+    result_summary: str = ""
+    workspace_id: str = ""
+    review_id: str = ""
+    review_urls: tuple[str, ...] = ()
+    changed_files: tuple[str, ...] = ()
+    publish_stage: str = ""
+    revision_id: str = ""
+    attempt: int = 0
+    max_attempts: int = 3
+    failure_code: str = ""
+    failure_class: str = ""
+    retryable: bool = False
+    runtime_provider: str = ""
+    runtime_session_id: str = ""
+    runtime_completion_reason: str = ""
+    runtime_usage: dict[str, int] = field(default_factory=dict)
+    runtime_output_refs: tuple[str, ...] = ()
+    runtime_side_effects: tuple[str, ...] = ()
+
+    @property
+    def delivery_key(self) -> str:
+        return f"extension:{self.extension_name}:task-event:{self.id}"
 
 
 @dataclass(frozen=True)
@@ -75,9 +116,7 @@ class ExtensionWorkflow:
             conversation_id,
             request,
             context=context,
-            context_source=(
-                f"extension:{self.extension_name}" if context.strip() else ""
-            ),
+            context_source=f"extension:{self.extension_name}",
             source="task",
             initiated_by=initiated_by,
             event_actor=event_actor,
@@ -181,12 +220,17 @@ class ExtensionLifecycleContext:
 
 
 ExtensionLifecycleHook = Callable[[ExtensionLifecycleContext], None]
+ExtensionTaskEventHook = Callable[
+    [ExtensionLifecycleContext, ExtensionTaskEvent],
+    None,
+]
 
 
 @dataclass(frozen=True)
 class ExtensionLifecycleHooks:
     on_initialize: ExtensionLifecycleHook | None = None
     on_startup: ExtensionLifecycleHook | None = None
+    on_task_event: ExtensionTaskEventHook | None = None
     before_run: ExtensionLifecycleHook | None = None
     after_run: ExtensionLifecycleHook | None = None
     on_shutdown: ExtensionLifecycleHook | None = None

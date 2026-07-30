@@ -10,7 +10,7 @@ The version 1 API provides:
 
 - namespaced private state and artifact storage;
 - chat commands with capability requirements and `/help` integration;
-- application lifecycle hooks;
+- application lifecycle hooks and durable task-result events;
 - a constrained façade over Enoch's single governed workflow.
 
 Extensions do not receive polling ownership, provider selection, task execution,
@@ -92,6 +92,46 @@ façade. For each `EnochApplication` process:
 
 Calling `start()` or `notify_startup()` again does not repeat `on_startup`.
 `/status` lists every active extension and its declared API version.
+
+### Durable task events
+
+An extension may register `on_task_event(context, event)` to observe work that
+it submitted through `ExtensionWorkflow`. Enoch routes `queued`, `started`,
+`completed`, `failed`, and `cancelled` events only to the originating
+extension. Events include a stable ID, request and result summaries, failure
+metadata, revision and review identities, runtime output references, and an
+extension-scoped `delivery_key`.
+
+```python
+from enoch.extensions import ExtensionLifecycleHooks
+
+
+def task_event(context, event):
+    if event.event == "completed":
+        record_deliverable(
+            task_id=event.task_id,
+            result=event.result_summary,
+            revision=event.revision_id,
+            reviews=event.review_urls,
+        )
+
+
+extension = AgentExtension(
+    name="manager",
+    lifecycle=ExtensionLifecycleHooks(on_task_event=task_event),
+)
+```
+
+Delivery is durable and ordered per extension. Enoch writes a success receipt
+after the hook returns. A hook failure, daemon restart, or crash before that
+receipt replays the same stable event ID, so handlers must apply the event
+idempotently. This at-least-once contract avoids losing a completion while
+remaining honest about the crash window between an extension's state change
+and Enoch's receipt.
+
+Receipts belong to
+`.enoch/extensions/<extension-name>/task_event_receipts.jsonl`; the canonical
+task events remain in the selected workflow engine's artifact storage.
 
 ## Package and select an extension
 

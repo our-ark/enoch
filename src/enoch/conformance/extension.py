@@ -9,6 +9,7 @@ from enoch.extensions import (
     AgentExtension,
     ExtensionCommandContext,
     ExtensionLifecycleContext,
+    ExtensionTaskEvent,
     ExtensionWorkflow,
     extension_storage,
 )
@@ -166,6 +167,19 @@ class AgentExtensionConformanceMixin:
             ):
                 if hook is not None:
                     hook(context)
+            if extension.lifecycle.on_task_event is not None:
+                extension.lifecycle.on_task_event(
+                    context,
+                    ExtensionTaskEvent(
+                        id="extension-conformance-event",
+                        extension_name=extension.name,
+                        task_id=1,
+                        event="completed",
+                        occurred_at="2026-01-01T00:00:00+00:00",
+                        request="Complete extension conformance work",
+                        result_summary="Conformance deliverable",
+                    ),
+                )
 
 
 class _Chat:

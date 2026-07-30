@@ -104,7 +104,9 @@ their `AgentExtension` from `create_extension`, and optionally return an
 discovery, namespaced storage, lifecycle isolation, and real governed task
 submission with extension provenance and a stable idempotency key.
 Stateful commands may override `prepare_command` to populate their isolated
-fixture before the representative command is invoked.
+fixture before the representative command is invoked. When an extension
+declares `on_task_event`, the lifecycle check also invokes it with a typed,
+isolated representative completion event.
 
 ```python
 from enoch.conformance import (
