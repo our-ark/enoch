@@ -256,7 +256,7 @@ installed through the `our_ark.profiles` entry-point group; see
 profile currently running.
 
 Descendants can add coexisting domain capabilities through the versioned
-`DomainExtension` API. Extensions receive namespaced state, commands, lifecycle
+`AgentExtension` API. Extensions receive namespaced state, commands, lifecycle
 hooks, and constrained access to Enoch's single workflow without owning polling
 or a second task queue. Packages are discovered through
 `our_ark.extensions`; see [`docs/extensions.md`](docs/extensions.md).

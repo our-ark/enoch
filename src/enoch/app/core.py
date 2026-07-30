@@ -266,11 +266,11 @@ from enoch.profiles import (
 )
 from enoch.profiles.contracts import extend_prompt
 from enoch.extensions import (
-    DomainCommandContext,
-    DomainCommandSpec,
-    DomainExtension,
-    DomainExtensionError,
-    DomainLifecycleContext,
+    ExtensionCommandContext,
+    ExtensionCommandSpec,
+    AgentExtension,
+    AgentExtensionError,
+    ExtensionLifecycleContext,
     ExtensionWorkflow,
     extension_storage,
     load_extensions,
@@ -462,7 +462,7 @@ class EnochApplication:
         repository: RepositoryProvider | None = None,
         review: ReviewProvider | None = None,
         profile: AgentProfile | None = None,
-        extensions: tuple[DomainExtension, ...] = (),
+        extensions: tuple[AgentExtension, ...] = (),
         daemon_epoch: DaemonEpoch | None = None,
         workflow: WorkflowEngine | None = None,
         authorization_policy: AuthorizationPolicy | None = None,
@@ -841,8 +841,8 @@ class EnochApplication:
         seen_commands.update(spec.name for spec in self.profile.commands)
         for extension in self.extensions:
             if extension.name in seen_names:
-                raise DomainExtensionError(
-                    f"Duplicate domain extension {extension.name!r}."
+                raise AgentExtensionError(
+                    f"Duplicate agent extension {extension.name!r}."
                 )
             seen_names.add(extension.name)
             conflicts = sorted(
@@ -852,8 +852,8 @@ class EnochApplication:
             )
             if conflicts:
                 commands = ", ".join(f"/{name}" for name in conflicts)
-                raise DomainExtensionError(
-                    f"Domain extension {extension.name} conflicts with registered "
+                raise AgentExtensionError(
+                    f"Agent extension {extension.name} conflicts with registered "
                     f"commands: {commands}."
                 )
             seen_commands.update(spec.name for spec in extension.commands)
@@ -861,7 +861,7 @@ class EnochApplication:
     def _extension_command(
         self,
         command: str,
-    ) -> tuple[DomainExtension, DomainCommandSpec] | None:
+    ) -> tuple[AgentExtension, ExtensionCommandSpec] | None:
         for extension in self.extensions:
             spec = extension.command(command)
             if spec is not None:
@@ -1055,7 +1055,7 @@ class EnochApplication:
             )
             return f"Profile command {command} failed: {error}"
 
-    def _extension_workflow(self, extension: DomainExtension) -> ExtensionWorkflow:
+    def _extension_workflow(self, extension: AgentExtension) -> ExtensionWorkflow:
         return ExtensionWorkflow.from_engine(
             extension_name=extension.name,
             engine=self.workflow,
@@ -1064,13 +1064,13 @@ class EnochApplication:
 
     def _run_extension_command(
         self,
-        extension: DomainExtension,
-        spec: DomainCommandSpec,
+        extension: AgentExtension,
+        spec: ExtensionCommandSpec,
         event: ChatEvent,
         command: str,
         argument: str,
     ) -> str:
-        context = DomainCommandContext(
+        context = ExtensionCommandContext(
             identity=self.identity,
             root=self.root,
             storage=extension_storage(self.storage, extension.name),
@@ -1097,7 +1097,7 @@ class EnochApplication:
             return str(error)
         except Exception as error:
             _record_system_event(
-                "domain_extension_command_failed",
+                "agent_extension_command_failed",
                 self.root,
                 details={
                     "extension": extension.name,
@@ -1225,7 +1225,7 @@ class EnochApplication:
                 continue
             try:
                 hook(
-                    DomainLifecycleContext(
+                    ExtensionLifecycleContext(
                         identity=self.identity,
                         root=self.root,
                         storage=extension_storage(self.storage, extension.name),
@@ -1238,7 +1238,7 @@ class EnochApplication:
                 )
             except Exception as error:
                 _record_system_event(
-                    "domain_extension_lifecycle_failed",
+                    "agent_extension_lifecycle_failed",
                     self.root,
                     details={
                         "extension": extension.name,
@@ -4406,7 +4406,7 @@ def main(chat_provider_name: str = "") -> None:
         ProviderError,
         ChatProviderError,
         ProfileError,
-        DomainExtensionError,
+        AgentExtensionError,
     ) as error:
         print(str(error))
         raise SystemExit(1) from error

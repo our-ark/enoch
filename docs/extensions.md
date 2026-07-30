@@ -1,6 +1,6 @@
-# Domain extensions
+# Agent extensions
 
-Domain extensions add durable, bounded domain capabilities to an Enoch-based
+Agent extensions add durable, bounded domain capabilities to an Enoch-based
 agent without copying `enoch.app.core` or creating a parallel control plane.
 They are intended for descendants such as a project manager, researcher, or
 operator that need their own commands and persistent state while reusing
@@ -20,7 +20,7 @@ find work through `ExtensionWorkflow`; Enoch remains the lifecycle owner.
 ## Profiles and extensions
 
 An application has one active `AgentProfile` and zero or more
-`DomainExtension` instances.
+`AgentExtension` instances.
 
 - A profile defines the agent-wide operating mode: prompt context, workflow
   policy, authorization policy, presentation, commands, and lifecycle hooks.
@@ -33,7 +33,7 @@ capability that can coexist with other capabilities.
 ## Define an extension
 
 ```python
-from enoch.extensions import DomainCommandSpec, DomainExtension
+from enoch.extensions import ExtensionCommandSpec, AgentExtension
 
 
 def project(context):
@@ -52,11 +52,11 @@ def project(context):
 
 def create_extension(root=None):
     del root
-    return DomainExtension(
+    return AgentExtension(
         name="manager",
         help_heading="Communication & collaboration",
         commands=(
-            DomainCommandSpec(
+            ExtensionCommandSpec(
                 "project",
                 "manage a project graph",
                 project,
@@ -105,6 +105,6 @@ checks govern use of Enoch's public provider and workflow surfaces; arbitrary
 Python code installed by an operator still has the process's operating-system
 permissions.
 
-The current contract is `DOMAIN_EXTENSION_API_VERSION = 1`. Enoch rejects an
+The current contract is `AGENT_EXTENSION_API_VERSION = 1`. Enoch rejects an
 extension that declares another version. Extension command and lifecycle
 failures are isolated and recorded as system events.

@@ -12,11 +12,11 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from enoch.app.core import EnochApplication
 from enoch.extensions import (
-    DOMAIN_EXTENSION_API_VERSION,
-    DomainCommandSpec,
-    DomainExtension,
-    DomainExtensionError,
-    DomainLifecycleHooks,
+    AGENT_EXTENSION_API_VERSION,
+    ExtensionCommandSpec,
+    AgentExtension,
+    AgentExtensionError,
+    ExtensionLifecycleHooks,
     load_extensions,
     register_extension,
 )
@@ -81,7 +81,7 @@ class _EntryPoint:
     name = "manager"
 
     def load(self):
-        return lambda _root=None: DomainExtension(name="manager")
+        return lambda _root=None: AgentExtension(name="manager")
 
 
 class _EntryPoints(list):
@@ -104,11 +104,11 @@ class EnochExtensionTests(unittest.TestCase):
             )
             return f"Queued planning task #{job.id}."
 
-        extension = DomainExtension(
+        extension = AgentExtension(
             name="manager",
             help_heading="Communication & collaboration",
             commands=(
-                DomainCommandSpec(
+                ExtensionCommandSpec(
                     "project",
                     "manage a project graph",
                     plan,
@@ -167,10 +167,10 @@ class EnochExtensionTests(unittest.TestCase):
     def test_extension_lifecycle_wraps_run_and_unwinds_in_reverse(self) -> None:
         events: list[str] = []
 
-        def extension(name: str) -> DomainExtension:
-            return DomainExtension(
+        def extension(name: str) -> AgentExtension:
+            return AgentExtension(
                 name=name,
-                lifecycle=DomainLifecycleHooks(
+                lifecycle=ExtensionLifecycleHooks(
                     on_initialize=lambda context: events.append(
                         f"initialize:{name}:{context.workflow.extension_name}"
                     ),
@@ -207,10 +207,10 @@ class EnochExtensionTests(unittest.TestCase):
             (
                 AgentProfile(name="enoch"),
                 (
-                    DomainExtension(
+                    AgentExtension(
                         name="manager",
                         commands=(
-                            DomainCommandSpec("task", "shadow core", lambda _: "no"),
+                            ExtensionCommandSpec("task", "shadow core", lambda _: "no"),
                         ),
                     ),
                 ),
@@ -224,10 +224,10 @@ class EnochExtensionTests(unittest.TestCase):
                     ),
                 ),
                 (
-                    DomainExtension(
+                    AgentExtension(
                         name="manager",
                         commands=(
-                            DomainCommandSpec(
+                            ExtensionCommandSpec(
                                 "research",
                                 "shadow profile",
                                 lambda _: "no",
@@ -240,16 +240,16 @@ class EnochExtensionTests(unittest.TestCase):
             (
                 AgentProfile(name="enoch"),
                 (
-                    DomainExtension(
+                    AgentExtension(
                         name="one",
                         commands=(
-                            DomainCommandSpec("project", "first", lambda _: "one"),
+                            ExtensionCommandSpec("project", "first", lambda _: "one"),
                         ),
                     ),
-                    DomainExtension(
+                    AgentExtension(
                         name="two",
                         commands=(
-                            DomainCommandSpec("project", "second", lambda _: "two"),
+                            ExtensionCommandSpec("project", "second", lambda _: "two"),
                         ),
                     ),
                 ),
@@ -259,7 +259,7 @@ class EnochExtensionTests(unittest.TestCase):
         for profile, extensions, command in cases:
             with self.subTest(command=command), TemporaryDirectory() as temp:
                 with self.assertRaisesRegex(
-                    DomainExtensionError,
+                    AgentExtensionError,
                     f"registered commands: {command}",
                 ):
                     EnochApplication(
@@ -279,7 +279,7 @@ class EnochExtensionTests(unittest.TestCase):
         ):
             register_extension(
                 "local",
-                lambda _root=None: DomainExtension(name="local"),
+                lambda _root=None: AgentExtension(name="local"),
             )
 
             self.assertEqual(
@@ -312,19 +312,19 @@ class EnochExtensionTests(unittest.TestCase):
 
     def test_extension_rejects_unsupported_api_and_duplicate_names(self) -> None:
         with self.assertRaisesRegex(
-            DomainExtensionError,
-            f"supports version {DOMAIN_EXTENSION_API_VERSION}",
+            AgentExtensionError,
+            f"supports version {AGENT_EXTENSION_API_VERSION}",
         ):
-            DomainExtension(
+            AgentExtension(
                 name="future",
-                api_version=DOMAIN_EXTENSION_API_VERSION + 1,
+                api_version=AGENT_EXTENSION_API_VERSION + 1,
             )
 
-        extension = DomainExtension(name="manager")
+        extension = AgentExtension(name="manager")
         with TemporaryDirectory() as temp:
             with self.assertRaisesRegex(
-                DomainExtensionError,
-                "Duplicate domain extension",
+                AgentExtensionError,
+                "Duplicate agent extension",
             ):
                 EnochApplication(
                     load_identity(),
@@ -341,16 +341,16 @@ class EnochExtensionTests(unittest.TestCase):
         def fail_hook(_context):
             raise RuntimeError("hook exploded")
 
-        extension = DomainExtension(
+        extension = AgentExtension(
             name="faulty",
             commands=(
-                DomainCommandSpec(
+                ExtensionCommandSpec(
                     "fault",
                     "exercise failure isolation",
                     fail_command,
                 ),
             ),
-            lifecycle=DomainLifecycleHooks(on_initialize=fail_hook),
+            lifecycle=ExtensionLifecycleHooks(on_initialize=fail_hook),
         )
         with TemporaryDirectory() as temp, patch(
             "enoch.app.core._record_system_event"
@@ -370,8 +370,8 @@ class EnochExtensionTests(unittest.TestCase):
             "Extension command /fault failed: command exploded",
         )
         events = [call.args[0] for call in record_event.call_args_list]
-        self.assertIn("domain_extension_lifecycle_failed", events)
-        self.assertIn("domain_extension_command_failed", events)
+        self.assertIn("agent_extension_lifecycle_failed", events)
+        self.assertIn("agent_extension_command_failed", events)
 
 
 def _event(text: str, *, message_id: str = "message-1") -> ChatEvent:

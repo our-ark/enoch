@@ -72,7 +72,7 @@ execute tasks, recover queue state, or persist a parallel control plane. This
 keeps downstream product behavior composable while `enoch.app` remains the
 single application and workflow owner.
 
-Domain extensions sit beside the active profile. Multiple extensions may add
+Agent extensions sit beside the active profile. Multiple extensions may add
 coexisting domain capabilities, but they receive only namespaced storage and a
 constrained façade over the application-owned workflow. See
 [`extensions.md`](extensions.md).

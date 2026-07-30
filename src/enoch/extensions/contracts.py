@@ -20,10 +20,10 @@ from enoch.tasks.queue import TaskJob, TaskQueueStatus
 from enoch.workflows import WorkflowEngine
 
 
-DOMAIN_EXTENSION_API_VERSION = 1
+AGENT_EXTENSION_API_VERSION = 1
 
 
-class DomainExtensionError(RuntimeError):
+class AgentExtensionError(RuntimeError):
     pass
 
 
@@ -96,7 +96,7 @@ class ExtensionWorkflow:
 
 
 @dataclass(frozen=True)
-class DomainCommandContext:
+class ExtensionCommandContext:
     identity: Identity
     root: Path
     storage: StorageLayout
@@ -128,14 +128,14 @@ class DomainCommandContext:
         )
 
 
-DomainCommandHandler = Callable[[DomainCommandContext], str]
+ExtensionCommandHandler = Callable[[ExtensionCommandContext], str]
 
 
 @dataclass(frozen=True)
-class DomainCommandSpec:
+class ExtensionCommandSpec:
     name: str
     summary: str
-    handler: DomainCommandHandler
+    handler: ExtensionCommandHandler
     usage: str = ""
     required_capabilities: tuple[str, ...] = ()
 
@@ -143,8 +143,8 @@ class DomainCommandSpec:
         name = _command_name(self.name)
         summary = self.summary.strip()
         if not summary:
-            raise DomainExtensionError(
-                f"Domain extension command /{name} requires a summary."
+            raise AgentExtensionError(
+                f"Agent extension command /{name} requires a summary."
             )
         object.__setattr__(self, "name", name)
         object.__setattr__(self, "summary", summary)
@@ -162,12 +162,12 @@ class DomainCommandSpec:
     def matches(self, command: str) -> bool:
         try:
             return _command_name(command) == self.name
-        except DomainExtensionError:
+        except AgentExtensionError:
             return False
 
 
 @dataclass(frozen=True)
-class DomainLifecycleContext:
+class ExtensionLifecycleContext:
     identity: Identity
     root: Path
     storage: StorageLayout
@@ -178,52 +178,52 @@ class DomainLifecycleContext:
     workflow: ExtensionWorkflow
 
 
-DomainLifecycleHook = Callable[[DomainLifecycleContext], None]
+ExtensionLifecycleHook = Callable[[ExtensionLifecycleContext], None]
 
 
 @dataclass(frozen=True)
-class DomainLifecycleHooks:
-    on_initialize: DomainLifecycleHook | None = None
-    on_startup: DomainLifecycleHook | None = None
-    before_run: DomainLifecycleHook | None = None
-    after_run: DomainLifecycleHook | None = None
-    on_shutdown: DomainLifecycleHook | None = None
+class ExtensionLifecycleHooks:
+    on_initialize: ExtensionLifecycleHook | None = None
+    on_startup: ExtensionLifecycleHook | None = None
+    before_run: ExtensionLifecycleHook | None = None
+    after_run: ExtensionLifecycleHook | None = None
+    on_shutdown: ExtensionLifecycleHook | None = None
 
 
 @dataclass(frozen=True)
-class DomainExtension:
+class AgentExtension:
     """A trusted domain module composed into Enoch's application lifecycle."""
 
     name: str
-    api_version: int = DOMAIN_EXTENSION_API_VERSION
-    commands: tuple[DomainCommandSpec, ...] = ()
-    lifecycle: DomainLifecycleHooks = field(default_factory=DomainLifecycleHooks)
+    api_version: int = AGENT_EXTENSION_API_VERSION
+    commands: tuple[ExtensionCommandSpec, ...] = ()
+    lifecycle: ExtensionLifecycleHooks = field(default_factory=ExtensionLifecycleHooks)
     help_heading: str = ""
 
     def __post_init__(self) -> None:
         name = _extension_name(self.name)
-        if self.api_version != DOMAIN_EXTENSION_API_VERSION:
-            raise DomainExtensionError(
-                f"Domain extension {name} uses API version {self.api_version}; "
-                f"Enoch supports version {DOMAIN_EXTENSION_API_VERSION}."
+        if self.api_version != AGENT_EXTENSION_API_VERSION:
+            raise AgentExtensionError(
+                f"Agent extension {name} uses API version {self.api_version}; "
+                f"Enoch supports version {AGENT_EXTENSION_API_VERSION}."
             )
         heading = self.help_heading.strip() or f"Extension ({name})"
         if "\n" in heading or len(heading) > 80:
-            raise DomainExtensionError(
-                f"Domain extension {name} help heading must be one line and "
+            raise AgentExtensionError(
+                f"Agent extension {name} help heading must be one line and "
                 "80 characters or fewer."
             )
         seen: set[str] = set()
         for spec in self.commands:
             if spec.name in seen:
-                raise DomainExtensionError(
-                    f"Duplicate domain extension command /{spec.name}."
+                raise AgentExtensionError(
+                    f"Duplicate agent extension command /{spec.name}."
                 )
             seen.add(spec.name)
         object.__setattr__(self, "name", name)
         object.__setattr__(self, "help_heading", heading)
 
-    def command(self, name: str) -> DomainCommandSpec | None:
+    def command(self, name: str) -> ExtensionCommandSpec | None:
         return next((spec for spec in self.commands if spec.matches(name)), None)
 
 
@@ -239,12 +239,12 @@ def extension_storage(storage: StorageLayout, name: str) -> StorageLayout:
 def _extension_name(value: str) -> str:
     name = value.strip().lower()
     if not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,63}", name):
-        raise DomainExtensionError(f"Invalid domain extension name {value!r}.")
+        raise AgentExtensionError(f"Invalid agent extension name {value!r}.")
     return name
 
 
 def _command_name(value: str) -> str:
     name = value.strip().lower().lstrip("/")
     if not re.fullmatch(r"[a-z][a-z0-9_-]{0,31}", name):
-        raise DomainExtensionError(f"Invalid domain extension command {value!r}.")
+        raise AgentExtensionError(f"Invalid agent extension command {value!r}.")
     return name

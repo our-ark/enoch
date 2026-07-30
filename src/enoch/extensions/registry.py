@@ -7,11 +7,11 @@ from pathlib import Path
 from typing import Callable, Iterable
 
 from enoch.config import read_section
-from enoch.extensions.contracts import DomainExtension, DomainExtensionError
+from enoch.extensions.contracts import AgentExtension, AgentExtensionError
 
 
 ENTRY_POINT_GROUP = "our_ark.extensions"
-ExtensionFactory = Callable[[Path | None], DomainExtension]
+ExtensionFactory = Callable[[Path | None], AgentExtension]
 _REGISTERED: dict[str, ExtensionFactory] = {}
 
 
@@ -21,10 +21,10 @@ def register_extension(
     *,
     replace: bool = False,
 ) -> None:
-    normalized = DomainExtension(name=name).name
+    normalized = AgentExtension(name=name).name
     if normalized in _REGISTERED and not replace:
-        raise DomainExtensionError(
-            f"Domain extension {normalized} is already registered."
+        raise AgentExtensionError(
+            f"Agent extension {normalized} is already registered."
         )
     _REGISTERED[normalized] = factory
 
@@ -39,7 +39,7 @@ def load_extensions(
     root: Path | None = None,
     *,
     names: Iterable[str] | None = None,
-) -> tuple[DomainExtension, ...]:
+) -> tuple[AgentExtension, ...]:
     selected = (
         tuple(names)
         if names is not None
@@ -52,19 +52,19 @@ def load_extensions(
         if sum(extension.name == name for extension in extensions) > 1
     )
     if duplicates:
-        raise DomainExtensionError(
-            "Duplicate domain extensions selected: " + ", ".join(duplicates) + "."
+        raise AgentExtensionError(
+            "Duplicate agent extensions selected: " + ", ".join(duplicates) + "."
         )
     return extensions
 
 
-def _load_extension(name: str, root: Path | None) -> DomainExtension:
-    selected = DomainExtension(name=name).name
+def _load_extension(name: str, root: Path | None) -> AgentExtension:
+    selected = AgentExtension(name=name).name
     factory = _REGISTERED.get(selected) or _entry_point_factory(selected)
     if factory is None:
         choices = ", ".join(available_extensions()) or "none"
-        raise DomainExtensionError(
-            f"Unknown domain extension {selected!r}. "
+        raise AgentExtensionError(
+            f"Unknown agent extension {selected!r}. "
             f"Available extensions: {choices}."
         )
     extension = (
@@ -72,13 +72,13 @@ def _load_extension(name: str, root: Path | None) -> DomainExtension:
         if _factory_accepts_root(factory)
         else factory()  # type: ignore[call-arg]
     )
-    if not isinstance(extension, DomainExtension):
-        raise DomainExtensionError(
-            f"Domain extension factory {selected!r} did not return DomainExtension."
+    if not isinstance(extension, AgentExtension):
+        raise AgentExtensionError(
+            f"Agent extension factory {selected!r} did not return AgentExtension."
         )
     if extension.name != selected:
-        raise DomainExtensionError(
-            f"Domain extension entry {selected!r} returned name "
+        raise AgentExtensionError(
+            f"Agent extension entry {selected!r} returned name "
             f"{extension.name!r}."
         )
     return extension
@@ -109,12 +109,12 @@ def _entry_point_factory(name: str) -> ExtensionFactory | None:
     try:
         factory = entry.load()
     except Exception as error:
-        raise DomainExtensionError(
-            f"Could not load domain extension {name}: {error}"
+        raise AgentExtensionError(
+            f"Could not load agent extension {name}: {error}"
         ) from error
     if not callable(factory):
-        raise DomainExtensionError(
-            f"Domain extension entry point {name} is not callable."
+        raise AgentExtensionError(
+            f"Agent extension entry point {name} is not callable."
         )
     return factory
 
