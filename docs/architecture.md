@@ -26,6 +26,7 @@ and validation boundary.
 | `enoch.providers` | Shared provider contracts, selection, and core adapters |
 | `enoch.providers.authorization` | Provider grants, persisted task requirements, and deny-only policy composition |
 | `enoch.profiles` | Versioned downstream-agent commands, prompt context, lifecycle hooks, and discovery |
+| `enoch.extensions` | Namespaced domain commands, lifecycle hooks, state, and constrained access to the shared workflow |
 | `enoch.workflows` | Versioned queue lifecycle contract and fenced local engine |
 | `enoch.conformance` | Reusable provider, runtime, workflow, and profile contract tests |
 | `enoch.memory` | Durable memory paths, prompts, and storage |
@@ -70,6 +71,11 @@ and lifecycle hooks or enqueue governed work, but they do not poll chat,
 execute tasks, recover queue state, or persist a parallel control plane. This
 keeps downstream product behavior composable while `enoch.app` remains the
 single application and workflow owner.
+
+Agent extensions sit beside the active profile. Multiple extensions may add
+coexisting domain capabilities, but they receive only namespaced storage and a
+constrained façade over the application-owned workflow. See
+[`extensions.md`](extensions.md).
 
 All durable paths cross the storage boundary before they cross the filesystem.
 Versioned code uses the software-body namespace, queue/config/memory/provider

@@ -1,9 +1,9 @@
 # Extension conformance
 
 Enoch publishes versioned `unittest` mixins for provider, runtime, workflow,
-and profile implementations. The suites are executable specifications of the
-public extension contracts; downstream packages should run the corresponding
-suite in their own CI.
+profile, and agent-extension implementations. The suites are executable
+specifications of the public contracts; downstream packages should run the
+corresponding suite in their own CI.
 
 `CONFORMANCE_API_VERSION` is currently `1`. Provider-only packages can import
 the lightweight suites from `our_ark_provider_kit.conformance`. Packages that
@@ -96,10 +96,49 @@ class ResearcherProfileConformance(
         )
 ```
 
+## Agent extension integration
+
+Agent-extension packages should use `AgentExtensionConformanceMixin`, return
+their `AgentExtension` from `create_extension`, and optionally return an
+`ExtensionCommandCase`. The suite checks API-version compatibility, command
+discovery, namespaced storage, lifecycle isolation, and real governed task
+submission with extension provenance and a stable idempotency key.
+Stateful commands may override `prepare_command` to populate their isolated
+fixture before the representative command is invoked. When an extension
+declares `on_task_event`, the lifecycle check also invokes it with a typed,
+isolated representative completion event.
+
+```python
+from enoch.conformance import (
+    AgentExtensionConformanceMixin,
+    ExtensionCommandCase,
+)
+
+
+class ManagerExtensionConformance(
+    AgentExtensionConformanceMixin,
+    unittest.TestCase,
+):
+    def create_extension(self):
+        return create_extension()
+
+    def command_case(self):
+        return ExtensionCommandCase(
+            command="delegate",
+            argument="project-1 task-1 builder",
+            expected_request="Complete task-1 for project-1",
+            expected_context="Assignee: builder",
+            expected_capabilities=("runtime.execute",),
+            idempotency_key="project:project-1:contract:task-1",
+        )
+```
+
 The core test suite applies all behavioral suites to Enoch's built-in runtime,
-workflow engine, and a representative profile. The offline wheel E2E also
-imports the conformance API from the installed artifact, preventing accidental
-source-checkout-only publication.
+workflow engine, a representative profile, and a representative agent
+extension. The offline wheel E2E builds and installs an independent extension
+wheel, discovers it through its entry point and private configuration, and
+exercises its help, workflow, storage, and status integration. This prevents
+accidental source-checkout-only publication.
 
 Repository and review implementations use
 `RepositoryProviderConformanceMixin` and `ReviewProviderConformanceMixin`.

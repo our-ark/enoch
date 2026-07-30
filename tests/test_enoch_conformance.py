@@ -3,11 +3,18 @@ import unittest
 
 from enoch.app.epoch import DaemonEpoch
 from enoch.conformance import (
+    AgentExtensionConformanceMixin,
     AgentRuntimeConformanceMixin,
     DurableNotificationConformanceMixin,
+    ExtensionCommandCase,
     ProfileCommandCase,
     ProfileConformanceMixin,
     WorkflowEngineConformanceMixin,
+)
+from enoch.extensions import (
+    AgentExtension,
+    ExtensionCommandSpec,
+    ExtensionLifecycleHooks,
 )
 from enoch.profiles import (
     AgentProfile,
@@ -119,6 +126,62 @@ class AgentProfileConformanceTests(
         self.test_conformance_profile_lifecycle_accepts_isolated_context()
 
         self.assertEqual(self.lifecycle_events, ["initialize", "shutdown"])
+
+
+class AgentExtensionConformanceTests(
+    AgentExtensionConformanceMixin,
+    unittest.TestCase,
+):
+    def setUp(self) -> None:
+        self.lifecycle_events: list[str] = []
+
+    def create_extension(self) -> AgentExtension:
+        def research(command):
+            command.enqueue_task(
+                f"Research {command.argument}",
+                context="Use cited primary sources.",
+                required_capabilities=("runtime.execute",),
+                idempotency_key=f"research:{command.argument}",
+            )
+            return "Research queued."
+
+        return AgentExtension(
+            name="research",
+            commands=(
+                ExtensionCommandSpec(
+                    name="research",
+                    summary="Queue governed research.",
+                    handler=research,
+                ),
+            ),
+            lifecycle=ExtensionLifecycleHooks(
+                on_initialize=lambda _context: self.lifecycle_events.append(
+                    "initialize"
+                ),
+                on_task_event=lambda _context, _event: self.lifecycle_events.append(
+                    "task-event"
+                ),
+                on_shutdown=lambda _context: self.lifecycle_events.append("shutdown"),
+            ),
+        )
+
+    def command_case(self) -> ExtensionCommandCase:
+        return ExtensionCommandCase(
+            command="research",
+            argument="durable-agents",
+            expected_request="Research durable-agents",
+            expected_context="Use cited primary sources.",
+            expected_capabilities=("runtime.execute",),
+            idempotency_key="research:durable-agents",
+        )
+
+    def test_lifecycle_hooks_were_exercised_by_extension_conformance(self) -> None:
+        self.test_conformance_extension_lifecycle_accepts_isolated_context()
+
+        self.assertEqual(
+            self.lifecycle_events,
+            ["initialize", "shutdown", "task-event"],
+        )
 
 
 class DurableNotificationConformanceTests(

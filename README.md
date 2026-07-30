@@ -255,6 +255,12 @@ installed through the `our_ark.profiles` entry-point group; see
 `/config profile <name>` to select one for restart, and `/status` to confirm the
 profile currently running.
 
+Descendants can add coexisting domain capabilities through the versioned
+`AgentExtension` API. Extensions receive namespaced state, commands, lifecycle
+hooks, and constrained access to Enoch's single workflow without owning polling
+or a second task queue. Packages are discovered through
+`our_ark.extensions`; see [`docs/extensions.md`](docs/extensions.md).
+
 Embedders can replace the task lifecycle implementation through the versioned
 `WorkflowEngine` API while preserving one queue owner. The default local engine
 provides enqueue, claim, heartbeat, cancellation, finalization, recovery, and
