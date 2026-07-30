@@ -46,6 +46,7 @@ def project(context):
     job = context.enqueue_task(
         f"Decompose this project into a dependency graph: {goal}",
         context="Define deliverables, acceptance criteria, and owners.",
+        idempotency_key=f"project:{goal}",
     )
     return f"Queued project-planning task #{job.id}."
 
@@ -72,7 +73,25 @@ def create_extension(root=None):
 and remains read-only by convention during normal extension operation.
 
 `context.enqueue_task()` records extension provenance and routes the task
-through the active profile's workflow policy and capability requirements.
+through the active profile's workflow policy and capability requirements. Its
+optional `idempotency_key` is scoped to the extension. Use a stable,
+domain-derived key whenever a command can be retried or can enqueue more than
+one durable task; the message identifier remains the fallback for simple
+one-task commands.
+
+## Lifecycle and observability
+
+Lifecycle hooks receive isolated storage and the extension-scoped workflow
+façade. For each `EnochApplication` process:
+
+- `on_initialize` runs when the extension is registered;
+- `on_startup` runs exactly once when `start()` first establishes the
+  application lifecycle, independently of whether a locked chat exists or a
+  startup notification is sent;
+- `on_shutdown` runs during application shutdown.
+
+Calling `start()` or `notify_startup()` again does not repeat `on_startup`.
+`/status` lists every active extension and its declared API version.
 
 ## Package and select an extension
 
@@ -108,3 +127,7 @@ permissions.
 The current contract is `AGENT_EXTENSION_API_VERSION = 1`. Enoch rejects an
 extension that declares another version. Extension command and lifecycle
 failures are isolated and recorded as system events.
+
+Downstream extension packages should inherit
+`AgentExtensionConformanceMixin` and, when possible, provide an
+`ExtensionCommandCase`. See [Extension conformance](conformance.md).

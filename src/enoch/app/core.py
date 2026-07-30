@@ -531,6 +531,8 @@ class EnochApplication:
         self._cron_scheduler_lock = threading.Lock()
         self._cron_scheduler_stop = threading.Event()
         self._cron_scheduler_wake = threading.Event()
+        self._startup_hook_lock = threading.Lock()
+        self._startup_hooks_ran = False
         self._lineage_worker: threading.Thread | None = None
         self._lineage_worker_lock = threading.Lock()
         self._task_cancellations: dict[int, threading.Event] = {}
@@ -582,6 +584,7 @@ class EnochApplication:
         return load_provider(kind, self.root)
 
     def run_forever(self) -> None:
+        self.start()
         self._start_cron_scheduler()
         try:
             while True:
@@ -598,6 +601,7 @@ class EnochApplication:
             self._stop_cron_scheduler()
 
     def notify_startup(self) -> None:
+        self.start()
         chat_id = _allowed_conversation_id(self.client)
         if chat_id is None:
             return
@@ -622,6 +626,14 @@ class EnochApplication:
             session_key=self._session_key(chat_id),
             effect_fence=self.effect_fence,
         )
+
+    def start(self) -> None:
+        """Run process-start hooks once, independently of chat notification."""
+
+        with self._startup_hook_lock:
+            if self._startup_hooks_ran:
+                return
+            self._startup_hooks_ran = True
         self._run_profile_hook("on_startup")
         self._run_extension_hooks("on_startup")
 
@@ -2159,6 +2171,10 @@ class EnochApplication:
             chat_id=chat_id,
             chat_provider=self.channel_name,
             profile_name=self._profile_status_name(),
+            extension_summaries=tuple(
+                f"{extension.name} (API v{extension.api_version})"
+                for extension in self.extensions
+            ),
             model_summary_fn=self.runtime.model_summary,
         )
         return "\n\n".join(
@@ -4434,6 +4450,7 @@ def main(chat_provider_name: str = "") -> None:
         daemon_epoch=daemon_epoch,
     )
     _install_shutdown_handlers()
+    bot.start()
     provider_label = str(getattr(chat_provider, "name", "chat")).strip() or "chat"
     print(f"{identity.name} is listening on {provider_label}.")
     try:

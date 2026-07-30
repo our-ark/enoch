@@ -22,7 +22,7 @@ from enoch.extensions import (
 )
 from enoch.extensions import registry as extension_registry
 from enoch.identity import load_identity
-from enoch.profiles import AgentProfile, CommandSpec
+from enoch.profiles import AgentProfile, CommandSpec, LifecycleHooks
 from enoch.providers import ChatEvent, ProviderHealth
 from enoch.tasks.events import load_task_events
 from enoch.tasks.queue import task_queue_status
@@ -75,6 +75,12 @@ class _Runtime:
 
     def health(self, root=None):
         return ProviderHealth("extension runtime", True, "extension doctor", "ready")
+
+
+class _UnlockedChat(_Chat):
+    @property
+    def allowed_conversation_id(self):
+        return None
 
 
 class _EntryPoint:
@@ -200,6 +206,100 @@ class EnochExtensionTests(unittest.TestCase):
                 "after:two",
                 "after:one",
             ],
+        )
+
+    def test_startup_hooks_run_once_without_a_chat_lock(self) -> None:
+        events: list[str] = []
+        profile = AgentProfile(
+            name="startup-profile",
+            lifecycle=LifecycleHooks(
+                on_startup=lambda _context: events.append("profile")
+            ),
+        )
+        extension = AgentExtension(
+            name="startup-extension",
+            lifecycle=ExtensionLifecycleHooks(
+                on_startup=lambda _context: events.append("extension")
+            ),
+        )
+        with TemporaryDirectory() as temp:
+            app = EnochApplication(
+                load_identity(),
+                Path(temp),
+                _UnlockedChat(),
+                runtime=_Runtime(),
+                profile=profile,
+                extensions=(extension,),
+            )
+
+            app.start()
+            app.start()
+            app.notify_startup()
+
+        self.assertEqual(events, ["profile", "extension"])
+
+    def test_extension_command_can_idempotently_enqueue_multiple_tasks(self) -> None:
+        def fanout(context):
+            first = context.enqueue_task(
+                "Create the slides",
+                idempotency_key="project:one:slides",
+            )
+            second = context.enqueue_task(
+                "Render the video",
+                idempotency_key="project:one:video",
+            )
+            return f"Tasks #{first.id} and #{second.id}."
+
+        extension = AgentExtension(
+            name="manager",
+            commands=(
+                ExtensionCommandSpec(
+                    "fanout",
+                    "queue two project nodes",
+                    fanout,
+                ),
+            ),
+        )
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            app = EnochApplication(
+                load_identity(),
+                root,
+                _Chat(),
+                runtime=_Runtime(),
+                extensions=(extension,),
+            )
+
+            app.handle_event(_event("/fanout", message_id="fanout-one"))
+            app.handle_event(_event("/fanout", message_id="fanout-retry"))
+            pending = task_queue_status(root).pending
+
+        self.assertEqual(tuple(job.id for job in pending), (1, 2))
+        self.assertEqual(
+            tuple(job.idempotency_key for job in pending),
+            (
+                "extension:manager:project:one:slides",
+                "extension:manager:project:one:video",
+            ),
+        )
+
+    def test_status_reports_active_extension_api_versions(self) -> None:
+        extension = AgentExtension(name="manager")
+        with TemporaryDirectory() as temp:
+            chat = _Chat()
+            app = EnochApplication(
+                load_identity(),
+                Path(temp),
+                chat,
+                runtime=_Runtime(),
+                extensions=(extension,),
+            )
+
+            app.handle_event(_event("/status"))
+
+        self.assertIn(
+            "Agent extensions: manager (API v1)",
+            chat.sent[-1][1],
         )
 
     def test_extension_cannot_shadow_core_profile_or_peer_commands(self) -> None:

@@ -115,7 +115,9 @@ class ExtensionCommandContext:
         *,
         context: str = "",
         required_capabilities: tuple[str, ...] = (),
+        idempotency_key: str = "",
     ) -> TaskJob:
+        key = idempotency_key.strip() or f"command:{self.event.message_id}"
         return self.workflow.enqueue(
             self.conversation_id,
             request,
@@ -124,7 +126,7 @@ class ExtensionCommandContext:
             event_actor="human",
             trigger=self.command,
             required_capabilities=required_capabilities,
-            idempotency_key=f"command:{self.event.message_id}",
+            idempotency_key=key,
         )
 
 

@@ -96,6 +96,7 @@ def status_message(
     chat_id: ConversationId | None = None,
     chat_provider: str = "chat",
     profile_name: str = "enoch",
+    extension_summaries: tuple[str, ...] = (),
     model_summary_fn: ModelSummaryFn = model_summary,
     code_version_summary_fn: CodeVersionSummaryFn = format_code_version_status,
 ) -> str:
@@ -112,6 +113,8 @@ def status_message(
     lines.extend(
         [
             f"- Agent profile: {profile_name}",
+            "- Agent extensions: "
+            + (", ".join(extension_summaries) if extension_summaries else "none"),
             f"- {provider_label} conversation lock: "
             f"{allowed_chat_id if allowed_chat_id is not None else 'not set'}",
         ]

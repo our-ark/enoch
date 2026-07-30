@@ -82,6 +82,7 @@ class EnochPortableInstallTests(unittest.TestCase):
             chat_provider = base / "portable-chat"
             vcs_provider = base / "portable-vcs"
             profile_package = base / "portable-researcher-profile"
+            extension_package = base / "portable-notes-extension"
             body = base / "body"
             codex = base / "codex"
             target.mkdir()
@@ -89,6 +90,7 @@ class EnochPortableInstallTests(unittest.TestCase):
             _write_chat_provider_package(chat_provider)
             _write_vcs_provider_package(vcs_provider)
             _write_profile_package(profile_package)
+            _write_extension_package(extension_package)
             _write_fake_codex(codex)
 
             for project in (
@@ -98,6 +100,7 @@ class EnochPortableInstallTests(unittest.TestCase):
                 chat_provider,
                 vcs_provider,
                 profile_package,
+                extension_package,
             ):
                 built = subprocess.run(
                     [
@@ -176,13 +179,16 @@ class EnochPortableInstallTests(unittest.TestCase):
         self.assertEqual(result["vcs_provider_version"], "0.0.1")
         self.assertEqual(result["profile"], "researcher")
         self.assertEqual(result["profile_version"], "0.0.1")
+        self.assertEqual(result["extension"], "notes")
+        self.assertEqual(result["extension_version"], "0.0.1")
+        self.assertEqual(result["extension_api_version"], 1)
         self.assertEqual(result["workflow_api_version"], 3)
         self.assertEqual(result["conformance_api_version"], 1)
         self.assertEqual(result["repository_contract_version"], 1)
         self.assertEqual(result["review_contract_version"], 1)
         self.assertEqual(
             result["workflow_operations"],
-            ["recover", "enqueue", "claim", "finalize:completed"],
+            ["recover", "enqueue", "claim", "finalize:completed", "enqueue"],
         )
         self.assertTrue(result["workflow_state_isolated"])
         self.assertEqual(result["profile_trigger"], "/research")
@@ -192,6 +198,16 @@ class EnochPortableInstallTests(unittest.TestCase):
         self.assertEqual(result["profile_timeout_seconds"], 180)
         self.assertEqual(result["profile_max_attempts"], 1)
         self.assertTrue(result["profile_task_label_applied"])
+        self.assertEqual(result["extension_trigger"], "/notes")
+        self.assertEqual(result["extension_context_source"], "extension:notes")
+        self.assertEqual(
+            result["extension_idempotency_key"],
+            "extension:notes:notes:portable-extension",
+        )
+        self.assertIn("/notes <topic>", result["extension_help"])
+        self.assertIn("Queued portable notes task #2", result["extension_reply"])
+        self.assertTrue(result["extension_state_namespaced"])
+        self.assertIn("Agent extensions: notes (API v1)", result["extension_status"])
         self.assertEqual(result["runtime_provider"], "codex")
         self.assertEqual(result["runtime_session_id"], "portable-session")
         self.assertEqual(result["runtime_completion_reason"], "completed")
@@ -542,6 +558,72 @@ def _write_profile_package(root: Path) -> None:
     )
 
 
+def _write_extension_package(root: Path) -> None:
+    root.mkdir()
+    (root / "pyproject.toml").write_text(
+        textwrap.dedent(
+            """
+            [project]
+            name = "enoch-portable-notes-extension"
+            version = "0.0.1"
+            requires-python = ">=3.11"
+
+            [project.entry-points."our_ark.extensions"]
+            notes = "portable_notes:create_extension"
+
+            [build-system]
+            requires = ["setuptools"]
+            build-backend = "setuptools.build_meta"
+
+            [tool.setuptools]
+            py-modules = ["portable_notes"]
+            """
+        ).strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    (root / "portable_notes.py").write_text(
+        textwrap.dedent(
+            """
+            from enoch.extensions import (
+                AgentExtension,
+                ExtensionCommandSpec,
+            )
+
+
+            def notes(command):
+                if not command.argument:
+                    return "Use /notes <topic>."
+                state = command.storage.private_path("notes.txt")
+                state.parent.mkdir(parents=True, exist_ok=True)
+                state.write_text(command.argument + "\\n", encoding="utf-8")
+                job = command.enqueue_task(
+                    "Create portable notes about " + command.argument,
+                    context="Preserve the installed extension provenance.",
+                    idempotency_key="notes:" + command.argument,
+                )
+                return f"Queued portable notes task #{job.id}."
+
+
+            def create_extension(root=None):
+                return AgentExtension(
+                    name="notes",
+                    help_heading="Portable notes",
+                    commands=(
+                        ExtensionCommandSpec(
+                            name="notes",
+                            summary="queue portable notes",
+                            usage="/notes <topic> - queue portable notes",
+                            handler=notes,
+                        ),
+                    ),
+                )
+            """
+        ).lstrip(),
+        encoding="utf-8",
+    )
+
+
 _INSTALLED_TASK_SCRIPT = textwrap.dedent(
     """
     import json
@@ -552,6 +634,7 @@ _INSTALLED_TASK_SCRIPT = textwrap.dedent(
 
     from enoch.app.core import EnochApplication
     from enoch.conformance import CONFORMANCE_API_VERSION
+    from enoch.extensions import AGENT_EXTENSION_API_VERSION, load_extensions
     from enoch.identity import load_identity
     from enoch.profiles import load_profile
     from enoch.providers import (
@@ -608,7 +691,7 @@ _INSTALLED_TASK_SCRIPT = textwrap.dedent(
     config.parent.mkdir()
     config.write_text(
         "providers:\\n  chat: portable\\n  vcs: portable\\n  forge: local\\n"
-        "agent:\\n  profile: researcher\\n",
+        "agent:\\n  profile: researcher\\n  extensions: notes\\n",
         encoding="utf-8",
     )
 
@@ -617,6 +700,7 @@ _INSTALLED_TASK_SCRIPT = textwrap.dedent(
     vcs = load_provider("vcs", root)
     forge = load_provider("forge", root)
     profile = load_profile(root)
+    extensions = load_extensions(root)
     workflow = InstalledWorkflow(root.parent / "workflow-state")
     app = EnochApplication(
         identity=load_identity(),
@@ -625,6 +709,7 @@ _INSTALLED_TASK_SCRIPT = textwrap.dedent(
         runtime=runtime,
         forge=forge,
         profile=profile,
+        extensions=extensions,
         workflow=workflow,
     )
     app.notify_startup()
@@ -651,6 +736,34 @@ _INSTALLED_TASK_SCRIPT = textwrap.dedent(
     assert running is not None and running.id == queued.id
     app._run_task_job(running)
     completed = workflow.inspect().history[-1]
+    app.handle_event(
+        ChatEvent(
+            cursor="extension-help",
+            conversation_id="portable-room",
+            message_id="extension-help",
+            text="/help notes",
+        )
+    )
+    extension_help = chat.sent[-1][1]
+    app.handle_event(
+        ChatEvent(
+            cursor="extension-command",
+            conversation_id="portable-room",
+            message_id="extension-command",
+            text="/notes portable-extension",
+        )
+    )
+    extension_job = workflow.inspect().pending[-1]
+    extension_reply = chat.sent[-1][1]
+    app.handle_event(
+        ChatEvent(
+            cursor="extension-status",
+            conversation_id="portable-room",
+            message_id="extension-status",
+            text="/status",
+        )
+    )
+    extension_status = chat.sent[-1][1]
     branch_preserved = subprocess.run(
         ["git", "show-ref", "--verify", "--quiet", f"refs/heads/{completed.branch_name}"],
         cwd=root,
@@ -674,6 +787,9 @@ _INSTALLED_TASK_SCRIPT = textwrap.dedent(
         "vcs_provider_version": version("enoch-portable-vcs-provider"),
         "profile": profile.name,
         "profile_version": version("enoch-portable-researcher-profile"),
+        "extension": extensions[0].name,
+        "extension_version": version("enoch-portable-notes-extension"),
+        "extension_api_version": AGENT_EXTENSION_API_VERSION,
         "workflow_api_version": workflow.api_version,
         "conformance_api_version": CONFORMANCE_API_VERSION,
         "repository_contract_version": REPOSITORY_CONTRACT_VERSION,
@@ -693,6 +809,15 @@ _INSTALLED_TASK_SCRIPT = textwrap.dedent(
             text.startswith(f"Research task #{completed.id}")
             for _conversation_id, text in chat.sent
         ),
+        "extension_trigger": extension_job.trigger,
+        "extension_context_source": extension_job.context_source,
+        "extension_idempotency_key": extension_job.idempotency_key,
+        "extension_help": extension_help,
+        "extension_reply": extension_reply,
+        "extension_state_namespaced": (
+            root / ".enoch" / "extensions" / "notes" / "notes.txt"
+        ).is_file(),
+        "extension_status": extension_status,
         "runtime_provider": completed.runtime_provider,
         "runtime_session_id": completed.runtime_session_id,
         "runtime_completion_reason": completed.runtime_completion_reason,
