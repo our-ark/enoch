@@ -13,6 +13,8 @@ sys.path.insert(0, str(ROOT / "src"))
 from enoch.app.core import EnochApplication
 from enoch.extensions import (
     AGENT_EXTENSION_API_VERSION,
+    EXTENSION_COMMAND_RESULT_API_VERSION,
+    ExtensionCommandResult,
     ExtensionCommandSpec,
     ExtensionTaskEvent,
     AgentExtension,
@@ -25,7 +27,11 @@ from enoch.extensions.events import load_extension_task_event_receipts
 from enoch.extensions import registry as extension_registry
 from enoch.identity import load_identity
 from enoch.profiles import AgentProfile, CommandSpec, LifecycleHooks
-from enoch.providers import ChatEvent, ProviderHealth
+from enoch.providers import (
+    AgentRuntimeAccessUnavailable,
+    ChatEvent,
+    ProviderHealth,
+)
 from enoch.tasks.events import load_task_events
 from enoch.tasks.queue import task_queue_status
 
@@ -288,6 +294,223 @@ class EnochExtensionTests(unittest.TestCase):
             tuple(job.context_source for job in pending),
             ("extension:manager", "extension:manager"),
         )
+
+    def test_typed_extension_command_result_links_durable_work_and_audit_refs(
+        self,
+    ) -> None:
+        def plan(context):
+            job = context.enqueue_task("Create the governed plan")
+            return ExtensionCommandResult.success(
+                f"Queued planning task #{job.id}.",
+                code="plan_queued",
+                task_ids=(job.id,),
+                output_refs=("artifact://plans/project-1",),
+            )
+
+        extension = AgentExtension(
+            name="manager",
+            commands=(
+                ExtensionCommandSpec("project", "queue a project plan", plan),
+            ),
+        )
+        with TemporaryDirectory() as temp, patch(
+            "enoch.app.core._record_system_event"
+        ) as record_event:
+            root = Path(temp)
+            chat = _Chat()
+            app = EnochApplication(
+                load_identity(),
+                root,
+                chat,
+                runtime=_Runtime(),
+                extensions=(extension,),
+            )
+
+            app.handle_event(_event("/project"))
+            queued = task_queue_status(root).pending
+
+        self.assertEqual(chat.sent[-1][1], "Queued planning task #1.")
+        self.assertEqual(tuple(job.id for job in queued), (1,))
+        result_event = next(
+            call
+            for call in record_event.call_args_list
+            if call.args[0] == "agent_extension_command_result"
+        )
+        self.assertEqual(result_event.kwargs["status"], "ok")
+        self.assertEqual(
+            result_event.kwargs["details"],
+            {
+                "extension": "manager",
+                "command": "/project",
+                "result_api_version": EXTENSION_COMMAND_RESULT_API_VERSION,
+                "result_status": "succeeded",
+                "code": "plan_queued",
+                "task_ids": [1],
+                "output_refs": ["artifact://plans/project-1"],
+            },
+        )
+
+    def test_string_extension_command_result_remains_text_shorthand(self) -> None:
+        extension = AgentExtension(
+            name="legacy",
+            commands=(
+                ExtensionCommandSpec(
+                    "ready",
+                    "return legacy text",
+                    lambda _context: "  Ready.  ",
+                ),
+            ),
+        )
+        with TemporaryDirectory() as temp, patch(
+            "enoch.app.core._record_system_event"
+        ) as record_event:
+            chat = _Chat()
+            app = EnochApplication(
+                load_identity(),
+                Path(temp),
+                chat,
+                runtime=_Runtime(),
+                extensions=(extension,),
+            )
+
+            app.handle_event(_event("/ready"))
+
+        self.assertEqual(chat.sent[-1][1], "  Ready.  ")
+        result_event = next(
+            call
+            for call in record_event.call_args_list
+            if call.args[0] == "agent_extension_command_result"
+        )
+        self.assertEqual(result_event.kwargs["details"]["code"], "ok")
+        self.assertEqual(
+            result_event.kwargs["details"]["result_status"],
+            "succeeded",
+        )
+
+    def test_extension_command_result_rejects_invalid_typed_fields(self) -> None:
+        cases = (
+            (
+                "API version",
+                lambda: ExtensionCommandResult(
+                    "Ready.",
+                    api_version=EXTENSION_COMMAND_RESULT_API_VERSION + 1,
+                ),
+            ),
+            (
+                "status",
+                lambda: ExtensionCommandResult("Ready.", status="unknown"),
+            ),
+            (
+                "non-ok code",
+                lambda: ExtensionCommandResult("Failed.", status="failed"),
+            ),
+            (
+                "positive integers",
+                lambda: ExtensionCommandResult("Ready.", task_ids=(0,)),
+            ),
+            (
+                "output references",
+                lambda: ExtensionCommandResult(
+                    "Ready.",
+                    output_refs=("artifact://one\nartifact://two",),
+                ),
+            ),
+        )
+
+        for message, create_result in cases:
+            with self.subTest(message=message), self.assertRaisesRegex(
+                AgentExtensionError,
+                message,
+            ):
+                create_result()
+
+    def test_extension_command_failures_have_typed_outcomes(self) -> None:
+        def explicit_failure(_context):
+            return ExtensionCommandResult.failure(
+                "A project goal is required.",
+                code="missing_goal",
+            )
+
+        def validation_failure(_context):
+            raise ValueError("project goal is required")
+
+        def enqueue_failure(context):
+            context.enqueue_task("")
+            return "unreachable"
+
+        def unavailable(_context):
+            raise AgentRuntimeAccessUnavailable("runtime is offline")
+
+        def internal_failure(_context):
+            raise RuntimeError("secret implementation detail")
+
+        extension = AgentExtension(
+            name="manager",
+            commands=(
+                ExtensionCommandSpec("explicit", "typed failure", explicit_failure),
+                ExtensionCommandSpec("validate", "invalid input", validation_failure),
+                ExtensionCommandSpec("enqueue", "failed enqueue", enqueue_failure),
+                ExtensionCommandSpec(
+                    "authorize",
+                    "denied capability",
+                    lambda _context: "unreachable",
+                    required_capabilities=("runtime.admin",),
+                ),
+                ExtensionCommandSpec("unavailable", "missing runtime", unavailable),
+                ExtensionCommandSpec(
+                    "explode",
+                    "isolated exception",
+                    internal_failure,
+                ),
+            ),
+        )
+        with TemporaryDirectory() as temp, patch(
+            "enoch.app.core._record_system_event"
+        ) as record_event:
+            chat = _Chat()
+            app = EnochApplication(
+                load_identity(),
+                Path(temp),
+                chat,
+                runtime=_Runtime(),
+                extensions=(extension,),
+            )
+
+            for index, command in enumerate(
+                (
+                    "/explicit",
+                    "/validate",
+                    "/enqueue",
+                    "/authorize",
+                    "/unavailable",
+                    "/explode",
+                ),
+                start=1,
+            ):
+                app.handle_event(_event(command, message_id=f"failure-{index}"))
+
+        result_calls = [
+            call
+            for call in record_event.call_args_list
+            if call.args[0] == "agent_extension_command_result"
+        ]
+        self.assertEqual(
+            tuple(call.kwargs["details"]["code"] for call in result_calls),
+            (
+                "missing_goal",
+                "validation_failed",
+                "enqueue_failed",
+                "authorization_denied",
+                "capability_unavailable",
+                "internal_failure",
+            ),
+        )
+        self.assertTrue(
+            all(call.kwargs["status"] == "failed" for call in result_calls)
+        )
+        self.assertEqual(chat.sent[0][1], "A project goal is required.")
+        self.assertNotIn("secret implementation detail", chat.sent[-1][1])
+        self.assertEqual(chat.sent[-1][1], "Extension command /explode failed.")
 
     def test_status_reports_active_extension_api_versions(self) -> None:
         extension = AgentExtension(name="manager")
@@ -579,11 +802,12 @@ class EnochExtensionTests(unittest.TestCase):
 
         self.assertEqual(
             chat.sent[-1][1],
-            "Extension command /fault failed: command exploded",
+            "Extension command /fault failed.",
         )
         events = [call.args[0] for call in record_event.call_args_list]
         self.assertIn("agent_extension_lifecycle_failed", events)
         self.assertIn("agent_extension_command_failed", events)
+        self.assertIn("agent_extension_command_result", events)
 
 
 def _event(text: str, *, message_id: str = "message-1") -> ChatEvent:

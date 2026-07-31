@@ -13,6 +13,7 @@ from enoch.conformance import (
 )
 from enoch.extensions import (
     AgentExtension,
+    ExtensionCommandResult,
     ExtensionCommandSpec,
     ExtensionLifecycleHooks,
 )
@@ -137,13 +138,17 @@ class AgentExtensionConformanceTests(
 
     def create_extension(self) -> AgentExtension:
         def research(command):
-            command.enqueue_task(
+            job = command.enqueue_task(
                 f"Research {command.argument}",
                 context="Use cited primary sources.",
                 required_capabilities=("runtime.execute",),
                 idempotency_key=f"research:{command.argument}",
             )
-            return "Research queued."
+            return ExtensionCommandResult.success(
+                "Research queued.",
+                code="research_queued",
+                task_ids=(job.id,),
+            )
 
         return AgentExtension(
             name="research",
