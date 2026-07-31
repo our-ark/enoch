@@ -16,10 +16,12 @@ from enoch.app.epoch import StaleDaemonEpoch, begin_daemon_epoch
 from enoch.extensions import (
     AGENT_EXTENSION_API_VERSION,
     EXTENSION_COMMAND_RESULT_API_VERSION,
+    ExtensionArtifactReference,
     ExtensionCommandResult,
     ExtensionCommandSpec,
     ExtensionTaskEvent,
     ExtensionWorkflow,
+    ExtensionWorkflowCapabilityError,
     ExtensionWorkflowControlError,
     AgentExtension,
     AgentExtensionError,
@@ -38,7 +40,12 @@ from enoch.providers import (
 )
 from enoch.tasks.events import load_task_events
 from enoch.tasks.queue import task_queue_status
-from enoch.workflows import LocalWorkflowEngine
+from enoch.workflows import (
+    WORKFLOW_FEATURE_ARTIFACT_REFERENCES,
+    WORKFLOW_FEATURE_EXECUTION_LANES,
+    WORKFLOW_FEATURE_STRUCTURED_METADATA,
+    LocalWorkflowEngine,
+)
 
 
 class _Chat:
@@ -354,6 +361,178 @@ class EnochExtensionTests(unittest.TestCase):
             )
         )
 
+    def test_extension_workflow_round_trips_structured_request_data(self) -> None:
+        metadata = {
+            "project_id": "project-17",
+            "revision": 3,
+            "policy": {"review": True, "owners": ["gary", "enoch"]},
+        }
+        artifact_refs = (
+            ExtensionArtifactReference(
+                "project-spec",
+                "projects/project-17/spec.md",
+                "text/markdown",
+            ),
+        )
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            engine = LocalWorkflowEngine(root)
+            workflow = ExtensionWorkflow.from_engine("manager", engine)
+            queued = workflow.enqueue(
+                "room-1",
+                "Implement the project specification",
+                metadata=metadata,
+                artifact_refs=artifact_refs,
+            )
+
+            restarted = ExtensionWorkflow.from_engine(
+                "manager",
+                LocalWorkflowEngine(root),
+            )
+            status = restarted.status(queued.id)
+            events = load_task_events(root, task_id=queued.id)
+
+        self.assertEqual(
+            workflow.features,
+            frozenset(
+                {
+                    WORKFLOW_FEATURE_ARTIFACT_REFERENCES,
+                    WORKFLOW_FEATURE_STRUCTURED_METADATA,
+                }
+            ),
+        )
+        self.assertFalse(workflow.supports(WORKFLOW_FEATURE_EXECUTION_LANES))
+        self.assertEqual(status.metadata, metadata)
+        self.assertEqual(status.artifact_refs, artifact_refs)
+        self.assertEqual(events[-1].extension_metadata, metadata)
+        self.assertEqual(events[-1].extension_artifact_refs, artifact_refs)
+
+    def test_extension_retry_preserves_and_rerun_can_replace_request_data(
+        self,
+    ) -> None:
+        original_ref = ExtensionArtifactReference(
+            "input",
+            "projects/original.json",
+            "application/json",
+        )
+        replacement_ref = ExtensionArtifactReference(
+            "input",
+            "projects/replacement.json",
+            "application/json",
+        )
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            engine = LocalWorkflowEngine(root)
+            workflow = ExtensionWorkflow.from_engine("manager", engine)
+            original = workflow.enqueue(
+                "room-1",
+                "Run the project workflow",
+                metadata={"project_id": "original"},
+                artifact_refs=(original_ref,),
+            )
+            engine.start_next()
+            engine.finalize(
+                original.id,
+                "failed",
+                failure_code="service_unavailable",
+                failure_class="transient",
+                retryable=True,
+            )
+
+            retry = workflow.retry(original.id)
+            preserved_rerun = workflow.rerun(
+                original.id,
+                idempotency_key="preserved-v1",
+            )
+            rerun = workflow.rerun(
+                original.id,
+                idempotency_key="replacement-v1",
+                metadata={"project_id": "replacement"},
+                artifact_refs=(replacement_ref,),
+            )
+            restarted = ExtensionWorkflow.from_engine(
+                "manager",
+                LocalWorkflowEngine(root),
+            )
+            retry_status = restarted.status(retry.task_id)
+            preserved_rerun_status = restarted.status(preserved_rerun.task_id)
+            rerun_status = restarted.status(rerun.task_id)
+
+        self.assertEqual(retry_status.metadata, {"project_id": "original"})
+        self.assertEqual(retry_status.artifact_refs, (original_ref,))
+        self.assertEqual(
+            preserved_rerun_status.metadata,
+            {"project_id": "original"},
+        )
+        self.assertEqual(
+            preserved_rerun_status.artifact_refs,
+            (original_ref,),
+        )
+        self.assertEqual(
+            rerun_status.metadata,
+            {"project_id": "replacement"},
+        )
+        self.assertEqual(
+            rerun_status.artifact_refs,
+            (replacement_ref,),
+        )
+
+    def test_extension_request_data_is_validated_before_enqueue(self) -> None:
+        invalid_metadata = (
+            {"_enoch": "reserved"},
+            {"Project_ID": "not-lowercase"},
+            {"project": object()},
+            {"score": float("nan")},
+            {"project": [[[[["too deep"]]]]]},
+            {"project": "x" * 2049},
+            {f"field_{index}": "x" * 1900 for index in range(9)},
+        )
+        with TemporaryDirectory() as temp:
+            engine = LocalWorkflowEngine(Path(temp))
+            workflow = ExtensionWorkflow.from_engine("manager", engine)
+
+            for metadata in invalid_metadata:
+                with self.subTest(metadata=metadata), self.assertRaises(ValueError):
+                    workflow.enqueue("room-1", "Do work", metadata=metadata)
+            for path in (
+                "../researcher/private.json",
+                "/tmp/outside.json",
+                "extensions/researcher/private.json",
+            ):
+                with self.subTest(path=path), self.assertRaises(ValueError):
+                    ExtensionArtifactReference("input", path)
+            with self.assertRaises(ValueError):
+                workflow.enqueue(
+                    "room-1",
+                    "Reject an untyped artifact",
+                    artifact_refs=("projects/raw.txt",),  # type: ignore[arg-type]
+                )
+
+            pending = engine.inspect().pending
+
+        self.assertEqual(pending, ())
+
+    def test_extension_request_data_requires_declared_workflow_features(self) -> None:
+        class LegacyWorkflow(LocalWorkflowEngine):
+            features = frozenset()
+
+        with TemporaryDirectory() as temp:
+            engine = LegacyWorkflow(Path(temp))
+            workflow = ExtensionWorkflow.from_engine("manager", engine)
+
+            with self.assertRaises(ExtensionWorkflowCapabilityError) as raised:
+                workflow.enqueue(
+                    "room-1",
+                    "Do structured work",
+                    metadata={"project_id": "project-17"},
+                )
+
+        self.assertEqual(
+            raised.exception.feature,
+            WORKFLOW_FEATURE_STRUCTURED_METADATA,
+        )
+        self.assertEqual(engine.inspect().pending, ())
+
     def test_extension_workflow_rejects_unowned_tasks_before_mutation(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
@@ -656,6 +835,51 @@ class EnochExtensionTests(unittest.TestCase):
         self.assertNotIn("secret implementation detail", chat.sent[-1][1])
         self.assertEqual(chat.sent[-1][1], "Extension command /explode failed.")
 
+    def test_extension_command_reports_missing_workflow_feature(self) -> None:
+        class LegacyWorkflow(LocalWorkflowEngine):
+            features = frozenset()
+
+        def queue(context):
+            context.enqueue_task(
+                "Queue structured work",
+                metadata={"project_id": "project-17"},
+            )
+            return "unreachable"
+
+        extension = AgentExtension(
+            name="manager",
+            commands=(
+                ExtensionCommandSpec("project", "queue project work", queue),
+            ),
+        )
+        with TemporaryDirectory() as temp, patch(
+            "enoch.app.core._record_system_event"
+        ) as record_event:
+            root = Path(temp)
+            chat = _Chat()
+            app = EnochApplication(
+                load_identity(),
+                root,
+                chat,
+                runtime=_Runtime(),
+                workflow=LegacyWorkflow(root),
+                extensions=(extension,),
+            )
+
+            app.handle_event(_event("/project"))
+
+        result = next(
+            call
+            for call in record_event.call_args_list
+            if call.args[0] == "agent_extension_command_result"
+        )
+        self.assertEqual(
+            result.kwargs["details"]["code"],
+            "workflow_capability_unavailable",
+        )
+        self.assertIn("does not support", chat.sent[-1][1])
+        self.assertEqual(app.workflow.inspect().pending, ())
+
     def test_status_reports_active_extension_api_versions(self) -> None:
         extension = AgentExtension(name="manager")
         with TemporaryDirectory() as temp:
@@ -679,7 +903,17 @@ class EnochExtensionTests(unittest.TestCase):
         delivered: list[ExtensionTaskEvent] = []
 
         def queue(context):
-            job = context.enqueue_task("Create the project artifact")
+            job = context.enqueue_task(
+                "Create the project artifact",
+                metadata={"project_id": "project-17"},
+                artifact_refs=(
+                    ExtensionArtifactReference(
+                        "project-spec",
+                        "projects/project-17/spec.md",
+                        "text/markdown",
+                    ),
+                ),
+            )
             return f"Queued task #{job.id}."
 
         extension = AgentExtension(
@@ -724,6 +958,17 @@ class EnochExtensionTests(unittest.TestCase):
             all(event.extension_name == "manager" for event in delivered)
         )
         self.assertEqual(delivered[-1].result_summary, "Created artifact.txt")
+        self.assertEqual(delivered[-1].metadata, {"project_id": "project-17"})
+        self.assertEqual(
+            delivered[-1].artifact_refs,
+            (
+                ExtensionArtifactReference(
+                    "project-spec",
+                    "projects/project-17/spec.md",
+                    "text/markdown",
+                ),
+            ),
+        )
         self.assertEqual(len(receipts), 3)
         self.assertEqual(
             delivered[-1].delivery_key,

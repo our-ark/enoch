@@ -93,6 +93,52 @@ domain-derived key whenever a command can be retried or can enqueue more than
 one durable task; the message identifier remains the fallback for simple
 one-task commands.
 
+### Structured task requests
+
+Extensions may attach versioned domain data without encoding it into prompt
+text:
+
+```python
+from enoch.extensions import ExtensionArtifactReference
+
+
+job = context.enqueue_task(
+    "Build the approved project plan",
+    metadata={
+        "contract_version": 1,
+        "project_id": "project-17",
+        "review_policy": {"required": True},
+    },
+    artifact_refs=(
+        ExtensionArtifactReference(
+            "project-spec",
+            "projects/project-17/spec.md",
+            "text/markdown",
+        ),
+    ),
+)
+```
+
+Metadata is copied into the durable task and task-event records under the
+originating extension's provenance namespace. It must be a JSON object with
+lowercase token keys, at most 16 KiB, five levels, 256 values, and 64 members
+per object or array. Keys beginning with `_`, `$`, `enoch.`, or `system.` and
+the exact keys `enoch`, `system`, and `schema_version` are reserved. Non-JSON
+values, non-finite numbers, and oversized values fail before enqueue.
+
+Artifact references are typed relative POSIX paths beneath
+`.enoch/artifacts/extensions/<extension-name>/`. Absolute paths, parent
+segments, URI-shaped values, backslashes, and paths beginning with
+`extensions/` are rejected, so an extension cannot name another extension's
+artifact boundary. References are durable identities; declaring one does not
+grant filesystem access or copy the artifact into task prompt text.
+
+`ExtensionWorkflow.features` and `supports()` expose optional workflow-engine
+support. The local engine advertises `structured_task_metadata` and
+`artifact_references`. Requesting either feature from an older engine fails
+with `ExtensionWorkflowCapabilityError` before queue mutation; command handlers
+receive the stable `workflow_capability_unavailable` enqueue result code.
+
 ## Typed command results
 
 An extension command may return `ExtensionCommandResult` with:
@@ -134,13 +180,17 @@ The lifecycle semantics are:
 - `retry` accepts only an owned failed task whose durable failure metadata says
   `retryable=True`. It creates the normal linked retry task with a new task ID;
   the original remains in history. A second live retry of the same failure is
-  rejected by the workflow engine.
+  rejected by the workflow engine. Retry always preserves the failed task's
+  metadata and artifact references because it is another attempt at the same
+  durable request.
 - `rerun` accepts any owned terminal task, including a regressed task. It
   creates a fresh task with `parent_task_id` pointing to the terminal source
   and preserves request, context, provenance, policy, and capability
-  requirements. The caller must provide a stable idempotency key. Repeating
-  the same key returns the same rerun after a process restart; a deliberate
-  additional rerun uses a new key.
+  requirements. Metadata and artifact references are preserved unless the
+  caller supplies explicit replacement values. The caller must provide a
+  stable idempotency key. Repeating the same key returns the same rerun after a
+  process restart with the first request envelope; a deliberate additional
+  rerun or replacement uses a new key.
 
 Every mutation still passes through the selected `WorkflowEngine`, so daemon
 epoch fencing, atomic queue persistence, task events, and restart recovery are
@@ -167,7 +217,8 @@ it submitted through `ExtensionWorkflow`. Enoch routes `queued`, `started`,
 `completed`, `failed`, and `cancelled` events only to the originating
 extension. Events include a stable ID, request and result summaries, failure
 metadata, revision and review identities, runtime output references, and an
-extension-scoped `delivery_key`.
+extension-scoped `delivery_key`. They also retain the original structured
+metadata and artifact references across restart and at-least-once replay.
 
 ```python
 from enoch.extensions import ExtensionLifecycleHooks

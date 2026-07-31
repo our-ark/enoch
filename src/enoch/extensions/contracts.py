@@ -23,7 +23,19 @@ from enoch.tasks.queue import (
     TaskQueueStatus,
     TaskRetryError,
 )
-from enoch.workflows import WorkflowEngine, WorkflowEngineError
+from enoch.tasks.payloads import (
+    ExtensionArtifactReference,
+    JsonValue,
+    normalize_extension_artifact_references,
+    normalize_extension_metadata,
+)
+from enoch.workflows import (
+    WORKFLOW_FEATURE_ARTIFACT_REFERENCES,
+    WORKFLOW_FEATURE_STRUCTURED_METADATA,
+    WorkflowEngine,
+    WorkflowEngineError,
+    workflow_features,
+)
 
 
 AGENT_EXTENSION_API_VERSION = 1
@@ -83,6 +95,18 @@ class ExtensionWorkflowControlError(AgentExtensionError):
         self.task_id = task_id
 
 
+class ExtensionWorkflowCapabilityError(AgentExtensionError):
+    """The selected workflow engine lacks an optional extension feature."""
+
+    code = "workflow_capability_unavailable"
+
+    def __init__(self, feature: str) -> None:
+        super().__init__(
+            f"Workflow engine does not support extension feature {feature!r}."
+        )
+        self.feature = feature
+
+
 @dataclass(frozen=True)
 class ExtensionTaskStatus:
     """Read-only status for a task owned by one extension."""
@@ -94,6 +118,8 @@ class ExtensionTaskStatus:
     parent_task_id: int | None = None
     retryable: bool = False
     idempotency_key: str = ""
+    metadata: dict[str, JsonValue] = field(default_factory=dict)
+    artifact_refs: tuple[ExtensionArtifactReference, ...] = ()
 
     @property
     def terminal(self) -> bool:
@@ -226,6 +252,8 @@ class ExtensionTaskEvent:
     runtime_usage: dict[str, int] = field(default_factory=dict)
     runtime_output_refs: tuple[str, ...] = ()
     runtime_side_effects: tuple[str, ...] = ()
+    metadata: dict[str, JsonValue] = field(default_factory=dict)
+    artifact_refs: tuple[ExtensionArtifactReference, ...] = ()
 
     @property
     def delivery_key(self) -> str:
@@ -247,6 +275,7 @@ class ExtensionWorkflow:
         repr=False,
     )
     _task_options: dict[str, object] = field(default_factory=dict, repr=False)
+    _features: frozenset[str] = field(default_factory=frozenset, repr=False)
 
     @classmethod
     def from_engine(
@@ -268,7 +297,15 @@ class ExtensionWorkflow:
                 request_running_cancellation or (lambda _task_id: None)
             ),
             _task_options=dict(task_options or {}),
+            _features=workflow_features(engine),
         )
+
+    @property
+    def features(self) -> frozenset[str]:
+        return self._features
+
+    def supports(self, feature: str) -> bool:
+        return feature.strip().lower() in self._features
 
     def enqueue(
         self,
@@ -281,13 +318,27 @@ class ExtensionWorkflow:
         trigger: str = "",
         required_capabilities: tuple[str, ...] = (),
         idempotency_key: str = "",
+        metadata: dict[str, JsonValue] | None = None,
+        artifact_refs: tuple[ExtensionArtifactReference, ...] = (),
     ) -> TaskJob:
+        normalized_metadata = normalize_extension_metadata(metadata)
+        normalized_artifact_refs = normalize_extension_artifact_references(
+            artifact_refs
+        )
+        if normalized_metadata:
+            self._require_feature(WORKFLOW_FEATURE_STRUCTURED_METADATA)
+        if normalized_artifact_refs:
+            self._require_feature(WORKFLOW_FEATURE_ARTIFACT_REFERENCES)
         options = dict(self._task_options)
         inherited = tuple(options.pop("required_capabilities", ()))
         options["required_capabilities"] = tuple(
             dict.fromkeys((*inherited, *required_capabilities))
         )
         key = idempotency_key.strip()
+        if normalized_metadata:
+            options["extension_metadata"] = normalized_metadata
+        if normalized_artifact_refs:
+            options["extension_artifact_refs"] = normalized_artifact_refs
         return self._enqueue(
             conversation_id,
             request,
@@ -381,6 +432,8 @@ class ExtensionWorkflow:
         task_id: int,
         *,
         idempotency_key: str,
+        metadata: dict[str, JsonValue] | None = None,
+        artifact_refs: tuple[ExtensionArtifactReference, ...] | None = None,
     ) -> ExtensionTaskStatus:
         original = self._owned_task(task_id, "rerun")
         if original.status not in {"completed", "failed", "cancelled", "regressed"}:
@@ -405,6 +458,24 @@ class ExtensionWorkflow:
         )
         options["max_attempts"] = original.max_attempts
         options["timeout_seconds"] = original.timeout_seconds
+        resolved_metadata = (
+            normalize_extension_metadata(original.extension_metadata)
+            if metadata is None
+            else normalize_extension_metadata(metadata)
+        )
+        resolved_artifact_refs = (
+            normalize_extension_artifact_references(
+                original.extension_artifact_refs
+            )
+            if artifact_refs is None
+            else normalize_extension_artifact_references(artifact_refs)
+        )
+        if resolved_metadata:
+            self._require_feature(WORKFLOW_FEATURE_STRUCTURED_METADATA)
+            options["extension_metadata"] = resolved_metadata
+        if resolved_artifact_refs:
+            self._require_feature(WORKFLOW_FEATURE_ARTIFACT_REFERENCES)
+            options["extension_artifact_refs"] = resolved_artifact_refs
         rerun = self._enqueue(
             original.chat_id,
             original.text,
@@ -467,7 +538,15 @@ class ExtensionWorkflow:
             parent_task_id=job.parent_task_id,
             retryable=job.retryable,
             idempotency_key=job.idempotency_key,
+            metadata=normalize_extension_metadata(job.extension_metadata),
+            artifact_refs=normalize_extension_artifact_references(
+                job.extension_artifact_refs
+            ),
         )
+
+    def _require_feature(self, feature: str) -> None:
+        if not self.supports(feature):
+            raise ExtensionWorkflowCapabilityError(feature)
 
     @staticmethod
     def _control_error(
@@ -505,6 +584,8 @@ class ExtensionCommandContext:
         context: str = "",
         required_capabilities: tuple[str, ...] = (),
         idempotency_key: str = "",
+        metadata: dict[str, JsonValue] | None = None,
+        artifact_refs: tuple[ExtensionArtifactReference, ...] = (),
     ) -> TaskJob:
         key = idempotency_key.strip() or f"command:{self.event.message_id}"
         try:
@@ -517,6 +598,8 @@ class ExtensionCommandContext:
                 trigger=self.command,
                 required_capabilities=required_capabilities,
                 idempotency_key=key,
+                metadata=metadata,
+                artifact_refs=artifact_refs,
             )
         except TaskAlreadyExists as error:
             raise ExtensionCommandEnqueueError(
@@ -526,6 +609,11 @@ class ExtensionCommandContext:
             ) from error
         except CapabilityAuthorizationError:
             raise
+        except ExtensionWorkflowCapabilityError as error:
+            raise ExtensionCommandEnqueueError(
+                str(error),
+                code=error.code,
+            ) from error
         except (OSError, ValueError, WorkflowEngineError) as error:
             raise ExtensionCommandEnqueueError(str(error)) from error
 

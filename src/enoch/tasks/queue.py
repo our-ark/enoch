@@ -19,10 +19,19 @@ from enoch.providers.contracts import (
     normalize_message_id,
 )
 from enoch.tasks.events import normalize_task_initiator, normalize_task_source, record_task_event
+from enoch.tasks.payloads import (
+    ExtensionArtifactReference,
+    JsonValue,
+    extension_artifact_references_from_json,
+    extension_artifact_references_to_json,
+    normalize_extension_artifact_references,
+    normalize_extension_metadata,
+    require_extension_payload_namespace,
+)
 from enoch.state import StateCorruptionError, file_transaction, load_json_object
 
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 DEFAULT_MAX_ATTEMPTS = 3
 LEGACY_REVIEW_URL_PATTERN = re.compile(
     r"https://[^\s]+/(?:pull|pulls|merge_requests)/\d+"
@@ -63,6 +72,8 @@ class TaskJob:
     max_attempts: int = DEFAULT_MAX_ATTEMPTS
     timeout_seconds: int | None = None
     required_capabilities: tuple[str, ...] = ()
+    extension_metadata: dict[str, JsonValue] = field(default_factory=dict)
+    extension_artifact_refs: tuple[ExtensionArtifactReference, ...] = ()
     next_attempt_at: str = ""
     failure_code: str = ""
     failure_class: str = ""
@@ -168,6 +179,8 @@ def enqueue_task(
     timeout_seconds: int | None = None,
     required_capabilities: tuple[str, ...] = (),
     idempotency_key: str = "",
+    extension_metadata: dict[str, JsonValue] | None = None,
+    extension_artifact_refs: tuple[ExtensionArtifactReference, ...] = (),
 ) -> TaskJob:
     cleaned = " ".join(text.split())
     if not cleaned:
@@ -177,6 +190,15 @@ def enqueue_task(
     max_attempts = _required_positive_int(max_attempts, "Task max attempts")
     timeout_seconds = _optional_positive_int(timeout_seconds, "Task timeout")
     required_capabilities = TaskRequirements(required_capabilities).capabilities
+    extension_metadata = normalize_extension_metadata(extension_metadata)
+    extension_artifact_refs = normalize_extension_artifact_references(
+        extension_artifact_refs
+    )
+    require_extension_payload_namespace(
+        context_source.strip(),
+        extension_metadata,
+        extension_artifact_refs,
+    )
     with _queue_transaction(root):
         data = _load_queue(root)
         if existing := _find_task_by_idempotency_key(data, idempotency_key):
@@ -202,6 +224,8 @@ def enqueue_task(
             max_attempts=max_attempts,
             timeout_seconds=timeout_seconds,
             required_capabilities=required_capabilities,
+            extension_metadata=extension_metadata,
+            extension_artifact_refs=extension_artifact_refs,
             idempotency_key=idempotency_key.strip(),
         )
         pending = data.setdefault("pending", [])
@@ -296,6 +320,12 @@ def retry_failed_task(
             max_attempts=original.max_attempts,
             timeout_seconds=original.timeout_seconds,
             required_capabilities=original.required_capabilities,
+            extension_metadata=normalize_extension_metadata(
+                original.extension_metadata
+            ),
+            extension_artifact_refs=normalize_extension_artifact_references(
+                original.extension_artifact_refs
+            ),
         )
         pending = data.setdefault("pending", [])
         pending.append(_job_to_dict(job))
@@ -341,6 +371,8 @@ def enqueue_task_front(
     timeout_seconds: int | None = None,
     required_capabilities: tuple[str, ...] = (),
     idempotency_key: str = "",
+    extension_metadata: dict[str, JsonValue] | None = None,
+    extension_artifact_refs: tuple[ExtensionArtifactReference, ...] = (),
 ) -> TaskJob:
     cleaned = " ".join(text.split())
     if not cleaned:
@@ -350,6 +382,15 @@ def enqueue_task_front(
     max_attempts = _required_positive_int(max_attempts, "Task max attempts")
     timeout_seconds = _optional_positive_int(timeout_seconds, "Task timeout")
     required_capabilities = TaskRequirements(required_capabilities).capabilities
+    extension_metadata = normalize_extension_metadata(extension_metadata)
+    extension_artifact_refs = normalize_extension_artifact_references(
+        extension_artifact_refs
+    )
+    require_extension_payload_namespace(
+        context_source.strip(),
+        extension_metadata,
+        extension_artifact_refs,
+    )
     with _queue_transaction(root):
         data = _load_queue(root)
         if existing := _find_task_by_idempotency_key(data, idempotency_key):
@@ -375,6 +416,8 @@ def enqueue_task_front(
             max_attempts=max_attempts,
             timeout_seconds=timeout_seconds,
             required_capabilities=required_capabilities,
+            extension_metadata=extension_metadata,
+            extension_artifact_refs=extension_artifact_refs,
             idempotency_key=idempotency_key.strip(),
         )
         pending = data.setdefault("pending", [])
@@ -409,6 +452,8 @@ def begin_direct_task(
     timeout_seconds: int | None = None,
     required_capabilities: tuple[str, ...] = (),
     idempotency_key: str = "",
+    extension_metadata: dict[str, JsonValue] | None = None,
+    extension_artifact_refs: tuple[ExtensionArtifactReference, ...] = (),
 ) -> TaskJob:
     cleaned = " ".join(text.split())
     if not cleaned:
@@ -418,6 +463,15 @@ def begin_direct_task(
     max_attempts = _required_positive_int(max_attempts, "Task max attempts")
     timeout_seconds = _optional_positive_int(timeout_seconds, "Task timeout")
     required_capabilities = TaskRequirements(required_capabilities).capabilities
+    extension_metadata = normalize_extension_metadata(extension_metadata)
+    extension_artifact_refs = normalize_extension_artifact_references(
+        extension_artifact_refs
+    )
+    require_extension_payload_namespace(
+        context_source.strip(),
+        extension_metadata,
+        extension_artifact_refs,
+    )
     with _queue_transaction(root):
         data = _load_queue(root)
         if existing := _find_task_by_idempotency_key(data, idempotency_key):
@@ -448,6 +502,8 @@ def begin_direct_task(
             max_attempts=max_attempts,
             timeout_seconds=timeout_seconds,
             required_capabilities=required_capabilities,
+            extension_metadata=extension_metadata,
+            extension_artifact_refs=extension_artifact_refs,
             idempotency_key=idempotency_key.strip(),
         )
         data["running"] = _job_to_dict(job)
@@ -1589,6 +1645,20 @@ def _parse_job(raw: object) -> TaskJob | None:
         ).capabilities
     except ValueError:
         required_capabilities = ()
+    try:
+        extension_metadata = normalize_extension_metadata(
+            raw.get("extension_metadata")
+        )
+        extension_artifact_refs = extension_artifact_references_from_json(
+            raw.get("extension_artifact_refs")
+        )
+        require_extension_payload_namespace(
+            context_source,
+            extension_metadata,
+            extension_artifact_refs,
+        )
+    except ValueError:
+        return None
     next_attempt_at = str(raw.get("next_attempt_at") or "").strip()
     failure_code = str(raw.get("failure_code") or "").strip()
     failure_class = str(raw.get("failure_class") or "").strip()
@@ -1662,6 +1732,8 @@ def _parse_job(raw: object) -> TaskJob | None:
         max_attempts=max_attempts,
         timeout_seconds=timeout_seconds,
         required_capabilities=required_capabilities,
+        extension_metadata=extension_metadata,
+        extension_artifact_refs=extension_artifact_refs,
         next_attempt_at=next_attempt_at,
         failure_code=failure_code,
         failure_class=failure_class,
@@ -1718,6 +1790,12 @@ def _job_to_dict(job: TaskJob | None) -> dict:
         "max_attempts": job.max_attempts,
         "timeout_seconds": job.timeout_seconds,
         "required_capabilities": list(job.required_capabilities),
+        "extension_metadata": normalize_extension_metadata(
+            job.extension_metadata
+        ),
+        "extension_artifact_refs": extension_artifact_references_to_json(
+            job.extension_artifact_refs
+        ),
         "next_attempt_at": job.next_attempt_at,
         "failure_code": job.failure_code,
         "failure_class": job.failure_class,
@@ -1771,6 +1849,10 @@ def _replace_job(job: TaskJob, **changes: object) -> TaskJob:
         "max_attempts": job.max_attempts,
         "timeout_seconds": job.timeout_seconds,
         "required_capabilities": job.required_capabilities,
+        "extension_metadata": normalize_extension_metadata(
+            job.extension_metadata
+        ),
+        "extension_artifact_refs": job.extension_artifact_refs,
         "next_attempt_at": job.next_attempt_at,
         "failure_code": job.failure_code,
         "failure_class": job.failure_class,

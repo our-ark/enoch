@@ -126,4 +126,6 @@ def _extension_event(
         runtime_usage=dict(event.runtime_usage),
         runtime_output_refs=event.runtime_output_refs,
         runtime_side_effects=event.runtime_side_effects,
+        metadata=dict(event.extension_metadata),
+        artifact_refs=event.extension_artifact_refs,
     )

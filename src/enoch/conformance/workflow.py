@@ -5,7 +5,14 @@ from tempfile import TemporaryDirectory
 from typing import Any
 
 from enoch.app.epoch import DaemonEpoch, StaleDaemonEpoch, begin_daemon_epoch
-from enoch.workflows import WORKFLOW_API_VERSION, WorkflowEngine
+from enoch.tasks.payloads import ExtensionArtifactReference
+from enoch.workflows import (
+    WORKFLOW_API_VERSION,
+    WORKFLOW_FEATURE_ARTIFACT_REFERENCES,
+    WORKFLOW_FEATURE_STRUCTURED_METADATA,
+    WorkflowEngine,
+    workflow_features,
+)
 
 
 class WorkflowEngineConformanceMixin:
@@ -127,6 +134,57 @@ class WorkflowEngineConformanceMixin:
             self.assertEqual(failed.status, "failed")
             self.assertEqual(failed.failure_code, "partial_failure")
             self.assertEqual(following.id, second.id)
+
+    def test_conformance_workflow_persists_advertised_request_features(
+        self,
+    ) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            epoch = self.begin_fencing_epoch(root)
+            engine = self.create_workflow(root, epoch=epoch)
+            features = workflow_features(engine)
+            options: dict[str, Any] = {}
+            if WORKFLOW_FEATURE_STRUCTURED_METADATA in features:
+                options["extension_metadata"] = {
+                    "request_id": "workflow-conformance",
+                    "revision": 1,
+                }
+            if WORKFLOW_FEATURE_ARTIFACT_REFERENCES in features:
+                options["extension_artifact_refs"] = (
+                    ExtensionArtifactReference(
+                        "input",
+                        "conformance/request.json",
+                        "application/json",
+                    ),
+                )
+            queued = engine.enqueue(
+                42,
+                "persist optional workflow features",
+                context_source="extension:conformance",
+                **options,
+            )
+            if options:
+                with self.assertRaises(ValueError):
+                    engine.enqueue(
+                        42,
+                        "reject unnamespaced extension payload",
+                        **options,
+                    )
+            restarted = self.create_workflow(root, epoch=epoch)
+            recovered = restarted.find(queued.id)
+
+        self.assertIsNotNone(recovered)
+        assert recovered is not None
+        if WORKFLOW_FEATURE_STRUCTURED_METADATA in features:
+            self.assertEqual(
+                recovered.extension_metadata,
+                options["extension_metadata"],
+            )
+        if WORKFLOW_FEATURE_ARTIFACT_REFERENCES in features:
+            self.assertEqual(
+                recovered.extension_artifact_refs,
+                options["extension_artifact_refs"],
+            )
 
     def _new_engine(self, root: Path) -> WorkflowEngine:
         epoch = self.begin_fencing_epoch(root)

@@ -8,6 +8,7 @@ from enoch.extensions import (
     AGENT_EXTENSION_API_VERSION,
     AgentExtension,
     AgentExtensionError,
+    ExtensionArtifactReference,
     ExtensionCommandContext,
     ExtensionCommandResult,
     ExtensionLifecycleContext,
@@ -20,7 +21,11 @@ from enoch.extensions import (
 from enoch.identity import load_identity
 from enoch.providers import ChatEvent, RuntimeResult, TaskRequirements
 from enoch.storage import local_storage_layout
-from enoch.workflows import LocalWorkflowEngine
+from enoch.workflows import (
+    WORKFLOW_FEATURE_ARTIFACT_REFERENCES,
+    WORKFLOW_FEATURE_STRUCTURED_METADATA,
+    LocalWorkflowEngine,
+)
 from our_ark_provider_kit import (
     BranchlessRepositoryFixture,
     IndependentReviewFixture,
@@ -209,6 +214,55 @@ class AgentExtensionConformanceMixin:
         self.assertEqual(same_rerun.task_id, rerun.task_id)
         self.assertEqual(retry.parent_task_id, failed_source.id)
         self.assertEqual(denied.exception.code, "task_not_owned")
+
+    def test_conformance_extension_structured_request_data(self) -> None:
+        extension = self.create_extension()
+        reference = ExtensionArtifactReference(
+            "input",
+            "conformance/request.json",
+            "application/json",
+        )
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow = ExtensionWorkflow.from_engine(
+                extension.name,
+                LocalWorkflowEngine(root),
+            )
+            queued = workflow.enqueue(
+                42,
+                "Process structured extension work",
+                metadata={"request_id": "conformance-1", "revision": 1},
+                artifact_refs=(reference,),
+            )
+            restarted = ExtensionWorkflow.from_engine(
+                extension.name,
+                LocalWorkflowEngine(root),
+            )
+            status = restarted.status(queued.id)
+
+            with self.assertRaises(ValueError):
+                restarted.enqueue(
+                    42,
+                    "Reject reserved metadata",
+                    metadata={"_system": True},
+                )
+            with self.assertRaises(ValueError):
+                ExtensionArtifactReference(
+                    "input",
+                    "../another-extension/private.json",
+                )
+
+        self.assertTrue(
+            workflow.supports(WORKFLOW_FEATURE_STRUCTURED_METADATA)
+        )
+        self.assertTrue(
+            workflow.supports(WORKFLOW_FEATURE_ARTIFACT_REFERENCES)
+        )
+        self.assertEqual(
+            status.metadata,
+            {"request_id": "conformance-1", "revision": 1},
+        )
+        self.assertEqual(status.artifact_refs, (reference,))
 
     def test_conformance_extension_lifecycle_accepts_isolated_context(self) -> None:
         extension = self.create_extension()

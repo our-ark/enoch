@@ -1,6 +1,7 @@
 from enoch.extensions.contracts import (
     AGENT_EXTENSION_API_VERSION,
     EXTENSION_COMMAND_RESULT_API_VERSION,
+    ExtensionArtifactReference,
     ExtensionCommandContext,
     ExtensionCommandEnqueueError,
     ExtensionCommandHandler,
@@ -18,6 +19,7 @@ from enoch.extensions.contracts import (
     ExtensionTaskStatus,
     ExtensionTaskControlOperation,
     ExtensionWorkflow,
+    ExtensionWorkflowCapabilityError,
     ExtensionWorkflowControlError,
     extension_storage,
     normalize_extension_command_result,
@@ -32,6 +34,7 @@ from enoch.extensions.registry import (
 __all__ = [
     "AGENT_EXTENSION_API_VERSION",
     "EXTENSION_COMMAND_RESULT_API_VERSION",
+    "ExtensionArtifactReference",
     "ExtensionCommandContext",
     "ExtensionCommandEnqueueError",
     "ExtensionCommandHandler",
@@ -49,6 +52,7 @@ __all__ = [
     "ExtensionTaskStatus",
     "ExtensionTaskControlOperation",
     "ExtensionWorkflow",
+    "ExtensionWorkflowCapabilityError",
     "ExtensionWorkflowControlError",
     "available_extensions",
     "extension_storage",

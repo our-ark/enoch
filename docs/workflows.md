@@ -13,6 +13,7 @@ The engine owns:
 - interrupted-worker recovery;
 - queue inspection and task lookup;
 - task status, runtime evidence, workspace, revision, and review records;
+- bounded extension request metadata and artifact references;
 - persisted task capability requirements used by the application authorizer.
 
 `LocalWorkflowEngine` is the default file-backed implementation. It preserves
@@ -63,9 +64,11 @@ operation. Durable `TaskJob` state now exposes `workspace_path`,
 `workspace_id`, `revision_id`, `review_id`, `review_url`, `review_urls`, and
 `review_published`.
 
-Queue schema 12 reads schema 11's `worktree_path`, `branch_name`,
+Queue schema 13 reads schema 11's `worktree_path`, `branch_name`,
 `commit_sha`, `remote_branch`, `pr_url`, `pr_urls`, and
-`published_remotely` keys, then writes only the provider-neutral names.
+`published_remotely` keys, then writes only the provider-neutral names. It also
+adds extension request metadata and typed artifact references; older tasks
+migrate with empty values.
 Read-only Python properties preserve those old attribute names during the
 migration window. Workflow API v1 implementations must deliberately adopt the
 v2 methods before injection; `LocalWorkflowEngine` retains v1 method adapters
@@ -79,10 +82,19 @@ The local engine still exposes the bounded v1 publication adapters for stored
 state migration, but injected engines implement only the current typed
 protocol.
 
-Task-event schema 7 records the same opaque `workspace_id`, `revision_id`, and
+Task-event schema 8 records the same opaque `workspace_id`, `revision_id`, and
 `review_id` values with `review_urls` at every lifecycle transition. Event
 readers continue to accept earlier schemas, including Git-shaped
-`branch_name`, `commit_sha`, and `pr_urls` evidence.
+`branch_name`, `commit_sha`, and `pr_urls` evidence. Schema 8 also carries the
+extension request payload without mixing it into task prompt text.
+
+Workflow API v3 engines may advertise optional behavior through a `features`
+iterable. `workflow_features()` normalizes discovery, and extension workflows
+expose it through `features` and `supports()`. The local engine currently
+advertises `structured_task_metadata` and `artifact_references`. It does not
+advertise `execution_lanes`; the local scheduler retains one global running
+task. An older API v3 engine without `features` continues to work until an
+extension requests an optional feature, which then fails before enqueue.
 
 Profiles do not receive or own the concrete engine. Their
 `CommandContext.enqueue_task()` method routes through the engine selected by

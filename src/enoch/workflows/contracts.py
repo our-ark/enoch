@@ -5,9 +5,13 @@ from typing import Literal, Protocol, runtime_checkable
 
 from enoch.providers.contracts import ConversationId, MessageId, RuntimeResult
 from enoch.tasks.queue import TaskJob, TaskPublicationState, TaskQueueStatus
+from enoch.tasks.payloads import ExtensionArtifactReference, JsonValue
 
 
 WORKFLOW_API_VERSION = 3
+WORKFLOW_FEATURE_STRUCTURED_METADATA = "structured_task_metadata"
+WORKFLOW_FEATURE_ARTIFACT_REFERENCES = "artifact_references"
+WORKFLOW_FEATURE_EXECUTION_LANES = "execution_lanes"
 EnqueueMode = Literal["queued", "front", "direct"]
 FinalTaskStatus = Literal["completed", "failed", "cancelled"]
 
@@ -47,6 +51,8 @@ class WorkflowEngine(Protocol):
         timeout_seconds: int | None = None,
         required_capabilities: tuple[str, ...] = (),
         idempotency_key: str = "",
+        extension_metadata: dict[str, JsonValue] | None = None,
+        extension_artifact_refs: tuple[ExtensionArtifactReference, ...] = (),
     ) -> TaskJob: ...
 
     def start_next(self) -> TaskJob | None: ...
@@ -194,3 +200,20 @@ def validate_workflow_engine(engine: WorkflowEngine) -> WorkflowEngine:
             f"Enoch supports version {WORKFLOW_API_VERSION}."
         )
     return engine
+
+
+def workflow_features(engine: WorkflowEngine) -> frozenset[str]:
+    """Discover optional workflow features without breaking API v3 engines."""
+
+    raw = getattr(engine, "features", ())
+    if isinstance(raw, str):
+        return frozenset()
+    try:
+        values = tuple(raw)
+    except TypeError:
+        return frozenset()
+    return frozenset(
+        value.strip().lower()
+        for value in values
+        if isinstance(value, str) and value.strip()
+    )

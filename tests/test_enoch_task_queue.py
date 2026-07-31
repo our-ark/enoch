@@ -103,9 +103,11 @@ class EnochTaskQueueTests(unittest.TestCase):
         )
         self.assertEqual(loaded.review_url, loaded.review_urls[0])
         self.assertTrue(loaded.review_published)
-        self.assertEqual(rewritten["schema_version"], 12)
+        self.assertEqual(rewritten["schema_version"], 13)
         self.assertEqual(persisted["workspace_id"], "legacy-workspace-id")
         self.assertEqual(persisted["revision_id"], "legacy-revision")
+        self.assertEqual(persisted["extension_metadata"], {})
+        self.assertEqual(persisted["extension_artifact_refs"], [])
         self.assertNotIn("branch_name", persisted)
         self.assertNotIn("commit_sha", persisted)
         self.assertNotIn("pr_urls", persisted)
@@ -149,11 +151,13 @@ class EnochTaskQueueTests(unittest.TestCase):
         self.assertEqual(completed.review_urls, (review_url,))
         self.assertEqual(completed.revision_id, "revision-1")
         self.assertEqual(completed.workspace_id, "workspace-1")
-        self.assertEqual(event_payload["schema_version"], 7)
+        self.assertEqual(event_payload["schema_version"], 8)
         self.assertEqual(event_payload["workspace_id"], "workspace-1")
         self.assertEqual(event_payload["review_id"], "change-alpha")
         self.assertEqual(event_payload["review_urls"], [review_url])
         self.assertEqual(event_payload["revision_id"], "revision-1")
+        self.assertEqual(event_payload["extension_metadata"], {})
+        self.assertEqual(event_payload["extension_artifact_refs"], [])
         self.assertNotIn("pr_urls", event_payload)
         self.assertNotIn("commit_sha", event_payload)
 
@@ -192,6 +196,8 @@ class EnochTaskQueueTests(unittest.TestCase):
             event.review_urls,
             ("https://reviews.example/change/legacy",),
         )
+        self.assertEqual(event.extension_metadata, {})
+        self.assertEqual(event.extension_artifact_refs, ())
 
     def test_recent_task_outcomes_keep_latest_terminal_state_and_publish_evidence(self) -> None:
         with TemporaryDirectory() as temp:

@@ -35,8 +35,11 @@ from enoch.tasks.queue import (
     task_result_has_review,
     task_worker_is_active,
 )
+from enoch.tasks.payloads import ExtensionArtifactReference, JsonValue
 from enoch.workflows.contracts import (
     WORKFLOW_API_VERSION,
+    WORKFLOW_FEATURE_ARTIFACT_REFERENCES,
+    WORKFLOW_FEATURE_STRUCTURED_METADATA,
     EnqueueMode,
     FinalTaskStatus,
 )
@@ -46,6 +49,12 @@ class LocalWorkflowEngine:
     """File-backed single-owner workflow engine used by Enoch."""
 
     api_version = WORKFLOW_API_VERSION
+    features = frozenset(
+        {
+            WORKFLOW_FEATURE_ARTIFACT_REFERENCES,
+            WORKFLOW_FEATURE_STRUCTURED_METADATA,
+        }
+    )
 
     def __init__(self, root: Path, *, epoch: DaemonEpoch | None = None) -> None:
         self.root = root
@@ -75,6 +84,8 @@ class LocalWorkflowEngine:
         timeout_seconds: int | None = None,
         required_capabilities: tuple[str, ...] = (),
         idempotency_key: str = "",
+        extension_metadata: dict[str, JsonValue] | None = None,
+        extension_artifact_refs: tuple[ExtensionArtifactReference, ...] = (),
     ) -> TaskJob:
         function = {
             "queued": enqueue_task,
@@ -112,6 +123,8 @@ class LocalWorkflowEngine:
                 timeout_seconds=timeout_seconds,
                 required_capabilities=required_capabilities,
                 idempotency_key=idempotency_key,
+                extension_metadata=extension_metadata,
+                extension_artifact_refs=extension_artifact_refs,
             )
 
     def start_next(self) -> TaskJob | None:

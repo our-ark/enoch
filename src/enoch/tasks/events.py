@@ -15,9 +15,17 @@ except ImportError:  # pragma: no cover - fcntl is unavailable on Windows.
 
 from enoch.memory.paths import clean_text, now as current_time
 from enoch.paths import artifact_path, artifact_read_paths
+from enoch.tasks.payloads import (
+    ExtensionArtifactReference,
+    JsonValue,
+    extension_artifact_references_from_json,
+    normalize_extension_artifact_references,
+    normalize_extension_metadata,
+    require_extension_payload_namespace,
+)
 
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 SUMMARY_LIMIT = 4000
 TASK_SOURCES = {
     "backlog",
@@ -85,6 +93,8 @@ class TaskLike(Protocol):
     runtime_event_types: tuple[str, ...]
     runtime_output_refs: tuple[str, ...]
     runtime_side_effects: tuple[str, ...]
+    extension_metadata: dict[str, JsonValue]
+    extension_artifact_refs: tuple[ExtensionArtifactReference, ...]
 
 
 @dataclass(frozen=True)
@@ -128,6 +138,8 @@ class TaskEvent:
     runtime_event_types: tuple[str, ...] = ()
     runtime_output_refs: tuple[str, ...] = ()
     runtime_side_effects: tuple[str, ...] = ()
+    extension_metadata: dict[str, JsonValue] = field(default_factory=dict)
+    extension_artifact_refs: tuple[ExtensionArtifactReference, ...] = ()
 
     @property
     def pr_urls(self) -> tuple[str, ...]:
@@ -170,6 +182,20 @@ def record_task_event(
     initiated_by = normalize_task_initiator(str(getattr(job, "initiated_by", "") or "human"))
     summary = _clip(result or str(getattr(job, "result", "") or ""))
     occurred_at = _event_time(job, event)
+    context_source = clean_text(
+        str(getattr(job, "context_source", "") or "")
+    )
+    extension_metadata = normalize_extension_metadata(
+        getattr(job, "extension_metadata", {})
+    )
+    extension_artifact_refs = normalize_extension_artifact_references(
+        getattr(job, "extension_artifact_refs", ())
+    )
+    require_extension_payload_namespace(
+        context_source,
+        extension_metadata,
+        extension_artifact_refs,
+    )
     task_event = TaskEvent(
         id=f"event-{uuid4().hex}",
         task_id=task_id,
@@ -181,7 +207,7 @@ def record_task_event(
         trigger=clean_text(trigger or str(getattr(job, "trigger", "") or "")),
         request=request,
         result_summary=summary,
-        context_source=clean_text(str(getattr(job, "context_source", "") or "")),
+        context_source=context_source,
         candidate_id=clean_text(str(getattr(job, "candidate_id", "") or "")),
         parent_task_id=_positive_int(getattr(job, "parent_task_id", None)),
         evidence_source=clean_text(str(getattr(job, "evidence_source", "") or "")).lower(),
@@ -239,6 +265,8 @@ def record_task_event(
         runtime_event_types=_string_tuple(getattr(job, "runtime_event_types", ())),
         runtime_output_refs=_string_tuple(getattr(job, "runtime_output_refs", ())),
         runtime_side_effects=_string_tuple(getattr(job, "runtime_side_effects", ())),
+        extension_metadata=extension_metadata,
+        extension_artifact_refs=extension_artifact_refs,
     )
     with _task_event_transaction(root):
         path = task_event_path(root)
@@ -364,6 +392,20 @@ def _event_from_line(line: str) -> TaskEvent | None:
             context_source,
             initiated_by,
         )
+    try:
+        extension_metadata = normalize_extension_metadata(
+            raw.get("extension_metadata")
+        )
+        extension_artifact_refs = extension_artifact_references_from_json(
+            raw.get("extension_artifact_refs")
+        )
+        require_extension_payload_namespace(
+            context_source,
+            extension_metadata,
+            extension_artifact_refs,
+        )
+    except ValueError:
+        return None
     return TaskEvent(
         id=clean_text(str(raw.get("id") or "")) or f"legacy-event-{task_id}-{event}",
         task_id=task_id,
@@ -412,6 +454,8 @@ def _event_from_line(line: str) -> TaskEvent | None:
         runtime_event_types=_string_tuple(raw.get("runtime_event_types")),
         runtime_output_refs=_string_tuple(raw.get("runtime_output_refs")),
         runtime_side_effects=_string_tuple(raw.get("runtime_side_effects")),
+        extension_metadata=extension_metadata,
+        extension_artifact_refs=extension_artifact_refs,
     )
 
 
