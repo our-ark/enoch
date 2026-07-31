@@ -15,8 +15,9 @@ The version 1 API provides:
 - a constrained façade over Enoch's single governed workflow.
 
 Extensions do not receive polling ownership, provider selection, task execution,
-recovery, publication, or queue mutation APIs. They can enqueue, inspect, and
-find work through `ExtensionWorkflow`; Enoch remains the lifecycle owner.
+recovery, publication, finalization, or raw queue mutation APIs. They can
+enqueue and inspect work, then request bounded lifecycle transitions through
+`ExtensionWorkflow`; Enoch remains the single lifecycle owner.
 
 ## Profiles and extensions
 
@@ -113,6 +114,37 @@ references; chat receives only `final_text`. Authorization denial, enqueue
 failure, capability unavailability, invalid typed output, and an isolated
 handler exception are normalized to stable failure codes rather than escaping
 the chat event loop. Internal exception text is not part of the chat contract.
+
+## Extension-scoped task controls
+
+`ExtensionWorkflow` exposes `status(task_id)`, `cancel(task_id)`,
+`retry(task_id)`, and `rerun(task_id, idempotency_key=...)`. Each returns an
+immutable `ExtensionTaskStatus`. A control request is accepted only when the
+task carries the exact immutable provenance marker
+`context_source=extension:<extension-name>`. Core tasks and tasks owned by
+another extension fail before mutation with `ExtensionWorkflowControlError`;
+its stable `code`, `operation`, and `task_id` fields are suitable for a typed
+command result.
+
+The lifecycle semantics are:
+
+- `cancel` accepts owned pending, paused, or running work. It signals an active
+  in-process worker, records the normal durable `cancelled` task event, and is
+  idempotent once the task is cancelled.
+- `retry` accepts only an owned failed task whose durable failure metadata says
+  `retryable=True`. It creates the normal linked retry task with a new task ID;
+  the original remains in history. A second live retry of the same failure is
+  rejected by the workflow engine.
+- `rerun` accepts any owned terminal task, including a regressed task. It
+  creates a fresh task with `parent_task_id` pointing to the terminal source
+  and preserves request, context, provenance, policy, and capability
+  requirements. The caller must provide a stable idempotency key. Repeating
+  the same key returns the same rerun after a process restart; a deliberate
+  additional rerun uses a new key.
+
+Every mutation still passes through the selected `WorkflowEngine`, so daemon
+epoch fencing, atomic queue persistence, task events, and restart recovery are
+unchanged. Extensions never receive finalization or storage mutation methods.
 
 ## Lifecycle and observability
 

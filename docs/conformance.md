@@ -103,7 +103,9 @@ their `AgentExtension` from `create_extension`, and optionally return an
 `ExtensionCommandCase`. The suite checks API-version compatibility, command
 discovery, typed command-result normalization, namespaced storage, lifecycle
 isolation, and real governed task submission with extension provenance and a
-stable idempotency key. The Enoch application conformance coverage also
+stable idempotency key. It also exercises extension-owned cancel, retry, and
+idempotent rerun transitions plus rejection of unowned tasks. The Enoch
+application conformance coverage additionally
 exercises typed success, validation and authorization failures, enqueue and
 capability failures, and handler-exception isolation.
 Stateful commands may override `prepare_command` to populate their isolated

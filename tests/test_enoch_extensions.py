@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import sys
 from tempfile import TemporaryDirectory
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -11,12 +12,15 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from enoch.app.core import EnochApplication
+from enoch.app.epoch import StaleDaemonEpoch, begin_daemon_epoch
 from enoch.extensions import (
     AGENT_EXTENSION_API_VERSION,
     EXTENSION_COMMAND_RESULT_API_VERSION,
     ExtensionCommandResult,
     ExtensionCommandSpec,
     ExtensionTaskEvent,
+    ExtensionWorkflow,
+    ExtensionWorkflowControlError,
     AgentExtension,
     AgentExtensionError,
     ExtensionLifecycleHooks,
@@ -34,6 +38,7 @@ from enoch.providers import (
 )
 from enoch.tasks.events import load_task_events
 from enoch.tasks.queue import task_queue_status
+from enoch.workflows import LocalWorkflowEngine
 
 
 class _Chat:
@@ -294,6 +299,145 @@ class EnochExtensionTests(unittest.TestCase):
             tuple(job.context_source for job in pending),
             ("extension:manager", "extension:manager"),
         )
+
+    def test_extension_workflow_controls_owned_task_lifecycle(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            engine = LocalWorkflowEngine(root)
+            workflow = ExtensionWorkflow.from_engine("manager", engine)
+
+            pending = workflow.enqueue("room-1", "Cancel pending work")
+            cancelled = workflow.cancel(pending.id)
+            cancelled_again = workflow.cancel(pending.id)
+
+            failed = workflow.enqueue("room-1", "Retry failed work")
+            engine.start_next()
+            engine.finalize(
+                failed.id,
+                "failed",
+                result="temporary outage",
+                failure_code="service_unavailable",
+                failure_class="transient",
+                retryable=True,
+            )
+            retried = workflow.retry(failed.id)
+
+            rerun = workflow.rerun(
+                cancelled.task_id,
+                idempotency_key="cancelled-task-v1",
+            )
+            restarted = ExtensionWorkflow.from_engine(
+                "manager",
+                LocalWorkflowEngine(root),
+            )
+            same_rerun = restarted.rerun(
+                cancelled.task_id,
+                idempotency_key="cancelled-task-v1",
+            )
+            events = load_task_events(root)
+
+        self.assertEqual(cancelled.state, "cancelled")
+        self.assertEqual(cancelled_again, cancelled)
+        self.assertEqual(retried.state, "pending")
+        self.assertEqual(retried.parent_task_id, failed.id)
+        self.assertEqual(rerun.state, "pending")
+        self.assertEqual(rerun.parent_task_id, pending.id)
+        self.assertEqual(same_rerun.task_id, rerun.task_id)
+        self.assertEqual(
+            rerun.idempotency_key,
+            "extension:manager:rerun:cancelled-task-v1",
+        )
+        self.assertTrue(
+            any(
+                event.task_id == pending.id and event.event == "cancelled"
+                for event in events
+            )
+        )
+
+    def test_extension_workflow_rejects_unowned_tasks_before_mutation(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            engine = LocalWorkflowEngine(root)
+            manager = ExtensionWorkflow.from_engine("manager", engine)
+            researcher = ExtensionWorkflow.from_engine("researcher", engine)
+            core = engine.enqueue("room-1", "Core task")
+            peer = researcher.enqueue("room-1", "Peer task")
+
+            for task_id in (core.id, peer.id):
+                with self.subTest(task_id=task_id), self.assertRaises(
+                    ExtensionWorkflowControlError,
+                ) as raised:
+                    manager.cancel(task_id)
+                self.assertEqual(raised.exception.code, "task_not_owned")
+
+            status = engine.inspect()
+
+        self.assertEqual(
+            tuple(job.id for job in status.pending),
+            (core.id, peer.id),
+        )
+
+    def test_extension_workflow_enforces_terminal_and_retry_rules(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            engine = LocalWorkflowEngine(root)
+            workflow = ExtensionWorkflow.from_engine("manager", engine)
+            pending = workflow.enqueue("room-1", "Pending task")
+
+            with self.assertRaises(ExtensionWorkflowControlError) as rerun_error:
+                workflow.rerun(pending.id, idempotency_key="too-early")
+
+            engine.start_next()
+            engine.finalize(
+                pending.id,
+                "failed",
+                result="permanent failure",
+                failure_code="validation_failed",
+                failure_class="permanent",
+                retryable=False,
+            )
+            with self.assertRaises(ExtensionWorkflowControlError) as retry_error:
+                workflow.retry(pending.id)
+            with self.assertRaises(ExtensionWorkflowControlError) as key_error:
+                workflow.rerun(pending.id, idempotency_key="")
+
+        self.assertEqual(rerun_error.exception.code, "invalid_state")
+        self.assertEqual(retry_error.exception.code, "not_retryable")
+        self.assertEqual(key_error.exception.code, "idempotency_required")
+
+    def test_extension_running_cancel_signals_worker_and_is_epoch_fenced(
+        self,
+    ) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            first_epoch = begin_daemon_epoch(root)
+            engine = LocalWorkflowEngine(root, epoch=first_epoch)
+            cancellation = threading.Event()
+            workflow = ExtensionWorkflow.from_engine(
+                "manager",
+                engine,
+                request_running_cancellation=lambda _task_id: cancellation.set(),
+            )
+            running = workflow.enqueue("room-1", "Running task")
+            engine.start_next()
+            workflow.cancel(running.id)
+
+            stale_engine = LocalWorkflowEngine(root, epoch=first_epoch)
+            stale = ExtensionWorkflow.from_engine("manager", stale_engine)
+            pending = ExtensionWorkflow.from_engine(
+                "manager",
+                LocalWorkflowEngine(root),
+            ).enqueue("room-1", "Fenced task")
+            begin_daemon_epoch(root)
+            with self.assertRaises(StaleDaemonEpoch):
+                stale.cancel(pending.id)
+            recovered = ExtensionWorkflow.from_engine(
+                "manager",
+                LocalWorkflowEngine(root),
+            ).status(pending.id)
+
+        self.assertTrue(cancellation.is_set())
+        self.assertEqual(recovered.state, "pending")
 
     def test_typed_extension_command_result_links_durable_work_and_audit_refs(
         self,
@@ -584,6 +728,40 @@ class EnochExtensionTests(unittest.TestCase):
         self.assertEqual(
             delivered[-1].delivery_key,
             f"extension:manager:task-event:{delivered[-1].id}",
+        )
+
+    def test_extension_cancel_delivers_its_durable_task_event(self) -> None:
+        delivered: list[ExtensionTaskEvent] = []
+
+        def queue(context):
+            job = context.enqueue_task("Cancel this project task")
+            return f"Queued task #{job.id}."
+
+        extension = AgentExtension(
+            name="manager",
+            commands=(
+                ExtensionCommandSpec("project", "queue project work", queue),
+            ),
+            lifecycle=ExtensionLifecycleHooks(
+                on_task_event=lambda _context, event: delivered.append(event),
+            ),
+        )
+        with TemporaryDirectory() as temp:
+            app = EnochApplication(
+                load_identity(),
+                Path(temp),
+                _Chat(),
+                runtime=_Runtime(),
+                extensions=(extension,),
+            )
+            app.handle_event(_event("/project"))
+            task_id = app.workflow.inspect().pending[0].id
+            app._extension_workflow(extension).cancel(task_id)
+            app.start()
+
+        self.assertEqual(
+            tuple((event.task_id, event.event) for event in delivered),
+            ((task_id, "queued"), (task_id, "cancelled")),
         )
 
     def test_failed_extension_task_event_is_replayed_after_restart(self) -> None:
