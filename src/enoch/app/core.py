@@ -206,7 +206,7 @@ from enoch.logs import log_conversation_turn, log_system_event, system_log_dirs
 from enoch.memory.paths import clean_text
 from enoch.memory.prompt import memory_for_prompt
 from enoch.memory.store import ensure_long_term_memory, remember_memory
-from enoch.paths import storage_layout
+from enoch.paths import repo_root, storage_layout
 from enoch.prompt_append import (
     TaskRegressionSignal,
     extract_edit_request,
@@ -4471,7 +4471,7 @@ class EnochApplication:
 
 
 def main(chat_provider_name: str = "") -> None:
-    root = Path.cwd()
+    root = repo_root()
     identity = load_identity()
     try:
         chat_provider = load_provider("chat", root, name=chat_provider_name)

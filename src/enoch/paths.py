@@ -6,7 +6,15 @@ from enoch.storage import StorageLayout, local_storage_layout
 
 
 def repo_root(start: Path | None = None) -> Path:
-    path = (start or Path.cwd()).resolve()
+    if start is not None:
+        return start.expanduser().resolve()
+    return discover_repo_root()
+
+
+def discover_repo_root(start: Path | None = None) -> Path:
+    """Discover a repository only when the caller explicitly asks for it."""
+
+    path = (start or Path.cwd()).expanduser().resolve()
     for candidate in [path, *path.parents]:
         if (candidate / ".git").exists() or (candidate / "pyproject.toml").exists():
             return candidate
