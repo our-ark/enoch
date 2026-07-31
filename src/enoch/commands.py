@@ -141,11 +141,20 @@ def identity_summary(identity: Identity, root: Path | None = None) -> str:
     )
 
 
-def mission_command(text: str, identity: Identity, root: Path, *, prefix: str = "/") -> str:
+def mission_command(
+    text: str,
+    identity: Identity,
+    root: Path,
+    *,
+    prefix: str = "/",
+    identity_path: Path | None = None,
+    display_name: str = "",
+) -> str:
     parts = text.split(maxsplit=1)
     command = f"{prefix}mission"
+    name = display_name.strip() or identity.name
     if len(parts) == 1:
-        current = _current_identity(identity, root)
+        current = _current_identity(identity, root, identity_path=identity_path)
         return "\n".join(
             [
                 f"{current.name} mission:",
@@ -155,15 +164,20 @@ def mission_command(text: str, identity: Identity, root: Path, *, prefix: str = 
             ]
         )
     try:
-        mission = update_mission(parts[1], root)
+        mission = update_mission(parts[1], root, path=identity_path)
     except (OSError, ValueError) as error:
-        return f"Enoch could not update her mission: {error}"
-    return f"Enoch mission updated.\nMission: {mission}"
+        return f"{name} could not update the mission: {error}"
+    return f"{name} mission updated.\nMission: {mission}"
 
 
-def _current_identity(identity: Identity, root: Path) -> Identity:
+def _current_identity(
+    identity: Identity,
+    root: Path,
+    *,
+    identity_path: Path | None = None,
+) -> Identity:
     try:
-        return load_identity(identity_file_path(root))
+        return load_identity(identity_path or identity_file_path(root))
     except (OSError, ValueError, KeyError):
         return identity
 

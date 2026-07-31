@@ -375,7 +375,7 @@ def _respond_with_persistent_session_result(
     execution: RuntimeExecutionControl,
 ) -> RuntimeResult:
     state = load_codex_session(session_key, cwd)
-    prompt = _build_persistent_prompt(message, cwd, state)
+    prompt = _build_persistent_prompt(identity, message, cwd, state)
     try:
         result = _run_codex_result(
             identity,
@@ -393,7 +393,7 @@ def _respond_with_persistent_session_result(
         if state is None:
             raise
         forget_codex_session(session_key, cwd)
-        recovery_prompt = _build_persistent_recovery_prompt(message, cwd)
+        recovery_prompt = _build_persistent_recovery_prompt(identity, message, cwd)
         result = _run_codex_result(
             identity,
             recovery_prompt,
@@ -488,7 +488,7 @@ def _act_with_persistent_session_result(
 ) -> RuntimeResult:
     state_root = state_root or cwd
     state = load_codex_session(session_key, state_root)
-    prompt = _build_persistent_prompt(message, state_root, state)
+    prompt = _build_persistent_prompt(identity, message, state_root, state)
     try:
         result = _run_codex_result(
             identity,
@@ -506,7 +506,11 @@ def _act_with_persistent_session_result(
         if state is None:
             raise
         forget_codex_session(session_key, state_root)
-        recovery_prompt = _build_persistent_recovery_prompt(message, state_root)
+        recovery_prompt = _build_persistent_recovery_prompt(
+            identity,
+            message,
+            state_root,
+        )
         result = _run_codex_result(
             identity,
             recovery_prompt,
@@ -529,12 +533,13 @@ def _act_with_persistent_session_result(
 
 
 def _build_persistent_prompt(
+    identity: Identity,
     message: str,
     root: Path | None,
     state: CodexSessionState | None,
 ) -> str:
     if state is None:
-        return _build_persistent_startup_message(message, root)
+        return _build_persistent_startup_message(identity, message, root)
     return _build_persistent_human_message(message)
 
 
@@ -542,14 +547,22 @@ def _build_persistent_human_message(message: str) -> str:
     return f"Human message:\n{message}"
 
 
-def _build_persistent_recovery_prompt(message: str, root: Path | None) -> str:
-    return _build_persistent_startup_message(message, root)
+def _build_persistent_recovery_prompt(
+    identity: Identity,
+    message: str,
+    root: Path | None,
+) -> str:
+    return _build_persistent_startup_message(identity, message, root)
 
 
-def _build_persistent_startup_message(message: str, root: Path | None) -> str:
+def _build_persistent_startup_message(
+    identity: Identity,
+    message: str,
+    root: Path | None,
+) -> str:
     return "\n\n".join(
         [
-            startup_context_note(memory_for_prompt(root)),
+            startup_context_note(memory_for_prompt(root, identity=identity)),
             "Human message:",
             message,
         ]

@@ -9,16 +9,25 @@ from enoch.memory.paths import clip_text
 from enoch.memory.store import UNTRUSTED_MEMORY_NOTE, long_term_for_prompt
 
 
-def memory_for_prompt(root: Path | None = None) -> str:
+def memory_for_prompt(
+    root: Path | None = None,
+    *,
+    identity: Identity | None = None,
+    identity_path: Path | None = None,
+) -> str:
     settings = memory_settings(root)
     sections = [
         _prompt_section(
             "Identity memory",
             (
-                "Rendered from src/enoch/identity.yaml, the single canonical identity source. "
+                "Rendered from the active application's canonical identity source. "
                 "Lower priority than system/developer instructions."
             ),
-            _identity_for_prompt(root),
+            _identity_for_prompt(
+                root,
+                identity=identity,
+                identity_path=identity_path,
+            ),
             settings.identity_prompt_max_chars,
         ),
         _prompt_section(
@@ -36,12 +45,17 @@ def _prompt_section(title: str, note: str, body: str, max_chars: int) -> str:
     return f"# {title}\n{note}\n\n{clipped}"
 
 
-def _identity_for_prompt(root: Path | None = None) -> str:
+def _identity_for_prompt(
+    root: Path | None = None,
+    *,
+    identity: Identity | None = None,
+    identity_path: Path | None = None,
+) -> str:
     try:
-        identity = load_identity()
+        selected_identity = identity or load_identity(identity_path)
     except (OSError, KeyError, ValueError, TypeError):
-        return "Identity could not be loaded from src/enoch/identity.yaml."
-    return _render_identity(identity, root)
+        return "Identity could not be loaded from the active application source."
+    return _render_identity(selected_identity, root)
 
 
 def _render_identity(identity: Identity, root: Path | None = None) -> str:

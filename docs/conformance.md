@@ -138,6 +138,18 @@ class ManagerExtensionConformance(
         )
 ```
 
+## Application composition
+
+Descendant launchers should use `ApplicationCompositionConformanceMixin` and
+return their versioned `ApplicationComposition` from `create_composition`.
+The suite checks the public API version, descendant identity loader, mutable
+identity path, and bounded presentation without taking over Enoch's runtime
+lifecycle. Provider, profile, extension, workflow, and installed-wheel
+integration remain covered by Enoch's application and portable-install suites.
+
+See [Application composition](application-composition.md) for the launcher
+contract and selection precedence.
+
 The core test suite applies all behavioral suites to Enoch's built-in runtime,
 workflow engine, a representative profile, and a representative agent
 extension. The offline wheel E2E builds and installs an independent extension

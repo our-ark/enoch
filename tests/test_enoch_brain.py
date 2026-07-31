@@ -523,7 +523,7 @@ class EnochBrainTests(unittest.TestCase):
         self.assertIn("Enoch startup context:", prompt)
         self.assertIn("Identity and long-term memory.", prompt)
         self.assertIn("Human message:\n\nhello", prompt)
-        _memory.assert_called_once_with(root)
+        _memory.assert_called_once_with(root, identity=load_identity())
         self.assertIsNotNone(state)
         assert state is not None
         self.assertEqual(state.session_id, "session-123")
@@ -642,7 +642,7 @@ class EnochBrainTests(unittest.TestCase):
         self.assertIn("Enoch startup context:", prompt)
         self.assertIn("Old memory should not be sent.", prompt)
         self.assertIn("Human message:\n\nhello", prompt)
-        _memory.assert_called_once_with(root)
+        _memory.assert_called_once_with(root, identity=load_identity())
         self.assertEqual(answer, "Fresh session")
         self.assertIsNotNone(state)
         assert state is not None

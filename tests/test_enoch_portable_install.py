@@ -182,6 +182,8 @@ class EnochPortableInstallTests(unittest.TestCase):
         self.assertEqual(result["extension"], "notes")
         self.assertEqual(result["extension_version"], "0.0.1")
         self.assertEqual(result["extension_api_version"], 1)
+        self.assertEqual(result["composition_api_version"], 1)
+        self.assertEqual(result["composition"], "portable-descendant")
         self.assertEqual(result["workflow_api_version"], 3)
         self.assertEqual(result["conformance_api_version"], 1)
         self.assertEqual(result["repository_contract_version"], 1)
@@ -646,32 +648,47 @@ def _write_extension_package(root: Path) -> None:
 _INSTALLED_TASK_SCRIPT = textwrap.dedent(
     """
     import json
+    from importlib import resources
     from importlib.metadata import version
     from pathlib import Path
     import subprocess
     import sys
 
     from enoch.app.core import EnochApplication
+    from enoch.app.epoch import daemon_epoch_guard
+    from enoch.application import (
+        APPLICATION_COMPOSITION_API_VERSION,
+        ApplicationComposition,
+        ApplicationPresentation,
+    )
     from enoch.conformance import CONFORMANCE_API_VERSION
-    from enoch.extensions import AGENT_EXTENSION_API_VERSION, load_extensions
+    from enoch.extensions import AGENT_EXTENSION_API_VERSION
     from enoch.identity import load_identity
-    from enoch.profiles import load_profile
     from enoch.providers import (
         REPOSITORY_CONTRACT_VERSION,
         REVIEW_CONTRACT_VERSION,
         ChatEvent,
-        load_provider,
     )
     from enoch.workflows import LocalWorkflowEngine
 
 
     root = Path(sys.argv[1])
     root.mkdir()
+    (root / "identity.yaml").write_text(
+        resources.files("enoch").joinpath("identity.yaml").read_text(
+            encoding="utf-8"
+        ),
+        encoding="utf-8",
+    )
 
     class InstalledWorkflow(LocalWorkflowEngine):
-        def __init__(self, root):
-            super().__init__(root)
+        def __init__(self, root, epoch, epoch_root):
+            super().__init__(root, epoch=epoch)
+            self.epoch_root = epoch_root
             self.operations = []
+
+        def _mutation(self):
+            return daemon_epoch_guard(self.epoch, self.epoch_root)
 
         def enqueue(self, conversation_id, request, *, mode="queued", **options):
             self.operations.append("enqueue")
@@ -714,22 +731,42 @@ _INSTALLED_TASK_SCRIPT = textwrap.dedent(
         encoding="utf-8",
     )
 
-    chat = load_provider("chat", root)
-    runtime = load_provider("runtime", root)
-    vcs = load_provider("vcs", root)
-    forge = load_provider("forge", root)
-    profile = load_profile(root)
-    extensions = load_extensions(root)
-    workflow = InstalledWorkflow(root.parent / "workflow-state")
+    composition = ApplicationComposition(
+        name="portable-descendant",
+        identity_loader=load_identity,
+        identity_path_resolver=lambda body: body / "identity.yaml",
+        presentation=ApplicationPresentation(
+            display_name="Portable descendant",
+            ready_message="Portable descendant is ready.",
+        ),
+        required_extensions=("notes",),
+        workflow_factory=lambda _body, epoch: InstalledWorkflow(
+            root.parent / "workflow-state",
+            epoch,
+            root,
+        ),
+    )
+    components = composition.resolve(root)
+    chat = components.chat
+    runtime = components.runtime
+    vcs = components.repository
+    forge = components.review
+    profile = components.profile
+    extensions = components.extensions
+    workflow = components.workflow
     app = EnochApplication(
-        identity=load_identity(),
+        identity=components.identity,
         root=root,
         client=chat,
         runtime=runtime,
-        forge=forge,
+        repository=vcs,
+        review=forge,
         profile=profile,
         extensions=extensions,
+        daemon_epoch=components.daemon_epoch,
         workflow=workflow,
+        identity_path=components.identity_path,
+        presentation=components.presentation,
     )
     app.notify_startup()
     app.handle_event(
@@ -817,6 +854,8 @@ _INSTALLED_TASK_SCRIPT = textwrap.dedent(
         "extension": extensions[0].name,
         "extension_version": version("enoch-portable-notes-extension"),
         "extension_api_version": AGENT_EXTENSION_API_VERSION,
+        "composition_api_version": APPLICATION_COMPOSITION_API_VERSION,
+        "composition": components.composition_name,
         "workflow_api_version": workflow.api_version,
         "conformance_api_version": CONFORMANCE_API_VERSION,
         "repository_contract_version": REPOSITORY_CONTRACT_VERSION,

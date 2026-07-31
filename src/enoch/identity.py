@@ -63,13 +63,18 @@ def identity_file_path(root: Path | None = None) -> Path:
     return Path.cwd() / "src" / "enoch" / "identity.yaml" if root is None else root / "src" / "enoch" / "identity.yaml"
 
 
-def update_mission(mission: str, root: Path | None = None) -> str:
+def update_mission(
+    mission: str,
+    root: Path | None = None,
+    *,
+    path: Path | None = None,
+) -> str:
     cleaned = " ".join(mission.split())
     if not cleaned:
         raise ValueError("Mission cannot be empty.")
 
-    path = identity_file_path(root)
-    lines = path.read_text(encoding="utf-8").splitlines()
+    target = Path(path or identity_file_path(root))
+    lines = target.read_text(encoding="utf-8").splitlines()
     updated: list[str] = []
     replaced = False
     index = 0
@@ -94,7 +99,7 @@ def update_mission(mission: str, root: Path | None = None) -> str:
 
     if not replaced:
         raise ValueError("Identity file does not contain a mission field.")
-    path.write_text("\n".join(updated) + "\n", encoding="utf-8")
+    target.write_text("\n".join(updated) + "\n", encoding="utf-8")
     return cleaned
 
 

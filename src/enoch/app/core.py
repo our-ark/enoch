@@ -126,6 +126,7 @@ from enoch.vcs_tools import (
 from enoch.workflows import (
     LocalWorkflowEngine,
     WorkflowEngine,
+    WorkflowEngineError,
     validate_workflow_engine,
 )
 from enoch.formatting import (
@@ -262,7 +263,6 @@ from enoch.profiles import (
     ProfileError,
     PromptContext,
     PromptPurpose,
-    load_profile,
 )
 from enoch.profiles.contracts import extend_prompt
 from enoch.extensions import (
@@ -275,7 +275,6 @@ from enoch.extensions import (
     ExtensionLifecycleContext,
     ExtensionWorkflow,
     extension_storage,
-    load_extensions,
     normalize_extension_command_result,
 )
 from enoch.extensions.events import (
@@ -400,6 +399,11 @@ from enoch.app.task_workflow import (
     sandbox_description as _sandbox_description,
     work_reply_failed as _work_reply_failed,
 )
+from enoch.application import (
+    ApplicationComposition,
+    ApplicationCompositionError,
+    ApplicationPresentation,
+)
 
 
 TASK_CONTEXT_SOURCE_CHAT = "chat-snapshot"
@@ -473,9 +477,15 @@ class EnochApplication:
         daemon_epoch: DaemonEpoch | None = None,
         workflow: WorkflowEngine | None = None,
         authorization_policy: AuthorizationPolicy | None = None,
+        identity_path: Path | None = None,
+        presentation: ApplicationPresentation | None = None,
     ) -> None:
         self.identity = identity
         self.root = root
+        self.identity_path = Path(
+            identity_path or identity_file_path(root)
+        ).resolve()
+        self.presentation = presentation or ApplicationPresentation()
         self.storage = storage_layout(root)
         assert_private_state_supported(root)
         self.client = client
@@ -629,7 +639,13 @@ class EnochApplication:
             self.identity,
             self.root,
             chat_id,
-            startup_context_note(memory_for_prompt(self.root)),
+            startup_context_note(
+                memory_for_prompt(
+                    self.root,
+                    identity=self.identity,
+                    identity_path=self.identity_path,
+                )
+            ),
             runtime=self.runtime,
             session_key=self._session_key(chat_id),
             effect_fence=self.effect_fence,
@@ -968,7 +984,7 @@ class EnochApplication:
         return {
             "start": lambda: "\n".join(
                 [
-                    "Enoch is ready.",
+                    self.presentation.resolved_ready_message(self.identity),
                     "Use /help to see every command.",
                     "Use /help <command> for detailed usage and subcommands.",
                 ]
@@ -2309,10 +2325,16 @@ class EnochApplication:
         )
 
     def _mission(self, text: str) -> str:
-        reply = mission_command(text, self.identity, self.root)
+        reply = mission_command(
+            text,
+            self.identity,
+            self.root,
+            identity_path=self.identity_path,
+            display_name=self.presentation.resolved_display_name(self.identity),
+        )
         if text.split(maxsplit=1)[0].lower() == "/mission" and len(text.split(maxsplit=1)) > 1:
             try:
-                self.identity = load_identity(identity_file_path(self.root))
+                self.identity = load_identity(self.identity_path)
             except (OSError, ValueError, KeyError):
                 pass
         return reply
@@ -4530,31 +4552,39 @@ class EnochApplication:
             return
 
 
-def main(chat_provider_name: str = "") -> None:
+def main(
+    chat_provider_name: str = "",
+    *,
+    composition: ApplicationComposition | None = None,
+) -> None:
     root = repo_root()
-    identity = load_identity()
+    selected_composition = composition or ApplicationComposition()
     try:
-        chat_provider = load_provider("chat", root, name=chat_provider_name)
-        runtime_provider = load_provider("runtime", root)
-        forge_provider = load_provider("forge", root)
-        profile = load_profile(root)
-        extensions = load_extensions(root)
+        components = selected_composition.resolve(
+            root,
+            chat_provider_name=chat_provider_name,
+        )
     except (
+        ApplicationCompositionError,
         ProviderError,
         ChatProviderError,
         ProfileError,
         AgentExtensionError,
+        WorkflowEngineError,
     ) as error:
         print(str(error))
         raise SystemExit(1) from error
+    identity = components.identity
+    chat_provider = components.chat
+    extensions = components.extensions
     selected_channel = _chat_provider_name(chat_provider)
-    daemon_epoch = begin_daemon_epoch(root, provider=selected_channel)
     previous_shutdown_warning = _begin_lifecycle_run(root, provider=selected_channel)
     _record_system_event(
         "startup",
         root,
         details={
             "identity": identity.name,
+            "composition": components.composition_name,
             "previous_shutdown_warning": previous_shutdown_warning,
             "extensions": [extension.name for extension in extensions],
         },
@@ -4564,11 +4594,16 @@ def main(chat_provider_name: str = "") -> None:
         root=root,
         client=chat_provider,
         previous_shutdown_warning=previous_shutdown_warning,
-        runtime=runtime_provider,
-        forge=forge_provider,
-        profile=profile,
+        runtime=components.runtime,
+        repository=components.repository,
+        review=components.review,
+        profile=components.profile,
         extensions=extensions,
-        daemon_epoch=daemon_epoch,
+        daemon_epoch=components.daemon_epoch,
+        workflow=components.workflow,
+        authorization_policy=components.authorization_policy,
+        identity_path=components.identity_path,
+        presentation=components.presentation,
     )
     _install_shutdown_handlers()
     bot.start()
