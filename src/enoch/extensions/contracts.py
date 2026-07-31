@@ -17,13 +17,28 @@ from enoch.providers.contracts import (
 )
 from enoch.providers.authorization import CapabilityAuthorizationError
 from enoch.storage import StorageLayout
-from enoch.tasks.queue import TaskAlreadyExists, TaskJob, TaskQueueStatus
+from enoch.tasks.queue import (
+    TaskAlreadyExists,
+    TaskJob,
+    TaskQueueStatus,
+    TaskRetryError,
+)
 from enoch.workflows import WorkflowEngine, WorkflowEngineError
 
 
 AGENT_EXTENSION_API_VERSION = 1
 EXTENSION_COMMAND_RESULT_API_VERSION = 1
 ExtensionCommandStatus = Literal["succeeded", "failed"]
+ExtensionTaskControlOperation = Literal["status", "cancel", "retry", "rerun"]
+ExtensionTaskState = Literal[
+    "pending",
+    "paused",
+    "running",
+    "completed",
+    "failed",
+    "cancelled",
+    "regressed",
+]
 ExtensionTaskEventType = Literal[
     "queued",
     "started",
@@ -50,6 +65,39 @@ class ExtensionCommandEnqueueError(AgentExtensionError):
         super().__init__(message)
         self.code = code
         self.task_ids = task_ids
+
+
+class ExtensionWorkflowControlError(AgentExtensionError):
+    """An extension requested a task transition outside its bounded authority."""
+
+    def __init__(
+        self,
+        code: str,
+        operation: ExtensionTaskControlOperation,
+        task_id: int,
+        message: str,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.operation = operation
+        self.task_id = task_id
+
+
+@dataclass(frozen=True)
+class ExtensionTaskStatus:
+    """Read-only status for a task owned by one extension."""
+
+    extension_name: str
+    task_id: int
+    state: ExtensionTaskState
+    request: str
+    parent_task_id: int | None = None
+    retryable: bool = False
+    idempotency_key: str = ""
+
+    @property
+    def terminal(self) -> bool:
+        return self.state in {"completed", "failed", "cancelled", "regressed"}
 
 
 @dataclass(frozen=True)
@@ -192,6 +240,12 @@ class ExtensionWorkflow:
     _enqueue: Callable[..., TaskJob] = field(repr=False)
     _inspect: Callable[[], TaskQueueStatus] = field(repr=False)
     _find: Callable[[int], TaskJob | None] = field(repr=False)
+    _cancel: Callable[..., TaskJob | None] = field(repr=False)
+    _retry_failed: Callable[..., TaskJob] = field(repr=False)
+    _request_running_cancellation: Callable[[int], None] = field(
+        default=lambda _task_id: None,
+        repr=False,
+    )
     _task_options: dict[str, object] = field(default_factory=dict, repr=False)
 
     @classmethod
@@ -201,12 +255,18 @@ class ExtensionWorkflow:
         engine: WorkflowEngine,
         *,
         task_options: dict[str, object] | None = None,
+        request_running_cancellation: Callable[[int], None] | None = None,
     ) -> ExtensionWorkflow:
         return cls(
-            extension_name=extension_name,
+            extension_name=_extension_name(extension_name),
             _enqueue=engine.enqueue,
             _inspect=engine.inspect,
             _find=engine.find,
+            _cancel=engine.cancel,
+            _retry_failed=engine.retry_failed,
+            _request_running_cancellation=(
+                request_running_cancellation or (lambda _task_id: None)
+            ),
             _task_options=dict(task_options or {}),
         )
 
@@ -248,6 +308,180 @@ class ExtensionWorkflow:
 
     def find(self, task_id: int) -> TaskJob | None:
         return self._find(task_id)
+
+    def status(self, task_id: int) -> ExtensionTaskStatus:
+        return self._status(self._owned_task(task_id, "status"))
+
+    def cancel(
+        self,
+        task_id: int,
+        *,
+        result: str = "",
+    ) -> ExtensionTaskStatus:
+        job = self._owned_task(task_id, "cancel")
+        if job.status == "cancelled":
+            return self._status(job)
+        if job.status not in {"pending", "paused", "running"}:
+            raise self._control_error(
+                "invalid_state",
+                "cancel",
+                task_id,
+                f"Extension task #{task_id} is {job.status} and cannot be cancelled.",
+            )
+        if job.status == "running":
+            self._request_running_cancellation(task_id)
+        cancelled = self._cancel(
+            task_id,
+            result=result.strip() or f"Cancelled by extension {self.extension_name}.",
+            event_actor="agent",
+            trigger=f"extension:{self.extension_name}:cancel",
+        )
+        if cancelled is None:
+            raise self._control_error(
+                "transition_conflict",
+                "cancel",
+                task_id,
+                f"Extension task #{task_id} changed before it could be cancelled.",
+            )
+        return self._status(cancelled)
+
+    def retry(self, task_id: int) -> ExtensionTaskStatus:
+        job = self._owned_task(task_id, "retry")
+        if job.status != "failed":
+            raise self._control_error(
+                "invalid_state",
+                "retry",
+                task_id,
+                f"Extension task #{task_id} is not failed.",
+            )
+        if not job.retryable:
+            raise self._control_error(
+                "not_retryable",
+                "retry",
+                task_id,
+                f"Extension task #{task_id} is not eligible for retry; rerun it instead.",
+            )
+        try:
+            retried = self._retry_failed(
+                task_id,
+                event_actor="agent",
+                trigger=f"extension:{self.extension_name}:retry",
+            )
+        except TaskRetryError as error:
+            raise self._control_error(
+                "retry_conflict",
+                "retry",
+                task_id,
+                str(error),
+            ) from error
+        return self._status(retried)
+
+    def rerun(
+        self,
+        task_id: int,
+        *,
+        idempotency_key: str,
+    ) -> ExtensionTaskStatus:
+        original = self._owned_task(task_id, "rerun")
+        if original.status not in {"completed", "failed", "cancelled", "regressed"}:
+            raise self._control_error(
+                "invalid_state",
+                "rerun",
+                task_id,
+                f"Extension task #{task_id} is not terminal.",
+            )
+        key = idempotency_key.strip()
+        if not key:
+            raise self._control_error(
+                "idempotency_required",
+                "rerun",
+                task_id,
+                "Extension task reruns require a stable idempotency key.",
+            )
+        options = dict(self._task_options)
+        inherited = tuple(options.pop("required_capabilities", ()))
+        options["required_capabilities"] = tuple(
+            dict.fromkeys((*inherited, *original.required_capabilities))
+        )
+        options["max_attempts"] = original.max_attempts
+        options["timeout_seconds"] = original.timeout_seconds
+        rerun = self._enqueue(
+            original.chat_id,
+            original.text,
+            context=original.context,
+            context_source=f"extension:{self.extension_name}",
+            source=original.source,
+            initiated_by="agent",
+            event_actor="agent",
+            trigger=f"extension:{self.extension_name}:rerun",
+            candidate_id=original.candidate_id,
+            parent_task_id=original.id,
+            evidence_source=original.evidence_source,
+            signal_actor=original.signal_actor,
+            candidate_actor=original.candidate_actor,
+            approval_actor=original.approval_actor,
+            parent_candidate_id=original.parent_candidate_id,
+            source_task_id=original.source_task_id,
+            idempotency_key=(
+                f"extension:{self.extension_name}:rerun:{key}"
+            ),
+            **options,
+        )
+        return self._status(rerun)
+
+    def _owned_task(
+        self,
+        task_id: int,
+        operation: ExtensionTaskControlOperation,
+    ) -> TaskJob:
+        if isinstance(task_id, bool) or not isinstance(task_id, int) or task_id < 1:
+            raise self._control_error(
+                "invalid_task_id",
+                operation,
+                task_id,
+                "Extension task IDs must be positive integers.",
+            )
+        job = self._find(task_id)
+        if job is None:
+            raise self._control_error(
+                "task_not_found",
+                operation,
+                task_id,
+                f"Task #{task_id} does not exist.",
+            )
+        if job.context_source != f"extension:{self.extension_name}":
+            raise self._control_error(
+                "task_not_owned",
+                operation,
+                task_id,
+                f"Task #{task_id} is not owned by extension {self.extension_name}.",
+            )
+        return job
+
+    def _status(self, job: TaskJob) -> ExtensionTaskStatus:
+        return ExtensionTaskStatus(
+            extension_name=self.extension_name,
+            task_id=job.id,
+            state=job.status,
+            request=job.text,
+            parent_task_id=job.parent_task_id,
+            retryable=job.retryable,
+            idempotency_key=job.idempotency_key,
+        )
+
+    @staticmethod
+    def _control_error(
+        code: str,
+        operation: ExtensionTaskControlOperation,
+        task_id: int,
+        message: str,
+    ) -> ExtensionWorkflowControlError:
+        return ExtensionWorkflowControlError(
+            code,
+            operation,
+            task_id,
+            message,
+        )
 
 
 @dataclass(frozen=True)

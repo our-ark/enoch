@@ -13,6 +13,7 @@ from enoch.extensions import (
     ExtensionLifecycleContext,
     ExtensionTaskEvent,
     ExtensionWorkflow,
+    ExtensionWorkflowControlError,
     extension_storage,
     normalize_extension_command_result,
 )
@@ -169,6 +170,45 @@ class AgentExtensionConformanceMixin:
             "must return str or ExtensionCommandResult",
         ):
             normalize_extension_command_result(object())
+
+    def test_conformance_extension_workflow_lifecycle_controls(self) -> None:
+        extension = self.create_extension()
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            engine = LocalWorkflowEngine(root)
+            workflow = ExtensionWorkflow.from_engine(extension.name, engine)
+
+            cancelled_source = workflow.enqueue(42, "Cancel this extension task")
+            cancelled = workflow.cancel(cancelled_source.id)
+            rerun = workflow.rerun(
+                cancelled_source.id,
+                idempotency_key="conformance-rerun",
+            )
+            same_rerun = workflow.rerun(
+                cancelled_source.id,
+                idempotency_key="conformance-rerun",
+            )
+            workflow.cancel(rerun.task_id)
+
+            failed_source = workflow.enqueue(42, "Retry this extension task")
+            engine.start_next()
+            engine.finalize(
+                failed_source.id,
+                "failed",
+                failure_code="service_unavailable",
+                failure_class="transient",
+                retryable=True,
+            )
+            retry = workflow.retry(failed_source.id)
+            core_task = engine.enqueue(42, "Core-owned task")
+            with self.assertRaises(ExtensionWorkflowControlError) as denied:
+                workflow.cancel(core_task.id)
+
+        self.assertEqual(cancelled.state, "cancelled")
+        self.assertEqual(rerun.parent_task_id, cancelled_source.id)
+        self.assertEqual(same_rerun.task_id, rerun.task_id)
+        self.assertEqual(retry.parent_task_id, failed_source.id)
+        self.assertEqual(denied.exception.code, "task_not_owned")
 
     def test_conformance_extension_lifecycle_accepts_isolated_context(self) -> None:
         extension = self.create_extension()

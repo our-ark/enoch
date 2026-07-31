@@ -1085,7 +1085,13 @@ class EnochApplication:
             extension_name=extension.name,
             engine=self.workflow,
             task_options=self._profile_task_options(),
+            request_running_cancellation=self._request_task_cancellation,
         )
+
+    def _request_task_cancellation(self, task_id: int) -> None:
+        cancellation = self._task_cancellations.get(task_id)
+        if cancellation is not None:
+            cancellation.set()
 
     def _run_extension_command(
         self,
