@@ -261,6 +261,12 @@ hooks, and constrained access to Enoch's single workflow without owning polling
 or a second task queue. Packages are discovered through
 `our_ark.extensions`; see [`docs/extensions.md`](docs/extensions.md).
 
+Descendant launchers can bind their own identity, mutable identity path,
+presentation, required extensions, provider selections, and fenced workflow
+factory through `ApplicationComposition` without subclassing the application
+core. Enoch retains polling and lifecycle ownership; see
+[`docs/application-composition.md`](docs/application-composition.md).
+
 Embedders can replace the task lifecycle implementation through the versioned
 `WorkflowEngine` API while preserving one queue owner. The default local engine
 provides enqueue, claim, heartbeat, cancellation, finalization, recovery, and

@@ -5,12 +5,14 @@ from enoch.app.epoch import DaemonEpoch
 from enoch.conformance import (
     AgentExtensionConformanceMixin,
     AgentRuntimeConformanceMixin,
+    ApplicationCompositionConformanceMixin,
     DurableNotificationConformanceMixin,
     ExtensionCommandCase,
     ProfileCommandCase,
     ProfileConformanceMixin,
     WorkflowEngineConformanceMixin,
 )
+from enoch.application import ApplicationComposition
 from enoch.extensions import (
     AgentExtension,
     ExtensionCommandResult,
@@ -62,6 +64,14 @@ class FunctionRuntimeConformanceTests(
             name="conformance",
             config_section="conformance",
         )
+
+
+class DefaultApplicationCompositionConformanceTests(
+    ApplicationCompositionConformanceMixin,
+    unittest.TestCase,
+):
+    def create_composition(self) -> ApplicationComposition:
+        return ApplicationComposition()
 
 
 class LocalWorkflowConformanceTests(

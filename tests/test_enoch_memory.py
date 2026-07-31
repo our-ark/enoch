@@ -23,7 +23,10 @@ class EnochMemoryTests(unittest.TestCase):
 
             self.assertTrue(long_term_memory_path(root).exists())
             self.assertIn("# Identity memory", prompt_memory)
-            self.assertIn("Rendered from src/enoch/identity.yaml", prompt_memory)
+            self.assertIn(
+                "Rendered from the active application's canonical identity source",
+                prompt_memory,
+            )
             self.assertIn("Name: Enoch", prompt_memory)
             self.assertIn("Mission: Work alongside her human", prompt_memory)
             self.assertIn("# Long-term memory", prompt_memory)
