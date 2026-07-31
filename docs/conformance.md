@@ -101,8 +101,11 @@ class ResearcherProfileConformance(
 Agent-extension packages should use `AgentExtensionConformanceMixin`, return
 their `AgentExtension` from `create_extension`, and optionally return an
 `ExtensionCommandCase`. The suite checks API-version compatibility, command
-discovery, namespaced storage, lifecycle isolation, and real governed task
-submission with extension provenance and a stable idempotency key.
+discovery, typed command-result normalization, namespaced storage, lifecycle
+isolation, and real governed task submission with extension provenance and a
+stable idempotency key. The Enoch application conformance coverage also
+exercises typed success, validation and authorization failures, enqueue and
+capability failures, and handler-exception isolation.
 Stateful commands may override `prepare_command` to populate their isolated
 fixture before the representative command is invoked. When an extension
 declares `on_task_event`, the lifecycle check also invokes it with a typed,

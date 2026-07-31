@@ -10,6 +10,7 @@ The version 1 API provides:
 
 - namespaced private state and artifact storage;
 - chat commands with capability requirements and `/help` integration;
+- typed command outcomes linked to durable tasks and output evidence;
 - application lifecycle hooks and durable task-result events;
 - a constrained façade over Enoch's single governed workflow.
 
@@ -33,13 +34,20 @@ capability that can coexist with other capabilities.
 ## Define an extension
 
 ```python
-from enoch.extensions import ExtensionCommandSpec, AgentExtension
+from enoch.extensions import (
+    AgentExtension,
+    ExtensionCommandResult,
+    ExtensionCommandSpec,
+)
 
 
 def project(context):
     goal = context.argument.strip()
     if not goal:
-        return "Usage: /project <goal>"
+        return ExtensionCommandResult.failure(
+            "Usage: /project <goal>",
+            code="missing_goal",
+        )
 
     state = context.storage.private_path("projects.json")
     state.parent.mkdir(parents=True, exist_ok=True)
@@ -48,7 +56,12 @@ def project(context):
         context="Define deliverables, acceptance criteria, and owners.",
         idempotency_key=f"project:{goal}",
     )
-    return f"Queued project-planning task #{job.id}."
+    return ExtensionCommandResult.success(
+        f"Queued project-planning task #{job.id}.",
+        code="project_plan_queued",
+        task_ids=(job.id,),
+        output_refs=(f"artifact://projects/{goal}",),
+    )
 
 
 def create_extension(root=None):
@@ -78,6 +91,28 @@ optional `idempotency_key` is scoped to the extension. Use a stable,
 domain-derived key whenever a command can be retried or can enqueue more than
 one durable task; the message identifier remains the fallback for simple
 one-task commands.
+
+## Typed command results
+
+An extension command may return `ExtensionCommandResult` with:
+
+- `final_text`, rendered through the active chat presentation;
+- `status`, either `succeeded` or `failed`;
+- a stable machine-readable `code`;
+- durable `task_ids` created by the command;
+- bounded `output_refs` for artifacts or other evidence.
+
+The result contract is independently versioned by
+`EXTENSION_COMMAND_RESULT_API_VERSION`. Returning a string remains the
+backward-compatible shorthand for a successful text-only result with code
+`ok`.
+
+Enoch records `agent_extension_command_result` for every invocation. The audit
+event retains the result version, status, stable code, task IDs, and output
+references; chat receives only `final_text`. Authorization denial, enqueue
+failure, capability unavailability, invalid typed output, and an isolated
+handler exception are normalized to stable failure codes rather than escaping
+the chat event loop. Internal exception text is not part of the chat contract.
 
 ## Lifecycle and observability
 
@@ -164,9 +199,10 @@ checks govern use of Enoch's public provider and workflow surfaces; arbitrary
 Python code installed by an operator still has the process's operating-system
 permissions.
 
-The current contract is `AGENT_EXTENSION_API_VERSION = 1`. Enoch rejects an
-extension that declares another version. Extension command and lifecycle
-failures are isolated and recorded as system events.
+The current contracts are `AGENT_EXTENSION_API_VERSION = 1` and
+`EXTENSION_COMMAND_RESULT_API_VERSION = 1`. Enoch rejects unsupported versions.
+Extension command and lifecycle failures are isolated and recorded as system
+events.
 
 Downstream extension packages should inherit
 `AgentExtensionConformanceMixin` and, when possible, provide an

@@ -7,11 +7,14 @@ from tempfile import TemporaryDirectory
 from enoch.extensions import (
     AGENT_EXTENSION_API_VERSION,
     AgentExtension,
+    AgentExtensionError,
     ExtensionCommandContext,
+    ExtensionCommandResult,
     ExtensionLifecycleContext,
     ExtensionTaskEvent,
     ExtensionWorkflow,
     extension_storage,
+    normalize_extension_command_result,
 )
 from enoch.identity import load_identity
 from enoch.providers import ChatEvent, RuntimeResult, TaskRequirements
@@ -118,10 +121,11 @@ class AgentExtensionConformanceMixin:
                 workflow=ExtensionWorkflow.from_engine(extension.name, engine),
             )
             self.prepare_command(extension, context, case)
-            response = spec.handler(context)
+            response = normalize_extension_command_result(spec.handler(context))
             pending = engine.inspect().pending
 
-        self.assertIsInstance(response, str)
+        self.assertIsInstance(response, ExtensionCommandResult)
+        self.assertTrue(response.succeeded)
         self.assertEqual(len(pending), 1)
         job = pending[0]
         self.assertEqual(job.text, case.expected_request)
@@ -139,6 +143,32 @@ class AgentExtensionConformanceMixin:
             job.idempotency_key,
             f"extension:{extension.name}:{local_key}",
         )
+        if response.task_ids:
+            self.assertIn(job.id, response.task_ids)
+
+    def test_conformance_extension_command_result_normalization(self) -> None:
+        shorthand = normalize_extension_command_result("Ready.")
+        typed = normalize_extension_command_result(
+            ExtensionCommandResult.failure(
+                "A stable validation error.",
+                code="validation_failed",
+                output_refs=("artifact://validation/report",),
+            )
+        )
+
+        self.assertTrue(shorthand.succeeded)
+        self.assertEqual(shorthand.final_text, "Ready.")
+        self.assertFalse(typed.succeeded)
+        self.assertEqual(typed.code, "validation_failed")
+        self.assertEqual(
+            typed.output_refs,
+            ("artifact://validation/report",),
+        )
+        with self.assertRaisesRegex(
+            AgentExtensionError,
+            "must return str or ExtensionCommandResult",
+        ):
+            normalize_extension_command_result(object())
 
     def test_conformance_extension_lifecycle_accepts_isolated_context(self) -> None:
         extension = self.create_extension()

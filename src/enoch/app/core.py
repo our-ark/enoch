@@ -267,6 +267,8 @@ from enoch.profiles import (
 from enoch.profiles.contracts import extend_prompt
 from enoch.extensions import (
     ExtensionCommandContext,
+    ExtensionCommandEnqueueError,
+    ExtensionCommandResult,
     ExtensionCommandSpec,
     AgentExtension,
     AgentExtensionError,
@@ -274,6 +276,7 @@ from enoch.extensions import (
     ExtensionWorkflow,
     extension_storage,
     load_extensions,
+    normalize_extension_command_result,
 )
 from enoch.extensions.events import (
     acknowledge_extension_task_event,
@@ -1105,6 +1108,7 @@ class EnochApplication:
             review=self.review,
             workflow=self._extension_workflow(extension),
         )
+        result: ExtensionCommandResult
         try:
             self.authorization.require(
                 f"extension-command:{extension.name}:{spec.name}",
@@ -1114,20 +1118,70 @@ class EnochApplication:
                     "command": command,
                 },
             )
-            return str(spec.handler(context))
+            result = normalize_extension_command_result(spec.handler(context))
         except CapabilityAuthorizationError as error:
-            return str(error)
+            result = ExtensionCommandResult.failure(
+                str(error),
+                code="authorization_denied",
+            )
+        except ExtensionCommandEnqueueError as error:
+            result = ExtensionCommandResult.failure(
+                f"Extension command {command} could not enqueue work: {error}",
+                code=error.code,
+                task_ids=error.task_ids,
+            )
+        except AgentRuntimeAccessUnavailable as error:
+            result = ExtensionCommandResult.failure(
+                f"Extension command {command} cannot access a required capability: "
+                f"{error}",
+                code="capability_unavailable",
+            )
+        except ProviderError as error:
+            result = ExtensionCommandResult.failure(
+                f"Extension command {command} cannot access a required capability: "
+                f"{error}",
+                code="capability_unavailable",
+            )
+        except AgentExtensionError as error:
+            result = ExtensionCommandResult.failure(
+                f"Extension command {command} returned an invalid result: {error}",
+                code="invalid_result",
+            )
+        except ValueError as error:
+            result = ExtensionCommandResult.failure(
+                f"Extension command {command} could not validate its input: {error}",
+                code="validation_failed",
+            )
         except Exception as error:
             _record_system_event(
                 "agent_extension_command_failed",
                 self.root,
+                status="failed",
                 details={
                     "extension": extension.name,
                     "command": command,
-                    "error": str(error),
+                    "error_class": type(error).__name__,
                 },
             )
-            return f"Extension command {command} failed: {error}"
+            result = ExtensionCommandResult.failure(
+                f"Extension command {command} failed.",
+                code="internal_failure",
+            )
+        _record_system_event(
+            "agent_extension_command_result",
+            self.root,
+            status="ok" if result.succeeded else "failed",
+            details={
+                "extension": extension.name,
+                "command": command,
+                "result_api_version": result.api_version,
+                "result_status": result.status,
+                "code": result.code,
+                "task_ids": list(result.task_ids),
+                "output_refs": list(result.output_refs),
+            },
+        )
+        return result.final_text
 
     def _profile_task_options(
         self,

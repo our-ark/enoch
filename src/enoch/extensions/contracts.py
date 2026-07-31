@@ -15,12 +15,15 @@ from enoch.providers.contracts import (
     ReviewProvider,
     TaskRequirements,
 )
+from enoch.providers.authorization import CapabilityAuthorizationError
 from enoch.storage import StorageLayout
-from enoch.tasks.queue import TaskJob, TaskQueueStatus
-from enoch.workflows import WorkflowEngine
+from enoch.tasks.queue import TaskAlreadyExists, TaskJob, TaskQueueStatus
+from enoch.workflows import WorkflowEngine, WorkflowEngineError
 
 
 AGENT_EXTENSION_API_VERSION = 1
+EXTENSION_COMMAND_RESULT_API_VERSION = 1
+ExtensionCommandStatus = Literal["succeeded", "failed"]
 ExtensionTaskEventType = Literal[
     "queued",
     "started",
@@ -32,6 +35,119 @@ ExtensionTaskEventType = Literal[
 
 class AgentExtensionError(RuntimeError):
     pass
+
+
+class ExtensionCommandEnqueueError(AgentExtensionError):
+    """A governed task could not be enqueued by an extension command."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str = "enqueue_failed",
+        task_ids: tuple[int, ...] = (),
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.task_ids = task_ids
+
+
+@dataclass(frozen=True)
+class ExtensionCommandResult:
+    """Versioned outcome returned by an agent-extension command."""
+
+    final_text: str
+    status: ExtensionCommandStatus = "succeeded"
+    code: str = "ok"
+    task_ids: tuple[int, ...] = ()
+    output_refs: tuple[str, ...] = ()
+    api_version: int = EXTENSION_COMMAND_RESULT_API_VERSION
+
+    def __post_init__(self) -> None:
+        if self.api_version != EXTENSION_COMMAND_RESULT_API_VERSION:
+            raise AgentExtensionError(
+                "Extension command result uses API version "
+                f"{self.api_version}; Enoch supports version "
+                f"{EXTENSION_COMMAND_RESULT_API_VERSION}."
+            )
+        if not isinstance(self.final_text, str):
+            raise AgentExtensionError(
+                "Extension command result final text must be a string."
+            )
+        if self.status not in ("succeeded", "failed"):
+            raise AgentExtensionError(
+                f"Invalid extension command result status {self.status!r}."
+            )
+        if not isinstance(self.code, str):
+            raise AgentExtensionError(
+                "Extension command result code must be a string."
+            )
+        code = self.code.strip().lower()
+        if not re.fullmatch(r"[a-z][a-z0-9._-]{0,63}", code):
+            raise AgentExtensionError(
+                f"Invalid extension command result code {self.code!r}."
+            )
+        if self.status == "failed" and code == "ok":
+            raise AgentExtensionError(
+                "Failed extension command results require a non-ok code."
+            )
+        task_ids = _result_task_ids(self.task_ids)
+        output_refs = _result_output_refs(self.output_refs)
+        object.__setattr__(self, "code", code)
+        object.__setattr__(self, "task_ids", task_ids)
+        object.__setattr__(self, "output_refs", output_refs)
+
+    @property
+    def succeeded(self) -> bool:
+        return self.status == "succeeded"
+
+    @classmethod
+    def success(
+        cls,
+        final_text: str,
+        *,
+        code: str = "ok",
+        task_ids: tuple[int, ...] = (),
+        output_refs: tuple[str, ...] = (),
+    ) -> ExtensionCommandResult:
+        return cls(
+            final_text=final_text,
+            status="succeeded",
+            code=code,
+            task_ids=task_ids,
+            output_refs=output_refs,
+        )
+
+    @classmethod
+    def failure(
+        cls,
+        final_text: str,
+        *,
+        code: str,
+        task_ids: tuple[int, ...] = (),
+        output_refs: tuple[str, ...] = (),
+    ) -> ExtensionCommandResult:
+        return cls(
+            final_text=final_text,
+            status="failed",
+            code=code,
+            task_ids=task_ids,
+            output_refs=output_refs,
+        )
+
+
+def normalize_extension_command_result(
+    result: str | ExtensionCommandResult,
+) -> ExtensionCommandResult:
+    """Normalize the v1 string shorthand into a typed command result."""
+
+    if isinstance(result, ExtensionCommandResult):
+        return result
+    if isinstance(result, str):
+        return ExtensionCommandResult.success(result)
+    raise AgentExtensionError(
+        "Extension command handlers must return str or ExtensionCommandResult."
+    )
 
 
 @dataclass(frozen=True)
@@ -157,19 +273,33 @@ class ExtensionCommandContext:
         idempotency_key: str = "",
     ) -> TaskJob:
         key = idempotency_key.strip() or f"command:{self.event.message_id}"
-        return self.workflow.enqueue(
-            self.conversation_id,
-            request,
-            context=context,
-            initiated_by="human",
-            event_actor="human",
-            trigger=self.command,
-            required_capabilities=required_capabilities,
-            idempotency_key=key,
-        )
+        try:
+            return self.workflow.enqueue(
+                self.conversation_id,
+                request,
+                context=context,
+                initiated_by="human",
+                event_actor="human",
+                trigger=self.command,
+                required_capabilities=required_capabilities,
+                idempotency_key=key,
+            )
+        except TaskAlreadyExists as error:
+            raise ExtensionCommandEnqueueError(
+                str(error),
+                code="task_already_exists",
+                task_ids=(error.job.id,),
+            ) from error
+        except CapabilityAuthorizationError:
+            raise
+        except (OSError, ValueError, WorkflowEngineError) as error:
+            raise ExtensionCommandEnqueueError(str(error)) from error
 
 
-ExtensionCommandHandler = Callable[[ExtensionCommandContext], str]
+ExtensionCommandHandler = Callable[
+    [ExtensionCommandContext],
+    str | ExtensionCommandResult,
+]
 
 
 @dataclass(frozen=True)
@@ -294,3 +424,66 @@ def _command_name(value: str) -> str:
     if not re.fullmatch(r"[a-z][a-z0-9_-]{0,31}", name):
         raise AgentExtensionError(f"Invalid agent extension command {value!r}.")
     return name
+
+
+def _result_task_ids(values: tuple[int, ...]) -> tuple[int, ...]:
+    try:
+        task_ids = tuple(values)
+    except TypeError as error:
+        raise AgentExtensionError(
+            "Extension command result task IDs must be an iterable."
+        ) from error
+    if len(task_ids) > 64:
+        raise AgentExtensionError(
+            "Extension command results support at most 64 task IDs."
+        )
+    if any(
+        isinstance(task_id, bool)
+        or not isinstance(task_id, int)
+        or task_id < 1
+        for task_id in task_ids
+    ):
+        raise AgentExtensionError(
+            "Extension command result task IDs must be positive integers."
+        )
+    if len(set(task_ids)) != len(task_ids):
+        raise AgentExtensionError(
+            "Extension command result task IDs must be unique."
+        )
+    return task_ids
+
+
+def _result_output_refs(values: tuple[str, ...]) -> tuple[str, ...]:
+    if isinstance(values, str):
+        raise AgentExtensionError(
+            "Extension command result output references must be an iterable "
+            "of strings, not one string."
+        )
+    try:
+        raw_refs = tuple(values)
+    except TypeError as error:
+        raise AgentExtensionError(
+            "Extension command result output references must be an iterable."
+        ) from error
+    if any(not isinstance(value, str) for value in raw_refs):
+        raise AgentExtensionError(
+            "Extension command result output references must be strings."
+        )
+    output_refs = tuple(value.strip() for value in raw_refs)
+    if len(output_refs) > 64:
+        raise AgentExtensionError(
+            "Extension command results support at most 64 output references."
+        )
+    if any(
+        not value or "\n" in value or len(value) > 512
+        for value in output_refs
+    ):
+        raise AgentExtensionError(
+            "Extension command result output references must be non-empty, "
+            "single-line strings of 512 characters or fewer."
+        )
+    if len(set(output_refs)) != len(output_refs):
+        raise AgentExtensionError(
+            "Extension command result output references must be unique."
+        )
+    return output_refs
