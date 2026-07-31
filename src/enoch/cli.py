@@ -12,6 +12,7 @@ from enoch.immune import run_immune_system
 from enoch.instance import InstanceError, format_instance_init_result, init_instance
 from enoch.logs import log_system_event
 from enoch.memory.store import ensure_long_term_memory
+from enoch.paths import repo_root
 from enoch.providers.registry import load_provider
 from enoch.commands import (
     config_command,
@@ -136,7 +137,7 @@ EXIT = object()
 
 def main(argv: list[str] | None = None) -> None:
     identity = load_identity()
-    root = Path.cwd()
+    root = repo_root()
     args = sys.argv[1:] if argv is None else argv
     if args:
         result = _command_output(" ".join(args), identity, root)

@@ -45,6 +45,13 @@ or `software_body_path()` from `enoch.paths` instead of joining paths onto the
 repository root or `.enoch` directly. `enoch_home()` remains a compatibility
 alias for the private-state root.
 
+An explicit root is authoritative. Passing `root=instance` to a path, queue,
+event, workflow, or storage API always selects that exact software body, even
+when it is nested beneath an unrelated `.git` directory or
+`pyproject.toml`. Omit the root to opt into repository discovery from the
+current working directory; `discover_repo_root()` exposes that operation
+directly for CLI entry points.
+
 ## Compatibility and retention
 
 New logs and append-only task, semantic evidence, evidence-scan, evolution,
