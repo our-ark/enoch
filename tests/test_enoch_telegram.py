@@ -104,6 +104,7 @@ from enoch.app.core import (
     _signal_reason,
     _task_context_snapshot_prompt,
 )
+from enoch.application import ApplicationPresentation
 from enoch.app import core as telegram
 from enoch.channel import (
     MAX_IMAGE_BYTES as MAX_TELEGRAM_IMAGE_BYTES,
@@ -4650,6 +4651,7 @@ class EnochTelegramTests(unittest.TestCase):
         update_from_authoritative.assert_called_once_with(
             ROOT,
             repository=ANY,
+            application_name="Enoch",
         )
         schedule_restart.assert_called_once_with(ROOT)
         self.assertIn("Enoch pulled latest main and doctor passed.", client.sent[0][1])
@@ -4662,20 +4664,29 @@ class EnochTelegramTests(unittest.TestCase):
         update_from_authoritative: MagicMock,
         schedule_restart: MagicMock,
     ) -> None:
-        update_from_authoritative.return_value.message = "Enoch is already up to date.\nAlready up to date."
+        update_from_authoritative.return_value.message = (
+            "Noah is already up to date.\nAlready up to date."
+        )
         update_from_authoritative.return_value.direct_action_result = "Already up to date."
         update_from_authoritative.return_value.restart_required = False
         client = FakeTelegramClient(allowed_chat_id=42)
-        bot = EnochApplication(load_identity(), ROOT, client)
+        bot = EnochApplication(
+            load_identity(),
+            ROOT,
+            client,
+            presentation=ApplicationPresentation(display_name="Noah"),
+        )
 
         _handle_update(bot, _message_update(chat_id=42, text="/update"))
 
         update_from_authoritative.assert_called_once_with(
             ROOT,
             repository=ANY,
+            application_name="Noah",
         )
         schedule_restart.assert_not_called()
-        self.assertIn("Enoch is already up to date.", client.sent[0][1])
+        self.assertIn("Noah is already up to date.", client.sent[0][1])
+        self.assertNotIn("Enoch", client.sent[0][1])
 
     @patch("enoch.app.core.update_from_authoritative")
     def test_update_requires_locked_chat(self, update_from_authoritative: MagicMock) -> None:

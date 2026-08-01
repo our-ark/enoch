@@ -36,7 +36,9 @@ def update_from_authoritative(
     root: Path,
     *,
     repository: RepositoryProvider | None = None,
+    application_name: str = "Enoch",
 ) -> UpdateResult:
+    application_name = application_name.strip() or "Enoch"
     repository = repository or as_repository_provider(load_provider("vcs", root))
     try:
         working_copy = repository.inspect_working_copy(root)
@@ -57,7 +59,7 @@ def update_from_authoritative(
             )
         ):
             return _message(
-                "Enoch could not update: current revision "
+                f"{application_name} could not update: current revision "
                 f"{previous_revision.id} is not in the history of authoritative "
                 f"revision {authoritative.revision.id}. Finish or publish that work first."
             )
@@ -73,7 +75,7 @@ def update_from_authoritative(
                 f"{authoritative.revision.id}."
             )
     except RepositoryProviderError as error:
-        return _message(f"Enoch could not update: {error}")
+        return _message(f"{application_name} could not update: {error}")
 
     previous_head = previous_revision.id
     updated_head = updated_revision.id
@@ -90,7 +92,14 @@ def update_from_authoritative(
     if previous_head == updated_head:
         restart_note = _running_commit_restart_note(root, updated_head)
         return UpdateResult(
-            message="\n\n".join(part for part in ["Enoch is already up to date.", restart_note] if part),
+            message="\n\n".join(
+                part
+                for part in [
+                    f"{application_name} is already up to date.",
+                    restart_note,
+                ]
+                if part
+            ),
             direct_action_result="\n\n".join(
                 part for part in [update_summary, restart_note] if part
             ),
@@ -109,10 +118,12 @@ def update_from_authoritative(
         return _message(
             "\n\n".join(
                 [
-                    f"Enoch updated to latest {authoritative_name}, but doctor failed. I am not restarting.",
+                    f"{application_name} updated to latest {authoritative_name}, "
+                    "but doctor failed. I am not restarting.",
                     format_doctor_result(doctor),
                     rollback,
-                    "The currently running Enoch process is still the pre-update code.",
+                    f"The currently running {application_name} process is still "
+                    "the pre-update code.",
                 ]
             )
         )
@@ -122,9 +133,11 @@ def update_from_authoritative(
         message="\n\n".join(
             part
             for part in [
-                f"Enoch updated to latest {authoritative_name} and doctor passed.",
+                f"{application_name} updated to latest {authoritative_name} "
+                "and doctor passed.",
                 formatted_doctor,
-                "Restarting now. The startup notification will confirm Enoch came back.",
+                "Restarting now. The startup notification will confirm "
+                f"{application_name} came back.",
             ]
             if part
         ),
@@ -144,9 +157,13 @@ def update_from_authoritative(
     )
 
 
-def update_from_main(root: Path) -> UpdateResult:
+def update_from_main(
+    root: Path,
+    *,
+    application_name: str = "Enoch",
+) -> UpdateResult:
     """Compatibility alias for integrations using the original Git-specific name."""
-    return update_from_authoritative(root)
+    return update_from_authoritative(root, application_name=application_name)
 
 
 def _message(message: str) -> UpdateResult:

@@ -95,16 +95,22 @@ class EnochUpdaterTests(unittest.TestCase):
         repository = _repository_with_update()
         run_update_doctor.return_value = _doctor_result()
 
-        result = update_from_authoritative(ROOT, repository=repository)
+        result = update_from_authoritative(
+            ROOT,
+            repository=repository,
+            application_name="Noah",
+        )
 
         run_update_doctor.assert_called_once_with(ROOT)
         self.assertEqual(repository.current.id, "r1")
         self.assertTrue(result.restart_required)
         self.assertIn(
-            "Enoch updated to latest authoritative and doctor passed.",
+            "Noah updated to latest authoritative and doctor passed.",
             result.message,
         )
         self.assertIn("Restarting now.", result.message)
+        self.assertIn("confirm Noah came back.", result.message)
+        self.assertNotIn("Enoch", result.message)
         self.assertIn("Updated repository from r0 to r1", result.direct_action_result)
         self.assertIn("Restarting into r1.", result.direct_action_result)
         self.assertEqual(result.previous_revision_id, "r0")
@@ -116,11 +122,15 @@ class EnochUpdaterTests(unittest.TestCase):
         run_update_doctor: MagicMock,
     ) -> None:
         repository = BranchlessRepositoryFixture()
-        result = update_from_authoritative(ROOT, repository=repository)
+        result = update_from_authoritative(
+            ROOT,
+            repository=repository,
+            application_name="Noah",
+        )
 
         run_update_doctor.assert_not_called()
         self.assertFalse(result.restart_required)
-        self.assertEqual(result.message, "Enoch is already up to date.")
+        self.assertEqual(result.message, "Noah is already up to date.")
         self.assertEqual(
             result.direct_action_result,
             "Already at authoritative revision r0.",
@@ -141,11 +151,15 @@ class EnochUpdaterTests(unittest.TestCase):
         _load_lifecycle_state: MagicMock,
     ) -> None:
         repository = BranchlessRepositoryFixture()
-        result = update_from_authoritative(ROOT, repository=repository)
+        result = update_from_authoritative(
+            ROOT,
+            repository=repository,
+            application_name="Noah",
+        )
 
         run_update_doctor.assert_not_called()
         self.assertFalse(result.restart_required)
-        self.assertIn("Enoch is already up to date.", result.message)
+        self.assertIn("Noah is already up to date.", result.message)
         self.assertIn("daemon started on 0000000", result.message)
         self.assertIn("Run /restart to load the current code.", result.message)
         self.assertIn("Run /restart to load the current code.", result.direct_action_result)
@@ -163,9 +177,14 @@ class EnochUpdaterTests(unittest.TestCase):
         _load_lifecycle_state: MagicMock,
     ) -> None:
         repository = BranchlessRepositoryFixture()
-        result = update_from_authoritative(ROOT, repository=repository)
+        result = update_from_authoritative(
+            ROOT,
+            repository=repository,
+            application_name="Noah",
+        )
 
         self.assertNotIn("Run /restart", result.message)
+        self.assertIn("Noah is already up to date.", result.message)
         self.assertEqual(
             result.direct_action_result,
             "Already at authoritative revision r0.",
@@ -187,12 +206,18 @@ class EnochUpdaterTests(unittest.TestCase):
         )
         run_update_doctor.return_value = doctor
 
-        result = update_from_authoritative(ROOT, repository=repository)
+        result = update_from_authoritative(
+            ROOT,
+            repository=repository,
+            application_name="Noah",
+        )
 
         self.assertEqual(repository.current.id, "r0")
         self.assertFalse(result.restart_required)
         self.assertIn("doctor failed", result.message)
         self.assertIn("Rolled back to r0.", result.message)
+        self.assertIn("currently running Noah process", result.message)
+        self.assertNotIn("Enoch", result.message)
         self.assertEqual(result.direct_action_result, "")
 
     def test_update_refuses_revision_outside_authoritative_history(self) -> None:
@@ -201,24 +226,41 @@ class EnochUpdaterTests(unittest.TestCase):
         repository.revisions[divergent.id] = divergent
         repository.current = divergent
 
-        result = update_from_authoritative(ROOT, repository=repository)
+        result = update_from_authoritative(
+            ROOT,
+            repository=repository,
+            application_name="Noah",
+        )
 
         self.assertIn(
             "is not in the history of authoritative revision r1",
             result.message,
         )
+        self.assertTrue(result.message.startswith("Noah could not update:"))
 
     def test_update_refuses_dirty_working_copy(self) -> None:
         repository = BranchlessRepositoryFixture()
         repository.mark_changed("src/enoch/app/core.py")
 
-        result = update_from_authoritative(ROOT, repository=repository)
+        result = update_from_authoritative(
+            ROOT,
+            repository=repository,
+            application_name="Noah",
+        )
 
         self.assertEqual(
             result.message,
-            "Enoch could not update: working copy has uncommitted changes: "
+            "Noah could not update: working copy has uncommitted changes: "
             "src/enoch/app/core.py",
         )
+
+    def test_update_defaults_to_enoch_application_name(self) -> None:
+        result = update_from_authoritative(
+            ROOT,
+            repository=BranchlessRepositoryFixture(),
+        )
+
+        self.assertEqual(result.message, "Enoch is already up to date.")
 
 
 def _doctor_result() -> MagicMock:
