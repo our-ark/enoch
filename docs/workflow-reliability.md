@@ -90,6 +90,16 @@ admitted as soon as the scheduler starts. The following target is the first
 anchored interval strictly in the future, preventing acknowledgement-time
 drift and unbounded catch-up work.
 
+Declarative extension schedules share that scheduler thread and claim/ack
+discipline. Their identities, occurrence claims, and task idempotency keys are
+scoped by extension. Interval schedules retain fixed-rate anchors; daily
+schedules calculate the next local calendar target through their declared IANA
+timezone. An outstanding task prevents overlap, and missed targets coalesce.
+Pause or extension removal prevents new claims while retaining an in-flight
+claim for restart reconciliation. Capability denial and other pre-enqueue
+failures are recorded on schedule status and in the system event log before the
+cadence advances.
+
 ## State safety
 
 All replace-style JSON writes use a unique sibling temporary file, `fsync`, and

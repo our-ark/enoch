@@ -113,6 +113,12 @@ STATE_FILE_SCHEMAS = (
         (("next_id", (int,)), ("active", (list,)), ("history", (list,))),
     ),
     StateFileSchema(
+        "extension_schedules.json",
+        1,
+        (("schedules", []),),
+        (("schedules", (list,)),),
+    ),
+    StateFileSchema(
         "evolve.json",
         2,
         (
@@ -493,6 +499,8 @@ def _normalized_payload(path: Path, schema: StateFileSchema) -> dict[str, Any]:
         return _normalize_backlog(path, normalized)
     if schema.pattern == "cron.json":
         return _normalize_cron(path, normalized)
+    if schema.pattern == "extension_schedules.json":
+        return _normalize_extension_schedules(path, normalized)
     if schema.pattern == "evolve_candidates.json":
         return _normalize_evolve_candidates(path, normalized)
     if schema.pattern == "memory/long_term.json" and any(
@@ -569,6 +577,29 @@ def _normalize_cron(path: Path, data: dict[str, Any]) -> dict[str, Any]:
         "next_id": max(next_id, max(ids, default=0) + 1),
         "active": [_job_to_dict(job) for job in parsed["active"]],
         "history": [_job_to_dict(job) for job in parsed["history"]],
+    }
+
+
+def _normalize_extension_schedules(
+    path: Path,
+    data: dict[str, Any],
+) -> dict[str, Any]:
+    from enoch.extensions.schedules import _parse_status, _status_to_dict
+
+    schedules = [_parse_status(item) for item in data["schedules"]]
+    if any(item is None for item in schedules):
+        raise StateCorruptionError(path, "found an invalid extension schedule")
+    parsed = [item for item in schedules if item is not None]
+    if len({item.id for item in parsed}) != len(parsed):
+        raise StateCorruptionError(
+            path,
+            "found duplicate extension schedule identities",
+        )
+    return {
+        "schema_version": data["schema_version"],
+        "schedules": [
+            _status_to_dict(item) for item in sorted(parsed, key=lambda item: item.id)
+        ],
     }
 
 

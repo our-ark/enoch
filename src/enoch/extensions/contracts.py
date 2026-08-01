@@ -17,6 +17,7 @@ from enoch.providers.contracts import (
 )
 from enoch.providers.authorization import CapabilityAuthorizationError
 from enoch.storage import StorageLayout
+from enoch.extensions.schedules import ExtensionScheduleSpec, ExtensionSchedules
 from enoch.tasks.queue import (
     TaskAlreadyExists,
     TaskJob,
@@ -603,6 +604,7 @@ class ExtensionCommandContext:
     repository: RepositoryProvider
     review: ReviewProvider
     workflow: ExtensionWorkflow
+    schedules: ExtensionSchedules
 
     def enqueue_task(
         self,
@@ -698,6 +700,7 @@ class ExtensionLifecycleContext:
     repository: RepositoryProvider
     review: ReviewProvider
     workflow: ExtensionWorkflow
+    schedules: ExtensionSchedules
 
 
 ExtensionLifecycleHook = Callable[[ExtensionLifecycleContext], None]
@@ -724,6 +727,7 @@ class AgentExtension:
     name: str
     api_version: int = AGENT_EXTENSION_API_VERSION
     commands: tuple[ExtensionCommandSpec, ...] = ()
+    schedules: tuple[ExtensionScheduleSpec, ...] = ()
     lifecycle: ExtensionLifecycleHooks = field(default_factory=ExtensionLifecycleHooks)
     help_heading: str = ""
 
@@ -747,6 +751,18 @@ class AgentExtension:
                     f"Duplicate agent extension command /{spec.name}."
                 )
             seen.add(spec.name)
+        seen_schedules: set[str] = set()
+        for schedule in self.schedules:
+            if not isinstance(schedule, ExtensionScheduleSpec):
+                raise AgentExtensionError(
+                    f"Agent extension {name} schedules must be "
+                    "ExtensionScheduleSpec values."
+                )
+            if schedule.name in seen_schedules:
+                raise AgentExtensionError(
+                    f"Duplicate agent extension schedule {schedule.name!r}."
+                )
+            seen_schedules.add(schedule.name)
         object.__setattr__(self, "name", name)
         object.__setattr__(self, "help_heading", heading)
 

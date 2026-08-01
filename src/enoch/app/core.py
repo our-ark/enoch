@@ -273,6 +273,9 @@ from enoch.extensions import (
     AgentExtension,
     AgentExtensionError,
     ExtensionLifecycleContext,
+    ExtensionScheduleControlError,
+    ExtensionScheduleError,
+    ExtensionSchedules,
     ExtensionWorkflow,
     extension_storage,
     normalize_extension_command_result,
@@ -280,6 +283,14 @@ from enoch.extensions import (
 from enoch.extensions.events import (
     acknowledge_extension_task_event,
     undelivered_extension_task_events,
+)
+from enoch.extensions.schedules import (
+    ExtensionScheduleStatus,
+    claim_due_extension_schedules,
+    extension_schedule_wait_seconds,
+    reconcile_extension_schedules,
+    record_extension_schedule_failure,
+    record_extension_schedule_task,
 )
 from enoch.runtime import DEFAULT_BRANCH
 from enoch.tasks.queue import (
@@ -555,6 +566,13 @@ class EnochApplication:
         self._lineage_worker_lock = threading.Lock()
         self._task_cancellations: dict[int, threading.Event] = {}
         self._stopping = False
+        reconcile_extension_schedules(
+            {
+                extension.name: extension.schedules
+                for extension in self.extensions
+            },
+            self.root,
+        )
         self._resident_branch = instance_branch(root)
         self._task_workflow = TaskWorkflow(
             self,
@@ -1104,6 +1122,19 @@ class EnochApplication:
             request_running_cancellation=self._request_task_cancellation,
         )
 
+    def _extension_schedules(
+        self,
+        extension: AgentExtension,
+        *,
+        event_actor: str = "agent",
+    ) -> ExtensionSchedules:
+        return ExtensionSchedules(
+            extension_name=extension.name,
+            _root=self.root,
+            _wake=self._cron_scheduler_wake.set,
+            _event_actor=event_actor,
+        )
+
     def _request_task_cancellation(self, task_id: int) -> None:
         cancellation = self._task_cancellations.get(task_id)
         if cancellation is not None:
@@ -1129,6 +1160,10 @@ class EnochApplication:
             repository=self.repository,
             review=self.review,
             workflow=self._extension_workflow(extension),
+            schedules=self._extension_schedules(
+                extension,
+                event_actor="human",
+            ),
         )
         result: ExtensionCommandResult
         try:
@@ -1151,6 +1186,17 @@ class EnochApplication:
                 f"Extension command {command} could not enqueue work: {error}",
                 code=error.code,
                 task_ids=error.task_ids,
+            )
+        except ExtensionScheduleControlError as error:
+            result = ExtensionCommandResult.failure(
+                str(error),
+                code=error.code,
+            )
+        except ExtensionScheduleError as error:
+            result = ExtensionCommandResult.failure(
+                f"Extension command {command} could not validate its schedule: "
+                f"{error}",
+                code="schedule_validation_failed",
             )
         except AgentRuntimeAccessUnavailable as error:
             result = ExtensionCommandResult.failure(
@@ -1394,6 +1440,7 @@ class EnochApplication:
             repository=self.repository,
             review=self.review,
             workflow=self._extension_workflow(extension),
+            schedules=self._extension_schedules(extension),
         )
 
     def _session_key(self, chat_id: ConversationId) -> str:
@@ -1974,8 +2021,12 @@ class EnochApplication:
             try:
                 require_current_daemon_epoch(self.daemon_epoch, self.root)
                 self._enqueue_due_cron_jobs()
+                self._enqueue_due_extension_schedules()
                 self._maybe_start_task_worker()
-                wait_seconds = cron_scheduler_wait_seconds(self.root)
+                wait_seconds = min(
+                    cron_scheduler_wait_seconds(self.root),
+                    extension_schedule_wait_seconds(self.root),
+                )
             except StaleDaemonEpoch:
                 return
             except Exception as error:
@@ -3525,8 +3576,9 @@ class EnochApplication:
                 self._cron_scheduler_wake.set()
                 try:
                     self._enqueue_due_cron_jobs()
+                    self._enqueue_due_extension_schedules()
                 except Exception as error:
-                    print(f"Enoch cron scheduler error after task completion: {error}")
+                    print(f"Enoch scheduler error after task completion: {error}")
                 if self.workflow.inspect().paused_count:
                     return
         except StaleDaemonEpoch:
@@ -3655,6 +3707,114 @@ class EnochApplication:
         if cron.last_task_id is None:
             return False
         task = self.workflow.find(cron.last_task_id)
+        return task is not None and task.status in {"pending", "running", "paused"}
+
+    def _enqueue_due_extension_schedules(self) -> tuple[TaskJob, ...]:
+        claimed = tuple(
+            sorted(
+                claim_due_extension_schedules(self.root),
+                key=lambda schedule: (schedule.claim_scheduled_for, schedule.id),
+            )
+        )
+        extensions = {extension.name: extension for extension in self.extensions}
+        jobs: list[TaskJob] = []
+        for schedule in claimed:
+            if self._extension_schedule_task_is_outstanding(schedule):
+                continue
+            extension = extensions.get(schedule.extension_name)
+            if extension is None:
+                record_extension_schedule_failure(
+                    schedule.id,
+                    self.root,
+                    claim_id=schedule.claim_id,
+                    code="extension_unavailable",
+                    error="The owning extension is not active.",
+                )
+                continue
+            conversation_id = _allowed_conversation_id(self.client)
+            if conversation_id is None:
+                record_extension_schedule_failure(
+                    schedule.id,
+                    self.root,
+                    claim_id=schedule.claim_id,
+                    code="conversation_unavailable",
+                    error="The active chat provider has no governed conversation.",
+                )
+                continue
+            requirements = tuple(
+                self._profile_task_options(
+                    schedule.required_capabilities
+                )["required_capabilities"]
+            )
+            try:
+                self.authorization.require(
+                    f"extension-schedule:{schedule.extension_name}:{schedule.name}",
+                    requirements,
+                    metadata={
+                        "extension": schedule.extension_name,
+                        "schedule": schedule.name,
+                        "schedule_id": schedule.id,
+                    },
+                )
+            except CapabilityAuthorizationError as error:
+                record_extension_schedule_failure(
+                    schedule.id,
+                    self.root,
+                    claim_id=schedule.claim_id,
+                    code="authorization_denied",
+                    error=str(error),
+                )
+                continue
+            except (OSError, ProviderError, TypeError, ValueError) as error:
+                record_extension_schedule_failure(
+                    schedule.id,
+                    self.root,
+                    claim_id=schedule.claim_id,
+                    code="authorization_failed",
+                    error=str(error),
+                )
+                continue
+            try:
+                job = self._extension_workflow(extension).enqueue(
+                    conversation_id,
+                    schedule.request,
+                    context=schedule.context,
+                    initiated_by="agent",
+                    event_actor="system",
+                    trigger=f"extension-schedule:{schedule.name}",
+                    required_capabilities=schedule.required_capabilities,
+                    idempotency_key=(
+                        f"schedule:{schedule.name}:{schedule.claim_id}"
+                    ),
+                    metadata=schedule.metadata,
+                    artifact_refs=schedule.artifact_refs,
+                    lane=schedule.lane,
+                )
+            except (AgentExtensionError, OSError, ValueError, WorkflowEngineError) as error:
+                record_extension_schedule_failure(
+                    schedule.id,
+                    self.root,
+                    claim_id=schedule.claim_id,
+                    code="enqueue_failed",
+                    error=str(error),
+                )
+                continue
+            record_extension_schedule_task(
+                schedule.id,
+                job.id,
+                self.root,
+                claim_id=schedule.claim_id,
+            )
+            jobs.append(job)
+        return tuple(jobs)
+
+    def _extension_schedule_task_is_outstanding(
+        self,
+        schedule: ExtensionScheduleStatus,
+    ) -> bool:
+        if schedule.last_task_id is None:
+            return False
+        task = self.workflow.find(schedule.last_task_id)
         return task is not None and task.status in {"pending", "running", "paused"}
 
     def _scan_evidence_sources(

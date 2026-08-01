@@ -20,6 +20,7 @@ from enoch.conformance.extension import (
     ExtensionCommandCase,
 )
 from enoch.conformance.notification import DurableNotificationConformanceMixin
+from enoch.conformance.schedule import ExtensionScheduleConformanceMixin
 from enoch.conformance.workflow import WorkflowEngineConformanceMixin
 
 
@@ -30,6 +31,7 @@ __all__ = [
     "AgentExtensionConformanceMixin",
     "DurableNotificationConformanceMixin",
     "ExtensionCommandCase",
+    "ExtensionScheduleConformanceMixin",
     "ProfileCommandCase",
     "ProfileConformanceMixin",
     "ProviderContractConformanceMixin",

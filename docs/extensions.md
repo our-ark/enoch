@@ -12,6 +12,7 @@ The version 1 API provides:
 - chat commands with capability requirements and `/help` integration;
 - typed command outcomes linked to durable tasks and output evidence;
 - application lifecycle hooks and durable task-result events;
+- declarative, timezone-aware scheduled work with bounded controls;
 - a constrained façade over Enoch's single governed workflow.
 
 Extensions do not receive polling ownership, provider selection, task execution,
@@ -206,6 +207,93 @@ The lifecycle semantics are:
 Every mutation still passes through the selected `WorkflowEngine`, so daemon
 epoch fencing, atomic queue persistence, task events, and restart recovery are
 unchanged. Extensions never receive finalization or storage mutation methods.
+
+## Declarative scheduled work
+
+An extension may declare periodic work without creating a polling thread or a
+second scheduler:
+
+```python
+from enoch.extensions import AgentExtension, ExtensionScheduleSpec
+
+
+extension = AgentExtension(
+    name="researcher",
+    schedules=(
+        ExtensionScheduleSpec(
+            name="daily-index",
+            request="Refresh the approved research index",
+            daily_time="09:00",
+            timezone="America/Los_Angeles",
+            required_capabilities=("runtime.execute",),
+            metadata={"contract_version": 1},
+            lane="research-index",
+        ),
+        ExtensionScheduleSpec(
+            name="source-health",
+            request="Check configured research sources",
+            interval_seconds=6 * 60 * 60,
+        ),
+    ),
+)
+```
+
+`ExtensionScheduleSpec` has its own
+`EXTENSION_SCHEDULE_API_VERSION`. A declaration uses exactly one cadence:
+
+- `interval_seconds`, from 60 seconds through 366 days; or
+- `daily_time="HH:MM"` with an explicit IANA `timezone`.
+
+Request text, context, capability requirements, metadata, artifact references,
+and an optional execution lane are validated when the extension loads. Daily
+targets use Python's IANA timezone database; calendar targets are recomputed
+from local wall time after each scheduled occurrence, including DST changes.
+
+Enoch reconciles declarations at process startup. Request-only changes retain
+the existing next occurrence. A cadence or timezone change calculates a new
+target from reconciliation time. Re-enabling a previously removed declaration
+also starts with a new future target, so work missed while the extension was
+disabled is not replayed. Removing a schedule or disabling its extension marks
+the durable record `disabled`, prevents new claims, and preserves its last task
+and failure evidence for inspection. A claim already in flight remains durable
+for restart deduplication; an unclaimed manual run request is discarded.
+
+Both command and lifecycle contexts expose the provider-neutral
+`context.schedules` façade:
+
+```python
+statuses = context.schedules.inspect()
+refresh = context.schedules.status("daily-index")
+context.schedules.pause("daily-index")
+context.schedules.resume("daily-index")
+context.schedules.run_now(
+    "daily-index",
+    idempotency_key="manual-refresh-2026-07-31",
+)
+```
+
+Pause, resume, and run-now are restricted to the calling extension's namespace
+and write structured system events with `human`, `agent`, or `system` actor
+provenance. A run-now request does not shift a future periodic target.
+Supplying an idempotency key prevents a retried command from
+requesting the same manual occurrence twice. Pausing prevents new claims; an
+already persisted claim remains recoverable so an enqueue/ack crash window
+cannot orphan its task.
+
+The application drives extension schedules from the same scheduler thread that
+owns `/cron`. A durable occurrence claim is converted into an ordinary
+extension task through `ExtensionWorkflow`; capability authorization runs
+before the workflow enqueue. The claim ID becomes part of the task idempotency
+key, so a crash after enqueue but before acknowledgement recovers the same task
+instead of duplicating it.
+
+Missed periodic targets are coalesced into one occurrence. If the schedule's
+previous task is pending, running, or paused, the claimed occurrence waits and
+no overlapping task is created. Once that task is terminal, the one coalesced
+occurrence may enter the queue. Runtime retries remain ordinary governed task
+retries and do not create another scheduled occurrence. Pre-enqueue failures
+advance the cadence, remain visible on `ExtensionScheduleStatus`, and emit a
+failed `agent_extension_schedule_event`.
 
 ## Lifecycle and observability
 

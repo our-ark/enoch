@@ -138,6 +138,23 @@ class ManagerExtensionConformance(
         )
 ```
 
+Extension scheduling implementations can additionally run
+`ExtensionScheduleConformanceMixin`. Its deterministic, network-free fixtures
+cover IANA timezone calculation, missed-run coalescing, pause and resume,
+idempotent run-now, persisted-claim restart recovery, and declaration removal.
+The mixin does not require an actual runtime or provider:
+
+```python
+from enoch.conformance import ExtensionScheduleConformanceMixin
+
+
+class ScheduleConformance(
+    ExtensionScheduleConformanceMixin,
+    unittest.TestCase,
+):
+    pass
+```
+
 ## Application composition
 
 Descendant launchers should use `ApplicationCompositionConformanceMixin` and

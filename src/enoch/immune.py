@@ -36,6 +36,7 @@ STATE_OBJECT_FIELDS: dict[str, dict[str, type]] = {
     "backlog.json": {"pending": list, "history": list},
     "codex_sessions.json": {"sessions": dict},
     "cron.json": {"active": list, "history": list},
+    "extension_schedules.json": {"schedules": list},
     "evolve_candidates.json": {"candidates": list},
     "inbox.json": {"events": dict},
     "long_term.json": {"memories": list},

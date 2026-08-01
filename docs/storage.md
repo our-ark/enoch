@@ -79,9 +79,10 @@ private-state schemas. The current manifest format is
 `PRIVATE_STATE_MANIFEST_SCHEMA_VERSION = 1`, and the current aggregate contract
 is `PRIVATE_STATE_VERSION = 1`.
 
-The registry versions queue, backlog, cron, evolution control, semantic
-evidence batch settings, memory, runtime session, daemon epoch, channel
-cursor/lifecycle/inbox/notification, config, and pending-adoption state.
+The registry versions queue, backlog, cron, declarative extension schedules,
+evolution control, semantic evidence batch settings, memory, runtime session,
+daemon epoch, channel cursor/lifecycle/inbox/notification, config, and
+pending-adoption state.
 Provider or profile files outside registered patterns remain owned by those
 extensions.
 

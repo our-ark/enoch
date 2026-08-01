@@ -257,8 +257,9 @@ profile currently running.
 
 Descendants can add coexisting domain capabilities through the versioned
 `AgentExtension` API. Extensions receive namespaced state, commands, lifecycle
-hooks, and constrained access to Enoch's single workflow without owning polling
-or a second task queue. Packages are discovered through
+hooks, declarative scheduled work, and constrained access to Enoch's single
+workflow without owning polling, a second scheduler, or a second task queue.
+Packages are discovered through
 `our_ark.extensions`; see [`docs/extensions.md`](docs/extensions.md).
 
 Descendant launchers can bind their own identity, mutable identity path,

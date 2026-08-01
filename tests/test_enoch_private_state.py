@@ -23,9 +23,32 @@ from enoch.private_state import (
     plan_private_state,
     private_state_manifest_path,
 )
+from enoch.extensions import ExtensionScheduleSpec
+from enoch.extensions.schedules import reconcile_extension_schedules
 
 
 class EnochPrivateStateTests(unittest.TestCase):
+    def test_extension_schedule_is_registered_private_state(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            reconcile_extension_schedules(
+                {
+                    "researcher": (
+                        ExtensionScheduleSpec(
+                            "refresh",
+                            "Refresh research sources",
+                            interval_seconds=3600,
+                        ),
+                    )
+                },
+                root,
+            )
+
+            plan = plan_private_state(root)
+
+        self.assertTrue(plan.valid)
+        self.assertEqual(plan.files_checked, 1)
+
     def test_lineage_inbox_is_registered_private_state(self) -> None:
         with TemporaryDirectory() as directory:
             root = Path(directory)

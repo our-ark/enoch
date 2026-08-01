@@ -6,13 +6,16 @@ from tempfile import TemporaryDirectory
 
 from enoch.extensions import (
     AGENT_EXTENSION_API_VERSION,
+    EXTENSION_SCHEDULE_API_VERSION,
     AgentExtension,
     AgentExtensionError,
     ExtensionArtifactReference,
     ExtensionCommandContext,
     ExtensionCommandResult,
     ExtensionLifecycleContext,
+    ExtensionScheduleSpec,
     ExtensionTaskEvent,
+    ExtensionSchedules,
     ExtensionWorkflow,
     ExtensionWorkflowControlError,
     extension_storage,
@@ -69,6 +72,12 @@ class AgentExtensionConformanceMixin:
         self.assertEqual(extension.api_version, AGENT_EXTENSION_API_VERSION)
         self.assertTrue(extension.name)
         self.assertTrue(extension.help_heading)
+        for schedule in extension.schedules:
+            self.assertIsInstance(schedule, ExtensionScheduleSpec)
+            self.assertEqual(
+                schedule.api_version,
+                EXTENSION_SCHEDULE_API_VERSION,
+            )
 
     def test_conformance_extension_commands_are_discoverable(self) -> None:
         extension = self.create_extension()
@@ -126,6 +135,7 @@ class AgentExtensionConformanceMixin:
                 repository=BranchlessRepositoryFixture(),
                 review=IndependentReviewFixture(),
                 workflow=ExtensionWorkflow.from_engine(extension.name, engine),
+                schedules=ExtensionSchedules(extension.name, root),
             )
             self.prepare_command(extension, context, case)
             response = normalize_extension_command_result(spec.handler(context))
@@ -295,6 +305,7 @@ class AgentExtensionConformanceMixin:
                 repository=BranchlessRepositoryFixture(),
                 review=IndependentReviewFixture(),
                 workflow=ExtensionWorkflow.from_engine(extension.name, engine),
+                schedules=ExtensionSchedules(extension.name, root),
             )
             for hook in (
                 extension.lifecycle.on_initialize,

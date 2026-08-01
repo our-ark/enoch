@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import sys
 from tempfile import TemporaryDirectory
@@ -26,15 +27,22 @@ from enoch.extensions import (
     AgentExtension,
     AgentExtensionError,
     ExtensionLifecycleHooks,
+    ExtensionScheduleSpec,
     load_extensions,
     register_extension,
 )
 from enoch.extensions.events import load_extension_task_event_receipts
+from enoch.extensions.schedules import (
+    claim_due_extension_schedules,
+    find_extension_schedule,
+)
 from enoch.extensions import registry as extension_registry
 from enoch.identity import load_identity
+from enoch.logs import system_log_path
 from enoch.profiles import AgentProfile, CommandSpec, LifecycleHooks
 from enoch.providers import (
     AgentRuntimeAccessUnavailable,
+    AuthorizationDecision,
     ChatEvent,
     ProviderHealth,
 )
@@ -115,7 +123,216 @@ class _EntryPoints(list):
         return self if group == "our_ark.extensions" else ()
 
 
+class _DenyRuntimeExecution:
+    def authorize(self, request):
+        if "runtime.execute" in request.requirements.capabilities:
+            return AuthorizationDecision(
+                allowed=False,
+                reason="Scheduled runtime execution is disabled.",
+                denied_capabilities=("runtime.execute",),
+            )
+        return AuthorizationDecision(allowed=True)
+
+
 class EnochExtensionTests(unittest.TestCase):
+    def test_extension_command_schedule_control_records_human_actor(self) -> None:
+        def run_refresh(context):
+            status = context.schedules.run_now(
+                "refresh",
+                idempotency_key="command-refresh-1",
+            )
+            return f"Scheduled {status.name}."
+
+        extension = AgentExtension(
+            name="manager",
+            commands=(
+                ExtensionCommandSpec(
+                    "refresh-now",
+                    "run the refresh schedule",
+                    run_refresh,
+                ),
+            ),
+            schedules=(
+                ExtensionScheduleSpec(
+                    "refresh",
+                    "Refresh project state",
+                    interval_seconds=3600,
+                ),
+            ),
+        )
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            chat = _Chat()
+            app = EnochApplication(
+                load_identity(),
+                root,
+                chat,
+                runtime=_Runtime(),
+                extensions=(extension,),
+            )
+
+            app.handle_event(_event("/refresh-now"))
+
+            events = [
+                json.loads(line)
+                for line in system_log_path(root).read_text(
+                    encoding="utf-8"
+                ).splitlines()
+            ]
+            control = next(
+                event
+                for event in reversed(events)
+                if event.get("event") == "agent_extension_schedule_event"
+                and event["details"].get("outcome") == "run_now_requested"
+            )
+
+        self.assertEqual(chat.sent[-1][1], "Scheduled refresh.")
+        self.assertEqual(control["details"]["event_actor"], "human")
+
+    def test_declared_extension_schedule_enqueues_governed_work(self) -> None:
+        schedule = ExtensionScheduleSpec(
+            "refresh",
+            "Refresh the project index",
+            interval_seconds=3600,
+            context="Use the approved project sources.",
+            required_capabilities=("runtime.execute",),
+            metadata={"contract_version": 1, "project_id": "project-17"},
+            artifact_refs=(
+                ExtensionArtifactReference(
+                    "project-index",
+                    "projects/project-17/index.json",
+                    "application/json",
+                ),
+            ),
+            lane="project-17",
+        )
+        extension = AgentExtension(name="manager", schedules=(schedule,))
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            app = EnochApplication(
+                load_identity(),
+                root,
+                _Chat(),
+                runtime=_Runtime(),
+                extensions=(extension,),
+            )
+            controller = app._extension_schedules(extension)
+            declared = controller.inspect()[0]
+            controller.run_now("refresh", idempotency_key="refresh-now-1")
+
+            jobs = app._enqueue_due_extension_schedules()
+            duplicate = app._enqueue_due_extension_schedules()
+            status = controller.status("refresh")
+
+        self.assertEqual(declared.id, "extension:manager:refresh")
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(duplicate, ())
+        job = jobs[0]
+        self.assertEqual(job.context_source, "extension:manager")
+        self.assertEqual(job.initiated_by, "agent")
+        self.assertEqual(job.trigger, "extension-schedule:refresh")
+        self.assertEqual(job.extension_metadata, schedule.metadata)
+        self.assertEqual(job.extension_artifact_refs, schedule.artifact_refs)
+        self.assertEqual(job.execution_lane, "extension:manager:project-17")
+        self.assertEqual(status.last_task_id, job.id)
+        self.assertEqual(status.last_outcome, "enqueued")
+
+    def test_extension_schedule_authorizes_before_workflow_enqueue(self) -> None:
+        extension = AgentExtension(
+            name="manager",
+            schedules=(
+                ExtensionScheduleSpec(
+                    "refresh",
+                    "Refresh the project index",
+                    interval_seconds=3600,
+                    required_capabilities=("runtime.execute",),
+                ),
+            ),
+        )
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            app = EnochApplication(
+                load_identity(),
+                root,
+                _Chat(),
+                runtime=_Runtime(),
+                extensions=(extension,),
+                authorization_policy=_DenyRuntimeExecution(),
+            )
+            app._extension_schedules(extension).run_now("refresh")
+            with patch.object(app.workflow, "enqueue") as enqueue:
+                jobs = app._enqueue_due_extension_schedules()
+            status = find_extension_schedule("manager", "refresh", root)
+            schedule_events = [
+                json.loads(line)
+                for line in system_log_path(root).read_text(
+                    encoding="utf-8"
+                ).splitlines()
+                if json.loads(line).get("event")
+                == "agent_extension_schedule_event"
+            ]
+
+        self.assertEqual(jobs, ())
+        enqueue.assert_not_called()
+        self.assertIsNotNone(status)
+        self.assertEqual(status.last_outcome, "failed")
+        self.assertEqual(status.last_error_code, "authorization_denied")
+        self.assertEqual(schedule_events[-1]["status"], "failed")
+        self.assertEqual(
+            schedule_events[-1]["details"]["code"],
+            "authorization_denied",
+        )
+
+    def test_extension_schedule_restart_reuses_the_durable_occurrence(self) -> None:
+        extension = AgentExtension(
+            name="manager",
+            schedules=(
+                ExtensionScheduleSpec(
+                    "refresh",
+                    "Refresh the project index",
+                    interval_seconds=3600,
+                ),
+            ),
+        )
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            first_app = EnochApplication(
+                load_identity(),
+                root,
+                _Chat(),
+                runtime=_Runtime(),
+                extensions=(extension,),
+            )
+            first_app._extension_schedules(extension).run_now("refresh")
+            occurrence = claim_due_extension_schedules(root)[0]
+            first_job = first_app._extension_workflow(extension).enqueue(
+                "room-1",
+                occurrence.request,
+                initiated_by="agent",
+                event_actor="system",
+                trigger="extension-schedule:refresh",
+                idempotency_key=(
+                    f"schedule:refresh:{occurrence.claim_id}"
+                ),
+            )
+
+            restarted = EnochApplication(
+                load_identity(),
+                root,
+                _Chat(),
+                runtime=_Runtime(),
+                extensions=(extension,),
+            )
+            recovered = restarted._enqueue_due_extension_schedules()
+            queue = task_queue_status(root)
+            status = restarted._extension_schedules(extension).status("refresh")
+
+        self.assertEqual(len(recovered), 1)
+        self.assertEqual(recovered[0].id, first_job.id)
+        self.assertEqual(len(queue.pending), 1)
+        self.assertEqual(status.last_task_id, first_job.id)
+        self.assertFalse(status.claimed)
+
     def test_extension_command_uses_namespaced_storage_and_shared_workflow(self) -> None:
         storage_layouts = []
 
@@ -1289,6 +1506,20 @@ class EnochExtensionTests(unittest.TestCase):
             AgentExtension(
                 name="future",
                 api_version=AGENT_EXTENSION_API_VERSION + 1,
+            )
+
+        schedule = ExtensionScheduleSpec(
+            "refresh",
+            "Refresh state",
+            interval_seconds=3600,
+        )
+        with self.assertRaisesRegex(
+            AgentExtensionError,
+            "Duplicate agent extension schedule",
+        ):
+            AgentExtension(
+                name="manager",
+                schedules=(schedule, schedule),
             )
 
         extension = AgentExtension(name="manager")

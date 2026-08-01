@@ -103,6 +103,21 @@ Profiles do not receive or own the concrete engine. Their
 the application, preserving one queue owner and keeping profile packages
 portable.
 
+Extension schedules are also application-owned rather than a second workflow
+engine. `AgentExtension.schedules` is reconciled into
+`.enoch/extension_schedules.json`, and the existing scheduler thread claims due
+occurrences alongside user-created cron work. Each occurrence is authorized
+against the active profile and providers, then enters the selected engine
+through the extension-scoped workflow façade. A persisted claim and scoped
+idempotency key prevent duplicate enqueue after process restart.
+
+The schedule layer supports fixed-rate intervals and daily IANA-timezone
+calendar targets. Missed targets coalesce into one occurrence, and an
+outstanding pending, running, or paused task prevents overlap for that
+schedule. Pause, resume, run-now, declaration upgrades, and extension removal
+change schedule state without bypassing queue ownership. Task-level retry and
+recovery remain responsibilities of the workflow engine.
+
 ## Contract behavior
 
 `enqueue()` accepts `mode="queued"`, `"front"`, or `"direct"`. `start_next()`
