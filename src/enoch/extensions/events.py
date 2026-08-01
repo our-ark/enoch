@@ -12,6 +12,7 @@ from enoch.extensions.contracts import (
 )
 from enoch.storage import StorageLayout
 from enoch.tasks.events import TaskEvent, load_task_events
+from enoch.tasks.payloads import local_extension_lane
 
 
 DELIVERY_SCHEMA_VERSION = 1
@@ -128,4 +129,5 @@ def _extension_event(
         runtime_side_effects=event.runtime_side_effects,
         metadata=dict(event.extension_metadata),
         artifact_refs=event.extension_artifact_refs,
+        lane=local_extension_lane(extension_name, event.execution_lane),
     )

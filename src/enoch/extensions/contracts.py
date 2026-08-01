@@ -26,11 +26,14 @@ from enoch.tasks.queue import (
 from enoch.tasks.payloads import (
     ExtensionArtifactReference,
     JsonValue,
+    local_extension_lane,
     normalize_extension_artifact_references,
     normalize_extension_metadata,
+    scoped_extension_lane,
 )
 from enoch.workflows import (
     WORKFLOW_FEATURE_ARTIFACT_REFERENCES,
+    WORKFLOW_FEATURE_EXECUTION_LANES,
     WORKFLOW_FEATURE_STRUCTURED_METADATA,
     WorkflowEngine,
     WorkflowEngineError,
@@ -120,6 +123,7 @@ class ExtensionTaskStatus:
     idempotency_key: str = ""
     metadata: dict[str, JsonValue] = field(default_factory=dict)
     artifact_refs: tuple[ExtensionArtifactReference, ...] = ()
+    lane: str = ""
 
     @property
     def terminal(self) -> bool:
@@ -254,6 +258,7 @@ class ExtensionTaskEvent:
     runtime_side_effects: tuple[str, ...] = ()
     metadata: dict[str, JsonValue] = field(default_factory=dict)
     artifact_refs: tuple[ExtensionArtifactReference, ...] = ()
+    lane: str = ""
 
     @property
     def delivery_key(self) -> str:
@@ -320,15 +325,19 @@ class ExtensionWorkflow:
         idempotency_key: str = "",
         metadata: dict[str, JsonValue] | None = None,
         artifact_refs: tuple[ExtensionArtifactReference, ...] = (),
+        lane: str = "",
     ) -> TaskJob:
         normalized_metadata = normalize_extension_metadata(metadata)
         normalized_artifact_refs = normalize_extension_artifact_references(
             artifact_refs
         )
+        execution_lane = scoped_extension_lane(self.extension_name, lane)
         if normalized_metadata:
             self._require_feature(WORKFLOW_FEATURE_STRUCTURED_METADATA)
         if normalized_artifact_refs:
             self._require_feature(WORKFLOW_FEATURE_ARTIFACT_REFERENCES)
+        if execution_lane:
+            self._require_feature(WORKFLOW_FEATURE_EXECUTION_LANES)
         options = dict(self._task_options)
         inherited = tuple(options.pop("required_capabilities", ()))
         options["required_capabilities"] = tuple(
@@ -339,6 +348,8 @@ class ExtensionWorkflow:
             options["extension_metadata"] = normalized_metadata
         if normalized_artifact_refs:
             options["extension_artifact_refs"] = normalized_artifact_refs
+        if execution_lane:
+            options["execution_lane"] = execution_lane
         return self._enqueue(
             conversation_id,
             request,
@@ -434,6 +445,7 @@ class ExtensionWorkflow:
         idempotency_key: str,
         metadata: dict[str, JsonValue] | None = None,
         artifact_refs: tuple[ExtensionArtifactReference, ...] | None = None,
+        lane: str | None = None,
     ) -> ExtensionTaskStatus:
         original = self._owned_task(task_id, "rerun")
         if original.status not in {"completed", "failed", "cancelled", "regressed"}:
@@ -476,6 +488,17 @@ class ExtensionWorkflow:
         if resolved_artifact_refs:
             self._require_feature(WORKFLOW_FEATURE_ARTIFACT_REFERENCES)
             options["extension_artifact_refs"] = resolved_artifact_refs
+        resolved_execution_lane = (
+            original.execution_lane
+            if lane is None
+            else scoped_extension_lane(
+                self.extension_name,
+                lane,
+            )
+        )
+        if resolved_execution_lane:
+            self._require_feature(WORKFLOW_FEATURE_EXECUTION_LANES)
+            options["execution_lane"] = resolved_execution_lane
         rerun = self._enqueue(
             original.chat_id,
             original.text,
@@ -542,6 +565,10 @@ class ExtensionWorkflow:
             artifact_refs=normalize_extension_artifact_references(
                 job.extension_artifact_refs
             ),
+            lane=local_extension_lane(
+                self.extension_name,
+                job.execution_lane,
+            ),
         )
 
     def _require_feature(self, feature: str) -> None:
@@ -586,6 +613,7 @@ class ExtensionCommandContext:
         idempotency_key: str = "",
         metadata: dict[str, JsonValue] | None = None,
         artifact_refs: tuple[ExtensionArtifactReference, ...] = (),
+        lane: str = "",
     ) -> TaskJob:
         key = idempotency_key.strip() or f"command:{self.event.message_id}"
         try:
@@ -600,6 +628,7 @@ class ExtensionCommandContext:
                 idempotency_key=key,
                 metadata=metadata,
                 artifact_refs=artifact_refs,
+                lane=lane,
             )
         except TaskAlreadyExists as error:
             raise ExtensionCommandEnqueueError(

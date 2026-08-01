@@ -116,6 +116,7 @@ job = context.enqueue_task(
             "text/markdown",
         ),
     ),
+    lane="project-17",
 )
 ```
 
@@ -134,10 +135,19 @@ artifact boundary. References are durable identities; declaring one does not
 grant filesystem access or copy the artifact into task prompt text.
 
 `ExtensionWorkflow.features` and `supports()` expose optional workflow-engine
-support. The local engine advertises `structured_task_metadata` and
-`artifact_references`. Requesting either feature from an older engine fails
-with `ExtensionWorkflowCapabilityError` before queue mutation; command handlers
-receive the stable `workflow_capability_unavailable` enqueue result code.
+support. The local engine advertises `structured_task_metadata`,
+`artifact_references`, and `execution_lanes`. Requesting one of these features
+from an older engine fails with `ExtensionWorkflowCapabilityError` before queue
+mutation; command handlers receive the stable
+`workflow_capability_unavailable` enqueue result code.
+
+A lane is a lowercase token of 64 characters or fewer. The public extension
+API uses the local token, while durable workflow records use
+`extension:<extension-name>:<lane>`. Tasks in one lane retain FIFO order even
+when the first task is paused or waiting for a delayed retry; ready tasks in a
+different lane or extension may continue according to engine policy. The local
+engine remains a single-worker scheduler, so lanes do not introduce concurrent
+runtime calls.
 
 ## Typed command results
 
@@ -181,16 +191,17 @@ The lifecycle semantics are:
   `retryable=True`. It creates the normal linked retry task with a new task ID;
   the original remains in history. A second live retry of the same failure is
   rejected by the workflow engine. Retry always preserves the failed task's
-  metadata and artifact references because it is another attempt at the same
-  durable request.
+  metadata, artifact references, and execution lane because it is another
+  attempt at the same durable request.
 - `rerun` accepts any owned terminal task, including a regressed task. It
   creates a fresh task with `parent_task_id` pointing to the terminal source
   and preserves request, context, provenance, policy, and capability
   requirements. Metadata and artifact references are preserved unless the
-  caller supplies explicit replacement values. The caller must provide a
-  stable idempotency key. Repeating the same key returns the same rerun after a
-  process restart with the first request envelope; a deliberate additional
-  rerun or replacement uses a new key.
+  caller supplies explicit replacement values. The lane is also preserved by
+  default; pass another token to move the rerun or `lane=""` to clear it. The
+  caller must provide a stable idempotency key. Repeating the same key returns
+  the same rerun after a process restart with the first request envelope; a
+  deliberate additional rerun or replacement uses a new key.
 
 Every mutation still passes through the selected `WorkflowEngine`, so daemon
 epoch fencing, atomic queue persistence, task events, and restart recovery are
@@ -218,7 +229,8 @@ it submitted through `ExtensionWorkflow`. Enoch routes `queued`, `started`,
 extension. Events include a stable ID, request and result summaries, failure
 metadata, revision and review identities, runtime output references, and an
 extension-scoped `delivery_key`. They also retain the original structured
-metadata and artifact references across restart and at-least-once replay.
+metadata, artifact references, and lane across restart and at-least-once
+replay.
 
 ```python
 from enoch.extensions import ExtensionLifecycleHooks

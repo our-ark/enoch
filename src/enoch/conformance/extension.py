@@ -23,6 +23,7 @@ from enoch.providers import ChatEvent, RuntimeResult, TaskRequirements
 from enoch.storage import local_storage_layout
 from enoch.workflows import (
     WORKFLOW_FEATURE_ARTIFACT_REFERENCES,
+    WORKFLOW_FEATURE_EXECUTION_LANES,
     WORKFLOW_FEATURE_STRUCTURED_METADATA,
     LocalWorkflowEngine,
 )
@@ -183,7 +184,11 @@ class AgentExtensionConformanceMixin:
             engine = LocalWorkflowEngine(root)
             workflow = ExtensionWorkflow.from_engine(extension.name, engine)
 
-            cancelled_source = workflow.enqueue(42, "Cancel this extension task")
+            cancelled_source = workflow.enqueue(
+                42,
+                "Cancel this extension task",
+                lane="lifecycle",
+            )
             cancelled = workflow.cancel(cancelled_source.id)
             rerun = workflow.rerun(
                 cancelled_source.id,
@@ -195,7 +200,11 @@ class AgentExtensionConformanceMixin:
             )
             workflow.cancel(rerun.task_id)
 
-            failed_source = workflow.enqueue(42, "Retry this extension task")
+            failed_source = workflow.enqueue(
+                42,
+                "Retry this extension task",
+                lane="retry",
+            )
             engine.start_next()
             engine.finalize(
                 failed_source.id,
@@ -211,8 +220,10 @@ class AgentExtensionConformanceMixin:
 
         self.assertEqual(cancelled.state, "cancelled")
         self.assertEqual(rerun.parent_task_id, cancelled_source.id)
+        self.assertEqual(rerun.lane, "lifecycle")
         self.assertEqual(same_rerun.task_id, rerun.task_id)
         self.assertEqual(retry.parent_task_id, failed_source.id)
+        self.assertEqual(retry.lane, "retry")
         self.assertEqual(denied.exception.code, "task_not_owned")
 
     def test_conformance_extension_structured_request_data(self) -> None:
@@ -233,6 +244,7 @@ class AgentExtensionConformanceMixin:
                 "Process structured extension work",
                 metadata={"request_id": "conformance-1", "revision": 1},
                 artifact_refs=(reference,),
+                lane="project-17",
             )
             restarted = ExtensionWorkflow.from_engine(
                 extension.name,
@@ -258,11 +270,13 @@ class AgentExtensionConformanceMixin:
         self.assertTrue(
             workflow.supports(WORKFLOW_FEATURE_ARTIFACT_REFERENCES)
         )
+        self.assertTrue(workflow.supports(WORKFLOW_FEATURE_EXECUTION_LANES))
         self.assertEqual(
             status.metadata,
             {"request_id": "conformance-1", "revision": 1},
         )
         self.assertEqual(status.artifact_refs, (reference,))
+        self.assertEqual(status.lane, "project-17")
 
     def test_conformance_extension_lifecycle_accepts_isolated_context(self) -> None:
         extension = self.create_extension()

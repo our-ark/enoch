@@ -64,11 +64,11 @@ operation. Durable `TaskJob` state now exposes `workspace_path`,
 `workspace_id`, `revision_id`, `review_id`, `review_url`, `review_urls`, and
 `review_published`.
 
-Queue schema 13 reads schema 11's `worktree_path`, `branch_name`,
+Queue schema 14 reads schema 11's `worktree_path`, `branch_name`,
 `commit_sha`, `remote_branch`, `pr_url`, `pr_urls`, and
 `published_remotely` keys, then writes only the provider-neutral names. It also
-adds extension request metadata and typed artifact references; older tasks
-migrate with empty values.
+adds extension request metadata, typed artifact references, and canonical
+execution lanes; older tasks migrate with empty values.
 Read-only Python properties preserve those old attribute names during the
 migration window. Workflow API v1 implementations must deliberately adopt the
 v2 methods before injection; `LocalWorkflowEngine` retains v1 method adapters
@@ -82,19 +82,21 @@ The local engine still exposes the bounded v1 publication adapters for stored
 state migration, but injected engines implement only the current typed
 protocol.
 
-Task-event schema 8 records the same opaque `workspace_id`, `revision_id`, and
+Task-event schema 9 records the same opaque `workspace_id`, `revision_id`, and
 `review_id` values with `review_urls` at every lifecycle transition. Event
 readers continue to accept earlier schemas, including Git-shaped
-`branch_name`, `commit_sha`, and `pr_urls` evidence. Schema 8 also carries the
-extension request payload without mixing it into task prompt text.
+`branch_name`, `commit_sha`, and `pr_urls` evidence. Schema 9 also carries the
+extension request payload and execution lane without mixing either into task
+prompt text.
 
 Workflow API v3 engines may advertise optional behavior through a `features`
 iterable. `workflow_features()` normalizes discovery, and extension workflows
 expose it through `features` and `supports()`. The local engine currently
-advertises `structured_task_metadata` and `artifact_references`. It does not
-advertise `execution_lanes`; the local scheduler retains one global running
-task. An older API v3 engine without `features` continues to work until an
-extension requests an optional feature, which then fails before enqueue.
+advertises `structured_task_metadata`, `artifact_references`, and
+`execution_lanes`. The local scheduler still retains one global running task;
+lane support defines ordering and blocking rather than parallel workers. An
+older API v3 engine without `features` continues to work until an extension
+requests an optional feature, which then fails before enqueue.
 
 Profiles do not receive or own the concrete engine. Their
 `CommandContext.enqueue_task()` method routes through the engine selected by
@@ -107,6 +109,16 @@ portable.
 atomically moves one due task into the running slot, and `claim()` binds that
 task to a worker identity and process. `heartbeat()` refreshes the durable
 claim. `finalize()` accepts only `completed`, `failed`, or `cancelled`.
+
+An extension may assign a local lane token such as `project-17`. Enoch stores
+the canonical key `extension:<extension-name>:<lane>`, preventing two
+extensions with the same local token from sharing a concurrency boundary.
+Within one lane, pending work remains FIFO: a delayed retry or paused task
+blocks later work in that lane. A ready task in another lane may proceed, so
+one blocked domain workflow does not stall unrelated extension work. Cancelling
+the blocker releases the lane. Retry and interrupted-worker recovery preserve
+the lane; extension rerun preserves it by default and may explicitly replace
+or clear it.
 
 Every core repository task records `runtime.execute`, `vcs.inspect`,
 `vcs.authoritative`, `vcs.workspace`, `vcs.capture`, and `forge.review`

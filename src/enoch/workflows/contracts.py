@@ -53,6 +53,7 @@ class WorkflowEngine(Protocol):
         idempotency_key: str = "",
         extension_metadata: dict[str, JsonValue] | None = None,
         extension_artifact_refs: tuple[ExtensionArtifactReference, ...] = (),
+        execution_lane: str = "",
     ) -> TaskJob: ...
 
     def start_next(self) -> TaskJob | None: ...

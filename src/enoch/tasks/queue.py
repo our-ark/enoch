@@ -26,12 +26,13 @@ from enoch.tasks.payloads import (
     extension_artifact_references_to_json,
     normalize_extension_artifact_references,
     normalize_extension_metadata,
+    require_extension_lane_namespace,
     require_extension_payload_namespace,
 )
 from enoch.state import StateCorruptionError, file_transaction, load_json_object
 
 
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 DEFAULT_MAX_ATTEMPTS = 3
 LEGACY_REVIEW_URL_PATTERN = re.compile(
     r"https://[^\s]+/(?:pull|pulls|merge_requests)/\d+"
@@ -74,6 +75,7 @@ class TaskJob:
     required_capabilities: tuple[str, ...] = ()
     extension_metadata: dict[str, JsonValue] = field(default_factory=dict)
     extension_artifact_refs: tuple[ExtensionArtifactReference, ...] = ()
+    execution_lane: str = ""
     next_attempt_at: str = ""
     failure_code: str = ""
     failure_class: str = ""
@@ -181,6 +183,7 @@ def enqueue_task(
     idempotency_key: str = "",
     extension_metadata: dict[str, JsonValue] | None = None,
     extension_artifact_refs: tuple[ExtensionArtifactReference, ...] = (),
+    execution_lane: str = "",
 ) -> TaskJob:
     cleaned = " ".join(text.split())
     if not cleaned:
@@ -198,6 +201,10 @@ def enqueue_task(
         context_source.strip(),
         extension_metadata,
         extension_artifact_refs,
+    )
+    execution_lane = require_extension_lane_namespace(
+        context_source.strip(),
+        execution_lane,
     )
     with _queue_transaction(root):
         data = _load_queue(root)
@@ -226,6 +233,7 @@ def enqueue_task(
             required_capabilities=required_capabilities,
             extension_metadata=extension_metadata,
             extension_artifact_refs=extension_artifact_refs,
+            execution_lane=execution_lane,
             idempotency_key=idempotency_key.strip(),
         )
         pending = data.setdefault("pending", [])
@@ -326,6 +334,7 @@ def retry_failed_task(
             extension_artifact_refs=normalize_extension_artifact_references(
                 original.extension_artifact_refs
             ),
+            execution_lane=original.execution_lane,
         )
         pending = data.setdefault("pending", [])
         pending.append(_job_to_dict(job))
@@ -373,6 +382,7 @@ def enqueue_task_front(
     idempotency_key: str = "",
     extension_metadata: dict[str, JsonValue] | None = None,
     extension_artifact_refs: tuple[ExtensionArtifactReference, ...] = (),
+    execution_lane: str = "",
 ) -> TaskJob:
     cleaned = " ".join(text.split())
     if not cleaned:
@@ -390,6 +400,10 @@ def enqueue_task_front(
         context_source.strip(),
         extension_metadata,
         extension_artifact_refs,
+    )
+    execution_lane = require_extension_lane_namespace(
+        context_source.strip(),
+        execution_lane,
     )
     with _queue_transaction(root):
         data = _load_queue(root)
@@ -418,6 +432,7 @@ def enqueue_task_front(
             required_capabilities=required_capabilities,
             extension_metadata=extension_metadata,
             extension_artifact_refs=extension_artifact_refs,
+            execution_lane=execution_lane,
             idempotency_key=idempotency_key.strip(),
         )
         pending = data.setdefault("pending", [])
@@ -454,6 +469,7 @@ def begin_direct_task(
     idempotency_key: str = "",
     extension_metadata: dict[str, JsonValue] | None = None,
     extension_artifact_refs: tuple[ExtensionArtifactReference, ...] = (),
+    execution_lane: str = "",
 ) -> TaskJob:
     cleaned = " ".join(text.split())
     if not cleaned:
@@ -471,6 +487,10 @@ def begin_direct_task(
         context_source.strip(),
         extension_metadata,
         extension_artifact_refs,
+    )
+    execution_lane = require_extension_lane_namespace(
+        context_source.strip(),
+        execution_lane,
     )
     with _queue_transaction(root):
         data = _load_queue(root)
@@ -504,6 +524,7 @@ def begin_direct_task(
             required_capabilities=required_capabilities,
             extension_metadata=extension_metadata,
             extension_artifact_refs=extension_artifact_refs,
+            execution_lane=execution_lane,
             idempotency_key=idempotency_key.strip(),
         )
         data["running"] = _job_to_dict(job)
@@ -554,8 +575,22 @@ def begin_next_task(root: Path | None = None) -> TaskJob | None:
         pending = _pending_jobs(data)
         if not pending:
             return None
+        blocked_lanes = {
+            job.execution_lane
+            for job in _paused_jobs(data)
+            if job.execution_lane
+        }
         ready_index = next(
-            (index for index, candidate in enumerate(pending) if _task_is_due(candidate)),
+            (
+                index
+                for index, candidate in enumerate(pending)
+                if _task_is_due(candidate)
+                and _lane_predecessors_finished(
+                    candidate,
+                    pending[:index],
+                    blocked_lanes,
+                )
+            ),
             None,
         )
         if ready_index is None:
@@ -1657,6 +1692,10 @@ def _parse_job(raw: object) -> TaskJob | None:
             extension_metadata,
             extension_artifact_refs,
         )
+        execution_lane = require_extension_lane_namespace(
+            context_source,
+            raw.get("execution_lane"),
+        )
     except ValueError:
         return None
     next_attempt_at = str(raw.get("next_attempt_at") or "").strip()
@@ -1734,6 +1773,7 @@ def _parse_job(raw: object) -> TaskJob | None:
         required_capabilities=required_capabilities,
         extension_metadata=extension_metadata,
         extension_artifact_refs=extension_artifact_refs,
+        execution_lane=execution_lane,
         next_attempt_at=next_attempt_at,
         failure_code=failure_code,
         failure_class=failure_class,
@@ -1796,6 +1836,7 @@ def _job_to_dict(job: TaskJob | None) -> dict:
         "extension_artifact_refs": extension_artifact_references_to_json(
             job.extension_artifact_refs
         ),
+        "execution_lane": job.execution_lane,
         "next_attempt_at": job.next_attempt_at,
         "failure_code": job.failure_code,
         "failure_class": job.failure_class,
@@ -1853,6 +1894,7 @@ def _replace_job(job: TaskJob, **changes: object) -> TaskJob:
             job.extension_metadata
         ),
         "extension_artifact_refs": job.extension_artifact_refs,
+        "execution_lane": job.execution_lane,
         "next_attempt_at": job.next_attempt_at,
         "failure_code": job.failure_code,
         "failure_class": job.failure_class,
@@ -1984,6 +2026,22 @@ def _task_is_due(job: TaskJob) -> bool:
     if due.tzinfo is None:
         due = due.replace(tzinfo=timezone.utc)
     return due <= datetime.now(timezone.utc)
+
+
+def _lane_predecessors_finished(
+    job: TaskJob,
+    predecessors: list[TaskJob],
+    blocked_lanes: set[str],
+) -> bool:
+    if not job.execution_lane:
+        return True
+    return (
+        job.execution_lane not in blocked_lanes
+        and all(
+            predecessor.execution_lane != job.execution_lane
+            for predecessor in predecessors
+        )
+    )
 
 
 def _review_urls(result: str) -> tuple[str, ...]:

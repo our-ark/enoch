@@ -39,6 +39,7 @@ from enoch.tasks.payloads import ExtensionArtifactReference, JsonValue
 from enoch.workflows.contracts import (
     WORKFLOW_API_VERSION,
     WORKFLOW_FEATURE_ARTIFACT_REFERENCES,
+    WORKFLOW_FEATURE_EXECUTION_LANES,
     WORKFLOW_FEATURE_STRUCTURED_METADATA,
     EnqueueMode,
     FinalTaskStatus,
@@ -52,6 +53,7 @@ class LocalWorkflowEngine:
     features = frozenset(
         {
             WORKFLOW_FEATURE_ARTIFACT_REFERENCES,
+            WORKFLOW_FEATURE_EXECUTION_LANES,
             WORKFLOW_FEATURE_STRUCTURED_METADATA,
         }
     )
@@ -86,6 +88,7 @@ class LocalWorkflowEngine:
         idempotency_key: str = "",
         extension_metadata: dict[str, JsonValue] | None = None,
         extension_artifact_refs: tuple[ExtensionArtifactReference, ...] = (),
+        execution_lane: str = "",
     ) -> TaskJob:
         function = {
             "queued": enqueue_task,
@@ -125,6 +128,7 @@ class LocalWorkflowEngine:
                 idempotency_key=idempotency_key,
                 extension_metadata=extension_metadata,
                 extension_artifact_refs=extension_artifact_refs,
+                execution_lane=execution_lane,
             )
 
     def start_next(self) -> TaskJob | None:

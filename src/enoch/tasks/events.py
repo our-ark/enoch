@@ -21,11 +21,12 @@ from enoch.tasks.payloads import (
     extension_artifact_references_from_json,
     normalize_extension_artifact_references,
     normalize_extension_metadata,
+    require_extension_lane_namespace,
     require_extension_payload_namespace,
 )
 
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 SUMMARY_LIMIT = 4000
 TASK_SOURCES = {
     "backlog",
@@ -95,6 +96,7 @@ class TaskLike(Protocol):
     runtime_side_effects: tuple[str, ...]
     extension_metadata: dict[str, JsonValue]
     extension_artifact_refs: tuple[ExtensionArtifactReference, ...]
+    execution_lane: str
 
 
 @dataclass(frozen=True)
@@ -140,6 +142,7 @@ class TaskEvent:
     runtime_side_effects: tuple[str, ...] = ()
     extension_metadata: dict[str, JsonValue] = field(default_factory=dict)
     extension_artifact_refs: tuple[ExtensionArtifactReference, ...] = ()
+    execution_lane: str = ""
 
     @property
     def pr_urls(self) -> tuple[str, ...]:
@@ -195,6 +198,10 @@ def record_task_event(
         context_source,
         extension_metadata,
         extension_artifact_refs,
+    )
+    execution_lane = require_extension_lane_namespace(
+        context_source,
+        getattr(job, "execution_lane", ""),
     )
     task_event = TaskEvent(
         id=f"event-{uuid4().hex}",
@@ -267,6 +274,7 @@ def record_task_event(
         runtime_side_effects=_string_tuple(getattr(job, "runtime_side_effects", ())),
         extension_metadata=extension_metadata,
         extension_artifact_refs=extension_artifact_refs,
+        execution_lane=execution_lane,
     )
     with _task_event_transaction(root):
         path = task_event_path(root)
@@ -404,6 +412,10 @@ def _event_from_line(line: str) -> TaskEvent | None:
             extension_metadata,
             extension_artifact_refs,
         )
+        execution_lane = require_extension_lane_namespace(
+            context_source,
+            raw.get("execution_lane"),
+        )
     except ValueError:
         return None
     return TaskEvent(
@@ -456,6 +468,7 @@ def _event_from_line(line: str) -> TaskEvent | None:
         runtime_side_effects=_string_tuple(raw.get("runtime_side_effects")),
         extension_metadata=extension_metadata,
         extension_artifact_refs=extension_artifact_refs,
+        execution_lane=execution_lane,
     )
 
 

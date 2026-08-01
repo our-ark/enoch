@@ -26,6 +26,7 @@ _MEDIA_TYPE = re.compile(
 _EXTENSION_CONTEXT_SOURCE = re.compile(
     r"extension:[a-z0-9][a-z0-9._-]{0,63}"
 )
+_EXTENSION_LANE = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
 _RESERVED_METADATA_KEYS = {"enoch", "schema_version", "system"}
 _RESERVED_METADATA_PREFIXES = ("$", "_", "enoch.", "system.")
 
@@ -164,6 +165,60 @@ def require_extension_payload_namespace(
             "Extension task metadata and artifact references require "
             "context_source=extension:<name>."
         )
+
+
+def normalize_extension_lane(value: object) -> str:
+    if not isinstance(value, str):
+        raise ValueError("Extension execution lane must be a string.")
+    lane = value.strip().lower()
+    if lane and not _EXTENSION_LANE.fullmatch(lane):
+        raise ValueError(f"Invalid extension execution lane {value!r}.")
+    return lane
+
+
+def scoped_extension_lane(extension_name: str, lane: object) -> str:
+    context_source = f"extension:{extension_name}"
+    if not _EXTENSION_CONTEXT_SOURCE.fullmatch(context_source):
+        raise ValueError(f"Invalid extension name {extension_name!r}.")
+    normalized = normalize_extension_lane(lane)
+    return f"{context_source}:{normalized}" if normalized else ""
+
+
+def require_extension_lane_namespace(
+    context_source: object,
+    execution_lane: object,
+) -> str:
+    if execution_lane in (None, ""):
+        return ""
+    if not isinstance(context_source, str) or not isinstance(execution_lane, str):
+        raise ValueError(
+            "Extension execution lanes require context_source=extension:<name>."
+        )
+    prefix = f"{context_source}:"
+    if (
+        not _EXTENSION_CONTEXT_SOURCE.fullmatch(context_source)
+        or not execution_lane.startswith(prefix)
+        or scoped_extension_lane(
+            context_source.removeprefix("extension:"),
+            execution_lane.removeprefix(prefix),
+        )
+        != execution_lane
+    ):
+        raise ValueError(
+            "Extension execution lanes must remain within the originating "
+            "extension namespace."
+        )
+    return execution_lane
+
+
+def local_extension_lane(extension_name: str, execution_lane: object) -> str:
+    canonical = require_extension_lane_namespace(
+        f"extension:{extension_name}",
+        execution_lane,
+    )
+    if not canonical:
+        return ""
+    return canonical.removeprefix(f"extension:{extension_name}:")
 
 
 def _normalize_json_object(

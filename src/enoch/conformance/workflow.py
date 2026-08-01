@@ -9,6 +9,7 @@ from enoch.tasks.payloads import ExtensionArtifactReference
 from enoch.workflows import (
     WORKFLOW_API_VERSION,
     WORKFLOW_FEATURE_ARTIFACT_REFERENCES,
+    WORKFLOW_FEATURE_EXECUTION_LANES,
     WORKFLOW_FEATURE_STRUCTURED_METADATA,
     WorkflowEngine,
     workflow_features,
@@ -87,7 +88,16 @@ class WorkflowEngineConformanceMixin:
             root = Path(directory)
             epoch = self.begin_fencing_epoch(root)
             first = self.create_workflow(root, epoch=epoch)
-            queued = first.enqueue(42, "recover this", max_attempts=2)
+            options: dict[str, Any] = {}
+            if WORKFLOW_FEATURE_EXECUTION_LANES in workflow_features(first):
+                options["context_source"] = "extension:conformance"
+                options["execution_lane"] = "extension:conformance:recovery"
+            queued = first.enqueue(
+                42,
+                "recover this",
+                max_attempts=2,
+                **options,
+            )
             started = first.start_next()
             self.assertEqual(started.id, queued.id)
 
@@ -97,6 +107,7 @@ class WorkflowEngineConformanceMixin:
             self.assertIsNotNone(recovered)
             self.assertEqual(recovered.id, queued.id)
             self.assertEqual(recovered.status, "pending")
+            self.assertEqual(recovered.execution_lane, queued.execution_lane)
             self.assertEqual(restarted.inspect().pending_count, 1)
 
     def test_conformance_workflow_rejects_stale_fencing_token(self) -> None:
@@ -157,6 +168,10 @@ class WorkflowEngineConformanceMixin:
                         "application/json",
                     ),
                 )
+            if WORKFLOW_FEATURE_EXECUTION_LANES in features:
+                options["execution_lane"] = (
+                    "extension:conformance:workflow-conformance"
+                )
             queued = engine.enqueue(
                 42,
                 "persist optional workflow features",
@@ -184,6 +199,11 @@ class WorkflowEngineConformanceMixin:
             self.assertEqual(
                 recovered.extension_artifact_refs,
                 options["extension_artifact_refs"],
+            )
+        if WORKFLOW_FEATURE_EXECUTION_LANES in features:
+            self.assertEqual(
+                recovered.execution_lane,
+                options["execution_lane"],
             )
 
     def _new_engine(self, root: Path) -> WorkflowEngine:

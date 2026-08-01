@@ -383,6 +383,7 @@ class EnochExtensionTests(unittest.TestCase):
                 "Implement the project specification",
                 metadata=metadata,
                 artifact_refs=artifact_refs,
+                lane="project-17",
             )
 
             restarted = ExtensionWorkflow.from_engine(
@@ -397,15 +398,18 @@ class EnochExtensionTests(unittest.TestCase):
             frozenset(
                 {
                     WORKFLOW_FEATURE_ARTIFACT_REFERENCES,
+                    WORKFLOW_FEATURE_EXECUTION_LANES,
                     WORKFLOW_FEATURE_STRUCTURED_METADATA,
                 }
             ),
         )
-        self.assertFalse(workflow.supports(WORKFLOW_FEATURE_EXECUTION_LANES))
+        self.assertTrue(workflow.supports(WORKFLOW_FEATURE_EXECUTION_LANES))
         self.assertEqual(status.metadata, metadata)
         self.assertEqual(status.artifact_refs, artifact_refs)
+        self.assertEqual(status.lane, "project-17")
         self.assertEqual(events[-1].extension_metadata, metadata)
         self.assertEqual(events[-1].extension_artifact_refs, artifact_refs)
+        self.assertEqual(events[-1].execution_lane, "extension:manager:project-17")
 
     def test_extension_retry_preserves_and_rerun_can_replace_request_data(
         self,
@@ -429,6 +433,7 @@ class EnochExtensionTests(unittest.TestCase):
                 "Run the project workflow",
                 metadata={"project_id": "original"},
                 artifact_refs=(original_ref,),
+                lane="original",
             )
             engine.start_next()
             engine.finalize(
@@ -449,6 +454,12 @@ class EnochExtensionTests(unittest.TestCase):
                 idempotency_key="replacement-v1",
                 metadata={"project_id": "replacement"},
                 artifact_refs=(replacement_ref,),
+                lane="replacement",
+            )
+            cleared_rerun = workflow.rerun(
+                original.id,
+                idempotency_key="cleared-v1",
+                lane="",
             )
             restarted = ExtensionWorkflow.from_engine(
                 "manager",
@@ -457,9 +468,11 @@ class EnochExtensionTests(unittest.TestCase):
             retry_status = restarted.status(retry.task_id)
             preserved_rerun_status = restarted.status(preserved_rerun.task_id)
             rerun_status = restarted.status(rerun.task_id)
+            cleared_rerun_status = restarted.status(cleared_rerun.task_id)
 
         self.assertEqual(retry_status.metadata, {"project_id": "original"})
         self.assertEqual(retry_status.artifact_refs, (original_ref,))
+        self.assertEqual(retry_status.lane, "original")
         self.assertEqual(
             preserved_rerun_status.metadata,
             {"project_id": "original"},
@@ -468,6 +481,7 @@ class EnochExtensionTests(unittest.TestCase):
             preserved_rerun_status.artifact_refs,
             (original_ref,),
         )
+        self.assertEqual(preserved_rerun_status.lane, "original")
         self.assertEqual(
             rerun_status.metadata,
             {"project_id": "replacement"},
@@ -476,6 +490,83 @@ class EnochExtensionTests(unittest.TestCase):
             rerun_status.artifact_refs,
             (replacement_ref,),
         )
+        self.assertEqual(rerun_status.lane, "replacement")
+        self.assertEqual(cleared_rerun_status.lane, "")
+
+    def test_extension_lanes_serialize_predecessors_without_blocking_peers(
+        self,
+    ) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            engine = LocalWorkflowEngine(root)
+            manager = ExtensionWorkflow.from_engine("manager", engine)
+            researcher = ExtensionWorkflow.from_engine("researcher", engine)
+            first = manager.enqueue("room-1", "Manager first", lane="project")
+            second = manager.enqueue("room-1", "Manager second", lane="project")
+            peer = researcher.enqueue("room-1", "Research peer", lane="project")
+            independent = manager.enqueue(
+                "room-1",
+                "Manager independent",
+                lane="maintenance",
+            )
+
+            started = engine.start_next()
+            assert started is not None
+            engine.retry_running(
+                started.id,
+                result="Retry after the dependency is ready.",
+                failure_code="dependency_pending",
+                failure_class="transient",
+                delay_seconds=60,
+            )
+            engine = LocalWorkflowEngine(root)
+            manager = ExtensionWorkflow.from_engine("manager", engine)
+            peer_started = engine.start_next()
+            assert peer_started is not None
+            engine.finalize(peer_started.id, "completed")
+            independent_started = engine.start_next()
+            assert independent_started is not None
+            engine.finalize(independent_started.id, "completed")
+            manager.cancel(first.id)
+            second_started = engine.start_next()
+
+        self.assertEqual(started.id, first.id)
+        self.assertEqual(first.execution_lane, "extension:manager:project")
+        self.assertEqual(second.execution_lane, "extension:manager:project")
+        self.assertEqual(peer.execution_lane, "extension:researcher:project")
+        self.assertEqual(peer_started.id, peer.id)
+        self.assertEqual(independent_started.id, independent.id)
+        self.assertIsNotNone(second_started)
+        assert second_started is not None
+        self.assertEqual(second_started.id, second.id)
+
+    def test_paused_task_blocks_only_its_execution_lane(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            engine = LocalWorkflowEngine(root)
+            workflow = ExtensionWorkflow.from_engine("manager", engine)
+            first = workflow.enqueue("room-1", "Paused first", lane="project")
+            second = workflow.enqueue("room-1", "Blocked second", lane="project")
+            independent = workflow.enqueue(
+                "room-1",
+                "Independent task",
+                lane="maintenance",
+            )
+
+            engine.start_next()
+            engine.pause(first.id, result="Waiting for runtime access.")
+            independent_started = engine.start_next()
+            assert independent_started is not None
+            engine.finalize(independent_started.id, "completed")
+            blocked = engine.start_next()
+            workflow.cancel(first.id)
+            second_started = engine.start_next()
+
+        self.assertEqual(independent_started.id, independent.id)
+        self.assertIsNone(blocked)
+        self.assertIsNotNone(second_started)
+        assert second_started is not None
+        self.assertEqual(second_started.id, second.id)
 
     def test_extension_request_data_is_validated_before_enqueue(self) -> None:
         invalid_metadata = (
@@ -507,6 +598,16 @@ class EnochExtensionTests(unittest.TestCase):
                     "Reject an untyped artifact",
                     artifact_refs=("projects/raw.txt",),  # type: ignore[arg-type]
                 )
+            for lane in ("../researcher", "project/child", "project:child"):
+                with self.subTest(lane=lane), self.assertRaises(ValueError):
+                    workflow.enqueue("room-1", "Reject lane", lane=lane)
+            with self.assertRaises(ValueError):
+                engine.enqueue(
+                    "room-1",
+                    "Reject cross-extension lane",
+                    context_source="extension:manager",
+                    execution_lane="extension:researcher:project",
+                )
 
             pending = engine.inspect().pending
 
@@ -526,10 +627,20 @@ class EnochExtensionTests(unittest.TestCase):
                     "Do structured work",
                     metadata={"project_id": "project-17"},
                 )
+            with self.assertRaises(ExtensionWorkflowCapabilityError) as lane_error:
+                workflow.enqueue(
+                    "room-1",
+                    "Do lane-bound work",
+                    lane="project-17",
+                )
 
         self.assertEqual(
             raised.exception.feature,
             WORKFLOW_FEATURE_STRUCTURED_METADATA,
+        )
+        self.assertEqual(
+            lane_error.exception.feature,
+            WORKFLOW_FEATURE_EXECUTION_LANES,
         )
         self.assertEqual(engine.inspect().pending, ())
 
@@ -913,6 +1024,7 @@ class EnochExtensionTests(unittest.TestCase):
                         "text/markdown",
                     ),
                 ),
+                lane="project-17",
             )
             return f"Queued task #{job.id}."
 
@@ -959,6 +1071,7 @@ class EnochExtensionTests(unittest.TestCase):
         )
         self.assertEqual(delivered[-1].result_summary, "Created artifact.txt")
         self.assertEqual(delivered[-1].metadata, {"project_id": "project-17"})
+        self.assertEqual(delivered[-1].lane, "project-17")
         self.assertEqual(
             delivered[-1].artifact_refs,
             (

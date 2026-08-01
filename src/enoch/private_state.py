@@ -84,7 +84,7 @@ class PrivateStateMigrationResult:
 STATE_FILE_SCHEMAS = (
     StateFileSchema(
         "task_queue.json",
-        13,
+        14,
         (
             ("next_id", 1),
             ("pending", []),
