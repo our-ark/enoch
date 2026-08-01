@@ -9,7 +9,7 @@ human-reviewed evolution.
 Use Python 3.11 or newer and run:
 
 ```bash
-python -m unittest discover -s tests
+python -m unittest discover -s tests -t .
 ```
 
 The suite includes hermetic evolution tests that use temporary Git repositories
