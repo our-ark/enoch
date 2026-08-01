@@ -4651,6 +4651,9 @@ class EnochApplication:
                 update_from_authoritative,
                 self.root,
                 repository=self.repository,
+                application_name=self.presentation.resolved_display_name(
+                    self.identity
+                ),
             )
         except CapabilityAuthorizationError as error:
             return str(error)
