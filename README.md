@@ -6,6 +6,10 @@
 
 <p align="center"><strong>Build your agent. Let her grow with you.</strong></p>
 
+<p align="center">
+  <a href="https://arxiv.org/abs/2607.28691"><img src="https://img.shields.io/badge/paper-arXiv%3A2607.28691-B31B1B" alt="arXiv:2607.28691"></a>
+</p>
+
 Enoch is a personal software agent you build for yourself. She lives in your
 environment, works with your tools and repositories, and grows through your
 shared history.
@@ -15,6 +19,10 @@ architecture. It demonstrates governed code evolution: Enoch can turn feedback
 and operational experience into tested, reviewable changes while you control
 what is adopted. It is built for researchers, agent builders, and power users
 who want to run or fork an agent body.
+
+The architecture and its Genesis and Enoch reference implementations are
+described in [*Code Is the Body: Agent-Owned Software Bodies for Recursive
+Evolution and Descent*](https://arxiv.org/abs/2607.28691).
 
 ## Why Enoch Is Different
 
