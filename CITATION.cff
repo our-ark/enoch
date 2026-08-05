@@ -18,3 +18,14 @@ keywords:
   - co-evolution
   - software lineage
   - self-evolving agents
+references:
+  - type: article
+    title: "Code Is the Body: Agent-Owned Software Bodies for Recursive Evolution and Descent"
+    authors:
+      - family-names: Zhao
+        given-names: Roy
+      - family-names: Zhao
+        given-names: Zhenyu
+    year: 2026
+    doi: "10.48550/arXiv.2607.28691"
+    url: "https://arxiv.org/abs/2607.28691"
