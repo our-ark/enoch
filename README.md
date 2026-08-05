@@ -20,9 +20,24 @@ and operational experience into tested, reviewable changes while you control
 what is adopted. It is built for researchers, agent builders, and power users
 who want to run or fork an agent body.
 
-The architecture and its Genesis and Enoch reference implementations are
-described in [*Code Is the Body: Agent-Owned Software Bodies for Recursive
-Evolution and Descent*](https://arxiv.org/abs/2607.28691).
+## Research Foundation
+
+Enoch is the reference agent implementation evaluated in
+[*Code Is the Body: Agent-Owned Software Bodies for Recursive Evolution and
+Descent*](https://arxiv.org/abs/2607.28691). The paper's frozen reproducibility
+snapshot uses [Enoch
+v0.3.1](https://github.com/our-ark/enoch/releases/tag/v0.3.1) at commit
+[`1021e1d`](https://github.com/our-ark/enoch/commit/1021e1dacce85f4a2edebd865673671bb37a2142),
+together with [Genesis
+v0.1.1](https://github.com/our-ark/genesis/releases/tag/v0.1.1).
+
+Current Enoch development has advanced beyond that evaluated snapshot. Use the
+current documentation for current behavior and the frozen releases when
+reproducing the paper. The [OurArk research
+notes](https://github.com/our-ark/.github/blob/main/docs/papers/code-is-the-body.md)
+record the evaluated artifacts, citation, reproduction steps, and the
+difference between the paper's six body-change origins and Enoch's four
+Evolution candidate pathways.
 
 ## Why Enoch Is Different
 
@@ -365,6 +380,12 @@ boundary and private reporting process.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development checks and contribution
 guidelines.
+
+## Citation
+
+Cite [*Code Is the Body*](https://arxiv.org/abs/2607.28691) when referring to
+the OurArk architecture. When reporting experiments or implementation results,
+also cite the exact Enoch release using [CITATION.cff](CITATION.cff).
 
 ## License
 
