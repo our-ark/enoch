@@ -13,7 +13,9 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from enoch.tasks.queue import (
     TaskPublicationState,
+    TaskReconciliationRequest,
     TaskRetryError,
+    TaskTerminalEvidence,
     begin_direct_task,
     begin_next_task,
     cancel_task,
@@ -24,12 +26,14 @@ from enoch.tasks.queue import (
     enqueue_task_front,
     fail_task,
     pause_task,
+    reconcile_running_task,
     recover_interrupted_task,
     record_task_result,
     record_task_runtime_result,
     record_task_publish_state,
     record_task_publication,
     record_task_status_message,
+    record_task_terminal_evidence,
     record_task_worktree,
     regress_task,
     resolve_regressed_task,
@@ -103,7 +107,7 @@ class EnochTaskQueueTests(unittest.TestCase):
         )
         self.assertEqual(loaded.review_url, loaded.review_urls[0])
         self.assertTrue(loaded.review_published)
-        self.assertEqual(rewritten["schema_version"], 14)
+        self.assertEqual(rewritten["schema_version"], 15)
         self.assertEqual(persisted["workspace_id"], "legacy-workspace-id")
         self.assertEqual(persisted["revision_id"], "legacy-revision")
         self.assertEqual(persisted["extension_metadata"], {})
@@ -864,6 +868,118 @@ class EnochTaskQueueTests(unittest.TestCase):
         self.assertEqual(recovered.status_message_id, 2001)
         self.assertEqual(recovered.context, "Resume with chat context.")
         self.assertEqual(status.pending[0].id, queued.id)
+
+    def test_reconciliation_repairs_terminal_evidence_once(self) -> None:
+        checked_at = "2026-08-16T21:30:00+00:00"
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            running = begin_direct_task(42, "finish after crash", root)
+            claimed = claim_running_task(running.id, "worker-one", 999_999, root)
+            assert claimed is not None
+            recorded = record_task_terminal_evidence(
+                claimed.id,
+                claimed.worker_id,
+                TaskTerminalEvidence(status="completed", result="done"),
+                root,
+            )
+            assert recorded is not None
+            request = TaskReconciliationRequest(
+                recorded.id,
+                recorded.worker_id,
+                recorded.worker_heartbeat_at,
+            )
+
+            repaired = reconcile_running_task(
+                request,
+                root,
+                worker_liveness=lambda _job: False,
+                checked_at=checked_at,
+            )
+            repeated = reconcile_running_task(
+                root=root,
+                worker_liveness=lambda _job: False,
+                checked_at=checked_at,
+            )
+            status = task_queue_status(root)
+
+        self.assertEqual(repaired.outcome, "terminal_repair")
+        self.assertEqual(repaired.checked_at, checked_at)
+        self.assertEqual(repeated.outcome, "no_op")
+        self.assertEqual(len(status.history), 1)
+        self.assertEqual(status.reconciliation, repaired)
+
+    def test_reconciliation_fails_closed_on_conflicting_or_unsupported_evidence(
+        self,
+    ) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            running = begin_direct_task(42, "incomplete review", root)
+            claimed = claim_running_task(running.id, "worker-one", 999_999, root)
+            assert claimed is not None
+            conflict = reconcile_running_task(
+                TaskReconciliationRequest(
+                    claimed.id,
+                    claimed.worker_id,
+                    "stale-lease",
+                ),
+                root,
+                worker_liveness=lambda _job: False,
+            )
+            record_task_publication(
+                claimed.id,
+                claimed.worker_id,
+                TaskPublicationState(
+                    stage="review_published",
+                    review_id="review-without-url",
+                    review_published=True,
+                ),
+                root,
+            )
+            unsupported = reconcile_running_task(
+                TaskReconciliationRequest(
+                    claimed.id,
+                    claimed.worker_id,
+                    claimed.worker_heartbeat_at,
+                ),
+                root,
+                worker_liveness=lambda _job: False,
+            )
+            status = task_queue_status(root)
+
+        self.assertEqual(conflict.outcome, "conflict")
+        self.assertEqual(unsupported.outcome, "unsupported_evidence")
+        self.assertIsNotNone(status.running)
+        self.assertEqual(status.history, ())
+
+    def test_reconciliation_retries_known_nonterminal_progress(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            running = begin_direct_task(42, "resume captured work", root)
+            claimed = claim_running_task(running.id, "worker-one", 999_999, root)
+            assert claimed is not None
+            record_task_runtime_result(
+                claimed.id,
+                RuntimeResult(final_text="runtime finished"),
+                root,
+                provider="fake-runtime",
+            )
+            record_task_publication(
+                claimed.id,
+                claimed.worker_id,
+                TaskPublicationState(stage="committed", revision_id="abc123"),
+                root,
+            )
+
+            recovered = reconcile_running_task(
+                root=root,
+                worker_liveness=lambda _job: False,
+            )
+            status = task_queue_status(root)
+
+        self.assertEqual(recovered.outcome, "interrupted_worker_recovery")
+        self.assertIsNone(status.running)
+        self.assertEqual(status.pending_count, 1)
+        self.assertEqual(status.pending[0].revision_id, "abc123")
 
     def test_recover_interrupted_task_with_pr_url_completes_it(self) -> None:
         with TemporaryDirectory() as temp:
