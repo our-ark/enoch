@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
@@ -11,6 +12,8 @@ from enoch.workflows import (
     WORKFLOW_FEATURE_ARTIFACT_REFERENCES,
     WORKFLOW_FEATURE_EXECUTION_LANES,
     WORKFLOW_FEATURE_STRUCTURED_METADATA,
+    TaskReconciliationRequest,
+    TaskTerminalEvidence,
     WorkflowEngine,
     workflow_features,
 )
@@ -109,6 +112,73 @@ class WorkflowEngineConformanceMixin:
             self.assertEqual(recovered.status, "pending")
             self.assertEqual(recovered.execution_lane, queued.execution_lane)
             self.assertEqual(restarted.inspect().pending_count, 1)
+
+    def test_conformance_workflow_reconciles_terminal_crash_point_once(
+        self,
+    ) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            engine = self._new_engine(root)
+            running = engine.enqueue(42, "terminal crash point", mode="direct")
+            claimed = engine.claim(running.id, "conformance-worker", 999_999)
+            assert claimed is not None
+            recorded = engine.record_terminal_evidence(
+                claimed.id,
+                claimed.worker_id,
+                TaskTerminalEvidence(
+                    status="completed",
+                    result="durable terminal result",
+                ),
+            )
+            assert recorded is not None
+
+            repaired = engine.reconcile(
+                TaskReconciliationRequest(
+                    recorded.id,
+                    recorded.worker_id,
+                    recorded.worker_heartbeat_at,
+                )
+            )
+            repeated = engine.reconcile()
+            status = engine.inspect()
+
+            self.assertEqual(repaired.outcome, "terminal_repair")
+            self.assertEqual(repeated.outcome, "no_op")
+            self.assertIsNone(status.running)
+            self.assertEqual(len(status.history), 1)
+
+    def test_conformance_workflow_reconciliation_preserves_live_worker(
+        self,
+    ) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            engine = self._new_engine(root)
+            running = engine.enqueue(42, "live worker", mode="direct")
+            claimed = engine.claim(running.id, "conformance-worker", os.getpid())
+            assert claimed is not None
+            recorded = engine.record_terminal_evidence(
+                claimed.id,
+                claimed.worker_id,
+                TaskTerminalEvidence(status="completed", result="done"),
+            )
+            assert recorded is not None
+
+            result = engine.reconcile(
+                TaskReconciliationRequest(
+                    recorded.id,
+                    recorded.worker_id,
+                    recorded.worker_heartbeat_at,
+                )
+            )
+
+            self.assertEqual(result.outcome, "no_op")
+            self.assertIsNotNone(engine.inspect().running)
+            engine.finalize(
+                claimed.id,
+                "completed",
+                result="done",
+                worker_id=claimed.worker_id,
+            )
 
     def test_conformance_workflow_rejects_stale_fencing_token(self) -> None:
         with TemporaryDirectory() as directory:

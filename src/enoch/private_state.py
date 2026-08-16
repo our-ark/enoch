@@ -84,13 +84,14 @@ class PrivateStateMigrationResult:
 STATE_FILE_SCHEMAS = (
     StateFileSchema(
         "task_queue.json",
-        14,
+        15,
         (
             ("next_id", 1),
             ("pending", []),
             ("paused", []),
             ("running", None),
             ("history", []),
+            ("reconciliation", None),
         ),
         (
             ("next_id", (int,)),
@@ -98,6 +99,7 @@ STATE_FILE_SCHEMAS = (
             ("paused", (list,)),
             ("running", (dict, type(None))),
             ("history", (list,)),
+            ("reconciliation", (dict, type(None))),
         ),
     ),
     StateFileSchema(
@@ -511,7 +513,12 @@ def _normalized_payload(path: Path, schema: StateFileSchema) -> dict[str, Any]:
 
 
 def _normalize_task_queue(path: Path, data: dict[str, Any]) -> dict[str, Any]:
-    from enoch.tasks.queue import _job_to_dict, _parse_job
+    from enoch.tasks.queue import (
+        _job_to_dict,
+        _parse_job,
+        _parse_reconciliation,
+        _reconciliation_to_dict,
+    )
 
     parsed: dict[str, list[Any]] = {}
     for key in ("pending", "paused", "history"):
@@ -522,6 +529,9 @@ def _normalize_task_queue(path: Path, data: dict[str, Any]) -> dict[str, Any]:
     running = _parse_job(data.get("running"))
     if data.get("running") is not None and running is None:
         raise StateCorruptionError(path, "found an invalid running task")
+    reconciliation = _parse_reconciliation(data.get("reconciliation"))
+    if data.get("reconciliation") is not None and reconciliation is None:
+        raise StateCorruptionError(path, "found an invalid reconciliation record")
     ids = [job.id for jobs in parsed.values() for job in jobs]
     if running is not None:
         ids.append(running.id)
@@ -535,6 +545,7 @@ def _normalize_task_queue(path: Path, data: dict[str, Any]) -> dict[str, Any]:
         "paused": [_job_to_dict(job) for job in parsed["paused"]],
         "running": _job_to_dict(running) if running is not None else None,
         "history": [_job_to_dict(job) for job in parsed["history"]],
+        "reconciliation": _reconciliation_to_dict(reconciliation),
     }
 
 
