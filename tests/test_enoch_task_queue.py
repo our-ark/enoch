@@ -887,6 +887,7 @@ class EnochTaskQueueTests(unittest.TestCase):
                 recorded.id,
                 recorded.worker_id,
                 recorded.worker_heartbeat_at,
+                recorded.worker_lease_id,
             )
 
             repaired = reconcile_running_task(
@@ -921,6 +922,7 @@ class EnochTaskQueueTests(unittest.TestCase):
                     claimed.id,
                     claimed.worker_id,
                     "stale-lease",
+                    claimed.worker_lease_id,
                 ),
                 root,
                 worker_liveness=lambda _job: False,
@@ -930,7 +932,6 @@ class EnochTaskQueueTests(unittest.TestCase):
                 claimed.worker_id,
                 TaskPublicationState(
                     stage="review_published",
-                    review_id="review-without-url",
                     review_published=True,
                 ),
                 root,
@@ -940,6 +941,7 @@ class EnochTaskQueueTests(unittest.TestCase):
                     claimed.id,
                     claimed.worker_id,
                     claimed.worker_heartbeat_at,
+                    claimed.worker_lease_id,
                 ),
                 root,
                 worker_liveness=lambda _job: False,
@@ -981,7 +983,7 @@ class EnochTaskQueueTests(unittest.TestCase):
         self.assertEqual(status.pending_count, 1)
         self.assertEqual(status.pending[0].revision_id, "abc123")
 
-    def test_recover_interrupted_task_with_pr_url_completes_it(self) -> None:
+    def test_reconciliation_does_not_infer_completion_from_result_url(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
             queued = enqueue_task(42, "ship it", root)
@@ -993,13 +995,83 @@ class EnochTaskQueueTests(unittest.TestCase):
             status = task_queue_status(root)
 
         self.assertEqual(recovered.id, queued.id)
-        self.assertEqual(recovered.status, "completed")
+        self.assertEqual(recovered.status, "pending")
         self.assertIsNone(status.running)
-        self.assertEqual(status.pending, ())
-        self.assertEqual(status.history[-1].id, queued.id)
+        self.assertEqual(status.pending[0].id, queued.id)
+        self.assertEqual(status.history, ())
+        self.assertTrue(task_result_has_pull_request(status.pending[0].result))
+        self.assertEqual(
+            status.pending[0].pr_urls,
+            ("https://github.com/our-ark/enoch/pull/3",),
+        )
+
+    def test_reconciliation_accepts_structured_published_review_identity(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            running = begin_direct_task(42, "publish review", root)
+            claimed = claim_running_task(running.id, "worker-one", 999_999, root)
+            assert claimed is not None
+            published = record_task_publication(
+                claimed.id,
+                claimed.worker_id,
+                TaskPublicationState(
+                    stage="review_published",
+                    review_id="review-3",
+                    review_published=True,
+                ),
+                root,
+            )
+            assert published is not None
+
+            result = reconcile_running_task(
+                TaskReconciliationRequest(
+                    published.id,
+                    published.worker_id,
+                    published.worker_heartbeat_at,
+                    published.worker_lease_id,
+                ),
+                root,
+                worker_liveness=lambda _job: False,
+            )
+            status = task_queue_status(root)
+
+        self.assertEqual(result.outcome, "terminal_repair")
         self.assertEqual(status.history[-1].status, "completed")
-        self.assertTrue(task_result_has_pull_request(status.history[-1].result))
-        self.assertEqual(status.history[-1].pr_urls, ("https://github.com/our-ark/enoch/pull/3",))
+
+    def test_reconciliation_fences_same_timestamp_lease_renewal(self) -> None:
+        timestamp = "2026-08-16T21:30:00+00:00"
+        with TemporaryDirectory() as temp, patch(
+            "enoch.tasks.queue.current_time",
+            return_value=timestamp,
+        ):
+            root = Path(temp)
+            running = begin_direct_task(42, "renew lease", root)
+            claimed = claim_running_task(running.id, "worker-one", 999_999, root)
+            assert claimed is not None
+            request = TaskReconciliationRequest(
+                claimed.id,
+                claimed.worker_id,
+                claimed.worker_heartbeat_at,
+                claimed.worker_lease_id,
+            )
+            renewed = task_queue.heartbeat_task(
+                claimed.id,
+                claimed.worker_id,
+                root,
+            )
+            assert renewed is not None
+
+            result = reconcile_running_task(
+                request,
+                root,
+                worker_liveness=lambda _job: False,
+            )
+            status = task_queue_status(root)
+
+        self.assertEqual(renewed.worker_heartbeat_at, claimed.worker_heartbeat_at)
+        self.assertNotEqual(renewed.worker_lease_id, claimed.worker_lease_id)
+        self.assertEqual(result.outcome, "conflict")
+        self.assertIsNotNone(status.running)
 
     def test_recovery_events_are_attributed_to_system(self) -> None:
         with TemporaryDirectory() as temp:

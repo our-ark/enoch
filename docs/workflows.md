@@ -102,13 +102,15 @@ an optional feature, which then fails before enqueue.
 Version 4 adds typed terminal evidence and reconciliation. A worker records a
 `TaskTerminalEvidence` immediately before final queue transition. The daemon's
 periodic maintenance tick then calls `reconcile()` with the expected task,
-worker, and heartbeat lease identity. The current daemon epoch still fences the
-mutation. A dead worker with matching terminal evidence is finalized exactly
-once; a dead worker without evidence follows bounded retry or exhaustion; a
-live worker remains authoritative; and conflicting or partial evidence fails
-closed. Queue inspection preserves the last material reconciliation outcome,
-evidence kinds, transition, and reason without replaying provider calls or
-terminal delivery.
+worker, heartbeat, and collision-free lease token. The current daemon epoch
+still fences the mutation. A dead worker with matching terminal evidence is
+finalized exactly once; a dead worker without evidence follows bounded retry or
+exhaustion; a live worker remains authoritative; and conflicting or partial
+evidence fails closed. A published review is terminal proof only when its
+provider-neutral publication flag and structured review identity are durable;
+URLs found in free-form result text are never reconciliation evidence. Queue
+inspection preserves the last material reconciliation outcome, evidence kinds,
+transition, and reason without replaying provider calls or terminal delivery.
 
 Profiles do not receive or own the concrete engine. Their
 `CommandContext.enqueue_task()` method routes through the engine selected by
@@ -135,7 +137,10 @@ recovery remain responsibilities of the workflow engine.
 `enqueue()` accepts `mode="queued"`, `"front"`, or `"direct"`. `start_next()`
 atomically moves one due task into the running slot, and `claim()` binds that
 task to a worker identity and process. `heartbeat()` refreshes the durable
-claim. `record_terminal_evidence()` persists the structured outcome before
+claim and rotates its lease token. The reference local engine records the
+actual in-process thread at `claim()` time, while external
+workflow engines remain responsible for their own worker topology.
+`record_terminal_evidence()` persists the structured outcome before
 `finalize()`, which accepts only `completed`, `failed`, or `cancelled`.
 `reconcile()` returns a typed no-op, terminal repair, interrupted-worker
 recovery, conflict, or unsupported-evidence result.

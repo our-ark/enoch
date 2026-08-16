@@ -137,6 +137,7 @@ class WorkflowEngineConformanceMixin:
                     recorded.id,
                     recorded.worker_id,
                     recorded.worker_heartbeat_at,
+                    recorded.worker_lease_id,
                 )
             )
             repeated = engine.reconcile()
@@ -168,6 +169,7 @@ class WorkflowEngineConformanceMixin:
                     recorded.id,
                     recorded.worker_id,
                     recorded.worker_heartbeat_at,
+                    recorded.worker_lease_id,
                 )
             )
 

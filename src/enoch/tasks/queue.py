@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 from typing import Callable, Literal
 from urllib.parse import urlsplit
+from uuid import uuid4
 
 from enoch.memory.paths import atomic_write, now as current_time
 from enoch.paths import private_state_path
@@ -76,6 +77,7 @@ class TaskJob:
     worker_id: str = ""
     worker_pid: int | None = None
     worker_heartbeat_at: str = ""
+    worker_lease_id: str = ""
     workspace_path: str = ""
     workspace_id: str = ""
     attempt: int = 0
@@ -173,6 +175,7 @@ class TaskReconciliationRequest:
     expected_task_id: int
     expected_worker_id: str = ""
     expected_worker_heartbeat_at: str = ""
+    expected_worker_lease_id: str = ""
 
     def __post_init__(self) -> None:
         if self.expected_task_id <= 0:
@@ -182,6 +185,11 @@ class TaskReconciliationRequest:
             self,
             "expected_worker_heartbeat_at",
             self.expected_worker_heartbeat_at.strip(),
+        )
+        object.__setattr__(
+            self,
+            "expected_worker_lease_id",
+            self.expected_worker_lease_id.strip(),
         )
 
 
@@ -196,6 +204,7 @@ class TaskReconciliationResult:
     reason: str = ""
     worker_id: str = ""
     worker_heartbeat_at: str = ""
+    worker_lease_id: str = ""
     recorded: bool = True
 
 
@@ -765,6 +774,7 @@ def retry_running_task(
             worker_id="",
             worker_pid=None,
             worker_heartbeat_at="",
+            worker_lease_id="",
             next_attempt_at=retry_at,
             failure_code=failure_code.strip(),
             failure_class=failure_class.strip(),
@@ -823,6 +833,7 @@ def claim_running_task(
             worker_id=cleaned_worker_id,
             worker_pid=worker_pid,
             worker_heartbeat_at=current_time(),
+            worker_lease_id=uuid4().hex,
         )
         data["running"] = _job_to_dict(claimed)
         _write_queue(data, root)
@@ -846,7 +857,11 @@ def heartbeat_task(
             or running.worker_id != cleaned_worker_id
         ):
             return None
-        updated = _replace_job(running, worker_heartbeat_at=current_time())
+        updated = _replace_job(
+            running,
+            worker_heartbeat_at=current_time(),
+            worker_lease_id=uuid4().hex,
+        )
         data["running"] = _job_to_dict(updated)
         _write_queue(data, root)
         return updated
@@ -944,6 +959,7 @@ def pause_task(
             worker_id="",
             worker_pid=None,
             worker_heartbeat_at="",
+            worker_lease_id="",
             terminal_status="",
             terminal_evidence_source="",
             terminal_evidence_at="",
@@ -994,6 +1010,7 @@ def resume_paused_tasks(
                 worker_id="",
                 worker_pid=None,
                 worker_heartbeat_at="",
+                worker_lease_id="",
             )
             for job in selected
         )
@@ -1395,6 +1412,7 @@ def _finish_running_task(
             worker_id="",
             worker_pid=None,
             worker_heartbeat_at="",
+            worker_lease_id="",
             failure_code=failure_code.strip(),
             failure_class=failure_class.strip(),
             retryable=retryable,
@@ -1486,6 +1504,7 @@ def cancel_running_task(
             worker_id="",
             worker_pid=None,
             worker_heartbeat_at="",
+            worker_lease_id="",
         )
         history = _history_jobs(data)
         history.append(cancelled)
@@ -1547,6 +1566,7 @@ def reconcile_running_task(
                     reason=mismatch,
                     worker_id=running.worker_id,
                     worker_heartbeat_at=running.worker_heartbeat_at,
+                    worker_lease_id=running.worker_lease_id,
                 ),
             )
             if result.recorded:
@@ -1563,6 +1583,7 @@ def reconcile_running_task(
                 reason="The authoritative worker is still active.",
                 worker_id=running.worker_id,
                 worker_heartbeat_at=running.worker_heartbeat_at,
+                worker_lease_id=running.worker_lease_id,
                 recorded=False,
             )
         terminal_status, terminal_evidence, terminal_conflict = (
@@ -1581,6 +1602,7 @@ def reconcile_running_task(
                     reason=terminal_conflict,
                     worker_id=running.worker_id,
                     worker_heartbeat_at=running.worker_heartbeat_at,
+                    worker_lease_id=running.worker_lease_id,
                 ),
             )
             if result.recorded:
@@ -1601,6 +1623,7 @@ def reconcile_running_task(
                         reason="Task history already contains the running task id.",
                         worker_id=running.worker_id,
                         worker_heartbeat_at=running.worker_heartbeat_at,
+                        worker_lease_id=running.worker_lease_id,
                     ),
                 )
                 if result.recorded:
@@ -1613,6 +1636,7 @@ def reconcile_running_task(
                 worker_id="",
                 worker_pid=None,
                 worker_heartbeat_at="",
+                worker_lease_id="",
                 next_attempt_at="",
             )
             history.append(finished)
@@ -1626,6 +1650,7 @@ def reconcile_running_task(
                 reason="Durable terminal evidence finalized the running task.",
                 worker_id=running.worker_id,
                 worker_heartbeat_at=running.worker_heartbeat_at,
+                worker_lease_id=running.worker_lease_id,
             )
             data["running"] = None
             data["history"] = [_job_to_dict(job) for job in history]
@@ -1657,6 +1682,7 @@ def reconcile_running_task(
                     ),
                     worker_id=running.worker_id,
                     worker_heartbeat_at=running.worker_heartbeat_at,
+                    worker_lease_id=running.worker_lease_id,
                 ),
             )
             if result.recorded:
@@ -1674,6 +1700,7 @@ def reconcile_running_task(
                 worker_id="",
                 worker_pid=None,
                 worker_heartbeat_at="",
+                worker_lease_id="",
                 failure_code="worker_interrupted",
                 failure_class="transient",
                 retryable=False,
@@ -1691,6 +1718,7 @@ def reconcile_running_task(
                 reason="The inactive worker exhausted bounded recovery attempts.",
                 worker_id=running.worker_id,
                 worker_heartbeat_at=running.worker_heartbeat_at,
+                worker_lease_id=running.worker_lease_id,
             )
             data["running"] = None
             data["history"] = [_job_to_dict(job) for job in history]
@@ -1712,6 +1740,7 @@ def reconcile_running_task(
             worker_id="",
             worker_pid=None,
             worker_heartbeat_at="",
+            worker_lease_id="",
             next_attempt_at=_retry_at_from(checked_at, 0),
             failure_code="worker_interrupted",
             failure_class="transient",
@@ -1727,6 +1756,7 @@ def reconcile_running_task(
             reason="The inactive worker was returned to the bounded retry queue.",
             worker_id=running.worker_id,
             worker_heartbeat_at=running.worker_heartbeat_at,
+            worker_lease_id=running.worker_lease_id,
         )
         data["running"] = None
         data["pending"] = [_job_to_dict(recovered), *[_job_to_dict(job) for job in _pending_jobs(data)]]
@@ -1783,6 +1813,13 @@ def _job_has_review(job: TaskJob) -> bool:
     return bool(job.review_urls) or task_result_has_review(job.result)
 
 
+def _job_has_confirmed_published_review(job: TaskJob) -> bool:
+    return bool(
+        job.review_published
+        and (job.review_id or job.review_url)
+    )
+
+
 def _reconciliation_request_mismatch(
     request: TaskReconciliationRequest | None,
     running: TaskJob,
@@ -1796,6 +1833,8 @@ def _reconciliation_request_mismatch(
         mismatches.append("worker")
     if request.expected_worker_heartbeat_at != running.worker_heartbeat_at:
         mismatches.append("lease")
+    if request.expected_worker_lease_id != running.worker_lease_id:
+        mismatches.append("lease-token")
     if not mismatches:
         return ""
     return (
@@ -1814,13 +1853,13 @@ def _terminal_reconciliation_evidence(
             statuses.setdefault(running.terminal_status, []).append(
                 f"terminal-evidence:{running.terminal_evidence_source}"
             )
-        elif _job_has_review(running):
+        elif _job_has_confirmed_published_review(running):
             return (
                 "",
                 ("terminal-evidence:incomplete", "published-review"),
                 "Incomplete terminal evidence conflicts with a published review.",
             )
-    if _job_has_review(running):
+    if _job_has_confirmed_published_review(running):
         statuses.setdefault("completed", []).append("published-review")
     evidence = tuple(
         item
@@ -1854,9 +1893,12 @@ def _unsupported_reconciliation_evidence(running: TaskJob) -> tuple[str, ...]:
         evidence.append(f"publish-stage:{running.publish_stage}")
     if (
         running.publish_stage == "review_published" or running.review_published
-    ) and not _job_has_review(running):
+    ) and not _job_has_confirmed_published_review(running):
         evidence.append("published-review:incomplete")
-    if running.review_id and not _job_has_review(running):
+    if (
+        (running.review_id or running.review_url)
+        and not running.review_published
+    ):
         evidence.append("unconfirmed-review")
     return _dedupe_strings(tuple(evidence))
 
@@ -1877,6 +1919,7 @@ def _store_reconciliation(
             reason=result.reason,
             worker_id=result.worker_id,
             worker_heartbeat_at=result.worker_heartbeat_at,
+            worker_lease_id=result.worker_lease_id,
             recorded=False,
         )
     data["reconciliation"] = _reconciliation_to_dict(result)
@@ -1896,6 +1939,7 @@ def _same_reconciliation(
         and first.reason == second.reason
         and first.worker_id == second.worker_id
         and first.worker_heartbeat_at == second.worker_heartbeat_at
+        and first.worker_lease_id == second.worker_lease_id
     )
 
 
@@ -2051,6 +2095,7 @@ def _parse_reconciliation(raw: object) -> TaskReconciliationResult | None:
         reason=str(raw.get("reason") or "").strip(),
         worker_id=str(raw.get("worker_id") or "").strip(),
         worker_heartbeat_at=str(raw.get("worker_heartbeat_at") or "").strip(),
+        worker_lease_id=str(raw.get("worker_lease_id") or "").strip(),
     )
 
 
@@ -2069,6 +2114,7 @@ def _reconciliation_to_dict(
         "reason": result.reason,
         "worker_id": result.worker_id,
         "worker_heartbeat_at": result.worker_heartbeat_at,
+        "worker_lease_id": result.worker_lease_id,
     }
 
 
@@ -2108,6 +2154,7 @@ def _parse_job(raw: object) -> TaskJob | None:
     worker_id = str(raw.get("worker_id") or "").strip()
     worker_pid = _optional_int(raw.get("worker_pid"))
     worker_heartbeat_at = str(raw.get("worker_heartbeat_at") or "").strip()
+    worker_lease_id = str(raw.get("worker_lease_id") or "").strip()
     workspace_path = str(
         raw.get("workspace_path", raw.get("worktree_path")) or ""
     ).strip()
@@ -2223,6 +2270,7 @@ def _parse_job(raw: object) -> TaskJob | None:
         worker_id=worker_id,
         worker_pid=worker_pid,
         worker_heartbeat_at=worker_heartbeat_at,
+        worker_lease_id=worker_lease_id,
         workspace_path=workspace_path,
         workspace_id=workspace_id,
         attempt=attempt,
@@ -2285,6 +2333,7 @@ def _job_to_dict(job: TaskJob | None) -> dict:
         "worker_id": job.worker_id,
         "worker_pid": job.worker_pid,
         "worker_heartbeat_at": job.worker_heartbeat_at,
+        "worker_lease_id": job.worker_lease_id,
         "workspace_path": job.workspace_path,
         "workspace_id": job.workspace_id,
         "attempt": job.attempt,
@@ -2349,6 +2398,7 @@ def _replace_job(job: TaskJob, **changes: object) -> TaskJob:
         "worker_id": job.worker_id,
         "worker_pid": job.worker_pid,
         "worker_heartbeat_at": job.worker_heartbeat_at,
+        "worker_lease_id": job.worker_lease_id,
         "workspace_path": job.workspace_path,
         "workspace_id": job.workspace_id,
         "attempt": job.attempt,

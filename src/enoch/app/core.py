@@ -412,7 +412,6 @@ from enoch.app.task_workflow import (
     coerce_work_outcome as _coerce_work_outcome,
     evolution_provenance_for_job as _evolution_provenance_for_job,
     sandbox_description as _sandbox_description,
-    work_reply_failed as _work_reply_failed,
 )
 from enoch.application import (
     ApplicationComposition,
@@ -598,12 +597,7 @@ class EnochApplication:
                 delete_branch=lambda *args, **kwargs: delete_branch(*args, **kwargs),
             ),
         )
-        recovered = _recover_running_task_from_direct_action_log(
-            root,
-            workflow=self.workflow,
-        )
-        if recovered is None:
-            recovered = self.workflow.recover()
+        recovered = self.workflow.recover()
         _cleanup_completed_task_worktree(recovered, root)
         self._work_status_messages: dict[int, MessageId] = _load_task_status_messages(
             self.workflow
@@ -732,6 +726,7 @@ class EnochApplication:
                 expected_task_id=running.id,
                 expected_worker_id=running.worker_id,
                 expected_worker_heartbeat_at=running.worker_heartbeat_at,
+                expected_worker_lease_id=running.worker_lease_id,
             )
             if running is not None
             else None
@@ -5084,35 +5079,8 @@ def _workflow_reconciliation_details(
         "reason": result.reason,
         "worker_id": result.worker_id,
         "worker_heartbeat_at": result.worker_heartbeat_at,
+        "worker_lease_id": result.worker_lease_id,
     }
-
-
-def _recover_running_task_from_direct_action_log(
-    root: Path,
-    *,
-    workflow: WorkflowEngine,
-) -> TaskJob | None:
-    running = workflow.inspect().running
-    if running is None or workflow.worker_is_active(running):
-        return None
-    result = _latest_direct_action_result_for_task(running, root)
-    if not result:
-        return None
-    if _work_reply_failed(result):
-        return workflow.finalize(
-            running.id,
-            "failed",
-            result=result,
-            event_actor="system",
-            trigger="recovery",
-        )
-    return workflow.finalize(
-        running.id,
-        "completed",
-        result=result,
-        event_actor="system",
-        trigger="recovery",
-    )
 
 
 def _cleanup_completed_task_worktree(job: TaskJob | None, root: Path) -> None:

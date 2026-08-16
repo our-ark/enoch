@@ -1,5 +1,7 @@
 from pathlib import Path
+import os
 from tempfile import TemporaryDirectory
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -12,6 +14,7 @@ from enoch.providers import ChatEvent, RuntimeResult
 from enoch.workflows import (
     WORKFLOW_API_VERSION,
     LocalWorkflowEngine,
+    TaskTerminalEvidence,
     WorkflowEngine,
     WorkflowEngineError,
 )
@@ -128,6 +131,87 @@ class WorkflowEngineTests(unittest.TestCase):
             workflow.operations,
             ["recover", "enqueue", "claim", "finalize:completed"],
         )
+
+    def test_application_reconciles_dead_in_process_worker_thread(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            epoch = begin_daemon_epoch(root, provider="test")
+            workflow = LocalWorkflowEngine(root, epoch=epoch)
+            app = EnochApplication(
+                load_identity(),
+                root,
+                _Chat(),
+                runtime=_Runtime(),
+                daemon_epoch=epoch,
+                workflow=workflow,
+            )
+            running = workflow.enqueue(42, "finish after worker crash", mode="direct")
+            def record_then_exit() -> None:
+                claimed = workflow.claim(running.id, "dead-thread", os.getpid())
+                assert claimed is not None
+                recorded = workflow.record_terminal_evidence(
+                    claimed.id,
+                    claimed.worker_id,
+                    TaskTerminalEvidence(status="completed", result="done"),
+                )
+                assert recorded is not None
+
+            dead_worker = threading.Thread(target=record_then_exit)
+            dead_worker.start()
+            dead_worker.join()
+
+            repaired = app._reconcile_workflow()
+            repeated = app._reconcile_workflow()
+            status = workflow.inspect()
+
+        self.assertIsNotNone(repaired)
+        self.assertEqual(repaired.status, "completed")
+        self.assertIsNone(repeated)
+        self.assertIsNone(status.running)
+        self.assertEqual(len(status.history), 1)
+
+    def test_application_preserves_live_in_process_worker_thread(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            epoch = begin_daemon_epoch(root, provider="test")
+            workflow = LocalWorkflowEngine(root, epoch=epoch)
+            app = EnochApplication(
+                load_identity(),
+                root,
+                _Chat(),
+                runtime=_Runtime(),
+                daemon_epoch=epoch,
+                workflow=workflow,
+            )
+            running = workflow.enqueue(42, "keep live worker", mode="direct")
+            release = threading.Event()
+            claimed_event = threading.Event()
+
+            def record_then_wait() -> None:
+                claimed = workflow.claim(running.id, "live-thread", os.getpid())
+                assert claimed is not None
+                workflow.record_terminal_evidence(
+                    claimed.id,
+                    claimed.worker_id,
+                    TaskTerminalEvidence(status="completed", result="done"),
+                )
+                claimed_event.set()
+                release.wait()
+
+            live_worker = threading.Thread(target=record_then_wait)
+            live_worker.start()
+            self.assertTrue(claimed_event.wait(timeout=2))
+
+            try:
+                repaired = app._reconcile_workflow()
+                status = workflow.inspect()
+            finally:
+                release.set()
+                live_worker.join()
+
+        self.assertIsNone(repaired)
+        self.assertIsNotNone(status.running)
+        self.assertEqual(status.history, ())
 
     def test_application_rejects_unsupported_workflow_version(self) -> None:
         with TemporaryDirectory() as directory:
