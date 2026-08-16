@@ -129,7 +129,8 @@ class EnochPrivateStateTests(unittest.TestCase):
 
         self.assertTrue(result.applied)
         self.assertIsNotNone(result.backup_path)
-        self.assertEqual(migrated_queue["schema_version"], 14)
+        self.assertEqual(migrated_queue["schema_version"], 15)
+        self.assertIsNone(migrated_queue["reconciliation"])
         self.assertEqual(migrated_queue["paused"], [])
         self.assertEqual(migrated_queue["pending"][0]["required_capabilities"], [])
         self.assertEqual(migrated_queue["pending"][0]["extension_metadata"], {})

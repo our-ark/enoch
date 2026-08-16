@@ -1,14 +1,21 @@
 from __future__ import annotations
 
 from contextlib import nullcontext
+import os
 from pathlib import Path
+import threading
+from typing import Callable
 
 from enoch.app.epoch import DaemonEpoch, daemon_epoch_guard
+from enoch.memory.paths import now as current_time
 from enoch.providers.contracts import ConversationId, MessageId, RuntimeResult
 from enoch.tasks.queue import (
     TaskJob,
     TaskPublicationState,
     TaskQueueStatus,
+    TaskReconciliationRequest,
+    TaskReconciliationResult,
+    TaskTerminalEvidence,
     begin_direct_task,
     begin_next_task,
     cancel_running_task,
@@ -24,8 +31,9 @@ from enoch.tasks.queue import (
     record_task_result,
     record_task_runtime_result,
     record_task_status_message,
+    record_task_terminal_evidence,
     record_task_workspace,
-    recover_interrupted_task,
+    reconcile_running_task,
     regress_task,
     resolve_regressed_task,
     resume_paused_tasks,
@@ -58,9 +66,20 @@ class LocalWorkflowEngine:
         }
     )
 
-    def __init__(self, root: Path, *, epoch: DaemonEpoch | None = None) -> None:
+    def __init__(
+        self,
+        root: Path,
+        *,
+        epoch: DaemonEpoch | None = None,
+        clock: Callable[[], str] = current_time,
+        worker_liveness: Callable[[TaskJob], bool] = task_worker_is_active,
+    ) -> None:
         self.root = root
         self.epoch = epoch
+        self._clock = clock
+        self._worker_liveness = worker_liveness
+        self._worker_threads: dict[str, threading.Thread] = {}
+        self._worker_threads_lock = threading.Lock()
 
     def enqueue(
         self,
@@ -141,8 +160,21 @@ class LocalWorkflowEngine:
         worker_id: str,
         worker_pid: int,
     ) -> TaskJob | None:
-        with self._mutation():
-            return claim_running_task(task_id, worker_id, worker_pid, self.root)
+        self._remember_worker_thread(worker_id)
+        try:
+            with self._mutation():
+                claimed = claim_running_task(
+                    task_id,
+                    worker_id,
+                    worker_pid,
+                    self.root,
+                )
+        except BaseException:
+            self._forget_worker_thread(worker_id)
+            raise
+        if claimed is None:
+            self._forget_worker_thread(worker_id)
+        return claimed
 
     def heartbeat(self, task_id: int, worker_id: str) -> TaskJob | None:
         with self._mutation():
@@ -225,7 +257,29 @@ class LocalWorkflowEngine:
 
     def recover(self) -> TaskJob | None:
         with self._mutation():
-            return recover_interrupted_task(self.root)
+            result = reconcile_running_task(
+                root=self.root,
+                worker_liveness=self._tracked_worker_is_active,
+                checked_at=self._clock(),
+            )
+        if result.outcome not in {
+            "terminal_repair",
+            "interrupted_worker_recovery",
+        } or result.task_id is None:
+            return None
+        return self.find(result.task_id)
+
+    def reconcile(
+        self,
+        request: TaskReconciliationRequest | None = None,
+    ) -> TaskReconciliationResult:
+        with self._mutation():
+            return reconcile_running_task(
+                request,
+                self.root,
+                worker_liveness=self._tracked_worker_is_active,
+                checked_at=self._clock(),
+            )
 
     def inspect(self) -> TaskQueueStatus:
         return task_queue_status(self.root)
@@ -454,8 +508,49 @@ class LocalWorkflowEngine:
                 provider=provider,
             )
 
+    def record_terminal_evidence(
+        self,
+        task_id: int,
+        worker_id: str,
+        evidence: TaskTerminalEvidence,
+    ) -> TaskJob | None:
+        with self._mutation():
+            return record_task_terminal_evidence(
+                task_id,
+                worker_id,
+                evidence,
+                self.root,
+            )
+
     def worker_is_active(self, job: TaskJob) -> bool:
-        return task_worker_is_active(job)
+        return self._tracked_worker_is_active(job)
+
+    def _remember_worker_thread(self, worker_id: str) -> None:
+        cleaned_worker_id = worker_id.strip()
+        if not cleaned_worker_id:
+            return
+        current_worker = threading.current_thread()
+        with self._worker_threads_lock:
+            self._worker_threads = {
+                key: thread
+                for key, thread in self._worker_threads.items()
+                if thread.is_alive() and thread is not current_worker
+            }
+            self._worker_threads[cleaned_worker_id] = current_worker
+
+    def _forget_worker_thread(self, worker_id: str) -> None:
+        with self._worker_threads_lock:
+            self._worker_threads.pop(worker_id.strip(), None)
+
+    def _tracked_worker_is_active(self, job: TaskJob) -> bool:
+        if job.worker_pid == os.getpid():
+            with self._worker_threads_lock:
+                worker = self._worker_threads.get(job.worker_id)
+                active = worker is not None and worker.is_alive()
+                if worker is not None and not active:
+                    self._worker_threads.pop(job.worker_id, None)
+            return active
+        return self._worker_liveness(job)
 
     def result_has_review(self, result: str) -> bool:
         return task_result_has_review(result)

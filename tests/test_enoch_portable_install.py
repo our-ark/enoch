@@ -184,7 +184,7 @@ class EnochPortableInstallTests(unittest.TestCase):
         self.assertEqual(result["extension_api_version"], 1)
         self.assertEqual(result["composition_api_version"], 1)
         self.assertEqual(result["composition"], "portable-descendant")
-        self.assertEqual(result["workflow_api_version"], 3)
+        self.assertEqual(result["workflow_api_version"], 4)
         self.assertEqual(result["conformance_api_version"], 1)
         self.assertEqual(result["repository_contract_version"], 1)
         self.assertEqual(result["review_contract_version"], 1)
@@ -197,7 +197,7 @@ class EnochPortableInstallTests(unittest.TestCase):
                 "finalize:completed",
                 "enqueue",
                 "finalize:completed",
-                "recover",
+                "reconcile",
             ],
         )
         self.assertTrue(result["workflow_state_isolated"])
@@ -707,6 +707,10 @@ _INSTALLED_TASK_SCRIPT = textwrap.dedent(
         def recover(self):
             self.operations.append("recover")
             return super().recover()
+
+        def reconcile(self, request=None):
+            self.operations.append("reconcile")
+            return super().reconcile(request)
 
     def git(*args):
         result = subprocess.run(

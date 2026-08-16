@@ -124,7 +124,11 @@ from enoch.vcs_tools import (
     switch_branch,
 )
 from enoch.workflows import (
+    FinalTaskStatus,
     LocalWorkflowEngine,
+    TaskReconciliationRequest,
+    TaskReconciliationResult,
+    TaskTerminalEvidence,
     WorkflowEngine,
     WorkflowEngineError,
     validate_workflow_engine,
@@ -408,7 +412,6 @@ from enoch.app.task_workflow import (
     coerce_work_outcome as _coerce_work_outcome,
     evolution_provenance_for_job as _evolution_provenance_for_job,
     sandbox_description as _sandbox_description,
-    work_reply_failed as _work_reply_failed,
 )
 from enoch.application import (
     ApplicationComposition,
@@ -594,12 +597,7 @@ class EnochApplication:
                 delete_branch=lambda *args, **kwargs: delete_branch(*args, **kwargs),
             ),
         )
-        recovered = _recover_running_task_from_direct_action_log(
-            root,
-            workflow=self.workflow,
-        )
-        if recovered is None:
-            recovered = self.workflow.recover()
+        recovered = self.workflow.recover()
         _cleanup_completed_task_worktree(recovered, root)
         self._work_status_messages: dict[int, MessageId] = _load_task_status_messages(
             self.workflow
@@ -704,12 +702,7 @@ class EnochApplication:
         self._run_profile_hook("before_run")
         self._run_extension_hooks("before_run")
         try:
-            recovered = _recover_running_task_from_direct_action_log(
-                self.root,
-                workflow=self.workflow,
-            )
-            if recovered is None:
-                recovered = self.workflow.recover()
+            recovered = self._reconcile_workflow()
             _cleanup_completed_task_worktree(recovered, self.root)
             self.effect_fence.authorize(
                 "chat.receive",
@@ -725,6 +718,37 @@ class EnochApplication:
             self._drain_extension_task_events()
             self._run_extension_hooks("after_run", reverse=True)
             self._run_profile_hook("after_run")
+
+    def _reconcile_workflow(self) -> TaskJob | None:
+        running = self.workflow.inspect().running
+        request = (
+            TaskReconciliationRequest(
+                expected_task_id=running.id,
+                expected_worker_id=running.worker_id,
+                expected_worker_heartbeat_at=running.worker_heartbeat_at,
+                expected_worker_lease_id=running.worker_lease_id,
+            )
+            if running is not None
+            else None
+        )
+        result = self.workflow.reconcile(request)
+        if result.recorded:
+            _record_system_event(
+                "workflow_reconciliation",
+                self.root,
+                status=(
+                    "failed"
+                    if result.outcome in {"conflict", "unsupported_evidence"}
+                    else "ok"
+                ),
+                details=_workflow_reconciliation_details(result),
+            )
+        if result.outcome not in {
+            "terminal_repair",
+            "interrupted_worker_recovery",
+        } or result.task_id is None:
+            return None
+        return self.workflow.find(result.task_id)
 
     def handle_event(self, event: ChatEvent) -> None:
         require_current_daemon_epoch(self.daemon_epoch, self.root)
@@ -1858,7 +1882,7 @@ class EnochApplication:
             _CURRENT_TASK_WORKER_ID.reset(worker_token)
             self._task_cancellations.pop(job.id, None)
             if completed_status == "cancelled":
-                finished_job = self.workflow.finalize(
+                finished_job = self._finalize_with_terminal_evidence(
                     job.id,
                     "cancelled",
                     result=reply,
@@ -1868,7 +1892,7 @@ class EnochApplication:
                 )
             elif completed_status == "failed":
                 failure = failure or classify_task_failure(reply)
-                finished_job = self.workflow.finalize(
+                finished_job = self._finalize_with_terminal_evidence(
                     job.id,
                     "failed",
                     result=reply,
@@ -1888,7 +1912,7 @@ class EnochApplication:
                     worker_id=worker_id,
                 )
             else:
-                finished_job = self.workflow.finalize(
+                finished_job = self._finalize_with_terminal_evidence(
                     job.id,
                     "completed",
                     result=reply,
@@ -2068,6 +2092,44 @@ class EnochApplication:
             context=context,
             session_key=session_key,
             execution=execution,
+        )
+
+    def _finalize_with_terminal_evidence(
+        self,
+        task_id: int,
+        status: FinalTaskStatus,
+        *,
+        result: str,
+        worker_id: str,
+        event_actor: str = "agent",
+        trigger: str = "task-runner",
+        failure_code: str = "",
+        failure_class: str = "",
+        retryable: bool = False,
+    ) -> TaskJob | None:
+        recorded = self.workflow.record_terminal_evidence(
+            task_id,
+            worker_id,
+            TaskTerminalEvidence(
+                status=status,
+                result=result,
+                failure_code=failure_code,
+                failure_class=failure_class,
+                retryable=retryable,
+            ),
+        )
+        if recorded is None:
+            return self.workflow.find(task_id)
+        return self.workflow.finalize(
+            task_id,
+            status,
+            result=result,
+            event_actor=event_actor,
+            trigger=trigger,
+            worker_id=worker_id,
+            failure_code=failure_code,
+            failure_class=failure_class,
+            retryable=retryable,
         )
 
     def _prepare_task_worktree(self, request: str) -> TaskWorktree:
@@ -4106,7 +4168,7 @@ class EnochApplication:
             except StaleDaemonEpoch:
                 return
             if completed_status == "cancelled":
-                finished_job = self.workflow.finalize(
+                finished_job = self._finalize_with_terminal_evidence(
                     job.id,
                     "cancelled",
                     result=reply,
@@ -4132,7 +4194,7 @@ class EnochApplication:
                     if finished_job is not None:
                         completed_status = "retrying"
                 if finished_job is None:
-                    finished_job = self.workflow.finalize(
+                    finished_job = self._finalize_with_terminal_evidence(
                         job.id,
                         "failed",
                         result=reply,
@@ -4152,7 +4214,7 @@ class EnochApplication:
                     worker_id=worker_id,
                 )
             else:
-                finished_job = self.workflow.finalize(
+                finished_job = self._finalize_with_terminal_evidence(
                     job.id,
                     "completed",
                     result=reply,
@@ -5004,32 +5066,21 @@ def _reconciled_retry_result(
     return ""
 
 
-def _recover_running_task_from_direct_action_log(
-    root: Path,
-    *,
-    workflow: WorkflowEngine,
-) -> TaskJob | None:
-    running = workflow.inspect().running
-    if running is None or workflow.worker_is_active(running):
-        return None
-    result = _latest_direct_action_result_for_task(running, root)
-    if not result:
-        return None
-    if _work_reply_failed(result):
-        return workflow.finalize(
-            running.id,
-            "failed",
-            result=result,
-            event_actor="system",
-            trigger="recovery",
-        )
-    return workflow.finalize(
-        running.id,
-        "completed",
-        result=result,
-        event_actor="system",
-        trigger="recovery",
-    )
+def _workflow_reconciliation_details(
+    result: TaskReconciliationResult,
+) -> dict[str, object]:
+    return {
+        "outcome": result.outcome,
+        "checked_at": result.checked_at,
+        "task_id": result.task_id,
+        "previous_status": result.previous_status,
+        "resulting_status": result.resulting_status,
+        "evidence": list(result.evidence),
+        "reason": result.reason,
+        "worker_id": result.worker_id,
+        "worker_heartbeat_at": result.worker_heartbeat_at,
+        "worker_lease_id": result.worker_lease_id,
+    }
 
 
 def _cleanup_completed_task_worktree(job: TaskJob | None, root: Path) -> None:

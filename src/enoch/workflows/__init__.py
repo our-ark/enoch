@@ -11,6 +11,11 @@ from enoch.workflows.contracts import (
     workflow_features,
 )
 from enoch.workflows.local import LocalWorkflowEngine
+from enoch.tasks.queue import (
+    TaskReconciliationRequest,
+    TaskReconciliationResult,
+    TaskTerminalEvidence,
+)
 
 
 __all__ = [
@@ -21,6 +26,9 @@ __all__ = [
     "EnqueueMode",
     "FinalTaskStatus",
     "LocalWorkflowEngine",
+    "TaskReconciliationRequest",
+    "TaskReconciliationResult",
+    "TaskTerminalEvidence",
     "WorkflowEngine",
     "WorkflowEngineError",
     "validate_workflow_engine",

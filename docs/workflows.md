@@ -2,7 +2,7 @@
 
 `enoch.workflows.WorkflowEngine` is the versioned public boundary for Enoch's
 single-owner task lifecycle. The current contract is
-`WORKFLOW_API_VERSION = 3`.
+`WORKFLOW_API_VERSION = 4`.
 
 The engine owns:
 
@@ -11,6 +11,7 @@ The engine owns:
 - durable worker heartbeats;
 - cancellation, pause, retry, and terminal finalization;
 - interrupted-worker recovery;
+- periodic reconciliation of durable terminal evidence and stale workers;
 - queue inspection and task lookup;
 - task status, runtime evidence, workspace, revision, and review records;
 - bounded extension request metadata and artifact references;
@@ -64,7 +65,7 @@ operation. Durable `TaskJob` state now exposes `workspace_path`,
 `workspace_id`, `revision_id`, `review_id`, `review_url`, `review_urls`, and
 `review_published`.
 
-Queue schema 14 reads schema 11's `worktree_path`, `branch_name`,
+Queue schema 15 reads schema 11's `worktree_path`, `branch_name`,
 `commit_sha`, `remote_branch`, `pr_url`, `pr_urls`, and
 `published_remotely` keys, then writes only the provider-neutral names. It also
 adds extension request metadata, typed artifact references, and canonical
@@ -89,14 +90,27 @@ readers continue to accept earlier schemas, including Git-shaped
 extension request payload and execution lane without mixing either into task
 prompt text.
 
-Workflow API v3 engines may advertise optional behavior through a `features`
+Workflow API v4 engines may advertise optional behavior through a `features`
 iterable. `workflow_features()` normalizes discovery, and extension workflows
 expose it through `features` and `supports()`. The local engine currently
 advertises `structured_task_metadata`, `artifact_references`, and
 `execution_lanes`. The local scheduler still retains one global running task;
 lane support defines ordering and blocking rather than parallel workers. An
-older API v3 engine without `features` continues to work until an extension
-requests an optional feature, which then fails before enqueue.
+API v4 engine without `features` continues to work until an extension requests
+an optional feature, which then fails before enqueue.
+
+Version 4 adds typed terminal evidence and reconciliation. A worker records a
+`TaskTerminalEvidence` immediately before final queue transition. The daemon's
+periodic maintenance tick then calls `reconcile()` with the expected task,
+worker, heartbeat, and collision-free lease token. The current daemon epoch
+still fences the mutation. A dead worker with matching terminal evidence is
+finalized exactly once; a dead worker without evidence follows bounded retry or
+exhaustion; a live worker remains authoritative; and conflicting or partial
+evidence fails closed. A published review is terminal proof only when its
+provider-neutral publication flag and structured review identity are durable;
+URLs found in free-form result text are never reconciliation evidence. Queue
+inspection preserves the last material reconciliation outcome, evidence kinds,
+transition, and reason without replaying provider calls or terminal delivery.
 
 Profiles do not receive or own the concrete engine. Their
 `CommandContext.enqueue_task()` method routes through the engine selected by
@@ -123,7 +137,13 @@ recovery remain responsibilities of the workflow engine.
 `enqueue()` accepts `mode="queued"`, `"front"`, or `"direct"`. `start_next()`
 atomically moves one due task into the running slot, and `claim()` binds that
 task to a worker identity and process. `heartbeat()` refreshes the durable
-claim. `finalize()` accepts only `completed`, `failed`, or `cancelled`.
+claim and rotates its lease token. The reference local engine records the
+actual in-process thread at `claim()` time, while external
+workflow engines remain responsible for their own worker topology.
+`record_terminal_evidence()` persists the structured outcome before
+`finalize()`, which accepts only `completed`, `failed`, or `cancelled`.
+`reconcile()` returns a typed no-op, terminal repair, interrupted-worker
+recovery, conflict, or unsupported-evidence result.
 
 An extension may assign a local lane token such as `project-17`. Enoch stores
 the canonical key `extension:<extension-name>:<lane>`, preventing two

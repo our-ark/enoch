@@ -4027,7 +4027,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertNotIn("Enoch committed this change. Branch:", message)
 
     @patch("enoch.app.core.ensure_long_term_memory")
-    def test_startup_completes_running_task_from_matching_direct_action_log(
+    def test_startup_does_not_complete_task_from_direct_action_text(
         self,
         _update_memory: MagicMock,
     ) -> None:
@@ -4047,13 +4047,12 @@ class EnochTelegramTests(unittest.TestCase):
             status = task_queue_status(root)
 
         self.assertIsNone(status.running)
-        self.assertEqual(status.pending, ())
-        self.assertEqual(status.history[-1].id, queued.id)
-        self.assertEqual(status.history[-1].status, "completed")
-        self.assertEqual(status.history[-1].result, result)
+        self.assertEqual(status.pending[0].id, queued.id)
+        self.assertEqual(status.pending[0].status, "pending")
+        self.assertEqual(status.history, ())
 
     @patch("enoch.app.core.ensure_long_term_memory")
-    def test_startup_fails_running_task_from_matching_failure_log(
+    def test_startup_does_not_fail_task_from_direct_action_text(
         self,
         _update_memory: MagicMock,
     ) -> None:
@@ -4073,9 +4072,9 @@ class EnochTelegramTests(unittest.TestCase):
             status = task_queue_status(root)
 
         self.assertIsNone(status.running)
-        self.assertEqual(status.history[-1].id, queued.id)
-        self.assertEqual(status.history[-1].status, "failed")
-        self.assertEqual(status.history[-1].result, result)
+        self.assertEqual(status.pending[0].id, queued.id)
+        self.assertEqual(status.pending[0].status, "pending")
+        self.assertEqual(status.history, ())
 
     @patch("enoch.app.core.act_in_session")
     @patch("enoch.app.core.respond")

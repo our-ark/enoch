@@ -4,11 +4,18 @@ from pathlib import Path
 from typing import Literal, Protocol, runtime_checkable
 
 from enoch.providers.contracts import ConversationId, MessageId, RuntimeResult
-from enoch.tasks.queue import TaskJob, TaskPublicationState, TaskQueueStatus
+from enoch.tasks.queue import (
+    TaskJob,
+    TaskPublicationState,
+    TaskQueueStatus,
+    TaskReconciliationRequest,
+    TaskReconciliationResult,
+    TaskTerminalEvidence,
+)
 from enoch.tasks.payloads import ExtensionArtifactReference, JsonValue
 
 
-WORKFLOW_API_VERSION = 3
+WORKFLOW_API_VERSION = 4
 WORKFLOW_FEATURE_STRUCTURED_METADATA = "structured_task_metadata"
 WORKFLOW_FEATURE_ARTIFACT_REFERENCES = "artifact_references"
 WORKFLOW_FEATURE_EXECUTION_LANES = "execution_lanes"
@@ -92,6 +99,11 @@ class WorkflowEngine(Protocol):
     ) -> TaskJob | None: ...
 
     def recover(self) -> TaskJob | None: ...
+
+    def reconcile(
+        self,
+        request: TaskReconciliationRequest | None = None,
+    ) -> TaskReconciliationResult: ...
 
     def inspect(self) -> TaskQueueStatus: ...
 
@@ -188,6 +200,13 @@ class WorkflowEngine(Protocol):
         provider: str,
     ) -> None: ...
 
+    def record_terminal_evidence(
+        self,
+        task_id: int,
+        worker_id: str,
+        evidence: TaskTerminalEvidence,
+    ) -> TaskJob | None: ...
+
     def worker_is_active(self, job: TaskJob) -> bool: ...
 
 def validate_workflow_engine(engine: WorkflowEngine) -> WorkflowEngine:
@@ -204,7 +223,7 @@ def validate_workflow_engine(engine: WorkflowEngine) -> WorkflowEngine:
 
 
 def workflow_features(engine: WorkflowEngine) -> frozenset[str]:
-    """Discover optional workflow features without breaking API v3 engines."""
+    """Discover optional workflow features without breaking API v4 engines."""
 
     raw = getattr(engine, "features", ())
     if isinstance(raw, str):

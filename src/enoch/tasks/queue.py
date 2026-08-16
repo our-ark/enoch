@@ -6,7 +6,9 @@ import json
 import os
 from pathlib import Path
 import re
+from typing import Callable, Literal
 from urllib.parse import urlsplit
+from uuid import uuid4
 
 from enoch.memory.paths import atomic_write, now as current_time
 from enoch.paths import private_state_path
@@ -32,8 +34,16 @@ from enoch.tasks.payloads import (
 from enoch.state import StateCorruptionError, file_transaction, load_json_object
 
 
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 DEFAULT_MAX_ATTEMPTS = 3
+ReconciliationOutcome = Literal[
+    "no_op",
+    "terminal_repair",
+    "interrupted_worker_recovery",
+    "conflict",
+    "unsupported_evidence",
+]
+TerminalTaskStatus = Literal["completed", "failed", "cancelled"]
 LEGACY_REVIEW_URL_PATTERN = re.compile(
     r"https://[^\s]+/(?:pull|pulls|merge_requests)/\d+"
 )
@@ -67,6 +77,7 @@ class TaskJob:
     worker_id: str = ""
     worker_pid: int | None = None
     worker_heartbeat_at: str = ""
+    worker_lease_id: str = ""
     workspace_path: str = ""
     workspace_id: str = ""
     attempt: int = 0
@@ -93,6 +104,9 @@ class TaskJob:
     review_id: str = ""
     review_url: str = ""
     review_published: bool = False
+    terminal_status: str = ""
+    terminal_evidence_source: str = ""
+    terminal_evidence_at: str = ""
 
     # Compatibility aliases for task queue schema <= 11 and workflow API v1.
     @property
@@ -132,6 +146,66 @@ class TaskQueueStatus:
     pending: tuple[TaskJob, ...] = ()
     paused: tuple[TaskJob, ...] = ()
     history: tuple[TaskJob, ...] = ()
+    reconciliation: TaskReconciliationResult | None = None
+
+
+@dataclass(frozen=True)
+class TaskTerminalEvidence:
+    status: TerminalTaskStatus
+    result: str = ""
+    source: str = "work-outcome"
+    failure_code: str = ""
+    failure_class: str = ""
+    retryable: bool = False
+
+    def __post_init__(self) -> None:
+        if self.status not in {"completed", "failed", "cancelled"}:
+            raise ValueError(f"Unknown terminal task status {self.status!r}.")
+        source = self.source.strip().lower()
+        if not source:
+            raise ValueError("Terminal task evidence source is required.")
+        object.__setattr__(self, "source", source)
+        object.__setattr__(self, "result", self.result.strip())
+        object.__setattr__(self, "failure_code", self.failure_code.strip())
+        object.__setattr__(self, "failure_class", self.failure_class.strip())
+
+
+@dataclass(frozen=True)
+class TaskReconciliationRequest:
+    expected_task_id: int
+    expected_worker_id: str = ""
+    expected_worker_heartbeat_at: str = ""
+    expected_worker_lease_id: str = ""
+
+    def __post_init__(self) -> None:
+        if self.expected_task_id <= 0:
+            raise ValueError("Reconciliation requires a positive task id.")
+        object.__setattr__(self, "expected_worker_id", self.expected_worker_id.strip())
+        object.__setattr__(
+            self,
+            "expected_worker_heartbeat_at",
+            self.expected_worker_heartbeat_at.strip(),
+        )
+        object.__setattr__(
+            self,
+            "expected_worker_lease_id",
+            self.expected_worker_lease_id.strip(),
+        )
+
+
+@dataclass(frozen=True)
+class TaskReconciliationResult:
+    outcome: ReconciliationOutcome
+    checked_at: str
+    task_id: int | None = None
+    previous_status: str = ""
+    resulting_status: str = ""
+    evidence: tuple[str, ...] = ()
+    reason: str = ""
+    worker_id: str = ""
+    worker_heartbeat_at: str = ""
+    worker_lease_id: str = ""
+    recorded: bool = True
 
 
 @dataclass(frozen=True)
@@ -700,10 +774,14 @@ def retry_running_task(
             worker_id="",
             worker_pid=None,
             worker_heartbeat_at="",
+            worker_lease_id="",
             next_attempt_at=retry_at,
             failure_code=failure_code.strip(),
             failure_class=failure_class.strip(),
             retryable=True,
+            terminal_status="",
+            terminal_evidence_source="",
+            terminal_evidence_at="",
         )
         data["running"] = None
         data["pending"] = [
@@ -755,6 +833,7 @@ def claim_running_task(
             worker_id=cleaned_worker_id,
             worker_pid=worker_pid,
             worker_heartbeat_at=current_time(),
+            worker_lease_id=uuid4().hex,
         )
         data["running"] = _job_to_dict(claimed)
         _write_queue(data, root)
@@ -778,7 +857,11 @@ def heartbeat_task(
             or running.worker_id != cleaned_worker_id
         ):
             return None
-        updated = _replace_job(running, worker_heartbeat_at=current_time())
+        updated = _replace_job(
+            running,
+            worker_heartbeat_at=current_time(),
+            worker_lease_id=uuid4().hex,
+        )
         data["running"] = _job_to_dict(updated)
         _write_queue(data, root)
         return updated
@@ -876,6 +959,10 @@ def pause_task(
             worker_id="",
             worker_pid=None,
             worker_heartbeat_at="",
+            worker_lease_id="",
+            terminal_status="",
+            terminal_evidence_source="",
+            terminal_evidence_at="",
         )
         paused = [job for job in _paused_jobs(data) if job.id != task_id]
         paused.append(paused_job)
@@ -923,6 +1010,7 @@ def resume_paused_tasks(
                 worker_id="",
                 worker_pid=None,
                 worker_heartbeat_at="",
+                worker_lease_id="",
             )
             for job in selected
         )
@@ -1241,6 +1329,56 @@ def record_task_runtime_result(
         _write_queue(data, root)
 
 
+def record_task_terminal_evidence(
+    task_id: int,
+    worker_id: str,
+    evidence: TaskTerminalEvidence,
+    root: Path | None = None,
+) -> TaskJob | None:
+    cleaned_worker_id = worker_id.strip()
+    if not cleaned_worker_id:
+        raise ValueError("A worker id is required.")
+    with _queue_transaction(root):
+        data = _load_queue(root)
+        running = _parse_job(data.get("running"))
+        if (
+            running is None
+            or running.id != task_id
+            or running.worker_id != cleaned_worker_id
+        ):
+            return None
+        if running.terminal_status:
+            if (
+                running.terminal_status == evidence.status
+                and running.terminal_evidence_source == evidence.source
+                and running.result == evidence.result
+                and running.failure_code == evidence.failure_code
+                and running.failure_class == evidence.failure_class
+                and running.retryable == evidence.retryable
+            ):
+                return running
+            raise ValueError(
+                f"Task #{task_id} already has conflicting terminal evidence."
+            )
+        updated = _replace_job(
+            running,
+            result=evidence.result,
+            review_urls=_merge_review_urls(
+                running.review_urls,
+                _review_urls(evidence.result),
+            ),
+            failure_code=evidence.failure_code,
+            failure_class=evidence.failure_class,
+            retryable=evidence.retryable,
+            terminal_status=evidence.status,
+            terminal_evidence_source=evidence.source,
+            terminal_evidence_at=current_time(),
+        )
+        data["running"] = _job_to_dict(updated)
+        _write_queue(data, root)
+        return updated
+
+
 def _finish_running_task(
     task_id: int,
     status: str,
@@ -1274,6 +1412,7 @@ def _finish_running_task(
             worker_id="",
             worker_pid=None,
             worker_heartbeat_at="",
+            worker_lease_id="",
             failure_code=failure_code.strip(),
             failure_class=failure_class.strip(),
             retryable=retryable,
@@ -1365,6 +1504,7 @@ def cancel_running_task(
             worker_id="",
             worker_pid=None,
             worker_heartbeat_at="",
+            worker_lease_id="",
         )
         history = _history_jobs(data)
         history.append(cancelled)
@@ -1383,41 +1523,176 @@ def cancel_running_task(
 
 
 def recover_interrupted_task(root: Path | None = None) -> TaskJob | None:
+    result = reconcile_running_task(root=root)
+    if result.outcome not in {
+        "terminal_repair",
+        "interrupted_worker_recovery",
+    } or result.task_id is None:
+        return None
+    return _find_task_in_status(result.task_id, root)
+
+
+def reconcile_running_task(
+    request: TaskReconciliationRequest | None = None,
+    root: Path | None = None,
+    *,
+    worker_liveness: Callable[[TaskJob], bool] = task_worker_is_active,
+    checked_at: str = "",
+) -> TaskReconciliationResult:
+    checked_at = checked_at.strip() or current_time()
     with _queue_transaction(root):
         data = _load_queue(root)
         running = _parse_job(data.get("running"))
         if running is None:
-            return None
-        if task_worker_is_active(running):
-            return None
-        if _job_has_review(running):
-            completed = _replace_job(
+            return TaskReconciliationResult(
+                outcome="no_op",
+                checked_at=checked_at,
+                previous_status="idle",
+                resulting_status="idle",
+                reason="No task is running.",
+                recorded=False,
+            )
+        mismatch = _reconciliation_request_mismatch(request, running)
+        if mismatch:
+            result = _store_reconciliation(
+                data,
+                TaskReconciliationResult(
+                    outcome="conflict",
+                    checked_at=checked_at,
+                    task_id=running.id,
+                    previous_status=running.status,
+                    resulting_status=running.status,
+                    evidence=("task-worker-lease",),
+                    reason=mismatch,
+                    worker_id=running.worker_id,
+                    worker_heartbeat_at=running.worker_heartbeat_at,
+                    worker_lease_id=running.worker_lease_id,
+                ),
+            )
+            if result.recorded:
+                _write_queue(data, root)
+            return result
+        if worker_liveness(running):
+            return TaskReconciliationResult(
+                outcome="no_op",
+                checked_at=checked_at,
+                task_id=running.id,
+                previous_status=running.status,
+                resulting_status=running.status,
+                evidence=("active-worker",),
+                reason="The authoritative worker is still active.",
+                worker_id=running.worker_id,
+                worker_heartbeat_at=running.worker_heartbeat_at,
+                worker_lease_id=running.worker_lease_id,
+                recorded=False,
+            )
+        terminal_status, terminal_evidence, terminal_conflict = (
+            _terminal_reconciliation_evidence(running)
+        )
+        if terminal_conflict:
+            result = _store_reconciliation(
+                data,
+                TaskReconciliationResult(
+                    outcome="conflict",
+                    checked_at=checked_at,
+                    task_id=running.id,
+                    previous_status=running.status,
+                    resulting_status=running.status,
+                    evidence=terminal_evidence,
+                    reason=terminal_conflict,
+                    worker_id=running.worker_id,
+                    worker_heartbeat_at=running.worker_heartbeat_at,
+                    worker_lease_id=running.worker_lease_id,
+                ),
+            )
+            if result.recorded:
+                _write_queue(data, root)
+            return result
+        if terminal_status:
+            history = _history_jobs(data)
+            if any(job.id == running.id for job in history):
+                result = _store_reconciliation(
+                    data,
+                    TaskReconciliationResult(
+                        outcome="conflict",
+                        checked_at=checked_at,
+                        task_id=running.id,
+                        previous_status=running.status,
+                        resulting_status=running.status,
+                        evidence=terminal_evidence,
+                        reason="Task history already contains the running task id.",
+                        worker_id=running.worker_id,
+                        worker_heartbeat_at=running.worker_heartbeat_at,
+                        worker_lease_id=running.worker_lease_id,
+                    ),
+                )
+                if result.recorded:
+                    _write_queue(data, root)
+                return result
+            finished = _replace_job(
                 running,
-                status="completed",
-                completed_at=current_time(),
+                status=terminal_status,
+                completed_at=checked_at,
                 worker_id="",
                 worker_pid=None,
                 worker_heartbeat_at="",
+                worker_lease_id="",
+                next_attempt_at="",
             )
-            history = _history_jobs(data)
-            history.append(completed)
+            history.append(finished)
+            result = TaskReconciliationResult(
+                outcome="terminal_repair",
+                checked_at=checked_at,
+                task_id=running.id,
+                previous_status=running.status,
+                resulting_status=finished.status,
+                evidence=terminal_evidence,
+                reason="Durable terminal evidence finalized the running task.",
+                worker_id=running.worker_id,
+                worker_heartbeat_at=running.worker_heartbeat_at,
+                worker_lease_id=running.worker_lease_id,
+            )
             data["running"] = None
             data["history"] = [_job_to_dict(job) for job in history]
+            data["reconciliation"] = _reconciliation_to_dict(result)
             _write_queue(data, root)
             _record_task_event_safely(
-                completed,
-                "completed",
+                finished,
+                finished.status,
                 root,
                 event_actor="system",
-                trigger="recovery",
-                result=completed.result,
+                trigger="reconciliation",
+                result=finished.result,
             )
-            return completed
+            return result
+        unsupported = _unsupported_reconciliation_evidence(running)
+        if unsupported:
+            result = _store_reconciliation(
+                data,
+                TaskReconciliationResult(
+                    outcome="unsupported_evidence",
+                    checked_at=checked_at,
+                    task_id=running.id,
+                    previous_status=running.status,
+                    resulting_status=running.status,
+                    evidence=unsupported,
+                    reason=(
+                        "Durable evidence exists, but it does not prove a terminal "
+                        "task outcome. Reconciliation failed closed."
+                    ),
+                    worker_id=running.worker_id,
+                    worker_heartbeat_at=running.worker_heartbeat_at,
+                    worker_lease_id=running.worker_lease_id,
+                ),
+            )
+            if result.recorded:
+                _write_queue(data, root)
+            return result
         if running.attempt >= running.max_attempts:
             failed = _replace_job(
                 running,
                 status="failed",
-                completed_at=current_time(),
+                completed_at=checked_at,
                 result=(
                     f"Task worker was interrupted and automatic recovery exhausted "
                     f"{running.max_attempts} attempts."
@@ -1425,6 +1700,7 @@ def recover_interrupted_task(root: Path | None = None) -> TaskJob | None:
                 worker_id="",
                 worker_pid=None,
                 worker_heartbeat_at="",
+                worker_lease_id="",
                 failure_code="worker_interrupted",
                 failure_class="transient",
                 retryable=False,
@@ -1432,8 +1708,21 @@ def recover_interrupted_task(root: Path | None = None) -> TaskJob | None:
             )
             history = _history_jobs(data)
             history.append(failed)
+            result = TaskReconciliationResult(
+                outcome="interrupted_worker_recovery",
+                checked_at=checked_at,
+                task_id=running.id,
+                previous_status=running.status,
+                resulting_status=failed.status,
+                evidence=("inactive-worker", "retry-policy-exhausted"),
+                reason="The inactive worker exhausted bounded recovery attempts.",
+                worker_id=running.worker_id,
+                worker_heartbeat_at=running.worker_heartbeat_at,
+                worker_lease_id=running.worker_lease_id,
+            )
             data["running"] = None
             data["history"] = [_job_to_dict(job) for job in history]
+            data["reconciliation"] = _reconciliation_to_dict(result)
             _write_queue(data, root)
             _record_task_event_safely(
                 failed,
@@ -1443,7 +1732,7 @@ def recover_interrupted_task(root: Path | None = None) -> TaskJob | None:
                 trigger="recovery-exhausted",
                 result=failed.result,
             )
-            return failed
+            return result
         recovered = _replace_job(
             running,
             status="pending",
@@ -1451,13 +1740,27 @@ def recover_interrupted_task(root: Path | None = None) -> TaskJob | None:
             worker_id="",
             worker_pid=None,
             worker_heartbeat_at="",
-            next_attempt_at=_retry_at(0),
+            worker_lease_id="",
+            next_attempt_at=_retry_at_from(checked_at, 0),
             failure_code="worker_interrupted",
             failure_class="transient",
             retryable=True,
         )
+        result = TaskReconciliationResult(
+            outcome="interrupted_worker_recovery",
+            checked_at=checked_at,
+            task_id=running.id,
+            previous_status=running.status,
+            resulting_status=recovered.status,
+            evidence=("inactive-worker", "retry-policy-available"),
+            reason="The inactive worker was returned to the bounded retry queue.",
+            worker_id=running.worker_id,
+            worker_heartbeat_at=running.worker_heartbeat_at,
+            worker_lease_id=running.worker_lease_id,
+        )
         data["running"] = None
         data["pending"] = [_job_to_dict(recovered), *[_job_to_dict(job) for job in _pending_jobs(data)]]
+        data["reconciliation"] = _reconciliation_to_dict(result)
         _write_queue(data, root)
         _record_task_event_safely(
             recovered,
@@ -1475,7 +1778,7 @@ def recover_interrupted_task(root: Path | None = None) -> TaskJob | None:
             trigger="recovery",
             result="Task worker was interrupted.",
         )
-        return recovered
+        return result
 
 
 def task_queue_status(root: Path | None = None) -> TaskQueueStatus:
@@ -1490,6 +1793,7 @@ def task_queue_status(root: Path | None = None) -> TaskQueueStatus:
             pending=pending,
             paused=paused,
             history=tuple(_history_jobs(data)),
+            reconciliation=_parse_reconciliation(data.get("reconciliation")),
         )
 
 
@@ -1509,6 +1813,136 @@ def _job_has_review(job: TaskJob) -> bool:
     return bool(job.review_urls) or task_result_has_review(job.result)
 
 
+def _job_has_confirmed_published_review(job: TaskJob) -> bool:
+    return bool(
+        job.review_published
+        and (job.review_id or job.review_url)
+    )
+
+
+def _reconciliation_request_mismatch(
+    request: TaskReconciliationRequest | None,
+    running: TaskJob,
+) -> str:
+    if request is None:
+        return ""
+    mismatches = []
+    if request.expected_task_id != running.id:
+        mismatches.append("task")
+    if request.expected_worker_id != running.worker_id:
+        mismatches.append("worker")
+    if request.expected_worker_heartbeat_at != running.worker_heartbeat_at:
+        mismatches.append("lease")
+    if request.expected_worker_lease_id != running.worker_lease_id:
+        mismatches.append("lease-token")
+    if not mismatches:
+        return ""
+    return (
+        "The running task no longer matches the expected "
+        + ", ".join(mismatches)
+        + " identity."
+    )
+
+
+def _terminal_reconciliation_evidence(
+    running: TaskJob,
+) -> tuple[str, tuple[str, ...], str]:
+    statuses: dict[str, list[str]] = {}
+    if running.terminal_status:
+        if running.terminal_evidence_source and running.terminal_evidence_at:
+            statuses.setdefault(running.terminal_status, []).append(
+                f"terminal-evidence:{running.terminal_evidence_source}"
+            )
+        elif _job_has_confirmed_published_review(running):
+            return (
+                "",
+                ("terminal-evidence:incomplete", "published-review"),
+                "Incomplete terminal evidence conflicts with a published review.",
+            )
+    if _job_has_confirmed_published_review(running):
+        statuses.setdefault("completed", []).append("published-review")
+    evidence = tuple(
+        item
+        for status_evidence in statuses.values()
+        for item in status_evidence
+    )
+    if len(statuses) > 1:
+        return "", evidence, "Durable terminal evidence has conflicting outcomes."
+    if not statuses:
+        return "", (), ""
+    status = next(iter(statuses))
+    if status not in {"completed", "failed", "cancelled"}:
+        return "", evidence, f"Unsupported terminal status {status!r}."
+    return status, evidence, ""
+
+
+def _unsupported_reconciliation_evidence(running: TaskJob) -> tuple[str, ...]:
+    evidence = []
+    if running.terminal_status and (
+        not running.terminal_evidence_source or not running.terminal_evidence_at
+    ):
+        evidence.append("terminal-evidence:incomplete")
+    if running.publish_stage and running.publish_stage not in {
+        "validated",
+        "committed",
+        "pushed",
+        "pr_opened",
+        "captured",
+        "review_published",
+    }:
+        evidence.append(f"publish-stage:{running.publish_stage}")
+    if (
+        running.publish_stage == "review_published" or running.review_published
+    ) and not _job_has_confirmed_published_review(running):
+        evidence.append("published-review:incomplete")
+    if (
+        (running.review_id or running.review_url)
+        and not running.review_published
+    ):
+        evidence.append("unconfirmed-review")
+    return _dedupe_strings(tuple(evidence))
+
+
+def _store_reconciliation(
+    data: dict,
+    result: TaskReconciliationResult,
+) -> TaskReconciliationResult:
+    previous = _parse_reconciliation(data.get("reconciliation"))
+    if previous is not None and _same_reconciliation(previous, result):
+        return TaskReconciliationResult(
+            outcome=result.outcome,
+            checked_at=previous.checked_at,
+            task_id=result.task_id,
+            previous_status=result.previous_status,
+            resulting_status=result.resulting_status,
+            evidence=result.evidence,
+            reason=result.reason,
+            worker_id=result.worker_id,
+            worker_heartbeat_at=result.worker_heartbeat_at,
+            worker_lease_id=result.worker_lease_id,
+            recorded=False,
+        )
+    data["reconciliation"] = _reconciliation_to_dict(result)
+    return result
+
+
+def _same_reconciliation(
+    first: TaskReconciliationResult,
+    second: TaskReconciliationResult,
+) -> bool:
+    return (
+        first.outcome == second.outcome
+        and first.task_id == second.task_id
+        and first.previous_status == second.previous_status
+        and first.resulting_status == second.resulting_status
+        and first.evidence == second.evidence
+        and first.reason == second.reason
+        and first.worker_id == second.worker_id
+        and first.worker_heartbeat_at == second.worker_heartbeat_at
+        and first.worker_lease_id == second.worker_lease_id
+    )
+
+
 def _load_queue(root: Path | None = None) -> dict:
     path = task_queue_path(root)
     raw = load_json_object(path, default_factory=_empty_queue)
@@ -1521,6 +1955,10 @@ def _load_queue(root: Path | None = None) -> dict:
         raise StateCorruptionError(path, "expected running to be an object or null")
     if isinstance(raw.get("running"), dict) and _parse_job(raw["running"]) is None:
         raise StateCorruptionError(path, "found an invalid running task")
+    if raw.get("reconciliation") is not None and _parse_reconciliation(
+        raw.get("reconciliation")
+    ) is None:
+        raise StateCorruptionError(path, "found an invalid reconciliation record")
     pending = [_job_to_dict(job) for job in _pending_jobs(raw)]
     paused_jobs = _paused_jobs(raw)
     paused = [_job_to_dict(job) for job in paused_jobs]
@@ -1542,6 +1980,9 @@ def _load_queue(root: Path | None = None) -> dict:
         "paused": paused,
         "running": _job_to_dict(running) if running is not None else None,
         "history": history,
+        "reconciliation": _reconciliation_to_dict(
+            _parse_reconciliation(raw.get("reconciliation"))
+        ),
     }
 
 
@@ -1553,6 +1994,9 @@ def _write_queue(data: dict, root: Path | None = None) -> None:
         "paused": [_job_to_dict(job) for job in _paused_jobs(data)],
         "running": _job_to_dict(_parse_job(data.get("running"))) if _parse_job(data.get("running")) else None,
         "history": [_job_to_dict(job) for job in _history_jobs(data)],
+        "reconciliation": _reconciliation_to_dict(
+            _parse_reconciliation(data.get("reconciliation"))
+        ),
     }
     atomic_write(task_queue_path(root), json.dumps(payload, indent=2, sort_keys=True) + "\n")
 
@@ -1625,6 +2069,55 @@ def _find_task_in_status(task_id: int, root: Path | None = None) -> TaskJob | No
         return _find_task(_load_queue(root), task_id)
 
 
+def _parse_reconciliation(raw: object) -> TaskReconciliationResult | None:
+    if not isinstance(raw, dict):
+        return None
+    outcome = str(raw.get("outcome") or "").strip()
+    if outcome not in {
+        "no_op",
+        "terminal_repair",
+        "interrupted_worker_recovery",
+        "conflict",
+        "unsupported_evidence",
+    }:
+        return None
+    task_id = _positive_int(raw.get("task_id"))
+    checked_at = str(raw.get("checked_at") or "").strip()
+    if not checked_at:
+        return None
+    return TaskReconciliationResult(
+        outcome=outcome,
+        checked_at=checked_at,
+        task_id=task_id,
+        previous_status=str(raw.get("previous_status") or "").strip(),
+        resulting_status=str(raw.get("resulting_status") or "").strip(),
+        evidence=_parse_string_tuple(raw.get("evidence")),
+        reason=str(raw.get("reason") or "").strip(),
+        worker_id=str(raw.get("worker_id") or "").strip(),
+        worker_heartbeat_at=str(raw.get("worker_heartbeat_at") or "").strip(),
+        worker_lease_id=str(raw.get("worker_lease_id") or "").strip(),
+    )
+
+
+def _reconciliation_to_dict(
+    result: TaskReconciliationResult | None,
+) -> dict | None:
+    if result is None:
+        return None
+    return {
+        "outcome": result.outcome,
+        "checked_at": result.checked_at,
+        "task_id": result.task_id,
+        "previous_status": result.previous_status,
+        "resulting_status": result.resulting_status,
+        "evidence": list(result.evidence),
+        "reason": result.reason,
+        "worker_id": result.worker_id,
+        "worker_heartbeat_at": result.worker_heartbeat_at,
+        "worker_lease_id": result.worker_lease_id,
+    }
+
+
 def _parse_job(raw: object) -> TaskJob | None:
     if not isinstance(raw, dict):
         return None
@@ -1661,6 +2154,7 @@ def _parse_job(raw: object) -> TaskJob | None:
     worker_id = str(raw.get("worker_id") or "").strip()
     worker_pid = _optional_int(raw.get("worker_pid"))
     worker_heartbeat_at = str(raw.get("worker_heartbeat_at") or "").strip()
+    worker_lease_id = str(raw.get("worker_lease_id") or "").strip()
     workspace_path = str(
         raw.get("workspace_path", raw.get("worktree_path")) or ""
     ).strip()
@@ -1731,6 +2225,17 @@ def _parse_job(raw: object) -> TaskJob | None:
         if raw_review_published is None
         else bool(raw_review_published)
     )
+    terminal_status = str(raw.get("terminal_status") or "").strip().lower()
+    terminal_evidence_source = str(
+        raw.get("terminal_evidence_source") or ""
+    ).strip().lower()
+    terminal_evidence_at = str(raw.get("terminal_evidence_at") or "").strip()
+    if terminal_status and terminal_status not in {
+        "completed",
+        "failed",
+        "cancelled",
+    }:
+        return None
     if candidate_id:
         evidence_source = evidence_source or source
         signal_actor = signal_actor or _legacy_signal_actor(evidence_source)
@@ -1765,6 +2270,7 @@ def _parse_job(raw: object) -> TaskJob | None:
         worker_id=worker_id,
         worker_pid=worker_pid,
         worker_heartbeat_at=worker_heartbeat_at,
+        worker_lease_id=worker_lease_id,
         workspace_path=workspace_path,
         workspace_id=workspace_id,
         attempt=attempt,
@@ -1791,6 +2297,9 @@ def _parse_job(raw: object) -> TaskJob | None:
         review_id=review_id,
         review_url=review_url,
         review_published=review_published,
+        terminal_status=terminal_status,
+        terminal_evidence_source=terminal_evidence_source,
+        terminal_evidence_at=terminal_evidence_at,
     )
 
 
@@ -1824,6 +2333,7 @@ def _job_to_dict(job: TaskJob | None) -> dict:
         "worker_id": job.worker_id,
         "worker_pid": job.worker_pid,
         "worker_heartbeat_at": job.worker_heartbeat_at,
+        "worker_lease_id": job.worker_lease_id,
         "workspace_path": job.workspace_path,
         "workspace_id": job.workspace_id,
         "attempt": job.attempt,
@@ -1854,6 +2364,9 @@ def _job_to_dict(job: TaskJob | None) -> dict:
         "review_id": job.review_id,
         "review_url": job.review_url,
         "review_published": job.review_published,
+        "terminal_status": job.terminal_status,
+        "terminal_evidence_source": job.terminal_evidence_source,
+        "terminal_evidence_at": job.terminal_evidence_at,
     }
 
 
@@ -1884,6 +2397,8 @@ def _replace_job(job: TaskJob, **changes: object) -> TaskJob:
         "source_task_id": job.source_task_id,
         "worker_id": job.worker_id,
         "worker_pid": job.worker_pid,
+        "worker_heartbeat_at": job.worker_heartbeat_at,
+        "worker_lease_id": job.worker_lease_id,
         "workspace_path": job.workspace_path,
         "workspace_id": job.workspace_id,
         "attempt": job.attempt,
@@ -1912,6 +2427,9 @@ def _replace_job(job: TaskJob, **changes: object) -> TaskJob:
         "review_id": job.review_id,
         "review_url": job.review_url,
         "review_published": job.review_published,
+        "terminal_status": job.terminal_status,
+        "terminal_evidence_source": job.terminal_evidence_source,
+        "terminal_evidence_at": job.terminal_evidence_at,
     }
     values.update(changes)
     return TaskJob(**values)
@@ -2016,6 +2534,19 @@ def _retry_at(delay_seconds: int) -> str:
     ).isoformat()
 
 
+def _retry_at_from(timestamp: str, delay_seconds: int) -> str:
+    try:
+        base = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+    except ValueError:
+        return _retry_at(delay_seconds)
+    if base.tzinfo is None:
+        base = base.replace(tzinfo=timezone.utc)
+    return (
+        base.replace(microsecond=0)
+        + timedelta(seconds=max(0, delay_seconds))
+    ).isoformat()
+
+
 def _task_is_due(job: TaskJob) -> bool:
     if not job.next_attempt_at:
         return True
@@ -2101,4 +2632,5 @@ def _empty_queue() -> dict:
         "paused": [],
         "running": None,
         "history": [],
+        "reconciliation": None,
     }
