@@ -4708,6 +4708,25 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("Enoch is restarting.", client.sent[0][1])
 
     @patch("enoch.app.core._schedule_daemon_restart")
+    def test_descendant_presentation_rebrands_core_reply(
+        self,
+        schedule_restart: MagicMock,
+    ) -> None:
+        client = FakeTelegramClient(allowed_chat_id=42)
+        bot = EnochApplication(
+            load_identity(),
+            ROOT,
+            client,
+            presentation=ApplicationPresentation(display_name="Noah"),
+        )
+
+        _handle_update(bot, _message_update(chat_id=42, text="/restart"))
+
+        schedule_restart.assert_called_once_with(ROOT)
+        self.assertIn("Noah is restarting.", client.sent[0][1])
+        self.assertNotIn("Enoch", client.sent[0][1])
+
+    @patch("enoch.app.core._schedule_daemon_restart")
     def test_restart_requires_locked_chat(self, schedule_restart: MagicMock) -> None:
         client = FakeTelegramClient(allowed_chat_id=None)
         bot = EnochApplication(load_identity(), ROOT, client)

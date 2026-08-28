@@ -2263,6 +2263,7 @@ class EnochApplication:
         *,
         notification_key: str = "",
     ) -> NotificationResult:
+        message = self.presentation.render_text(message, self.identity)
         key = notification_key or self._notification_key(
             "send",
             chat_id,
@@ -2316,6 +2317,7 @@ class EnochApplication:
         *,
         notification_key: str = "",
     ) -> None:
+        message = self.presentation.render_text(message, self.identity)
         key = notification_key or self._notification_key(
             "edit",
             chat_id,

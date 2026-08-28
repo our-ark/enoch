@@ -66,6 +66,14 @@ class ApplicationPresentation:
     def resolved_ready_message(self, identity: Identity) -> str:
         return self.ready_message or f"{self.resolved_display_name(identity)} is ready."
 
+    def render_text(self, text: str, identity: Identity) -> str:
+        """Render Enoch-owned user-facing copy for a descendant application."""
+
+        display_name = self.resolved_display_name(identity)
+        if display_name == "Enoch":
+            return text
+        return re.sub(r"\bEnoch\b", lambda _match: display_name, text)
+
 
 @dataclass(frozen=True)
 class ApplicationProviderSelection:

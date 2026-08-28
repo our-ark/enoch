@@ -256,6 +256,19 @@ class ApplicationCompositionTests(unittest.TestCase):
         ):
             ApplicationPresentation(ready_message="line one\nline two")
 
+    def test_presentation_renders_enoch_owned_copy_for_descendant(self) -> None:
+        identity = load_identity()
+
+        rendered = ApplicationPresentation(display_name="Noah").render_text(
+            "Enoch is working. Enoch's state is durable. Enochian stays literal.",
+            identity,
+        )
+
+        self.assertEqual(
+            rendered,
+            "Noah is working. Noah's state is durable. Enochian stays literal.",
+        )
+
 
 class _Chat:
     name = "composition-chat"
