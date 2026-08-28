@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 from pathlib import Path
+import re
 from typing import Any
 from urllib import parse, request
 
@@ -25,6 +26,8 @@ MAX_TELEGRAM_MESSAGE = 4096
 DEFAULT_TELEGRAM_POLL_TIMEOUT = 30
 READ_ACK_EMOJI = "👀"
 SUPPORTED_IMAGE_MIME_TYPES = {"image/jpeg", "image/png", "image/webp"}
+_PEER_ALIAS = re.compile(r"[a-z][a-z0-9_-]{0,63}")
+_BOT_USERNAME = re.compile(r"[A-Za-z0-9_]{5,32}")
 
 
 class TelegramError(ChatProviderError):
@@ -36,6 +39,40 @@ class TelegramConfig:
     token: str
     allowed_chat_id: int | None = None
     poll_timeout: int = DEFAULT_TELEGRAM_POLL_TIMEOUT
+    bot_peers: tuple["TelegramBotPeer", ...] = ()
+
+
+@dataclass(frozen=True)
+class TelegramBotPeer:
+    """One explicitly trusted Telegram bot identity."""
+
+    alias: str
+    username: str
+    user_id: int
+
+    def __post_init__(self) -> None:
+        alias = self.alias.strip().lower()
+        username = self.username.strip().removeprefix("@")
+        if not _PEER_ALIAS.fullmatch(alias):
+            raise ValueError(
+                "Telegram bot peer alias must start with a letter and contain only "
+                "letters, numbers, underscores, or hyphens."
+            )
+        if not _BOT_USERNAME.fullmatch(username):
+            raise ValueError("Telegram bot peer username is invalid.")
+        if isinstance(self.user_id, bool) or int(self.user_id) < 1:
+            raise ValueError("Telegram bot peer user id must be a positive integer.")
+        object.__setattr__(self, "alias", alias)
+        object.__setattr__(self, "username", username)
+        object.__setattr__(self, "user_id", int(self.user_id))
+
+    @property
+    def address(self) -> str:
+        return f"@{self.username}"
+
+    @property
+    def config_value(self) -> str:
+        return f"{self.address}|{self.user_id}"
 
 
 class TelegramClient:
@@ -83,6 +120,40 @@ class TelegramClient:
             if first_message_id is None and message_id is not None:
                 first_message_id = message_id
         return first_message_id
+
+    def bot_peer(self, alias: str) -> TelegramBotPeer | None:
+        normalized = alias.strip().lower()
+        return next(
+            (peer for peer in self.config.bot_peers if peer.alias == normalized),
+            None,
+        )
+
+    def send_to_peer(self, alias: str, text: str) -> MessageId | None:
+        peer = self.bot_peer(alias)
+        if peer is None:
+            raise TelegramError(f"Telegram bot peer {alias!r} is not allowed.")
+        return self.send_message(peer.address, text)
+
+    def peer_alias(self, event: ChatEvent) -> str | None:
+        """Authenticate one private bot event against the configured peer list."""
+
+        message = event.raw.get("message") if isinstance(event.raw, dict) else None
+        if not isinstance(message, dict):
+            return None
+        chat = message.get("chat")
+        sender = message.get("from")
+        if not isinstance(chat, dict) or not isinstance(sender, dict):
+            return None
+        if chat.get("type") != "private" or sender.get("is_bot") is not True:
+            return None
+        sender_id = sender.get("id")
+        username = str(sender.get("username") or "").strip().lower()
+        if not isinstance(sender_id, int) or not username:
+            return None
+        for peer in self.config.bot_peers:
+            if peer.user_id == sender_id and peer.username.lower() == username:
+                return peer.alias
+        return None
 
     def download_file(self, file_id: str, destination: Path, *, max_bytes: int) -> None:
         data = self._call("getFile", {"file_id": file_id})

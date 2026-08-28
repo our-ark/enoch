@@ -754,7 +754,8 @@ class EnochApplication:
         require_current_daemon_epoch(self.daemon_epoch, self.root)
         chat_id = event.conversation_id
         message_id = event.message_id
-        if not self._chat_allowed(chat_id):
+        peer_alias = _peer_alias(self.client, event)
+        if not self._chat_allowed(chat_id) and peer_alias is None:
             self._remember_update_offset(event.cursor)
             return
 
@@ -765,7 +766,10 @@ class EnochApplication:
 
         event_token = _CURRENT_EVENT_KEY.set(receipt.key)
         try:
-            reply, logged_input = self._dispatch_chat_event(event)
+            if peer_alias is None:
+                reply, logged_input = self._dispatch_chat_event(event)
+            else:
+                reply, logged_input = self._dispatch_peer_event(event, peer_alias)
             receipt = complete_event(
                 self.channel_name,
                 receipt.key,
@@ -788,10 +792,18 @@ class EnochApplication:
                 receipt.key,
                 self.root,
                 reply=(
-                    "Enoch skipped this update after three failed processing attempts. "
-                    f"The failure was recorded for debugging: {type(error).__name__}."
+                    ""
+                    if peer_alias is not None
+                    else (
+                        "Enoch skipped this update after three failed processing attempts. "
+                        f"The failure was recorded for debugging: {type(error).__name__}."
+                    )
                 ),
-                logged_input=event.text.strip(),
+                logged_input=(
+                    f"[Agent peer {peer_alias}] {event.text.strip()}"
+                    if peer_alias is not None
+                    else event.text.strip()
+                ),
             )
         finally:
             _CURRENT_EVENT_KEY.reset(event_token)
@@ -850,6 +862,27 @@ class EnochApplication:
         else:
             reply = self._natural(chat_id, text)
         return reply, logged_input
+
+    def _dispatch_peer_event(
+        self,
+        event: ChatEvent,
+        peer_alias: str,
+    ) -> tuple[str, str]:
+        """Offer an authenticated bot event only to opted-in extensions."""
+
+        logged_input = f"[Agent peer {peer_alias}] {event.text.strip()}"
+        for extension in self.extensions:
+            hook = extension.lifecycle.on_peer_event
+            if hook is None:
+                continue
+            reply = hook(
+                self._extension_lifecycle_context(extension),
+                event,
+                peer_alias,
+            )
+            if reply is not None:
+                return reply, logged_input
+        return "", logged_input
 
     def _finish_chat_event(self, event: ChatEvent, receipt: InboxReceipt) -> None:
         if not receipt.reply_sent:
@@ -1180,6 +1213,7 @@ class EnochApplication:
             event=event,
             command=command,
             argument=argument,
+            chat=self.client,
             runtime=self.runtime,
             repository=self.repository,
             review=self.review,
@@ -4899,6 +4933,17 @@ def _allowed_conversation_id(client: object) -> ConversationId | None:
         return getattr(client, "allowed_conversation_id")
     config = getattr(client, "config", None)
     return getattr(config, "allowed_chat_id", None)
+
+
+def _peer_alias(client: object, event: ChatEvent) -> str | None:
+    resolver = getattr(client, "peer_alias", None)
+    if not callable(resolver):
+        return None
+    alias = resolver(event)
+    if not isinstance(alias, str):
+        return None
+    normalized = alias.strip().lower()
+    return normalized or None
 
 
 def _chat_provider_name(client: object) -> str:

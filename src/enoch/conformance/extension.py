@@ -131,6 +131,7 @@ class AgentExtensionConformanceMixin:
                 ),
                 command=spec.command,
                 argument=case.argument,
+                chat=_Chat(),
                 runtime=_Runtime(),
                 repository=BranchlessRepositoryFixture(),
                 review=IndependentReviewFixture(),

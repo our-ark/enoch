@@ -173,6 +173,24 @@ bin/enoch-daemon start
 
 Then open the bot in Telegram and send `/status`.
 
+### Authenticated agent peers
+
+Telegram's Bot-to-Bot Communication mode can carry structured messages between
+agents on different machines. Enable that mode for both bots in `@BotFather`,
+then allow each remote bot by a local alias, public username, and numeric bot
+user ID:
+
+```bash
+bin/enoch setup peer worker @worker_agent_bot 7000000001
+bin/enoch-daemon restart
+```
+
+Both the Telegram `from.id` and username must match. Peer messages bypass the
+owner conversation lock only to an extension that explicitly implements the
+agent-peer lifecycle hook; they never enter Enoch's owner command or natural
+conversation paths. Remove access with
+`bin/enoch setup peer remove worker` and restart the daemon.
+
 Use `/help` to see every Telegram command. Use `/help <command>` for detailed
 usage and subcommands, for example `/help task` or `/help worktree`. `/start`
 only shows this getting-started guidance inside Telegram; it does not start or

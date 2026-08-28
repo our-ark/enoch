@@ -17,6 +17,7 @@ from our_ark_provider_kit import (
     ProviderContractConformanceMixin,
 )
 from our_ark_telegram import (
+    TelegramBotPeer,
     TelegramClient,
     TelegramConfig,
     TelegramError,
@@ -112,6 +113,42 @@ class TelegramLibraryTests(ProviderContractConformanceMixin, unittest.TestCase):
             calls[0][1]["text"],
             "Run <code>bin/enoch doctor</code> and keep &lt;output&gt;.",
         )
+
+    def test_private_bot_peer_is_strictly_authenticated_and_addressable(self) -> None:
+        peer = TelegramBotPeer("worker", "@worker_agent_bot", 7000000001)
+        client = TelegramClient(TelegramConfig(token="test", bot_peers=(peer,)))
+        calls = []
+        client._call = lambda method, payload: (
+            calls.append((method, payload))
+            or {"ok": True, "result": {"message_id": 17}}
+        )
+        event = telegram_event(
+            {
+                "update_id": 8,
+                "message": {
+                    "message_id": 4,
+                    "chat": {"id": 7000000001, "type": "private"},
+                    "from": {
+                        "id": 7000000001,
+                        "is_bot": True,
+                        "username": "worker_agent_bot",
+                    },
+                    "text": "agent message",
+                },
+            }
+        )
+        assert event is not None
+
+        self.assertEqual(client.peer_alias(event), "worker")
+        self.assertEqual(client.send_to_peer("WORKER", "hello"), 17)
+        self.assertEqual(calls[0][1]["chat_id"], "@worker_agent_bot")
+
+        forged = dict(event.raw)
+        forged["message"] = dict(event.raw["message"])
+        forged["message"]["from"] = dict(event.raw["message"]["from"], id=123)
+        forged_event = telegram_event(forged)
+        assert forged_event is not None
+        self.assertIsNone(client.peer_alias(forged_event))
 
     def test_edit_uses_the_same_display_only_renderer(self) -> None:
         client = TelegramClient(TelegramConfig(token="test"))

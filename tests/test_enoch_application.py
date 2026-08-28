@@ -15,7 +15,7 @@ from enoch.application import (
     ApplicationProviderSelection,
     run_application,
 )
-from enoch.extensions import AgentExtension
+from enoch.extensions import AgentExtension, ExtensionLifecycleHooks
 from enoch.identity import load_identity, update_mission
 from enoch.memory.prompt import memory_for_prompt
 from enoch.profiles import AgentProfile
@@ -256,6 +256,40 @@ class ApplicationCompositionTests(unittest.TestCase):
         ):
             ApplicationPresentation(ready_message="line one\nline two")
 
+    def test_authenticated_peer_event_is_only_offered_to_extension_hook(self) -> None:
+        received = []
+
+        def on_peer(context, event, alias):
+            received.append((context.identity.name, event.text, alias))
+            return ""
+
+        extension = AgentExtension(
+            name="peer-test",
+            lifecycle=ExtensionLifecycleHooks(on_peer_event=on_peer),
+        )
+        chat = _PeerChat()
+        with TemporaryDirectory() as temp:
+            app = EnochApplication(
+                load_identity(),
+                Path(temp),
+                chat,
+                runtime=_Runtime(),
+                repository=BranchlessRepositoryFixture(),
+                review=IndependentReviewFixture(),
+                extensions=(extension,),
+            )
+            app.handle_event(
+                ChatEvent(
+                    cursor="peer-2",
+                    conversation_id="peer-room",
+                    message_id="peer-1",
+                    text="/shutdown",
+                )
+            )
+
+        self.assertEqual(received, [("Enoch", "/shutdown", "lily")])
+        self.assertEqual(chat.sent, [])
+
 
 class _Chat:
     name = "composition-chat"
@@ -280,6 +314,11 @@ class _Chat:
 
     def send_read_ack(self, conversation_id, message_id):
         return None
+
+
+class _PeerChat(_Chat):
+    def peer_alias(self, event):
+        return "lily" if event.conversation_id == "peer-room" else None
 
 
 class _Runtime:

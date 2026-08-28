@@ -195,6 +195,7 @@ class EnochTelegramTests(unittest.TestCase):
                         '  bot_token: "file-token"',
                         "  allowed_chat_id: 42",
                         "  poll_timeout: 10",
+                        '  peer_worker: "@worker_agent_bot|7000000001"',
                     ]
                 ),
                 encoding="utf-8",
@@ -205,6 +206,9 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual(config.token, "file-token")
         self.assertEqual(config.allowed_chat_id, 42)
         self.assertEqual(config.poll_timeout, 10)
+        self.assertEqual(config.bot_peers[0].alias, "worker")
+        self.assertEqual(config.bot_peers[0].username, "worker_agent_bot")
+        self.assertEqual(config.bot_peers[0].user_id, 7000000001)
 
     @patch("our_ark_telegram.core.request.urlopen")
     def test_downloads_telegram_file_with_size_limit(self, urlopen: MagicMock) -> None:
