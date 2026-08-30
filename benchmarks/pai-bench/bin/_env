@@ -1,0 +1,26 @@
+pai_bench_python_supported() {
+  "$1" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' >/dev/null 2>&1
+}
+
+pai_bench_find_python() {
+  local candidate
+
+  if [[ -n "${PAI_BENCH_PYTHON:-}" ]]; then
+    if pai_bench_python_supported "$PAI_BENCH_PYTHON"; then
+      printf '%s\n' "$PAI_BENCH_PYTHON"
+      return 0
+    fi
+    printf 'pai-bench: PAI_BENCH_PYTHON must point to Python 3.11 or newer.\n' >&2
+    return 1
+  fi
+
+  for candidate in python3.14 python3.13 python3.12 python3.11 python3 python; do
+    if command -v "$candidate" >/dev/null 2>&1 && pai_bench_python_supported "$candidate"; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+
+  printf 'pai-bench: Python 3.11 or newer is required.\n' >&2
+  return 1
+}

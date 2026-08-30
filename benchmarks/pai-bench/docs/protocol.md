@@ -11,12 +11,12 @@ three prespecified splits, and 32 shared probe templates. See
 ## Install the runner
 
 ```bash
-python3 -m pip install ./libraries/pai-bench
+python3 -m pip install ./benchmarks/pai-bench
 identity-benchmark --help
 ```
 
-Inside this checkout, `bin/identity-benchmark` runs the same CLI without an
-installation.
+Inside this checkout, `benchmarks/pai-bench/bin/identity-benchmark` runs the
+same CLI without an installation.
 
 ## Three-part benchmark source
 
@@ -83,7 +83,7 @@ An experiment manifest defines target models, reasoning efforts, identity
 modes, repetitions, command adapters, timeouts, and an optional evaluator.
 
 ```bash
-bin/identity-benchmark matrix EXPERIMENT.json \
+benchmarks/pai-bench/bin/identity-benchmark matrix EXPERIMENT.json \
   --output-dir .pai-bench/reports/run-001 \
   --batch-size 4 --batch-index 1 --resume
 ```
@@ -101,7 +101,8 @@ clustered bootstrap confidence intervals without calling the target again.
 The development split permits pipeline work. The factorial-test and
 source-challenge splits are frozen. Do not tune prompts, adapters, or judging
 rules after inspecting frozen responses. `protocol.json` records this policy,
-and `bin/pai-bench-release --check` verifies every generated release file.
+and `benchmarks/pai-bench/bin/release --check` verifies every generated release
+file.
 
 The retained `identity-publication-v4.1` strings are internal provenance IDs
 for the freeze that became public PAI-Bench v1.0; they are not separate public

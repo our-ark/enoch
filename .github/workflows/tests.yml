@@ -39,7 +39,7 @@ jobs:
         run: |
           python -m unittest discover -s libraries/github/tests
           python -m unittest discover -s libraries/launchd/tests
-          python -m unittest discover -s libraries/pai-bench/tests
+          python -m unittest discover -s benchmarks/pai-bench/tests
           python -m unittest discover -s libraries/provider-kit/tests
           python -m unittest discover -s libraries/skill-catalog/tests
           python -m unittest discover -s libraries/systemd/tests

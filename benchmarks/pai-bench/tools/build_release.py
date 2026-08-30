@@ -7,7 +7,7 @@ import sys
 
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "libraries" / "pai-bench" / "src"))
+sys.path.insert(0, str(ROOT / "src"))
 
 from identity_benchmark.pai_bench import (  # noqa: E402
     PaiBenchError,
@@ -25,9 +25,9 @@ def main() -> None:
         type=Path,
         default=(
             ROOT
-            / "benchmarks"
-            / "pai-bench"
+            / "releases"
             / "v1.0"
+            / "data"
         ),
     )
     args = parser.parse_args()

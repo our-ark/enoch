@@ -1,6 +1,6 @@
-benchmarks/pai-bench/v1.0/bindings/*.json linguist-generated=true
-benchmarks/pai-bench/v1.0/identities/*.json linguist-generated=true
-benchmarks/pai-bench/v1.0/profiles/*.json linguist-generated=true
-benchmarks/pai-bench/v1.0/decoupled-index.json linguist-generated=true
-benchmarks/pai-bench/v1.0/population.json linguist-generated=true
-benchmarks/pai-bench/v1.0/source-prototypes.json linguist-generated=true
+benchmarks/pai-bench/releases/v1.0/data/bindings/*.json linguist-generated=true
+benchmarks/pai-bench/releases/v1.0/data/identities/*.json linguist-generated=true
+benchmarks/pai-bench/releases/v1.0/data/profiles/*.json linguist-generated=true
+benchmarks/pai-bench/releases/v1.0/data/decoupled-index.json linguist-generated=true
+benchmarks/pai-bench/releases/v1.0/data/population.json linguist-generated=true
+benchmarks/pai-bench/releases/v1.0/data/source-prototypes.json linguist-generated=true

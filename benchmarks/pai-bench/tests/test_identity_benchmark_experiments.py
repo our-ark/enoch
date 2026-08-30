@@ -9,7 +9,6 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
-REPO_ROOT = ROOT.parents[1]
 FIXTURES = ROOT / "tests" / "fixtures"
 
 from identity_benchmark.experiments import (
@@ -350,7 +349,7 @@ class IdentityBenchmarkExperimentTests(unittest.TestCase):
             ("test-decoupled-experiment.json", 4, 24, 6),
             ("source-challenge-decoupled-experiment.json", 4, 24, 6),
         )
-        release = REPO_ROOT / "benchmarks" / "pai-bench" / "v1.0"
+        release = ROOT / "releases" / "v1.0" / "data"
         for relative, batch_size, total_runs, total_batches in cases:
             with self.subTest(task=relative):
                 plan = plan_experiment(

@@ -7,9 +7,25 @@ PAI-Bench v1.0 contains 24 synthetic identities in 12 matched counterfactual
 pairs, divided into development, frozen factorial-test, and frozen
 source-challenge splits. Every identity uses the same 32 question templates.
 
+The folder is self-contained: it includes the installable Python package,
+tests, schemas, documentation, release generator, and frozen public data. It
+can be extracted from Enoch without importing the Enoch agent package.
+
+## Install
+
+From the Enoch repository root:
+
+```bash
+python3 -m pip install ./benchmarks/pai-bench
+```
+
+The package exposes the `identity-benchmark` and
+`identity-benchmark-replay` commands. The checkout-local launchers under
+`bin/` select Python 3.11 or newer without requiring an installation.
+
 ## Release layout
 
-The frozen release is stored under [`v1.0/`](v1.0/):
+The frozen release is stored under [`releases/v1.0/data/`](releases/v1.0/data/):
 
 - `probe-suite.json`: the shared question templates;
 - `identities/`: portable identity contracts without benchmark questions;
@@ -27,7 +43,7 @@ separate public benchmark versions. The public release version is recorded in
 ## Verify the release
 
 ```bash
-bin/pai-bench-release --check
+benchmarks/pai-bench/bin/release --check
 ```
 
 ## Run a split
@@ -39,7 +55,7 @@ untracked working directory and replace `instance_command` and, when needed,
 not change the identities, probe suite, bindings, split membership, or rubric.
 
 ```bash
-bin/identity-benchmark matrix \
+benchmarks/pai-bench/bin/identity-benchmark matrix \
   .pai-bench/experiments/test.json \
   --output-dir .pai-bench/reports/pai-bench-v1-test \
   --resume
@@ -47,3 +63,11 @@ bin/identity-benchmark matrix \
 
 Use the development split for pipeline work. Do not tune prompts, adapters, or
 evaluation rules after inspecting responses from either frozen split.
+
+## Adapter environment
+
+Experiment processes receive `IDENTITY_BENCHMARK_STATE_HOME`,
+`IDENTITY_BENCHMARK_MODEL`, `IDENTITY_BENCHMARK_REASONING_EFFORT`,
+`IDENTITY_BENCHMARK_IDENTITY_MODE`, and `IDENTITY_BENCHMARK_RUN_ID`.
+Evaluator commands additionally receive the documented
+`IDENTITY_BENCHMARK_EVALUATOR_*` variables.

@@ -9,7 +9,6 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
-REPO_ROOT = ROOT.parents[1]
 
 from identity_benchmark.contracts import (
     BenchmarkRequest,
@@ -32,12 +31,12 @@ from identity_benchmark.probe_suites import (
 )
 
 
-SUITE = REPO_ROOT / "benchmarks" / "pai-bench" / "v1.0"
+SUITE = ROOT / "releases" / "v1.0" / "data"
 INDEX = SUITE / "population.json"
 PROTOCOL = SUITE / "protocol.json"
 DECOUPLED_INDEX = SUITE / "decoupled-index.json"
 PROBE_SUITE = SUITE / "probe-suite.json"
-VERSION = SUITE.parent / "VERSION"
+VERSION = ROOT / "VERSION"
 
 
 class PaiBenchTests(unittest.TestCase):
@@ -77,10 +76,10 @@ class PaiBenchTests(unittest.TestCase):
         result = subprocess.run(
             [
                 sys.executable,
-                str(REPO_ROOT / "tools" / "build_pai_bench.py"),
+                str(ROOT / "tools" / "build_release.py"),
                 "--check",
             ],
-            cwd=REPO_ROOT,
+            cwd=ROOT,
             text=True,
             capture_output=True,
             check=False,

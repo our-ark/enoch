@@ -1,5 +1,5 @@
 {
-  "$schema": "../../../../specs/identity-benchmark-experiment.schema.json",
+  "$schema": "../../specs/identity-benchmark-experiment.schema.json",
   "schema_version": 1,
   "experiment_id": "model-evaluator-smoke-v1",
   "profile": "synthetic-profile.json",

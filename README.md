@@ -43,10 +43,10 @@ Evolution candidate pathways.
 
 Enoch also hosts [PAI-Bench v1.0](benchmarks/pai-bench/), the frozen public
 benchmark for persistent identity in deployed AI agents. Its independent
-[`our-ark-pai-bench`](libraries/pai-bench/) library provides provider-neutral
+[`our-ark-pai-bench`](benchmarks/pai-bench/) package provides provider-neutral
 target and evaluator interfaces, experiment matrices, deterministic scoring,
 replay, and clustered-bootstrap analysis. See the
-[benchmark guide](docs/identity-benchmark.md) for the protocol and adapter
+[benchmark guide](benchmarks/pai-bench/docs/protocol.md) for the protocol and adapter
 contract.
 
 ## Why Enoch Is Different
