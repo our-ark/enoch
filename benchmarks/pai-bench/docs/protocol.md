@@ -6,7 +6,7 @@ target from the questions and evaluator-private scoring rules.
 
 The public v1.0 release contains 24 synthetic identities in 12 matched pairs,
 three prespecified splits, and 32 shared probe templates. See
-[`benchmarks/pai-bench/`](../benchmarks/pai-bench/).
+[the package README](../README.md).
 
 ## Install the runner
 
@@ -46,8 +46,7 @@ JSON request to standard input:
   "protocol_version": 1,
   "profile_id": "profile-001",
   "probe_id": "designation-atomic",
-  "messages": [{"role": "user", "content": "Identify yourself."}],
-  "after_response": null
+  "messages": [{"role": "user", "content": "Identify yourself."}]
 }
 ```
 
@@ -65,6 +64,32 @@ Adapters receive the selected model, reasoning effort, isolated state path,
 identity mode, and run ID through `IDENTITY_BENCHMARK_*` environment
 variables. The interface can wrap a local process, HTTP endpoint, message
 transport, or another agent harness.
+
+The `{profile}` command placeholder always resolves to the identity-only input
+profile in decoupled experiments. Compiled probes, expectations, reference
+statements, and private bindings remain inside the benchmark runner and
+evaluator.
+
+If a probe prescribes an authorized state change, the runner first collects
+the target response and then invokes the same adapter with a separate control
+request:
+
+```json
+{
+  "protocol_version": 1,
+  "operation": "apply_transition",
+  "profile_id": "profile-001",
+  "probe_id": "authorized-correction",
+  "transition": {
+    "type": "replace-agent-identity",
+    "agent_identity": {"schema_version": 1}
+  }
+}
+```
+
+The adapter applies the transition without exposing it to the inference call
+and returns `{"protocol_version": 1, "applied": true}`. The ordinary response
+request never contains transition or scoring data.
 
 ## Evaluator interface
 
@@ -102,7 +127,8 @@ The development split permits pipeline work. The factorial-test and
 source-challenge splits are frozen. Do not tune prompts, adapters, or judging
 rules after inspecting frozen responses. `protocol.json` records this policy,
 and `benchmarks/pai-bench/bin/release --check` verifies every generated release
-file.
+file. Resume and experiment analysis also recompute report aggregates from the
+saved per-probe results and reject mismatches.
 
 The retained `identity-publication-v4.1` strings are internal provenance IDs
 for the freeze that became public PAI-Bench v1.0; they are not separate public

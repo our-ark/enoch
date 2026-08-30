@@ -13,6 +13,7 @@ sys.path.insert(0, str(ROOT / "src"))
 from identity_benchmark.contracts import (
     BenchmarkRequest,
     InstanceResponse,
+    TransitionRequest,
     load_benchmark_profile,
 )
 from identity_benchmark.experiments import load_experiment_spec
@@ -45,6 +46,19 @@ class PaiBenchTests(unittest.TestCase):
             VERSION.read_text(encoding="utf-8").strip(),
             RELEASE_VERSION,
         )
+
+    def test_release_schema_references_are_self_contained(self) -> None:
+        self.assertTrue((ROOT / "specs" / "ai-agent-identity.schema.json").is_file())
+        for path in SUITE.rglob("*.json"):
+            value = _load(path)
+            for reference in _schema_references(value):
+                if not reference.startswith("."):
+                    continue
+                resolved = (path.parent / reference).resolve()
+                self.assertTrue(
+                    resolved.is_file(),
+                    f"{path} references missing schema {resolved}",
+                )
 
     def test_decoupled_sources_compile_to_the_frozen_profile_snapshots(self) -> None:
         index = _load(DECOUPLED_INDEX)
@@ -313,6 +327,9 @@ class _ExpectationOracle:
     def respond(self, request: BenchmarkRequest) -> InstanceResponse:
         return InstanceResponse(response=self.answers[request.probe_id])
 
+    def apply_transition(self, request: TransitionRequest) -> None:
+        del request
+
 
 class _IdentityBlindAgent:
     instance_id = "publication-v4-negative-control"
@@ -320,6 +337,9 @@ class _IdentityBlindAgent:
     def respond(self, request: BenchmarkRequest) -> InstanceResponse:
         del request
         return InstanceResponse(response="I will handle this thoughtfully.")
+
+    def apply_transition(self, request: TransitionRequest) -> None:
+        del request
 
 
 def _oracle_answer(probe) -> str:
@@ -356,6 +376,18 @@ def _first_profile():
 
 def _load(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _schema_references(value: object):
+    if isinstance(value, dict):
+        schema = value.get("$schema")
+        if isinstance(schema, str):
+            yield schema
+        for item in value.values():
+            yield from _schema_references(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _schema_references(item)
 
 
 if __name__ == "__main__":

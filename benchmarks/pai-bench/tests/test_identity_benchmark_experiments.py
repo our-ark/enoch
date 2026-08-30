@@ -23,6 +23,7 @@ from identity_benchmark.experiments import (
 
 PROFILE = FIXTURES / "synthetic-profile.json"
 INSTANCE = FIXTURES / "synthetic-instance.py"
+PRIVACY_INSTANCE = FIXTURES / "privacy-instance.py"
 VECTOR_NORTH = FIXTURES / "counterfactual" / "vector-north.json"
 VECTOR_SOUTH = VECTOR_NORTH.with_name("vector-south.json")
 
@@ -105,6 +106,116 @@ class IdentityBenchmarkExperimentTests(unittest.TestCase):
         self.assertEqual(spec.body_root, ROOT)
         self.assertEqual(spec.profile_path, PROFILE)
         self.assertEqual(spec.identity_modes, ("none", "full-context"))
+
+    def test_decoupled_target_sees_only_identity_and_inference_messages(self) -> None:
+        with TemporaryDirectory() as directory:
+            temporary = Path(directory)
+            identity = temporary / "identity.json"
+            suite = temporary / "suite.json"
+            bindings = temporary / "bindings.json"
+            manifest = temporary / "experiment.json"
+            identity.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "profile_id": "identity-a",
+                        "statements": [
+                            {"id": "designation", "content": "I am ORBIT-A."}
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            suite.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "suite_id": "privacy-suite",
+                        "variables": [],
+                        "probes": [
+                            {
+                                "id": "designation",
+                                "dimension": "recognition",
+                                "messages": [
+                                    {"role": "user", "content": "Identify yourself."}
+                                ],
+                                "tags": ["identity-fact"],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            bindings.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "suite_id": "privacy-suite",
+                        "profile_id": "identity-a",
+                        "variables": {},
+                        "oracles": {
+                            "designation": {
+                                "expectations": [
+                                    {
+                                        "type": "exact",
+                                        "value": "ORBIT-A",
+                                        "gate": True,
+                                    }
+                                ],
+                                "reference_statements": [
+                                    {
+                                        "id": "private-reference",
+                                        "content": "The private answer is ORBIT-A.",
+                                    }
+                                ],
+                                "after_response": {
+                                    "type": "replace-agent-identity",
+                                    "agent_identity": {"schema_version": 1},
+                                },
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "experiment_id": "privacy-boundary",
+                        "profile": str(identity),
+                        "probe_suite": str(suite),
+                        "probe_bindings": {"identity-a": str(bindings)},
+                        "body_root": str(ROOT),
+                        "instance_command": [
+                            sys.executable,
+                            str(PRIVACY_INSTANCE),
+                            "--profile",
+                            "{profile}",
+                        ],
+                        "models": ["model-a"],
+                        "reasoning_efforts": ["medium"],
+                        "identity_modes": ["installed"],
+                        "timeout_seconds": 10,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            report = run_experiment(
+                load_experiment_spec(manifest), temporary / "reports"
+            )
+            metadata = report.runs[0].report.results[0].metadata
+
+        self.assertEqual(report.runs[0].report.score, 1.0)
+        self.assertEqual(metadata["profile_path"], str(identity.resolve()))
+        self.assertTrue(
+            {"probes", "expectations", "reference_statements"}.isdisjoint(
+                metadata["profile_keys"]
+            )
+        )
+        self.assertNotIn("after_response", metadata["request_keys"])
+        self.assertNotIn("transition", metadata["request_keys"])
 
     def test_multi_profile_matrix_reports_counterfactual_sensitivity(self) -> None:
         with TemporaryDirectory() as directory:
@@ -305,6 +416,31 @@ class IdentityBenchmarkExperimentTests(unittest.TestCase):
 
             with self.assertRaisesRegex(ExperimentError, "fingerprint"):
                 run_experiment(spec, output, batch_size=1, resume=True)
+
+    def test_resume_rejects_tampered_report_aggregates(self) -> None:
+        fields = (
+            ("score", None),
+            ("dimension_scores", "recognition"),
+            ("metric_scores", "identity_recall"),
+        )
+        for field, key in fields:
+            with self.subTest(field=field), TemporaryDirectory() as directory:
+                temporary = Path(directory)
+                spec = load_experiment_spec(self._manifest(temporary))
+                output = temporary / "reports"
+                run_experiment(spec, output, batch_size=1)
+                path = output / "runs" / "run-0001.json"
+                value = json.loads(path.read_text(encoding="utf-8"))
+                if key is None:
+                    value["report"][field] = 0.25
+                else:
+                    value["report"][field][key] = 0.25
+                path.write_text(json.dumps(value), encoding="utf-8")
+
+                with self.assertRaisesRegex(
+                    ExperimentError, "report integrity failed"
+                ):
+                    run_experiment(spec, output, batch_size=1, resume=True)
 
     def test_resume_retries_a_saved_run_with_probe_errors(self) -> None:
         with TemporaryDirectory() as directory:

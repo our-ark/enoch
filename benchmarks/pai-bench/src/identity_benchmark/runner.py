@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import UTC, datetime
+import math
 
 from identity_benchmark.adapters import AgentAdapter, InstanceError
 from identity_benchmark.contracts import (
@@ -11,6 +12,7 @@ from identity_benchmark.contracts import (
     ExpectationResult,
     Probe,
     ProbeResult,
+    TransitionRequest,
 )
 from identity_benchmark.evaluators import (
     DeterministicEvaluator,
@@ -52,6 +54,10 @@ METRIC_TAGS = {
 HEADLINE_EXCLUDED_TAGS = {"safety-boundary"}
 
 
+class ReportIntegrityError(ValueError):
+    """Raised when saved aggregate scores disagree with their probe results."""
+
+
 def run_benchmark(
     profile: BenchmarkProfile,
     instance: AgentAdapter,
@@ -71,10 +77,22 @@ def run_benchmark(
             profile_id=profile.profile_id,
             probe_id=probe.id,
             messages=probe.messages,
-            after_response=probe.after_response,
         )
         try:
             response = instance.respond(request)
+            if probe.after_response is not None:
+                apply_transition = getattr(instance, "apply_transition", None)
+                if apply_transition is None:
+                    raise InstanceError(
+                        "Instance adapter does not support state transitions."
+                    )
+                apply_transition(
+                    TransitionRequest(
+                        profile_id=profile.profile_id,
+                        probe_id=probe.id,
+                        transition=probe.after_response,
+                    )
+                )
         except InstanceError as error:
             results.append(
                 ProbeResult(
@@ -152,6 +170,62 @@ def run_benchmark(
         dimension_scores=_dimension_scores(materialized),
         metric_scores=_metric_scores(profile, materialized),
         results=materialized,
+    )
+
+
+def validate_report_integrity(
+    profile: BenchmarkProfile,
+    report: BenchmarkReport,
+) -> None:
+    """Verify that a saved report is derived from the frozen profile and results."""
+    if report.profile_id != profile.profile_id:
+        raise ReportIntegrityError(
+            "report profile does not match the benchmark profile"
+        )
+    expected_probes = tuple(profile.probes)
+    results = report.results
+    expected_ids = tuple(probe.id for probe in expected_probes)
+    actual_ids = tuple(result.probe_id for result in results)
+    if actual_ids != expected_ids:
+        raise ReportIntegrityError(
+            "probe result order or membership does not match the benchmark profile"
+        )
+    for probe, result in zip(expected_probes, results, strict=True):
+        if result.dimension != probe.dimension:
+            raise ReportIntegrityError(
+                f"probe {probe.id!r} dimension does not match the benchmark profile"
+            )
+        if not math.isclose(result.weight, probe.weight, rel_tol=0.0, abs_tol=1e-12):
+            raise ReportIntegrityError(
+                f"probe {probe.id!r} weight does not match the benchmark profile"
+            )
+
+    expected_score = _headline_score(profile, results)
+    expected_dimensions = _dimension_scores(results)
+    expected_metrics = _metric_scores(profile, results)
+    if not _score_matches(report.score, expected_score):
+        raise ReportIntegrityError(
+            "headline score does not match the saved per-probe results"
+        )
+    if not _score_mapping_matches(report.dimension_scores, expected_dimensions):
+        raise ReportIntegrityError(
+            "dimension scores do not match the saved per-probe results"
+        )
+    if not _score_mapping_matches(report.metric_scores, expected_metrics):
+        raise ReportIntegrityError(
+            "metric scores do not match the saved per-probe results"
+        )
+
+
+def _score_matches(actual: float, expected: float) -> bool:
+    return math.isclose(actual, expected, rel_tol=0.0, abs_tol=1e-12)
+
+
+def _score_mapping_matches(
+    actual: dict[str, float], expected: dict[str, float]
+) -> bool:
+    return set(actual) == set(expected) and all(
+        _score_matches(actual[key], expected[key]) for key in expected
     )
 
 

@@ -6,15 +6,22 @@ from identity_benchmark.adapters import (
     CommandInstance,
     InstanceAdapter,
     InstanceError,
+    TransitionAdapter,
 )
 from identity_benchmark.contracts import (
     BenchmarkProfile,
     BenchmarkProfileError,
     BenchmarkReport,
+    TransitionRequest,
     load_benchmark_profile,
     parse_benchmark_request,
+    parse_transition_request,
 )
-from identity_benchmark.runner import run_benchmark
+from identity_benchmark.runner import (
+    ReportIntegrityError,
+    run_benchmark,
+    validate_report_integrity,
+)
 from identity_benchmark.scoring import DeterministicScorer, ExpectationScorer
 from identity_benchmark.evaluators import (
     CommandEvaluator,
@@ -105,6 +112,7 @@ __all__ = [
     "ProbeBindings",
     "ProbeSuite",
     "ProbeSuiteError",
+    "ReportIntegrityError",
     "StatisticalAnalysisError",
     "analyze_experiment",
     "compile_benchmark_profile",
@@ -119,9 +127,13 @@ __all__ = [
     "load_probe_suite",
     "load_saved_experiment_runs",
     "parse_benchmark_request",
+    "parse_transition_request",
     "passes_counterfactual_gates",
     "run_benchmark",
     "run_experiment",
+    "TransitionRequest",
+    "TransitionAdapter",
+    "validate_report_integrity",
     "write_population",
     "write_pai_bench",
     "write_statistical_analysis",

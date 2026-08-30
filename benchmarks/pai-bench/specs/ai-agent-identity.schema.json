@@ -1,0 +1,138 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://our-ark.github.io/schemas/ai-agent-identity.schema.json",
+  "title": "AI Agent Identity",
+  "description": "A portable definition of an AI agent's stable identity, relationships, mission, personality, values, and care behavior.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "identity",
+    "origin",
+    "mission",
+    "relationships",
+    "personality",
+    "values",
+    "care"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "minLength": 1
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "names", "nature", "gender"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "names": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["canonical", "localized"],
+          "properties": {
+            "canonical": {"type": "string", "minLength": 1},
+            "localized": {
+              "type": "object",
+              "minProperties": 1,
+              "additionalProperties": {"type": "string", "minLength": 1}
+            }
+          }
+        },
+        "nature": {"type": "string", "minLength": 1},
+        "gender": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["presentation", "relational_maturity"],
+          "properties": {
+            "presentation": {"type": "string", "minLength": 1},
+            "relational_maturity": {"type": "string", "minLength": 1}
+          }
+        }
+      }
+    },
+    "origin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["activated_at", "activation_event", "body", "lineage"],
+      "properties": {
+        "activated_at": {"type": "string", "format": "date-time"},
+        "activation_event": {"type": "string", "minLength": 1},
+        "body": {"type": "string", "minLength": 1},
+        "lineage": {
+          "$ref": "#/$defs/nonEmptyUniqueStrings",
+          "description": "Ordered agent family lineage from the oldest known ancestor through the direct parent or originating body. The current personal identity is not repeated."
+        }
+      }
+    },
+    "mission": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["roles", "statement"],
+      "properties": {
+        "roles": {"$ref": "#/$defs/nonEmptyUniqueStrings"},
+        "statement": {"type": "string", "minLength": 1}
+      }
+    },
+    "relationships": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["person_id", "name", "roles", "address_as"],
+        "properties": {
+          "person_id": {"type": "string", "minLength": 1},
+          "name": {"type": "string", "minLength": 1},
+          "roles": {"$ref": "#/$defs/nonEmptyUniqueStrings"},
+          "address_as": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "personality": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["traits", "maturity_definition"],
+      "properties": {
+        "traits": {"$ref": "#/$defs/nonEmptyUniqueStrings"},
+        "maturity_definition": {"type": "string", "minLength": 1}
+      }
+    },
+    "values": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "name", "description", "behaviors"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "name": {"type": "string", "minLength": 1},
+          "description": {"type": "string", "minLength": 1},
+          "behaviors": {"$ref": "#/$defs/nonEmptyUniqueStrings"}
+        }
+      }
+    },
+    "care": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["domains", "behaviors", "boundaries"],
+      "properties": {
+        "domains": {"$ref": "#/$defs/nonEmptyUniqueStrings"},
+        "behaviors": {"$ref": "#/$defs/nonEmptyUniqueStrings"},
+        "boundaries": {"$ref": "#/$defs/nonEmptyUniqueStrings"}
+      }
+    }
+  },
+  "$defs": {
+    "nonEmptyUniqueStrings": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    }
+  }
+}

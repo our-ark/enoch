@@ -20,7 +20,11 @@ from identity_benchmark.contracts import (
     load_benchmark_profile,
     parse_benchmark_report,
 )
-from identity_benchmark.runner import run_benchmark
+from identity_benchmark.runner import (
+    ReportIntegrityError,
+    run_benchmark,
+    validate_report_integrity,
+)
 from identity_benchmark.evaluators import CommandEvaluator
 from identity_benchmark.probe_suites import (
     ProbeSuiteError,
@@ -650,6 +654,12 @@ def _load_existing_runs(
                 + ", ".join(mismatches)
                 + "."
             )
+        try:
+            validate_report_integrity(planned.profile, run.report)
+        except ReportIntegrityError as error:
+            raise ExperimentError(
+                f"Saved run {run_id} report integrity failed: {error}."
+            ) from error
         loaded[run_id] = run
     return loaded
 
@@ -891,13 +901,9 @@ def _run_condition(
     repetition: int,
     fingerprint: str = "",
 ) -> ExperimentRun:
-    runtime_profile_path = profile_path
-    if spec.probe_suite_path is not None:
-        runtime_profile_path = state_home / "compiled-profile.json"
-        _write_json(runtime_profile_path, profile.to_dict())
     replacements = {
         "body_root": str(spec.body_root),
-        "profile": str(runtime_profile_path),
+        "profile": str(profile_path),
         "state_home": str(state_home),
         "identity_mode": identity_mode,
         "run_id": run_id,

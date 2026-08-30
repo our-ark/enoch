@@ -21,10 +21,12 @@ from identity_benchmark.contracts import (
     BenchmarkProfileError,
     BenchmarkRequest,
     InstanceResponse,
+    TransitionRequest,
     load_benchmark_profile,
     parse_benchmark_request,
     parse_benchmark_profile,
     parse_instance_response,
+    parse_transition_request,
 )
 from identity_benchmark.runner import run_benchmark
 from identity_benchmark.rescore import RescoreError, rescore_saved_report
@@ -91,8 +93,8 @@ class IdentityBenchmarkTests(unittest.TestCase):
         with self.assertRaisesRegex(BenchmarkProfileError, "at least one identity aspect"):
             parse_benchmark_profile(value)
 
-    def test_request_rejects_unknown_state_transition(self) -> None:
-        with self.assertRaisesRegex(BenchmarkProfileError, "type must be one of"):
+    def test_response_request_rejects_transition_control_data(self) -> None:
+        with self.assertRaisesRegex(BenchmarkProfileError, "unknown fields: after_response"):
             parse_benchmark_request(
                 {
                     "protocol_version": 1,
@@ -105,6 +107,73 @@ class IdentityBenchmarkTests(unittest.TestCase):
                     },
                 }
             )
+
+    def test_transition_request_uses_a_separate_control_protocol(self) -> None:
+        request = parse_transition_request(
+            {
+                "protocol_version": 1,
+                "operation": "apply_transition",
+                "profile_id": "profile-1",
+                "probe_id": "probe-1",
+                "transition": {
+                    "type": "replace-agent-identity",
+                    "agent_identity": {"schema_version": 1},
+                },
+            }
+        )
+
+        self.assertEqual(request.profile_id, "profile-1")
+        self.assertEqual(request.transition.type, "replace-agent-identity")
+
+        value = request.to_dict()
+        value["transition"]["type"] = "append-memory"
+        with self.assertRaisesRegex(BenchmarkProfileError, "type must be one of"):
+            parse_transition_request(value)
+
+    def test_runner_applies_transition_only_after_collecting_the_response(self) -> None:
+        profile = parse_benchmark_profile(
+            {
+                "schema_version": 1,
+                "profile_id": "transition-order",
+                "statements": [{"id": "designation", "content": "ORBIT-A"}],
+                "probes": [
+                    {
+                        "id": "before-update",
+                        "dimension": "governance",
+                        "messages": [{"role": "user", "content": "Current state?"}],
+                        "expectations": [
+                            {"type": "exact", "value": "BEFORE", "gate": True}
+                        ],
+                        "after_response": {
+                            "type": "replace-agent-identity",
+                            "agent_identity": {"schema_version": 1},
+                        },
+                    },
+                    {
+                        "id": "after-update",
+                        "dimension": "retention",
+                        "messages": [{"role": "user", "content": "Current state?"}],
+                        "expectations": [
+                            {"type": "exact", "value": "AFTER", "gate": True}
+                        ],
+                    },
+                ],
+            }
+        )
+        instance = _TransitionTrackingInstance()
+
+        report = run_benchmark(profile, instance)
+
+        self.assertEqual(report.score, 1.0)
+        self.assertEqual(
+            [event[0] for event in instance.events],
+            ["respond", "apply_transition", "respond"],
+        )
+        self.assertNotIn("after_response", instance.events[0][1])
+        self.assertNotIn("transition", instance.events[0][1])
+        self.assertEqual(
+            instance.events[1][1]["operation"], "apply_transition"
+        )
 
     def test_command_instance_runs_every_probe_in_isolation(self) -> None:
         profile = load_benchmark_profile(PROFILE)
@@ -276,6 +345,22 @@ class _FailingInstance:
     def respond(self, request: BenchmarkRequest) -> InstanceResponse:
         del request
         raise InstanceError("instance unavailable")
+
+
+class _TransitionTrackingInstance:
+    instance_id = "transition-tracking-instance"
+
+    def __init__(self) -> None:
+        self.events: list[tuple[str, dict]] = []
+        self.updated = False
+
+    def respond(self, request: BenchmarkRequest) -> InstanceResponse:
+        self.events.append(("respond", request.to_dict()))
+        return InstanceResponse(response="AFTER" if self.updated else "BEFORE")
+
+    def apply_transition(self, request: TransitionRequest) -> None:
+        self.events.append(("apply_transition", request.to_dict()))
+        self.updated = True
 
 
 if __name__ == "__main__":

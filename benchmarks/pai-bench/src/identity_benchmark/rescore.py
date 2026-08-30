@@ -10,6 +10,7 @@ from identity_benchmark.contracts import (
     BenchmarkRequest,
     InstanceResponse,
     JsonValue,
+    TransitionRequest,
 )
 from identity_benchmark.runner import run_benchmark
 
@@ -30,6 +31,10 @@ class RecordedInstance:
             raise RescoreError(
                 f"saved report has no response for probe {request.probe_id!r}"
             ) from error
+
+    def apply_transition(self, request: TransitionRequest) -> None:
+        # Responses are already recorded after the original control-plane update.
+        del request
 
 
 def rescore_saved_report(profile: BenchmarkProfile, path: Path):

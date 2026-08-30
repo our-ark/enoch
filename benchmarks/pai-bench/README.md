@@ -71,3 +71,8 @@ Experiment processes receive `IDENTITY_BENCHMARK_STATE_HOME`,
 `IDENTITY_BENCHMARK_IDENTITY_MODE`, and `IDENTITY_BENCHMARK_RUN_ID`.
 Evaluator commands additionally receive the documented
 `IDENTITY_BENCHMARK_EVALUATOR_*` variables.
+
+In decoupled experiments, `{profile}` exposes only the identity contract to the
+target adapter. Questions and private scoring bindings stay runner-side. State
+transitions use a separate adapter control call after inference; see the
+[protocol](docs/protocol.md).

@@ -154,7 +154,6 @@ class BenchmarkRequest:
     profile_id: str
     probe_id: str
     messages: tuple[Message, ...]
-    after_response: StateTransition | None = None
     protocol_version: int = INSTANCE_PROTOCOL_VERSION
 
     def to_dict(self) -> dict[str, JsonValue]:
@@ -164,9 +163,24 @@ class BenchmarkRequest:
             "probe_id": self.probe_id,
             "messages": [message.to_dict() for message in self.messages],
         }
-        if self.after_response is not None:
-            value["after_response"] = self.after_response.to_dict()
         return value
+
+
+@dataclass(frozen=True)
+class TransitionRequest:
+    profile_id: str
+    probe_id: str
+    transition: StateTransition
+    protocol_version: int = INSTANCE_PROTOCOL_VERSION
+
+    def to_dict(self) -> dict[str, JsonValue]:
+        return {
+            "protocol_version": self.protocol_version,
+            "operation": "apply_transition",
+            "profile_id": self.profile_id,
+            "probe_id": self.probe_id,
+            "transition": self.transition.to_dict(),
+        }
 
 
 @dataclass(frozen=True)
@@ -397,7 +411,6 @@ def parse_benchmark_request(value: object) -> BenchmarkRequest:
         root,
         "benchmark request",
         required={"protocol_version", "profile_id", "probe_id", "messages"},
-        optional={"after_response"},
     )
     if root["protocol_version"] != INSTANCE_PROTOCOL_VERSION:
         raise BenchmarkProfileError(
@@ -418,10 +431,36 @@ def parse_benchmark_request(value: object) -> BenchmarkRequest:
         profile_id=_identifier(root["profile_id"], "benchmark request.profile_id"),
         probe_id=_identifier(root["probe_id"], "benchmark request.probe_id"),
         messages=messages,
-        after_response=(
-            _state_transition(root["after_response"], "benchmark request.after_response")
-            if "after_response" in root
-            else None
+    )
+
+
+def parse_transition_request(value: object) -> TransitionRequest:
+    root = _mapping(value, "transition request")
+    _keys(
+        root,
+        "transition request",
+        required={
+            "protocol_version",
+            "operation",
+            "profile_id",
+            "probe_id",
+            "transition",
+        },
+    )
+    if root["protocol_version"] != INSTANCE_PROTOCOL_VERSION:
+        raise BenchmarkProfileError(
+            "transition request protocol_version must be "
+            f"{INSTANCE_PROTOCOL_VERSION}; received {root['protocol_version']!r}."
+        )
+    if root["operation"] != "apply_transition":
+        raise BenchmarkProfileError(
+            "transition request.operation must be 'apply_transition'."
+        )
+    return TransitionRequest(
+        profile_id=_identifier(root["profile_id"], "transition request.profile_id"),
+        probe_id=_identifier(root["probe_id"], "transition request.probe_id"),
+        transition=_state_transition(
+            root["transition"], "transition request.transition"
         ),
     )
 
