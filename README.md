@@ -39,6 +39,16 @@ record the evaluated artifacts, citation, reproduction steps, and the
 difference between the paper's six body-change origins and Enoch's four
 Evolution candidate pathways.
 
+## Persistent Agent Identity Benchmark
+
+Enoch also hosts [PAI-Bench v1.0](benchmarks/pai-bench/), the frozen public
+benchmark for persistent identity in deployed AI agents. Its independent
+[`our-ark-pai-bench`](libraries/pai-bench/) library provides provider-neutral
+target and evaluator interfaces, experiment matrices, deterministic scoring,
+replay, and clustered-bootstrap analysis. See the
+[benchmark guide](docs/identity-benchmark.md) for the protocol and adapter
+contract.
+
 ## Why Enoch Is Different
 
 Memory changes what an agent remembers. Skills change how an agent works.

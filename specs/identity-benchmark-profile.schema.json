@@ -1,0 +1,125 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://our-ark.github.io/schemas/identity-benchmark-profile.schema.json",
+  "title": "Identity Benchmark Profile",
+  "description": "A provider-neutral contract containing stable identity statements and held-out evaluation probes.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "profile_id", "statements", "probes"],
+  "properties": {
+    "$schema": {"type": "string", "minLength": 1},
+    "schema_version": {"const": 1},
+    "profile_id": {"$ref": "#/$defs/identifier"},
+    "description": {"type": "string", "minLength": 1},
+    "agent_identity": {
+      "description": "Optional portable identity document installed into an agent instance before probes are sent.",
+      "$ref": "ai-agent-identity.schema.json"
+    },
+    "statements": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "content"],
+        "properties": {
+          "id": {"$ref": "#/$defs/identifier"},
+          "content": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "probes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/probe"}
+    }
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$"
+    },
+    "positiveNumber": {
+      "type": "number",
+      "exclusiveMinimum": 0
+    },
+    "message": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role", "content"],
+      "properties": {
+        "role": {"enum": ["system", "user", "assistant"]},
+        "content": {"type": "string", "minLength": 1}
+      }
+    },
+    "expectation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "value"],
+      "properties": {
+        "type": {"enum": ["exact", "contains", "excludes", "regex"]},
+        "value": {"type": "string", "minLength": 1},
+        "weight": {"$ref": "#/$defs/positiveNumber"},
+        "gate": {"type": "boolean", "default": false},
+        "aspect": {
+          "enum": ["identity", "format", "constraint"],
+          "default": "identity",
+          "description": "Score identity semantics in the headline result; report exact format and other deterministic observable constraints separately."
+        }
+      }
+    },
+    "stateTransition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "agent_identity"],
+      "properties": {
+        "type": {"const": "replace-agent-identity"},
+        "agent_identity": {"$ref": "ai-agent-identity.schema.json"}
+      }
+    },
+    "probe": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "dimension", "messages", "expectations"],
+      "properties": {
+        "id": {"$ref": "#/$defs/identifier"},
+        "dimension": {
+          "enum": [
+            "recognition",
+            "application",
+            "consistency",
+            "resistance",
+            "separation",
+            "retention",
+            "governance",
+            "capability"
+          ]
+        },
+        "messages": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/message"}
+        },
+        "expectations": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/expectation"}
+        },
+        "weight": {"$ref": "#/$defs/positiveNumber"},
+        "tags": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/identifier"}
+        },
+        "after_response": {"$ref": "#/$defs/stateTransition"},
+        "reference_statements": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "description": "Evaluator-private stable reference statements for this probe after a declared state transition.",
+          "items": {"$ref": "#/$defs/statement"}
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,112 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://our-ark.github.io/schemas/identity-benchmark-experiment.schema.json",
+  "title": "Identity Benchmark Experiment",
+  "description": "A local matrix of model, reasoning, identity-delivery, and repetition conditions.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "experiment_id",
+    "body_root",
+    "instance_command",
+    "models",
+    "reasoning_efforts",
+    "identity_modes"
+  ],
+  "oneOf": [
+    {"required": ["profile"], "not": {"required": ["profiles"]}},
+    {"required": ["profiles"], "not": {"required": ["profile"]}}
+  ],
+  "dependentRequired": {
+    "probe_suite": ["probe_bindings"],
+    "probe_bindings": ["probe_suite"]
+  },
+  "properties": {
+    "$schema": {"type": "string", "minLength": 1},
+    "schema_version": {"const": 1},
+    "experiment_id": {"$ref": "#/$defs/identifier"},
+    "profile": {"type": "string", "minLength": 1},
+    "population": {"type": "string", "minLength": 1},
+    "profiles": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "counterfactual_pairs": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "array",
+        "prefixItems": [
+          {"$ref": "#/$defs/identifier"},
+          {"$ref": "#/$defs/identifier"}
+        ],
+        "items": false,
+        "minItems": 2,
+        "maxItems": 2
+      }
+    },
+    "probe_suite": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Optional shared question suite used with identity-only profile files."
+    },
+    "probe_bindings": {
+      "type": "object",
+      "description": "Profile-ID to private oracle-binding file used with probe_suite.",
+      "additionalProperties": {"type": "string", "minLength": 1}
+    },
+    "body_root": {"type": "string", "minLength": 1},
+    "instance_command": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "models": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "reasoning_efforts": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "identity_modes": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "evaluator": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "harness", "command", "model", "reasoning_effort", "rubric_version"],
+      "properties": {
+        "id": {"$ref": "#/$defs/identifier"},
+        "harness": {"type": "string", "minLength": 1},
+        "command": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "model": {"type": "string", "minLength": 1},
+        "reasoning_effort": {"type": "string", "minLength": 1},
+        "rubric_version": {"$ref": "#/$defs/identifier"},
+        "timeout_seconds": {"type": "number", "exclusiveMinimum": 0}
+      }
+    },
+    "repetitions": {"type": "integer", "minimum": 1},
+    "timeout_seconds": {"type": "number", "exclusiveMinimum": 0}
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$"
+    }
+  }
+}

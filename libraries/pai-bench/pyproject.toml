@@ -1,0 +1,18 @@
+[project]
+name = "our-ark-pai-bench"
+version = "1.0.0"
+description = "Provider-neutral Persistent Agent Identity benchmark tooling."
+license = "Apache-2.0"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+identity-benchmark = "identity_benchmark.cli:main"
+identity-benchmark-replay = "identity_benchmark.replay:main"
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

@@ -1,0 +1,70 @@
+{
+  "$schema": "../../../specs/identity-benchmark-experiment.schema.json",
+  "body_root": "../../..",
+  "counterfactual_pairs": [
+    [
+      "population-p008-a-publication-v4",
+      "population-p008-b-publication-v4"
+    ],
+    [
+      "population-p016-a-publication-v4",
+      "population-p016-b-publication-v4"
+    ],
+    [
+      "population-p024-a-publication-v4",
+      "population-p024-b-publication-v4"
+    ],
+    [
+      "population-p032-a-publication-v4",
+      "population-p032-b-publication-v4"
+    ]
+  ],
+  "evaluator": {
+    "command": [
+      "{body_root}/bin/eve-benchmark-evaluator",
+      "--body-root",
+      "{body_root}"
+    ],
+    "harness": "codex-cli",
+    "id": "codex-sol-xhigh-v2",
+    "model": "gpt-5.6-sol",
+    "reasoning_effort": "xhigh",
+    "rubric_version": "pai-model-judge-v2",
+    "timeout_seconds": 600
+  },
+  "experiment_id": "identity-publication-v4-source-challenge",
+  "identity_modes": [
+    "installed"
+  ],
+  "instance_command": [
+    "{body_root}/bin/eve-benchmark-instance",
+    "--profile",
+    "{profile}",
+    "--identity-mode",
+    "{identity_mode}",
+    "--body-root",
+    "{body_root}"
+  ],
+  "models": [
+    "gpt-5.6-luna",
+    "gpt-5.6-terra",
+    "gpt-5.6-sol"
+  ],
+  "population": "population.json",
+  "profiles": [
+    "profiles/population-p008-a-publication-v4.json",
+    "profiles/population-p008-b-publication-v4.json",
+    "profiles/population-p016-a-publication-v4.json",
+    "profiles/population-p016-b-publication-v4.json",
+    "profiles/population-p024-a-publication-v4.json",
+    "profiles/population-p024-b-publication-v4.json",
+    "profiles/population-p032-a-publication-v4.json",
+    "profiles/population-p032-b-publication-v4.json"
+  ],
+  "reasoning_efforts": [
+    "medium"
+  ],
+  "repetitions": 1,
+  "schema_version": 1,
+  "timeout_seconds": 600
+}

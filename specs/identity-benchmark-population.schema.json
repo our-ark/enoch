@@ -1,0 +1,158 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://our-ark.github.io/schemas/identity-benchmark-population.schema.json",
+  "title": "Identity Benchmark Synthetic Population",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "generator_version",
+    "seed",
+    "population_size",
+    "profiles_per_category",
+    "probes_per_profile",
+    "categories",
+    "strata",
+    "source_policy",
+    "profiles",
+    "counterfactual_pairs",
+    "pilot"
+  ],
+  "properties": {
+    "$schema": {"type": "string", "minLength": 1},
+    "schema_version": {"const": 1},
+    "generator_version": {"$ref": "#/$defs/identifier"},
+    "source_population": {"type": "string", "minLength": 1},
+    "seed": {"type": "integer"},
+    "population_size": {"type": "integer", "minimum": 8, "multipleOf": 8},
+    "profiles_per_category": {"type": "integer", "minimum": 2},
+    "probes_per_profile": {"type": "integer", "minimum": 1},
+    "categories": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/identifier"}
+    },
+    "strata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["factorial", "source-inspired-composite"],
+      "properties": {
+        "factorial": {"type": "integer", "minimum": 0},
+        "source-inspired-composite": {"type": "integer", "minimum": 0}
+      }
+    },
+    "source_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "minimum_sources_per_composite",
+        "deceased_public_figures_only",
+        "profile_excludes_source_names",
+        "profile_excludes_source_dates_places_and_signature_events",
+        "source_personality_claimed"
+      ],
+      "properties": {
+        "minimum_sources_per_composite": {"type": "integer", "minimum": 2},
+        "deceased_public_figures_only": {"const": true},
+        "profile_excludes_source_names": {"const": true},
+        "profile_excludes_source_dates_places_and_signature_events": {"const": true},
+        "source_personality_claimed": {"const": false}
+      }
+    },
+    "profiles": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/profile"}
+    },
+    "counterfactual_pairs": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "array",
+        "prefixItems": [
+          {"$ref": "#/$defs/identifier"},
+          {"$ref": "#/$defs/identifier"}
+        ],
+        "minItems": 2,
+        "maxItems": 2
+      }
+    },
+    "pilot": {"$ref": "#/$defs/pilot"}
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$"
+    },
+    "profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "profile_id",
+        "path",
+        "pair_id",
+        "variant",
+        "category",
+        "stratum",
+        "prototype_mix"
+      ],
+      "properties": {
+        "profile_id": {"$ref": "#/$defs/identifier"},
+        "path": {"type": "string", "minLength": 1},
+        "pair_id": {"$ref": "#/$defs/identifier"},
+        "variant": {"enum": ["a", "b"]},
+        "category": {"$ref": "#/$defs/identifier"},
+        "stratum": {"enum": ["factorial", "source-inspired-composite"]},
+        "prototype_mix": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/identifier"}
+        },
+        "source_profile_id": {"$ref": "#/$defs/identifier"}
+      }
+    },
+    "pilot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "profile_ids",
+        "models",
+        "reasoning_efforts",
+        "identity_modes",
+        "repetitions",
+        "target_probe_completions",
+        "model_evaluator_completions"
+      ],
+      "properties": {
+        "profile_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/identifier"}
+        },
+        "models": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "reasoning_efforts": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "identity_modes": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "repetitions": {"type": "integer", "minimum": 1},
+        "target_probe_completions": {"type": "integer", "minimum": 1},
+        "model_evaluator_completions": {"type": "integer", "minimum": 1}
+      }
+    }
+  }
+}

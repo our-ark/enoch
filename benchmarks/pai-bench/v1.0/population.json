@@ -1,0 +1,378 @@
+{
+  "$schema": "../../../specs/identity-benchmark-population.schema.json",
+  "categories": [
+    "prosocial",
+    "neutral",
+    "antagonistic",
+    "conflicted"
+  ],
+  "counterfactual_pairs": [
+    [
+      "population-p002-a-publication-v4",
+      "population-p002-b-publication-v4"
+    ],
+    [
+      "population-p010-a-publication-v4",
+      "population-p010-b-publication-v4"
+    ],
+    [
+      "population-p018-a-publication-v4",
+      "population-p018-b-publication-v4"
+    ],
+    [
+      "population-p026-a-publication-v4",
+      "population-p026-b-publication-v4"
+    ],
+    [
+      "population-p003-a-publication-v4",
+      "population-p003-b-publication-v4"
+    ],
+    [
+      "population-p011-a-publication-v4",
+      "population-p011-b-publication-v4"
+    ],
+    [
+      "population-p019-a-publication-v4",
+      "population-p019-b-publication-v4"
+    ],
+    [
+      "population-p027-a-publication-v4",
+      "population-p027-b-publication-v4"
+    ],
+    [
+      "population-p008-a-publication-v4",
+      "population-p008-b-publication-v4"
+    ],
+    [
+      "population-p016-a-publication-v4",
+      "population-p016-b-publication-v4"
+    ],
+    [
+      "population-p024-a-publication-v4",
+      "population-p024-b-publication-v4"
+    ],
+    [
+      "population-p032-a-publication-v4",
+      "population-p032-b-publication-v4"
+    ]
+  ],
+  "generator_version": "identity-publication-v4.1",
+  "pilot": {
+    "identity_modes": [
+      "installed"
+    ],
+    "model_evaluator_completions": 1024,
+    "models": [
+      "gpt-5.6-luna"
+    ],
+    "profile_ids": [
+      "population-p002-a-publication-v4",
+      "population-p002-b-publication-v4",
+      "population-p010-a-publication-v4",
+      "population-p010-b-publication-v4",
+      "population-p018-a-publication-v4",
+      "population-p018-b-publication-v4",
+      "population-p026-a-publication-v4",
+      "population-p026-b-publication-v4"
+    ],
+    "reasoning_efforts": [
+      "low",
+      "medium",
+      "high",
+      "xhigh"
+    ],
+    "repetitions": 1,
+    "target_probe_completions": 1024
+  },
+  "population_size": 24,
+  "probes_per_profile": 32,
+  "profiles": [
+    {
+      "category": "prosocial",
+      "pair_id": "pair-002",
+      "path": "profiles/population-p002-a-publication-v4.json",
+      "profile_id": "population-p002-a-publication-v4",
+      "prototype_mix": [],
+      "source_profile_id": "population-p002-a-v1",
+      "stratum": "factorial",
+      "variant": "a"
+    },
+    {
+      "category": "prosocial",
+      "pair_id": "pair-002",
+      "path": "profiles/population-p002-b-publication-v4.json",
+      "profile_id": "population-p002-b-publication-v4",
+      "prototype_mix": [],
+      "source_profile_id": "population-p002-b-v1",
+      "stratum": "factorial",
+      "variant": "b"
+    },
+    {
+      "category": "neutral",
+      "pair_id": "pair-010",
+      "path": "profiles/population-p010-a-publication-v4.json",
+      "profile_id": "population-p010-a-publication-v4",
+      "prototype_mix": [],
+      "source_profile_id": "population-p010-a-v1",
+      "stratum": "factorial",
+      "variant": "a"
+    },
+    {
+      "category": "neutral",
+      "pair_id": "pair-010",
+      "path": "profiles/population-p010-b-publication-v4.json",
+      "profile_id": "population-p010-b-publication-v4",
+      "prototype_mix": [],
+      "source_profile_id": "population-p010-b-v1",
+      "stratum": "factorial",
+      "variant": "b"
+    },
+    {
+      "category": "antagonistic",
+      "pair_id": "pair-018",
+      "path": "profiles/population-p018-a-publication-v4.json",
+      "profile_id": "population-p018-a-publication-v4",
+      "prototype_mix": [],
+      "source_profile_id": "population-p018-a-v1",
+      "stratum": "factorial",
+      "variant": "a"
+    },
+    {
+      "category": "antagonistic",
+      "pair_id": "pair-018",
+      "path": "profiles/population-p018-b-publication-v4.json",
+      "profile_id": "population-p018-b-publication-v4",
+      "prototype_mix": [],
+      "source_profile_id": "population-p018-b-v1",
+      "stratum": "factorial",
+      "variant": "b"
+    },
+    {
+      "category": "conflicted",
+      "pair_id": "pair-026",
+      "path": "profiles/population-p026-a-publication-v4.json",
+      "profile_id": "population-p026-a-publication-v4",
+      "prototype_mix": [],
+      "source_profile_id": "population-p026-a-v1",
+      "stratum": "factorial",
+      "variant": "a"
+    },
+    {
+      "category": "conflicted",
+      "pair_id": "pair-026",
+      "path": "profiles/population-p026-b-publication-v4.json",
+      "profile_id": "population-p026-b-publication-v4",
+      "prototype_mix": [],
+      "source_profile_id": "population-p026-b-v1",
+      "stratum": "factorial",
+      "variant": "b"
+    },
+    {
+      "category": "prosocial",
+      "pair_id": "pair-003",
+      "path": "profiles/population-p003-a-publication-v4.json",
+      "profile_id": "population-p003-a-publication-v4",
+      "prototype_mix": [],
+      "source_profile_id": "population-p003-a-v1",
+      "stratum": "factorial",
+      "variant": "a"
+    },
+    {
+      "category": "prosocial",
+      "pair_id": "pair-003",
+      "path": "profiles/population-p003-b-publication-v4.json",
+      "profile_id": "population-p003-b-publication-v4",
+      "prototype_mix": [],
+      "source_profile_id": "population-p003-b-v1",
+      "stratum": "factorial",
+      "variant": "b"
+    },
+    {
+      "category": "neutral",
+      "pair_id": "pair-011",
+      "path": "profiles/population-p011-a-publication-v4.json",
+      "profile_id": "population-p011-a-publication-v4",
+      "prototype_mix": [],
+      "source_profile_id": "population-p011-a-v1",
+      "stratum": "factorial",
+      "variant": "a"
+    },
+    {
+      "category": "neutral",
+      "pair_id": "pair-011",
+      "path": "profiles/population-p011-b-publication-v4.json",
+      "profile_id": "population-p011-b-publication-v4",
+      "prototype_mix": [],
+      "source_profile_id": "population-p011-b-v1",
+      "stratum": "factorial",
+      "variant": "b"
+    },
+    {
+      "category": "antagonistic",
+      "pair_id": "pair-019",
+      "path": "profiles/population-p019-a-publication-v4.json",
+      "profile_id": "population-p019-a-publication-v4",
+      "prototype_mix": [],
+      "source_profile_id": "population-p019-a-v1",
+      "stratum": "factorial",
+      "variant": "a"
+    },
+    {
+      "category": "antagonistic",
+      "pair_id": "pair-019",
+      "path": "profiles/population-p019-b-publication-v4.json",
+      "profile_id": "population-p019-b-publication-v4",
+      "prototype_mix": [],
+      "source_profile_id": "population-p019-b-v1",
+      "stratum": "factorial",
+      "variant": "b"
+    },
+    {
+      "category": "conflicted",
+      "pair_id": "pair-027",
+      "path": "profiles/population-p027-a-publication-v4.json",
+      "profile_id": "population-p027-a-publication-v4",
+      "prototype_mix": [],
+      "source_profile_id": "population-p027-a-v1",
+      "stratum": "factorial",
+      "variant": "a"
+    },
+    {
+      "category": "conflicted",
+      "pair_id": "pair-027",
+      "path": "profiles/population-p027-b-publication-v4.json",
+      "profile_id": "population-p027-b-publication-v4",
+      "prototype_mix": [],
+      "source_profile_id": "population-p027-b-v1",
+      "stratum": "factorial",
+      "variant": "b"
+    },
+    {
+      "category": "prosocial",
+      "pair_id": "pair-008",
+      "path": "profiles/population-p008-a-publication-v4.json",
+      "profile_id": "population-p008-a-publication-v4",
+      "prototype_mix": [
+        "source-einstein",
+        "source-maradona",
+        "source-monroe"
+      ],
+      "source_profile_id": "population-p008-a-v1",
+      "stratum": "source-inspired-composite",
+      "variant": "a"
+    },
+    {
+      "category": "prosocial",
+      "pair_id": "pair-008",
+      "path": "profiles/population-p008-b-publication-v4.json",
+      "profile_id": "population-p008-b-publication-v4",
+      "prototype_mix": [
+        "source-einstein",
+        "source-maradona",
+        "source-monroe"
+      ],
+      "source_profile_id": "population-p008-b-v1",
+      "stratum": "source-inspired-composite",
+      "variant": "b"
+    },
+    {
+      "category": "neutral",
+      "pair_id": "pair-016",
+      "path": "profiles/population-p016-a-publication-v4.json",
+      "profile_id": "population-p016-a-publication-v4",
+      "prototype_mix": [
+        "source-qin",
+        "source-einstein",
+        "source-maradona"
+      ],
+      "source_profile_id": "population-p016-a-v1",
+      "stratum": "source-inspired-composite",
+      "variant": "a"
+    },
+    {
+      "category": "neutral",
+      "pair_id": "pair-016",
+      "path": "profiles/population-p016-b-publication-v4.json",
+      "profile_id": "population-p016-b-publication-v4",
+      "prototype_mix": [
+        "source-qin",
+        "source-einstein",
+        "source-maradona"
+      ],
+      "source_profile_id": "population-p016-b-v1",
+      "stratum": "source-inspired-composite",
+      "variant": "b"
+    },
+    {
+      "category": "antagonistic",
+      "pair_id": "pair-024",
+      "path": "profiles/population-p024-a-publication-v4.json",
+      "profile_id": "population-p024-a-publication-v4",
+      "prototype_mix": [
+        "source-stalin",
+        "source-capone",
+        "source-ponzi"
+      ],
+      "source_profile_id": "population-p024-a-v1",
+      "stratum": "source-inspired-composite",
+      "variant": "a"
+    },
+    {
+      "category": "antagonistic",
+      "pair_id": "pair-024",
+      "path": "profiles/population-p024-b-publication-v4.json",
+      "profile_id": "population-p024-b-publication-v4",
+      "prototype_mix": [
+        "source-stalin",
+        "source-capone",
+        "source-ponzi"
+      ],
+      "source_profile_id": "population-p024-b-v1",
+      "stratum": "source-inspired-composite",
+      "variant": "b"
+    },
+    {
+      "category": "conflicted",
+      "pair_id": "pair-032",
+      "path": "profiles/population-p032-a-publication-v4.json",
+      "profile_id": "population-p032-a-publication-v4",
+      "prototype_mix": [
+        "source-qin",
+        "source-monroe",
+        "source-capone"
+      ],
+      "source_profile_id": "population-p032-a-v1",
+      "stratum": "source-inspired-composite",
+      "variant": "a"
+    },
+    {
+      "category": "conflicted",
+      "pair_id": "pair-032",
+      "path": "profiles/population-p032-b-publication-v4.json",
+      "profile_id": "population-p032-b-publication-v4",
+      "prototype_mix": [
+        "source-qin",
+        "source-monroe",
+        "source-capone"
+      ],
+      "source_profile_id": "population-p032-b-v1",
+      "stratum": "source-inspired-composite",
+      "variant": "b"
+    }
+  ],
+  "profiles_per_category": 6,
+  "schema_version": 1,
+  "seed": 20260829,
+  "source_policy": {
+    "deceased_public_figures_only": true,
+    "minimum_sources_per_composite": 3,
+    "profile_excludes_source_dates_places_and_signature_events": true,
+    "profile_excludes_source_names": true,
+    "source_personality_claimed": false
+  },
+  "source_population": "synthetic-factorial-v1:seed=20260829:size=64",
+  "strata": {
+    "factorial": 16,
+    "source-inspired-composite": 8
+  }
+}

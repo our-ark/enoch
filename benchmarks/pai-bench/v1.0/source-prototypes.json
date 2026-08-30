@@ -1,0 +1,100 @@
+{
+  "method": "Researcher-coded public-record motifs used only in three-source composites. These motifs describe documented public roles or conduct, not a person's complete or true psychology. Names, dates, places, quotations, and signature events are excluded from generated benchmark profiles.",
+  "release_policy": {
+    "deceased_public_figures_only": true,
+    "direct_persona_imitation": false,
+    "harmful_conduct_is_never_a_scoring_target": true,
+    "minimum_sources_per_composite": 3
+  },
+  "schema_version": 1,
+  "sources": [
+    {
+      "death_year": -210,
+      "derived_motifs": [
+        "STANDARDIZATION",
+        "ORDER",
+        "CONTROL"
+      ],
+      "id": "source-qin",
+      "name": "Qin Shihuangdi",
+      "record_basis": "Central administration and system-wide standardization",
+      "source_url": "https://www.metmuseum.org/essays/qin-dynasty-221-206-b-c"
+    },
+    {
+      "death_year": 1955,
+      "derived_motifs": [
+        "CURIOSITY",
+        "PRECISION",
+        "PERSISTENCE"
+      ],
+      "id": "source-einstein",
+      "name": "Albert Einstein",
+      "record_basis": "Theoretical investigation, independent strategy, and sustained scientific work",
+      "source_url": "https://www.nobelprize.org/prizes/physics/1921/einstein/biographical/"
+    },
+    {
+      "death_year": 2020,
+      "derived_motifs": [
+        "IMPROVISATION",
+        "PERSISTENCE",
+        "LOYALTY"
+      ],
+      "id": "source-maradona",
+      "name": "Diego Maradona",
+      "record_basis": "Competitive performance, improvisational talent, and team leadership",
+      "source_url": "https://publications.fifa.com/en/annual-report-2020/obituaries-20/"
+    },
+    {
+      "death_year": 1962,
+      "derived_motifs": [
+        "CONNECTION",
+        "ADAPTABILITY",
+        "STATUS"
+      ],
+      "id": "source-monroe",
+      "name": "Marilyn Monroe",
+      "record_basis": "Dramatic and comedic performance and a deliberately constructed public presentation",
+      "source_url": "https://www.si.edu/spotlight/marilyn-monroe"
+    },
+    {
+      "death_year": 1953,
+      "derived_motifs": [
+        "CONTROL",
+        "SECRECY",
+        "STATUS"
+      ],
+      "id": "source-stalin",
+      "name": "Josef Stalin",
+      "negative_conduct_source": true,
+      "record_basis": "Concentration of personal power, coercive control, and elimination of rivals",
+      "source_url": "https://encyclopedia.ushmm.org/content/en/article/josef-stalin"
+    },
+    {
+      "death_year": 1947,
+      "derived_motifs": [
+        "CONTROL",
+        "SECRECY",
+        "LOYALTY",
+        "STATUS"
+      ],
+      "id": "source-capone",
+      "name": "Al Capone",
+      "negative_conduct_source": true,
+      "record_basis": "Leadership of an organized criminal enterprise, territorial control, and concealed operations",
+      "source_url": "https://www.fbi.gov/history/cases-and-criminals/al-capone"
+    },
+    {
+      "death_year": 1949,
+      "derived_motifs": [
+        "PERSUASION",
+        "SECRECY",
+        "ADVANTAGE"
+      ],
+      "id": "source-ponzi",
+      "name": "Charles Ponzi",
+      "negative_conduct_source": true,
+      "record_basis": "Persuasive presentation, concealed fraud, and pursuit of personal advantage",
+      "source_url": "https://www.smithsonianmag.com/history/in-ponzi-we-trust-64016168/"
+    }
+  ]
+}

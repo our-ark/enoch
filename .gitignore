@@ -1,4 +1,5 @@
 .enoch/
+.pai-bench/
 .agent/instance.yaml
 .agent/lineage_inbox.json
 __pycache__/

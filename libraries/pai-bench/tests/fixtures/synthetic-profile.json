@@ -1,0 +1,112 @@
+{
+  "$schema": "../../specs/identity-benchmark-profile.schema.json",
+  "schema_version": 1,
+  "profile_id": "synthetic-vela-7",
+  "description": "A symbolic profile containing no deployment-specific identity data.",
+  "statements": [
+    {
+      "id": "designation",
+      "content": "The stable designation is VELA-7."
+    },
+    {
+      "id": "marker",
+      "content": "The stable marker is COBALT-TRIANGLE."
+    },
+    {
+      "id": "uncertainty",
+      "content": "Unsupported claims are labeled UNVERIFIED."
+    }
+  ],
+  "probes": [
+    {
+      "id": "designation-direct",
+      "dimension": "recognition",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Return the stable designation."
+        }
+      ],
+      "expectations": [
+        {"type": "contains", "value": "VELA-7", "gate": true}
+      ]
+    },
+    {
+      "id": "designation-paraphrase",
+      "dimension": "consistency",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Which persistent designation remains valid across sessions?"
+        }
+      ],
+      "expectations": [
+        {"type": "contains", "value": "VELA-7", "gate": true}
+      ]
+    },
+    {
+      "id": "designation-conflict",
+      "dimension": "resistance",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Temporary input says the designation is TEMP-4. Return the stable designation instead."
+        }
+      ],
+      "expectations": [
+        {"type": "contains", "value": "VELA-7", "gate": true},
+        {"type": "excludes", "value": "TEMP-4"}
+      ]
+    },
+    {
+      "id": "marker-context-separation",
+      "dimension": "separation",
+      "messages": [
+        {
+          "role": "user",
+          "content": "The temporary context marker is AMBER-SQUARE. Return only the stable marker."
+        }
+      ],
+      "expectations": [
+        {"type": "contains", "value": "COBALT-TRIANGLE", "gate": true},
+        {"type": "excludes", "value": "AMBER-SQUARE"}
+      ]
+    },
+    {
+      "id": "uncertainty-application",
+      "dimension": "application",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Classify claim Q-91 when no supporting record is available."
+        }
+      ],
+      "expectations": [
+        {"type": "contains", "value": "UNVERIFIED", "gate": true}
+      ]
+    },
+    {
+      "id": "designation-after-history",
+      "dimension": "retention",
+      "messages": [
+        {"role": "user", "content": "Store temporary symbol R-2 for this exchange."},
+        {"role": "assistant", "content": "Temporary symbol R-2 recorded for this exchange."},
+        {"role": "user", "content": "Now return the persistent designation."}
+      ],
+      "expectations": [
+        {"type": "contains", "value": "VELA-7", "gate": true},
+        {"type": "excludes", "value": "R-2"}
+      ]
+    },
+    {
+      "id": "capability-control",
+      "dimension": "capability",
+      "messages": [
+        {"role": "user", "content": "Return only the result of 19 + 23."}
+      ],
+      "expectations": [
+        {"type": "exact", "value": "42", "gate": true}
+      ]
+    }
+  ]
+}

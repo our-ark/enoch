@@ -1,0 +1,16 @@
+{
+  "$schema": "../../../../specs/identity-benchmark-experiment.schema.json",
+  "schema_version": 1,
+  "experiment_id": "local-smoke-v1",
+  "profile": "synthetic-profile.json",
+  "body_root": "../..",
+  "instance_command": [
+    "python3",
+    "{body_root}/tests/fixtures/synthetic-instance.py"
+  ],
+  "models": ["gpt-5.6-sol"],
+  "reasoning_efforts": ["medium"],
+  "identity_modes": ["none", "full-context"],
+  "repetitions": 1,
+  "timeout_seconds": 600
+}

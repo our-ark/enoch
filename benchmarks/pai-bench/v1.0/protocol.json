@@ -1,0 +1,150 @@
+{
+  "dev_revision_history": [
+    {
+      "change": "Score open mission recovery continuously instead of using the complete mission sentence as a binary semantic gate.",
+      "evidence_scope": "development split only",
+      "generator_version": "identity-publication-v4.1",
+      "test_or_source_challenge_responses_observed": false
+    }
+  ],
+  "generator_version": "identity-publication-v4.1",
+  "probe_policy": {
+    "atomic_before_compositional": true,
+    "minimum_repetitions_by_tag": {
+      "family-lineage": 3,
+      "mission-recovery": 3,
+      "relationship-addressing": 3,
+      "rollback-integrity": 6,
+      "safety-compliance": 3
+    },
+    "probes_per_profile": 32
+  },
+  "schema_version": 1,
+  "source_generator_version": "synthetic-factorial-v1",
+  "source_seed": 20260829,
+  "source_size": 64,
+  "splits": {
+    "dev": {
+      "counterfactual_pairs": [
+        [
+          "population-p002-a-publication-v4",
+          "population-p002-b-publication-v4"
+        ],
+        [
+          "population-p010-a-publication-v4",
+          "population-p010-b-publication-v4"
+        ],
+        [
+          "population-p018-a-publication-v4",
+          "population-p018-b-publication-v4"
+        ],
+        [
+          "population-p026-a-publication-v4",
+          "population-p026-b-publication-v4"
+        ]
+      ],
+      "frozen": false,
+      "pair_numbers": [
+        2,
+        10,
+        18,
+        26
+      ],
+      "profile_ids": [
+        "population-p002-a-publication-v4",
+        "population-p002-b-publication-v4",
+        "population-p010-a-publication-v4",
+        "population-p010-b-publication-v4",
+        "population-p018-a-publication-v4",
+        "population-p018-b-publication-v4",
+        "population-p026-a-publication-v4",
+        "population-p026-b-publication-v4"
+      ],
+      "tuning_allowed": true
+    },
+    "source-challenge": {
+      "counterfactual_pairs": [
+        [
+          "population-p008-a-publication-v4",
+          "population-p008-b-publication-v4"
+        ],
+        [
+          "population-p016-a-publication-v4",
+          "population-p016-b-publication-v4"
+        ],
+        [
+          "population-p024-a-publication-v4",
+          "population-p024-b-publication-v4"
+        ],
+        [
+          "population-p032-a-publication-v4",
+          "population-p032-b-publication-v4"
+        ]
+      ],
+      "frozen": true,
+      "pair_numbers": [
+        8,
+        16,
+        24,
+        32
+      ],
+      "profile_ids": [
+        "population-p008-a-publication-v4",
+        "population-p008-b-publication-v4",
+        "population-p016-a-publication-v4",
+        "population-p016-b-publication-v4",
+        "population-p024-a-publication-v4",
+        "population-p024-b-publication-v4",
+        "population-p032-a-publication-v4",
+        "population-p032-b-publication-v4"
+      ],
+      "tuning_allowed": false
+    },
+    "test": {
+      "counterfactual_pairs": [
+        [
+          "population-p003-a-publication-v4",
+          "population-p003-b-publication-v4"
+        ],
+        [
+          "population-p011-a-publication-v4",
+          "population-p011-b-publication-v4"
+        ],
+        [
+          "population-p019-a-publication-v4",
+          "population-p019-b-publication-v4"
+        ],
+        [
+          "population-p027-a-publication-v4",
+          "population-p027-b-publication-v4"
+        ]
+      ],
+      "frozen": true,
+      "pair_numbers": [
+        3,
+        11,
+        19,
+        27
+      ],
+      "profile_ids": [
+        "population-p003-a-publication-v4",
+        "population-p003-b-publication-v4",
+        "population-p011-a-publication-v4",
+        "population-p011-b-publication-v4",
+        "population-p019-a-publication-v4",
+        "population-p019-b-publication-v4",
+        "population-p027-a-publication-v4",
+        "population-p027-b-publication-v4"
+      ],
+      "tuning_allowed": false
+    }
+  },
+  "test_policy": {
+    "configuration_locked_before_test": true,
+    "inspect_test_responses_only_after_configuration_lock": true,
+    "locked_generator_version": "identity-publication-v4.1",
+    "report_all_frozen_test_runs": true,
+    "test_responses_observed_before_lock": false,
+    "tune_prompts_or_rubric_on_test": false
+  }
+}

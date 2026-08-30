@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+ENOCH_ROOT="$ROOT"
+source "$ROOT/bin/_enoch-env"
+if [[ -n "${PAI_BENCH_PYTHON:-}" ]]; then
+  ENOCH_PYTHON="$PAI_BENCH_PYTHON"
+fi
+python="$(enoch_find_python)"
+PYTHONPATH="$ROOT/libraries/pai-bench/src${PYTHONPATH:+:$PYTHONPATH}" \
+  "$python" "$ROOT/tools/build_pai_bench.py" "$@"
