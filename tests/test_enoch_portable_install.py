@@ -66,7 +66,7 @@ class EnochPortableInstallTests(unittest.TestCase):
             if dependency["name"] == "provider-kit"
         ]
         self.assertEqual(runtime_contracts, [core_contract])
-        for package in ("github", "launchd", "systemd", "telegram"):
+        for package in ("github", "launchd", "slack", "systemd", "telegram"):
             metadata = _project_metadata(ROOT / "libraries" / package / "pyproject.toml")
             provider_contract = _dependency(
                 metadata["project"]["dependencies"],

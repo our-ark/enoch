@@ -1,0 +1,6 @@
+name: slack-talk
+version: 0.1.0
+summary: Converse through a locked Slack Socket Mode provider.
+owner: Enoch
+implementation: provider
+library_contract: slack/v1

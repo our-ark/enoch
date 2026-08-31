@@ -1,0 +1,21 @@
+[project]
+name = "our-ark-slack"
+version = "0.1.0"
+description = "Agent-neutral Slack Socket Mode transport for Our Ark agents."
+license = "Apache-2.0"
+requires-python = ">=3.11"
+dependencies = [
+  "our-ark-provider-kit @ git+https://github.com/our-ark/enoch.git@ac776973f53fd8638da7e7bee59d139480cdf48f#subdirectory=libraries/provider-kit",
+  "slack-sdk>=3.44,<4",
+  "websocket-client>=1.8,<2",
+]
+
+[project.entry-points."our_ark.providers"]
+"chat.slack" = "our_ark_slack:create_provider"
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

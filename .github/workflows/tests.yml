@@ -41,6 +41,7 @@ jobs:
           python -m unittest discover -s libraries/launchd/tests
           python -m unittest discover -s libraries/provider-kit/tests
           python -m unittest discover -s libraries/skill-catalog/tests
+          python -m unittest discover -s libraries/slack/tests
           python -m unittest discover -s libraries/systemd/tests
           python -m unittest discover -s libraries/telegram/tests
           python -m unittest discover -s libraries/telegram-vision/tests

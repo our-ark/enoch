@@ -6,7 +6,7 @@ core agent into a new environment:
 
 | Kind | Reference provider | Responsibility |
 | --- | --- | --- |
-| `chat` | `telegram` | Receive normalized chat events and deliver messages |
+| `chat` | `telegram` / `slack` | Receive normalized chat events and deliver messages |
 | `runtime` | `codex` | Answer, edit, resume sessions, report models, and cancel work |
 | `vcs` | `git` | Manage repository revisions, working copies, and isolated workspaces |
 | `forge` | local fallback; `github` reference | Publish and govern review units; retain local changes when remote review is unavailable |
@@ -23,6 +23,24 @@ providers:
   forge: github
   service: launchd
 ```
+
+The Slack reference provider uses Socket Mode and therefore does not require a
+public HTTP endpoint. Import `libraries/slack/slack-app-manifest.yaml`, install
+the package, and select it explicitly:
+
+```text
+python -m pip install ./libraries/slack
+bin/enoch config provider chat slack
+bin/enoch setup bot-token <xoxb-token>
+bin/enoch setup app-token <xapp-token>
+bin/enoch setup conversation <conversation-id>
+bin/enoch setup user <user-id>
+```
+
+Natural conversation is sent directly in the app's Messages tab. Slack owns
+the slash-command namespace, so Enoch commands use `/enoch help`,
+`/enoch task ...`, and `/enoch evolve ...`; the provider translates them back
+to Enoch's existing command surface.
 
 The minimal portable configuration is:
 
@@ -283,10 +301,11 @@ reconciles first, then replays only when the provider can prove absence or
 guarantee idempotency. Transport-native request ids and lookup mechanisms stay
 inside the provider.
 
-The channel-neutral application lives in `src/enoch/app/`. Telegram's
-Bot API transport, Enoch config adapter, setup handler, and integration skill
-live in `libraries/telegram`. Core code receives only normalized `ChatEvent`
-values and does not import that package.
+The channel-neutral application lives in `src/enoch/app/`. Telegram's Bot API
+transport lives in `libraries/telegram`, while Slack's Socket Mode transport
+lives in `libraries/slack`. Their config adapters, setup handlers, presentation
+rules, and integration skills remain provider-owned. Core code receives only
+normalized `ChatEvent` values and does not import either package.
 
 Runtime providers expose `health()` so doctor checks the selected runtime
 instead of assuming a Codex binary. They should raise

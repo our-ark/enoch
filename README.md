@@ -101,10 +101,10 @@ exists and otherwise reports the body identity.
 | [`inherit`](src/enoch/skills/inherit/SKILL.md) | Discover direct-ancestor skills and changes for selective inheritance. |
 | [`skill-library`](src/enoch/skills/skill-library/SKILL.md) | Package reusable, agent-neutral skill implementations as immutable libraries with thin adapters. |
 
-The reference stack also includes `telegram-talk`, `telegram-vision`, and
-`github` integration skills. They live outside the core agent body and can be
-replaced with other provider packages. Run `/skills` on an active instance to
-inspect its complete installed skill set.
+The reference stack also includes `telegram-talk`, `telegram-vision`,
+`slack-talk`, and `github` integration skills. They live outside the core agent
+body and can be replaced with other provider packages. Run `/skills` on an
+active instance to inspect its complete installed skill set.
 
 ## Requirements
 
@@ -275,7 +275,7 @@ python -m pip install --disable-pip-version-check --require-hashes \
 
 ## Providers
 
-Codex, Git, and a local-only forge are core defaults. Telegram, GitHub,
+Codex, Git, and a local-only forge are core defaults. Telegram, Slack, GitHub,
 launchd, and systemd are reference provider packages under `libraries/`.
 Installed Python packages can
 add or replace chat, agent runtime, version control, code forge, and host
