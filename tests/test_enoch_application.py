@@ -62,7 +62,7 @@ class ApplicationCompositionTests(unittest.TestCase):
         composition = ApplicationComposition(
             name="noah",
             identity_loader=lambda _path: identity,
-            identity_path_resolver=lambda root: root / "src/noah/identity.yaml",
+            identity_path_resolver=lambda root: root / "src/noah/body.yaml",
             presentation=ApplicationPresentation(
                 display_name="Noah",
                 ready_message="Noah is ready to coordinate.",
@@ -101,7 +101,7 @@ class ApplicationCompositionTests(unittest.TestCase):
         self.assertIs(components.identity, identity)
         self.assertEqual(
             components.identity_path,
-            root.resolve() / "src/noah/identity.yaml",
+            root.resolve() / "src/noah/body.yaml",
         )
         self.assertEqual(
             tuple(extension.name for extension in components.extensions),
@@ -142,9 +142,9 @@ class ApplicationCompositionTests(unittest.TestCase):
     def test_composition_reloads_mutable_identity_after_restart(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
-            identity_path = root / "src/noah/identity.yaml"
+            identity_path = root / "src/noah/body.yaml"
             identity_path.parent.mkdir(parents=True)
-            shutil.copyfile(ROOT / "src/enoch/identity.yaml", identity_path)
+            shutil.copyfile(ROOT / "src/enoch/body.yaml", identity_path)
             composition = ApplicationComposition(
                 name="noah",
                 identity_loader=load_identity,
@@ -185,9 +185,9 @@ class ApplicationCompositionTests(unittest.TestCase):
     def test_custom_identity_path_and_presentation_drive_application(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
-            identity_path = root / "src/noah/identity.yaml"
+            identity_path = root / "src/noah/body.yaml"
             identity_path.parent.mkdir(parents=True)
-            shutil.copyfile(ROOT / "src/enoch/identity.yaml", identity_path)
+            shutil.copyfile(ROOT / "src/enoch/body.yaml", identity_path)
             identity_path.write_text(
                 identity_path.read_text(encoding="utf-8").replace(
                     "name: Enoch",

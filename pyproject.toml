@@ -33,5 +33,5 @@ build-backend = "setuptools.build_meta"
 where = ["src"]
 
 [tool.setuptools.package-data]
-enoch = ["identity.yaml"]
+enoch = ["body.yaml", "schemas/*.json"]
 "enoch.skills" = ["**/*.md", "**/*.yaml"]

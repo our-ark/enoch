@@ -173,7 +173,8 @@ def memory_status(root: Path | None = None) -> str:
     memories = data["memories"]
     lines = [
         "Memory:",
-        "- identity: rendered from src/enoch/identity.yaml",
+        "- body identity: rendered from src/enoch/body.yaml",
+        "- personal identity: private self.json when installed",
         f"- long-term: {len(memories)} saved",
     ]
     if memories:

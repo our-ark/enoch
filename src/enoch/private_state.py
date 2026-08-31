@@ -82,6 +82,7 @@ class PrivateStateMigrationResult:
 
 
 STATE_FILE_SCHEMAS = (
+    StateFileSchema("self.json", 1),
     StateFileSchema(
         "task_queue.json",
         15,
@@ -482,6 +483,13 @@ def _normalized_payload(path: Path, schema: StateFileSchema) -> dict[str, Any]:
         _parse_simple_yaml(path.read_text(encoding="utf-8"))
         return {}
     data = load_json_object(path)
+    if schema.pattern == "self.json":
+        from enoch.agent_identity import validate_agent_identity
+
+        try:
+            return validate_agent_identity(data)
+        except ValueError as error:
+            raise StateCorruptionError(path, str(error)) from error
     normalized = deepcopy(data)
     for key, default in schema.defaults:
         normalized.setdefault(key, deepcopy(default))

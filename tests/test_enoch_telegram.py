@@ -4147,9 +4147,9 @@ class EnochTelegramTests(unittest.TestCase):
     def test_mission_command_shows_and_updates_identity_mission(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
-            identity_file = root / "src" / "enoch" / "identity.yaml"
+            identity_file = root / "src" / "enoch" / "body.yaml"
             identity_file.parent.mkdir(parents=True)
-            identity_file.write_text((ROOT / "src" / "enoch" / "identity.yaml").read_text(encoding="utf-8"), encoding="utf-8")
+            identity_file.write_text((ROOT / "src" / "enoch" / "body.yaml").read_text(encoding="utf-8"), encoding="utf-8")
             client = FakeTelegramClient(allowed_chat_id=42)
             bot = EnochApplication(load_identity(), root, client)
 

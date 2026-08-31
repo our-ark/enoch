@@ -25,9 +25,28 @@ from enoch.private_state import (
 )
 from enoch.extensions import ExtensionScheduleSpec
 from enoch.extensions.schedules import reconcile_extension_schedules
+from enoch.agent_identity import install_agent_identity
+from tests.test_enoch_agent_identity import _identity
 
 
 class EnochPrivateStateTests(unittest.TestCase):
+    def test_portable_self_is_registered_and_schema_validated(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            install_agent_identity(_identity(), root)
+
+            valid = plan_private_state(root)
+            self_file = root / ".enoch" / "self.json"
+            document = json.loads(self_file.read_text(encoding="utf-8"))
+            del document["mission"]
+            self_file.write_text(json.dumps(document), encoding="utf-8")
+            invalid = plan_private_state(root)
+
+        self.assertTrue(valid.valid)
+        self.assertEqual(valid.files_checked, 1)
+        self.assertFalse(invalid.valid)
+        self.assertIn("missing required fields: mission", invalid.errors[0])
+
     def test_extension_schedule_is_registered_private_state(self) -> None:
         with TemporaryDirectory() as directory:
             root = Path(directory)

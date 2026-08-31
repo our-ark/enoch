@@ -15,13 +15,13 @@ from enoch.application import (
     ApplicationPresentation,
     run_application,
 )
-from enoch.identity import load_identity
+from enoch.identity import load_body_identity
 
 
 NOAH = ApplicationComposition(
     name="noah",
-    identity_loader=load_identity,
-    identity_path_resolver=lambda root: root / "src/noah/identity.yaml",
+    identity_loader=load_body_identity,
+    identity_path_resolver=lambda root: root / "src/noah/body.yaml",
     presentation=ApplicationPresentation(
         display_name="Noah",
         ready_message="Noah is ready to coordinate.",
@@ -34,11 +34,16 @@ def main():
     run_application(NOAH)
 ```
 
-`identity_path_resolver` identifies the descendant's canonical mutable identity
+`identity_path_resolver` identifies the descendant's canonical mutable body
 file in the instance body. The resolved path must remain under the explicit
 instance root. Enoch passes that path to `identity_loader` on every startup, and
 `/mission` reads and writes the same path instead of assuming
-`src/enoch/identity.yaml`. This preserves identity changes across restarts.
+`src/enoch/body.yaml`. This preserves body mission changes across restarts.
+
+Personal identity is separate private instance state in `self.json`. Enoch
+reloads it into startup context for every fresh session, while `body.yaml`
+remains the versioned executable-body contract. Legacy descendant
+`identity.yaml` files remain readable during migration.
 
 `ApplicationPresentation` intentionally contains only bounded, single-line
 application strings. Domain command wording belongs to profiles or extensions,

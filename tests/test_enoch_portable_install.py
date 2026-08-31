@@ -174,6 +174,10 @@ class EnochPortableInstallTests(unittest.TestCase):
         self.assertEqual(result["runtime"], "codex")
         self.assertEqual(result["forge"], "local")
         self.assertEqual(result["enoch_version"], "0.6.1")
+        self.assertEqual(
+            result["agent_identity_schema_id"],
+            "https://our-ark.github.io/schemas/ai-agent-identity.schema.json",
+        )
         self.assertEqual(result["provider_kit_version"], "0.7.0")
         self.assertEqual(result["chat_provider_version"], "0.0.1")
         self.assertEqual(result["vcs_provider_version"], "0.0.1")
@@ -654,6 +658,7 @@ _INSTALLED_TASK_SCRIPT = textwrap.dedent(
     import subprocess
     import sys
 
+    from enoch import agent_identity_schema
     from enoch.app.core import EnochApplication
     from enoch.app.epoch import daemon_epoch_guard
     from enoch.application import (
@@ -674,8 +679,8 @@ _INSTALLED_TASK_SCRIPT = textwrap.dedent(
 
     root = Path(sys.argv[1])
     root.mkdir()
-    (root / "identity.yaml").write_text(
-        resources.files("enoch").joinpath("identity.yaml").read_text(
+    (root / "body.yaml").write_text(
+        resources.files("enoch").joinpath("body.yaml").read_text(
             encoding="utf-8"
         ),
         encoding="utf-8",
@@ -738,7 +743,7 @@ _INSTALLED_TASK_SCRIPT = textwrap.dedent(
     composition = ApplicationComposition(
         name="portable-descendant",
         identity_loader=load_identity,
-        identity_path_resolver=lambda body: body / "identity.yaml",
+        identity_path_resolver=lambda body: body / "body.yaml",
         presentation=ApplicationPresentation(
             display_name="Portable descendant",
             ready_message="Portable descendant is ready.",
@@ -850,6 +855,7 @@ _INSTALLED_TASK_SCRIPT = textwrap.dedent(
         "runtime": runtime.name,
         "forge": forge.name,
         "enoch_version": version("enoch"),
+        "agent_identity_schema_id": agent_identity_schema()["$id"],
         "provider_kit_version": version("our-ark-provider-kit"),
         "chat_provider_version": version("enoch-portable-chat-provider"),
         "vcs_provider_version": version("enoch-portable-vcs-provider"),

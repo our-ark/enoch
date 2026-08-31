@@ -12,6 +12,7 @@ from enoch.brain import (
 )
 from enoch.command_surface import lineage_usage
 from enoch.config import write_section_value
+from enoch.agent_identity import AgentIdentityError, load_active_agent_identity
 from enoch.identity import Identity, identity_file_path, load_identity, update_mission
 from enoch.identity_context import display_ancestor
 from enoch.immune import ImmuneResult, run_immune_system
@@ -129,6 +130,38 @@ def status_message(
 
 
 def identity_summary(identity: Identity, root: Path | None = None) -> str:
+    try:
+        personal = load_active_agent_identity(root)
+    except (AgentIdentityError, OSError):
+        personal = None
+    if personal is not None:
+        names = personal["identity"]["names"]
+        localized = ", ".join(names["localized"].values())
+        origin = personal["origin"]
+        lineage = list(origin["lineage"])
+        if not lineage or lineage[-1].casefold() != names["canonical"].casefold():
+            lineage.append(names["canonical"])
+        mission = personal["mission"]
+        values = ", ".join(value["name"] for value in personal["values"])
+        relationships = "; ".join(
+            f"{relationship['name']} ({', '.join(relationship['roles'])}); "
+            f"address as {relationship['address_as']}"
+            for relationship in personal["relationships"]
+        )
+        return "\n".join(
+            [
+                f"I am {names['canonical']} ({localized}).",
+                f"Nature: {personal['identity']['nature']}",
+                f"Body: {origin['body']}",
+                f"Body role: {identity.role}",
+                f"Generation: {identity.generation}",
+                f"Lineage: {' -> '.join(lineage)}",
+                f"Mission roles: {', '.join(mission['roles'])}",
+                f"Mission: {mission['statement']}",
+                f"Relationships: {relationships}",
+                f"Values: {values}",
+            ]
+        )
     ancestor = display_ancestor(identity, root)
     return "\n".join(
         [

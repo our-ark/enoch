@@ -385,7 +385,7 @@ def _current_enoch_context(root: Path | None) -> str:
     base = Path(root or Path.cwd())
     sections = []
     for relative, limit in (
-        (Path("src") / "enoch" / "identity.yaml", 2_000),
+        (Path("src") / "enoch" / "body.yaml", 2_000),
         (Path("docs") / "architecture.md", 4_000),
     ):
         try:

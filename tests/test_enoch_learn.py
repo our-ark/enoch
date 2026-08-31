@@ -135,7 +135,7 @@ class EnochLearnTests(unittest.TestCase):
 
     def test_refuses_hidden_skill(self) -> None:
         def hidden_text(agent: str, path: str, **kwargs) -> str:
-            if path == "src/lucy/identity.yaml":
+            if path == "src/lucy/body.yaml":
                 return "\n".join(
                     [
                         "name: Lucy",
@@ -191,7 +191,7 @@ def _skill():
 def _published_text(agent: str, path: str, *, ref: str, **_kwargs) -> str:
     if agent != "lucy" or ref != _source().revision:
         raise AssertionError((agent, ref))
-    if path == "src/lucy/identity.yaml":
+    if path == "src/lucy/body.yaml":
         return "\n".join(
             [
                 "name: Lucy",

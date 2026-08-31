@@ -165,6 +165,37 @@ class GithubProviderTests(ProviderContractConformanceMixin, unittest.TestCase):
 
         self.assertEqual(commits, ("one", "two"))
 
+    def test_declared_skills_prefers_published_body_file(self) -> None:
+        provider = GithubForgeProvider(gh="/usr/local/bin/gh", root=ROOT)
+        with patch.object(
+            provider,
+            "_content_text",
+            return_value="name: Lucy\nskills:\n  - name: teach\n",
+        ) as read:
+            skills = provider.declared_skills("our-ark/lucy", "main")
+
+        self.assertEqual(skills, ("teach",))
+        read.assert_called_once_with(
+            "our-ark/lucy",
+            "src/lucy/body.yaml",
+            "main",
+        )
+
+    def test_declared_skills_falls_back_to_legacy_identity_file(self) -> None:
+        provider = GithubForgeProvider(gh="/usr/local/bin/gh", root=ROOT)
+        with patch.object(
+            provider,
+            "_content_text",
+            side_effect=[None, "name: Lucy\nskills:\n  - name: teach\n"],
+        ) as read:
+            skills = provider.declared_skills("our-ark/lucy", "main")
+
+        self.assertEqual(skills, ("teach",))
+        self.assertEqual(
+            [call.args[1] for call in read.call_args_list],
+            ["src/lucy/body.yaml", "src/lucy/identity.yaml"],
+        )
+
     def test_lineage_commit_diff_includes_file_stats_and_patch(self) -> None:
         provider = GithubForgeProvider(gh="/usr/local/bin/gh")
         with patch.object(

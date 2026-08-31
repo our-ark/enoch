@@ -71,6 +71,25 @@ Each generation inherits a versioned code body and Git history, then develops a
 new specialization. This lineage describes software provenance, not model
 checkpoints or a fictional family tree.
 
+## Body and Self
+
+Enoch keeps executable body identity separate from portable personal identity:
+
+| Contract | Location | Meaning | Lifecycle |
+| --- | --- | --- | --- |
+| Body | `src/enoch/body.yaml` | package, role, code mission, principles, and software lineage | human-readable, reviewed, and versioned with code |
+| Self | private `.enoch/self.json` | personal designation, relationships, personality, values, care behavior, and agent lineage | schema-validated, private, and portable between compatible bodies |
+
+`self.json` is JSON because it is a strict machine-governed interchange
+contract. Its public v1 schema is packaged at
+`src/enoch/schemas/ai-agent-identity.schema.json`. `body.yaml` remains YAML
+because it is a small human-authored repository manifest. At every fresh
+session, Enoch loads both into separate startup-context sections; without a
+`self.json`, Enoch runs with body identity only. A legacy `identity.yaml`
+remains readable during descendant migration but is no longer Enoch's
+canonical body file. `/self` reports the installed personal identity when one
+exists and otherwise reports the body identity.
+
 ## Core Skills
 
 | Skill | What Enoch can do |
@@ -303,7 +322,7 @@ workflow without owning polling, a second scheduler, or a second task queue.
 Packages are discovered through
 `our_ark.extensions`; see [`docs/extensions.md`](docs/extensions.md).
 
-Descendant launchers can bind their own identity, mutable identity path,
+Descendant launchers can bind their own body identity, mutable body path,
 presentation, required extensions, provider selections, and fenced workflow
 factory through `ApplicationComposition` without subclassing the application
 core. Enoch retains polling and lifecycle ownership; see

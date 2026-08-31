@@ -17,6 +17,8 @@ and validation boundary.
 | `enoch.app.inbox` | Durable chat receipts, redelivery suppression, and poison-event attempts |
 | `enoch.state` | Corruption-safe JSON loading, atomic writes, and interprocess transactions |
 | `enoch.storage` | Versioned software-body, private-state, and artifact ownership boundaries |
+| `enoch.identity` | Versioned `body.yaml` loading and legacy body-file compatibility |
+| `enoch.agent_identity` | Portable `self.json` schema validation, private installation, and startup rendering |
 | `enoch.private_state` | Manifest validation, supported-version checks, backup, migration, and rollback |
 | `enoch.tasks` | Task queue state, audit events, failure policy, configuration, and isolated worktrees |
 | `enoch.evolution` | Semantic evidence scanning, candidate synthesis and ranking, decision history, and task handoff |
@@ -64,6 +66,14 @@ contracts. Migration of task and evolution workflows is incremental; see
 The stable executable surfaces remain `bin/enoch`, `bin/enoch-agent`, and
 `bin/enoch-daemon`. Internal Python module paths may evolve with the package
 boundaries, while these launchers and chat commands remain stable.
+
+Body and self are independent startup inputs. `body.yaml` belongs to the Git
+software body and determines package, code mission, principles, and repository
+lineage. Private `self.json` follows the portable AI Agent Identity schema and
+determines personal designation, relationships, personality, values, care
+behavior, and agent lineage. `enoch.memory.prompt` reloads both for every fresh
+runtime session, but renders them in separate sections so a portable self does
+not silently redefine the executable body.
 
 Agent profiles sit above domain, workflow, and provider contracts. They may contribute
 commands, context, persisted workflow defaults, bounded presentation labels,
