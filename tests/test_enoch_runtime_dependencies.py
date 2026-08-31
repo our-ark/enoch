@@ -87,6 +87,47 @@ class EnochRuntimeDependencyTests(unittest.TestCase):
             self.assertEqual(paths, ())
             pip.assert_not_called()
 
+    def test_skips_dependency_for_inactive_provider(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            _write_manifest(root, when_provider="chat.slack")
+
+            with patch("enoch.runtime_dependencies._pip_install") as pip:
+                paths = runtime_dependency_paths(root)
+
+            self.assertEqual(paths, ())
+            pip.assert_not_called()
+
+    def test_installs_dependency_for_selected_provider(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            _write_manifest(root, when_provider="chat.slack")
+            (root / ".enoch").mkdir()
+            (root / ".enoch" / "config.yaml").write_text(
+                'providers:\n  chat: "slack"\n',
+                encoding="utf-8",
+            )
+
+            def install(_requirements, target):
+                (target / "example_lib").mkdir()
+
+            with patch(
+                "enoch.runtime_dependencies._pip_install",
+                side_effect=install,
+            ) as pip:
+                paths = runtime_dependency_paths(root)
+
+            self.assertEqual(len(paths), 1)
+            self.assertEqual(pip.call_count, 1)
+
+    def test_rejects_invalid_provider_condition(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            _write_manifest(root, when_provider="slack")
+
+            with self.assertRaisesRegex(RuntimeDependencyError, "when_provider"):
+                load_runtime_dependencies(root)
+
     def test_replaces_incomplete_private_install(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
@@ -150,6 +191,7 @@ def _write_manifest(
     *,
     local_source: str = "",
     optional: bool = False,
+    when_provider: str = "",
 ) -> None:
     lines = [
         "[[runtime_dependencies]]",
@@ -161,6 +203,8 @@ def _write_manifest(
         lines.append(f'local_source = "{local_source}"')
     if optional:
         lines.append("optional = true")
+    if when_provider:
+        lines.append(f'when_provider = "{when_provider}"')
     (root / "genesis.toml").write_text("\n".join(lines), encoding="utf-8")
 
 

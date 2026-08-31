@@ -38,6 +38,18 @@ local_source = "libraries/slack/src"
 optional = true
 
 [[runtime_dependencies]]
+name = "slack-sdk"
+requirement = "slack-sdk==3.44.0"
+import_name = "slack_sdk"
+when_provider = "chat.slack"
+
+[[runtime_dependencies]]
+name = "websocket-client"
+requirement = "websocket-client==1.8.0"
+import_name = "websocket"
+when_provider = "chat.slack"
+
+[[runtime_dependencies]]
 name = "github"
 requirement = "our-ark-github @ git+https://github.com/our-ark/enoch.git@54e6f5525380cf0f3b1275992b9d73bd2f44774e#subdirectory=libraries/github"
 import_name = "our_ark_github"

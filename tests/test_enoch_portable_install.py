@@ -74,6 +74,24 @@ class EnochPortableInstallTests(unittest.TestCase):
             )
             self.assertEqual(provider_contract, core_contract, package)
 
+    def test_slack_runtime_dependencies_are_pinned_in_genesis_manifest(self) -> None:
+        manifest = _project_metadata(ROOT / "genesis.toml")
+        dependencies = {
+            dependency["name"]: dependency
+            for dependency in manifest["runtime_dependencies"]
+        }
+
+        self.assertEqual(dependencies["slack-sdk"]["requirement"], "slack-sdk==3.44.0")
+        self.assertEqual(
+            dependencies["websocket-client"]["requirement"],
+            "websocket-client==1.8.0",
+        )
+        self.assertEqual(dependencies["slack-sdk"]["when_provider"], "chat.slack")
+        self.assertEqual(
+            dependencies["websocket-client"]["when_provider"],
+            "chat.slack",
+        )
+
     def test_wheel_install_completes_profile_task_with_independent_packages(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
