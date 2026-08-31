@@ -39,6 +39,15 @@ def provider_label(name: str) -> str:
     return cleaned.title() or "Chat"
 
 
+def provider_command_prefix(provider: object) -> str:
+    value = str(getattr(provider, "command_prefix", "/") or "/")
+    if not value.startswith("/") or "\n" in value or "\r" in value:
+        return "/"
+    if value != "/" and not value.endswith(" "):
+        value += " "
+    return value
+
+
 def load_channel_cursor(name: str, root: Path | None = None) -> Cursor | None:
     path = channel_cursor_path(name, root)
     data = load_json_object(path)
@@ -134,6 +143,7 @@ def startup_message(
     name: str,
     root: Path | None = None,
     previous_shutdown_warning: str = "",
+    command_prefix: str = "/",
 ) -> str:
     label = provider_label(name)
     lines = [
@@ -143,7 +153,7 @@ def startup_message(
     ]
     if previous_shutdown_warning:
         lines.append(previous_shutdown_warning)
-    lines.append("Use /help to see available commands.")
+    lines.append(f"Use {command_prefix}help to see available commands.")
     return "\n".join(lines)
 
 

@@ -551,6 +551,19 @@ class EnochTelegramTests(unittest.TestCase):
         self.sync_session_activity.assert_called_once()
         self.assertIn("Enoch startup context:", self.sync_session_activity.call_args.args[3])
 
+    def test_startup_notification_uses_provider_command_prefix(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            client = FakeTelegramClient(allowed_chat_id=42)
+            client.name = "slack"
+            client.command_prefix = "/enoch "
+            bot = EnochApplication(load_identity(), root, client)
+
+            bot.notify_startup()
+
+        self.assertIn("Use /enoch help to see available commands.", client.sent[0][1])
+        self.assertNotIn("Use /help", client.sent[0][1])
+
     def test_startup_notification_reports_previous_shutdown_warning(self) -> None:
         client = FakeTelegramClient(allowed_chat_id=42)
         bot = EnochApplication(

@@ -64,6 +64,7 @@ class SlackConfig:
 class SlackClient:
     name = "slack"
     provider_kind = "chat"
+    command_prefix = f"{SLACK_COMMAND} "
     capabilities = ProviderCapabilities(
         provider_kind="chat",
         capabilities=frozenset(

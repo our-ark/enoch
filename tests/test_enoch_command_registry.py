@@ -55,6 +55,18 @@ class CoreCommandRegistryTests(unittest.TestCase):
         )
         self.assertIn("Example: /help worktree", overview)
 
+    def test_help_uses_chat_provider_command_prefix(self) -> None:
+        overview = help_message(command_prefix="/enoch ")
+        evolve = help_message("evolve", command_prefix="/enoch ")
+
+        self.assertIn(
+            "Use /enoch help <command> for detailed usage and subcommands.",
+            overview,
+        )
+        self.assertIn("/enoch status - show identity", overview)
+        self.assertIn("/enoch evolve propose", evolve)
+        self.assertNotIn("\n/evolve propose", evolve)
+
     def test_evolve_help_exposes_only_the_consolidated_surface(self) -> None:
         usage = help_message("evolve")
 

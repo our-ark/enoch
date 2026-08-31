@@ -809,30 +809,31 @@ def doctor_command(
     return format_doctor(run_doctor(root))
 
 
-def help_message(topic: str = "", *, chat_provider: str = "chat") -> str:
-    del chat_provider
+def help_message(topic: str = "", *, command_prefix: str = "/") -> str:
     normalized_topic = _normalize_help_topic(topic)
     if normalized_topic:
         command = core_command(normalized_topic)
         if command is not None:
-            return command.usage_message("/")
+            return command.usage_message(command_prefix)
         return "\n".join(
             [
-                f"No help found for /{normalized_topic}.",
-                "Use /help to see every command.",
-                "Use /help <command> for detailed usage and subcommands.",
+                f"No help found for {command_prefix}{normalized_topic}.",
+                f"Use {command_prefix}help to see every command.",
+                f"Use {command_prefix}help <command> for detailed usage and subcommands.",
             ]
         )
 
     lines = [
         "Enoch commands:",
         "",
-        "Use /help <command> for detailed usage and subcommands.",
-        "Example: /help worktree",
+        f"Use {command_prefix}help <command> for detailed usage and subcommands.",
+        f"Example: {command_prefix}help worktree",
     ]
     standalone = [command for command in CORE_COMMANDS if not command.section]
     if standalone:
-        lines.extend(["", *(command.summary_line("/") for command in standalone)])
+        lines.extend(
+            ["", *(command.summary_line(command_prefix) for command in standalone)]
+        )
     sections = tuple(dict.fromkeys(command.section for command in CORE_COMMANDS if command.section))
     for section in sections:
         lines.extend(
@@ -840,7 +841,7 @@ def help_message(topic: str = "", *, chat_provider: str = "chat") -> str:
                 "",
                 f"{section}:",
                 *(
-                    command.summary_line("/")
+                    command.summary_line(command_prefix)
                     for command in CORE_COMMANDS
                     if command.section == section
                 ),

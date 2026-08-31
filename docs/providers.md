@@ -24,6 +24,10 @@ providers:
   service: launchd
 ```
 
+A chat provider may expose a `command_prefix` presentation hint when its host
+reserves slash commands. The default is `/`; the Slack reference provider uses
+`/enoch ` so startup and help text show commands that Slack will accept.
+
 The Slack reference provider uses Socket Mode and therefore does not require a
 public HTTP endpoint. Import `libraries/slack/slack-app-manifest.yaml`, install
 the package, and select it explicitly:

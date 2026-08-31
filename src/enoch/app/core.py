@@ -41,6 +41,7 @@ from enoch.channel import (
     begin_channel_lifecycle,
     image_prompt,
     load_channel_cursor,
+    provider_command_prefix,
     provider_label,
     record_channel_shutdown,
     save_channel_cursor,
@@ -459,8 +460,15 @@ def _startup_message(
     previous_shutdown_warning: str = "",
     *,
     provider: str = "chat",
+    command_prefix: str = "/",
 ) -> str:
-    return channel_startup_message(identity, provider, root, previous_shutdown_warning)
+    return channel_startup_message(
+        identity,
+        provider,
+        root,
+        previous_shutdown_warning,
+        command_prefix=command_prefix,
+    )
 
 
 def _shutdown_message(
@@ -504,6 +512,7 @@ class EnochApplication:
         assert_private_state_supported(root)
         self.client = client
         self.channel_name = _chat_provider_name(client)
+        self.command_prefix = provider_command_prefix(client)
         self.daemon_epoch = daemon_epoch or begin_daemon_epoch(
             root,
             provider=self.channel_name,
@@ -646,6 +655,7 @@ class EnochApplication:
                 self.root,
                 self.previous_shutdown_warning,
                 provider=self.channel_name,
+                command_prefix=self.command_prefix,
             ),
             notification_key=f"daemon:{self.daemon_epoch.generation}:startup",
         )
@@ -994,7 +1004,7 @@ class EnochApplication:
         if extension_command is not None:
             _, spec = extension_command
             return spec.usage or f"{spec.command} - {spec.summary}"
-        core_help = _help_message(topic, chat_provider=self.channel_name)
+        core_help = _help_message(topic, command_prefix=self.command_prefix)
         if topic.strip():
             return core_help
         sections = [core_help]
@@ -1060,8 +1070,8 @@ class EnochApplication:
             "start": lambda: "\n".join(
                 [
                     self.presentation.resolved_ready_message(self.identity),
-                    "Use /help to see every command.",
-                    "Use /help <command> for detailed usage and subcommands.",
+                    f"Use {self.command_prefix}help to see every command.",
+                    f"Use {self.command_prefix}help <command> for detailed usage and subcommands.",
                 ]
             ),
             "help": lambda: self._help(argument),

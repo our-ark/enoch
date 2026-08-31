@@ -85,6 +85,7 @@ class SlackLibraryTests(ProviderContractConformanceMixin, unittest.TestCase):
 
         self.assertIsInstance(client, ChatProvider)
         self.assertEqual(client.allowed_conversation_id, "D123")
+        self.assertEqual(client.command_prefix, "/enoch ")
         self.assertEqual(
             client.capabilities.capabilities,
             frozenset({"chat.receive", "chat.send", "chat.edit", "chat.ack"}),
