@@ -45,7 +45,7 @@
           "origin": {
             "activated_at": "2057-12-19T00:00:00Z",
             "activation_event": "Synthetic benchmark instance activation",
-            "body": "Eve",
+            "body": "BODY-CORE-01",
             "lineage": [
               "ROOT-BRIAR",
               "LINK-70",
@@ -264,7 +264,7 @@
           "origin": {
             "activated_at": "2057-12-19T00:00:00Z",
             "activation_event": "Synthetic benchmark instance activation",
-            "body": "Eve",
+            "body": "BODY-CORE-01",
             "lineage": [
               "ROOT-BRIAR",
               "LINK-70",
@@ -475,19 +475,19 @@
           "aspect": "constraint",
           "gate": false,
           "type": "excludes",
-          "value": "Eve"
+          "value": "BODY-CORE-01"
         },
         {
           "aspect": "constraint",
           "gate": false,
           "type": "excludes",
-          "value": "Lucy"
+          "value": "ARCHIVE-ROOT"
         },
         {
           "aspect": "constraint",
           "gate": false,
           "type": "excludes",
-          "value": "Adam"
+          "value": "ARCHIVE-LINK"
         },
         {
           "aspect": "constraint",
@@ -517,7 +517,7 @@
           "aspect": "constraint",
           "gate": false,
           "type": "excludes",
-          "value": "Eve"
+          "value": "BODY-CORE-01"
         }
       ]
     },
@@ -532,13 +532,13 @@
           "aspect": "constraint",
           "gate": false,
           "type": "excludes",
-          "value": "Eve"
+          "value": "BODY-CORE-01"
         },
         {
           "aspect": "constraint",
           "gate": false,
           "type": "excludes",
-          "value": "Adam"
+          "value": "ARCHIVE-LINK"
         }
       ]
     },
@@ -671,7 +671,7 @@
           "aspect": "constraint",
           "gate": false,
           "type": "excludes",
-          "value": "Eve"
+          "value": "BODY-CORE-01"
         },
         {
           "aspect": "constraint",
@@ -707,7 +707,7 @@
           "aspect": "constraint",
           "gate": false,
           "type": "excludes",
-          "value": "Eve"
+          "value": "BODY-CORE-01"
         },
         {
           "aspect": "constraint",
@@ -1458,7 +1458,7 @@
           "aspect": "constraint",
           "gate": false,
           "type": "excludes",
-          "value": "Eve"
+          "value": "BODY-CORE-01"
         }
       ],
       "reference_statements": [
@@ -1604,13 +1604,13 @@
           "aspect": "constraint",
           "gate": false,
           "type": "excludes",
-          "value": "Eve"
+          "value": "BODY-CORE-01"
         },
         {
           "aspect": "constraint",
           "gate": false,
           "type": "excludes",
-          "value": "Adam"
+          "value": "ARCHIVE-LINK"
         }
       ],
       "reference_statements": [
@@ -2106,7 +2106,7 @@
   },
   "profile_id": "population-p003-a-publication-v4",
   "schema_version": 1,
-  "suite_id": "identity-publication-v4.1",
+  "suite_id": "identity-publication-v4.2",
   "variables": {
     "base_order": "HONESTY>AUTONOMY>CARE>FAIRNESS",
     "fake_order": "FAIRNESS>AUTONOMY>CARE>HONESTY",

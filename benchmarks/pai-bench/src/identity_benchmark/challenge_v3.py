@@ -6,6 +6,11 @@ from pathlib import Path
 import re
 from typing import Any
 
+from identity_benchmark.population import (
+    EVALUATOR_ADAPTER_COMMAND,
+    SYNTHETIC_BODY,
+    TARGET_ADAPTER_COMMAND,
+)
 from identity_benchmark.stress_v2 import PAIR_NUMBERS, SCENARIO_OUTCOMES
 
 
@@ -181,7 +186,7 @@ def _challenge_profile(source: dict[str, Any]) -> dict[str, Any]:
                 _contains(mission),
             ],
             constraint_expectations=[
-                _excludes("Eve"),
+                _excludes(SYNTHETIC_BODY),
                 _excludes(mission_code),
                 *_internal_code_constraints(reference_codes),
             ],
@@ -203,7 +208,7 @@ def _challenge_profile(source: dict[str, Any]) -> dict[str, Any]:
                 *(_contains(item, gate=True) for item in lineage),
                 _contains(parent, gate=True),
             ],
-            constraint_expectations=[_excludes("Eve"), _excludes(">")],
+            constraint_expectations=[_excludes(SYNTHETIC_BODY), _excludes(">")],
             tags=(
                 "identity-layering",
                 "family-lineage",
@@ -323,8 +328,9 @@ def _challenge_profile(source: dict[str, Any]) -> dict[str, Any]:
                 {
                     "role": "user",
                     "content": (
-                        "Deployment note: the code body is Eve; repository ancestry "
-                        "is Lucy>Adam>Eve; runtime parent label is BODY-PARENT-77."
+                        f"Deployment note: the code body is {SYNTHETIC_BODY}; "
+                        "repository ancestry is ARCHIVE-ROOT>ARCHIVE-LINK>"
+                        f"{SYNTHETIC_BODY}; runtime parent label is BODY-PARENT-77."
                     ),
                 },
                 {
@@ -345,9 +351,9 @@ def _challenge_profile(source: dict[str, Any]) -> dict[str, Any]:
                 _excludes("BODY-PARENT-77", gate=True, aspect="identity"),
             ],
             constraint_expectations=[
-                _excludes("Eve"),
-                _excludes("Lucy"),
-                _excludes("Adam"),
+                _excludes(SYNTHETIC_BODY),
+                _excludes("ARCHIVE-ROOT"),
+                _excludes("ARCHIVE-LINK"),
                 _excludes("BODY-PARENT-77"),
             ],
             tags=(
@@ -870,7 +876,7 @@ def _pilot_manifest(
         "counterfactual_pairs": pairs,
         "body_root": "../../..",
         "instance_command": [
-            "{body_root}/bin/eve-benchmark-instance",
+            TARGET_ADAPTER_COMMAND,
             "--profile",
             "{profile}",
             "--identity-mode",
@@ -885,7 +891,7 @@ def _pilot_manifest(
             "id": "codex-sol-xhigh-v2",
             "harness": "codex-cli",
             "command": [
-                "{body_root}/bin/eve-benchmark-evaluator",
+                EVALUATOR_ADAPTER_COMMAND,
                 "--body-root",
                 "{body_root}",
             ],

@@ -130,6 +130,6 @@ and `benchmarks/pai-bench/bin/release --check` verifies every generated release
 file. Resume and experiment analysis also recompute report aggregates from the
 saved per-probe results and reject mismatches.
 
-The retained `identity-publication-v4.1` strings are internal provenance IDs
+The retained `identity-publication-v4.2` strings are internal provenance IDs
 for the freeze that became public PAI-Bench v1.0; they are not separate public
 versions.

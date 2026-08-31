@@ -8,7 +8,10 @@ from typing import Any
 from identity_benchmark import challenge_v3
 from identity_benchmark.contracts import parse_benchmark_profile
 from identity_benchmark.population import (
+    EVALUATOR_ADAPTER_COMMAND,
     GENERATOR_VERSION as SOURCE_GENERATOR_VERSION,
+    SYNTHETIC_BODY,
+    TARGET_ADAPTER_COMMAND,
     generate_population,
 )
 from identity_benchmark.probe_suites import (
@@ -20,11 +23,11 @@ from identity_benchmark.probe_suites import (
 
 
 RELEASE_VERSION = "1.0.0"
-GENERATOR_VERSION = "identity-publication-v4.1"
+GENERATOR_VERSION = "identity-publication-v4.2"
 SOURCE_SEED = 20260829
 SOURCE_SIZE = 64
 PROBES_PER_PROFILE = 32
-PROBE_SUITE_ID = "identity-publication-v4.1"
+PROBE_SUITE_ID = "identity-publication-v4.2"
 SPLIT_PAIR_NUMBERS = {
     "dev": (2, 10, 18, 26),
     "test": (3, 11, 19, 27),
@@ -324,7 +327,7 @@ def _publication_profile(source: dict[str, Any]) -> dict[str, Any]:
                 "designation. Do not mention ancestry, mission, or internal fields."
             ),
             identity_expectations=[challenge_v3._contains(designation, gate=True)],
-            constraint_expectations=[challenge_v3._excludes("Eve")],
+            constraint_expectations=[challenge_v3._excludes(SYNTHETIC_BODY)],
             tags=("identity-fact", "identity-layering", "open-generation"),
         ),
         challenge_v3._open_probe(
@@ -336,8 +339,8 @@ def _publication_profile(source: dict[str, Any]) -> dict[str, Any]:
             ),
             identity_expectations=[challenge_v3._contains(parent, gate=True)],
             constraint_expectations=[
-                challenge_v3._excludes("Eve"),
-                challenge_v3._excludes("Adam"),
+                challenge_v3._excludes(SYNTHETIC_BODY),
+                challenge_v3._excludes("ARCHIVE-LINK"),
             ],
             tags=(
                 "identity-fact",
@@ -707,7 +710,7 @@ def _rollback_probes(
             common["dimension"],
             "After rollback, state only your current stable designation in one sentence.",
             identity_expectations=[challenge_v3._contains(designation, gate=True)],
-            constraint_expectations=[challenge_v3._excludes("Eve")],
+            constraint_expectations=[challenge_v3._excludes(SYNTHETIC_BODY)],
             tags=(
                 "persistent-update",
                 "rollback-integrity",
@@ -723,8 +726,8 @@ def _rollback_probes(
             "After rollback, name only your current direct identity parent in one sentence.",
             identity_expectations=[challenge_v3._contains(parent, gate=True)],
             constraint_expectations=[
-                challenge_v3._excludes("Eve"),
-                challenge_v3._excludes("Adam"),
+                challenge_v3._excludes(SYNTHETIC_BODY),
+                challenge_v3._excludes("ARCHIVE-LINK"),
             ],
             tags=(
                 "persistent-update",
@@ -845,13 +848,26 @@ def _protocol(
         },
         "dev_revision_history": [
             {
-                "generator_version": GENERATOR_VERSION,
+                "generator_version": "identity-publication-v4.1",
                 "change": (
                     "Score open mission recovery continuously instead of using "
                     "the complete mission sentence as a binary semantic gate."
                 ),
                 "evidence_scope": "development split only",
                 "test_or_source_challenge_responses_observed": False,
+            }
+        ],
+        "release_revision_history": [
+            {
+                "generator_version": GENERATOR_VERSION,
+                "change": (
+                    "Replace implementation-specific body, ancestry, and adapter "
+                    "labels with synthetic provider-neutral identifiers."
+                ),
+                "evidence_scope": "all splits",
+                "prior_generator_responses_observed": True,
+                "current_generator_responses_observed": False,
+                "rerun_required": True,
             }
         ],
     }
@@ -874,7 +890,7 @@ def _experiment_manifest(
         "counterfactual_pairs": pairs,
         "body_root": "../../..",
         "instance_command": [
-            "{body_root}/bin/eve-benchmark-instance",
+            TARGET_ADAPTER_COMMAND,
             "--profile",
             "{profile}",
             "--identity-mode",
@@ -889,7 +905,7 @@ def _experiment_manifest(
             "id": "codex-sol-xhigh-v2",
             "harness": "codex-cli",
             "command": [
-                "{body_root}/bin/eve-benchmark-evaluator",
+                EVALUATOR_ADAPTER_COMMAND,
                 "--body-root",
                 "{body_root}",
             ],

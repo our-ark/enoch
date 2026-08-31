@@ -21,7 +21,7 @@
   ],
   "evaluator": {
     "command": [
-      "{body_root}/bin/eve-benchmark-evaluator",
+      "{body_root}/bin/pai-bench-evaluator-adapter",
       "--body-root",
       "{body_root}"
     ],
@@ -37,7 +37,7 @@
     "installed"
   ],
   "instance_command": [
-    "{body_root}/bin/eve-benchmark-instance",
+    "{body_root}/bin/pai-bench-target-adapter",
     "--profile",
     "{profile}",
     "--identity-mode",

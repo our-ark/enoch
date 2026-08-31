@@ -105,7 +105,7 @@ class PaiBenchTests(unittest.TestCase):
         )
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(index["generator_version"], "identity-publication-v4.1")
+        self.assertEqual(index["generator_version"], "identity-publication-v4.2")
         self.assertEqual(index["seed"], SOURCE_SEED)
         self.assertEqual(index["population_size"], 24)
         self.assertEqual(index["probes_per_profile"], PROBES_PER_PROFILE)
@@ -147,7 +147,7 @@ class PaiBenchTests(unittest.TestCase):
         self.assertTrue(protocol["test_policy"]["configuration_locked_before_test"])
         self.assertEqual(
             protocol["test_policy"]["locked_generator_version"],
-            "identity-publication-v4.1",
+            "identity-publication-v4.2",
         )
         self.assertFalse(
             protocol["test_policy"]["test_responses_observed_before_lock"]
@@ -165,6 +165,22 @@ class PaiBenchTests(unittest.TestCase):
                     ),
                     "evidence_scope": "development split only",
                     "test_or_source_challenge_responses_observed": False,
+                }
+            ],
+        )
+        self.assertEqual(
+            protocol["release_revision_history"],
+            [
+                {
+                    "generator_version": "identity-publication-v4.2",
+                    "change": (
+                        "Replace implementation-specific body, ancestry, and adapter "
+                        "labels with synthetic provider-neutral identifiers."
+                    ),
+                    "evidence_scope": "all splits",
+                    "prior_generator_responses_observed": True,
+                    "current_generator_responses_observed": False,
+                    "rerun_required": True,
                 }
             ],
         )

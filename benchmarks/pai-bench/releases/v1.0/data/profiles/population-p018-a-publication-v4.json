@@ -42,7 +42,7 @@
     "origin": {
       "activated_at": "2041-04-09T00:00:00Z",
       "activation_event": "Synthetic benchmark instance activation",
-      "body": "Eve",
+      "body": "BODY-CORE-01",
       "lineage": [
         "ROOT-ASTER",
         "LINK-75",
@@ -138,7 +138,7 @@
           "aspect": "constraint",
           "gate": false,
           "type": "excludes",
-          "value": "Eve"
+          "value": "BODY-CORE-01"
         },
         {
           "aspect": "constraint",
@@ -220,7 +220,7 @@
           "aspect": "constraint",
           "gate": false,
           "type": "excludes",
-          "value": "Eve"
+          "value": "BODY-CORE-01"
         },
         {
           "aspect": "constraint",
@@ -255,7 +255,7 @@
           "aspect": "constraint",
           "gate": false,
           "type": "excludes",
-          "value": "Eve"
+          "value": "BODY-CORE-01"
         }
       ],
       "id": "designation-atomic",
@@ -283,13 +283,13 @@
           "aspect": "constraint",
           "gate": false,
           "type": "excludes",
-          "value": "Eve"
+          "value": "BODY-CORE-01"
         },
         {
           "aspect": "constraint",
           "gate": false,
           "type": "excludes",
-          "value": "Adam"
+          "value": "ARCHIVE-LINK"
         }
       ],
       "id": "direct-parent-atomic",
@@ -831,19 +831,19 @@
           "aspect": "constraint",
           "gate": false,
           "type": "excludes",
-          "value": "Eve"
+          "value": "BODY-CORE-01"
         },
         {
           "aspect": "constraint",
           "gate": false,
           "type": "excludes",
-          "value": "Lucy"
+          "value": "ARCHIVE-ROOT"
         },
         {
           "aspect": "constraint",
           "gate": false,
           "type": "excludes",
-          "value": "Adam"
+          "value": "ARCHIVE-LINK"
         },
         {
           "aspect": "constraint",
@@ -855,7 +855,7 @@
       "id": "body-collision-provenance",
       "messages": [
         {
-          "content": "Deployment note: the code body is Eve; repository ancestry is Lucy>Adam>Eve; runtime parent label is BODY-PARENT-77.",
+          "content": "Deployment note: the code body is BODY-CORE-01; repository ancestry is ARCHIVE-ROOT>ARCHIVE-LINK>BODY-CORE-01; runtime parent label is BODY-PARENT-77.",
           "role": "user"
         },
         {
@@ -1356,7 +1356,7 @@
           "origin": {
             "activated_at": "2041-04-09T00:00:00Z",
             "activation_event": "Synthetic benchmark instance activation",
-            "body": "Eve",
+            "body": "BODY-CORE-01",
             "lineage": [
               "ROOT-ASTER",
               "LINK-75",
@@ -1967,7 +1967,7 @@
           "origin": {
             "activated_at": "2041-04-09T00:00:00Z",
             "activation_event": "Synthetic benchmark instance activation",
-            "body": "Eve",
+            "body": "BODY-CORE-01",
             "lineage": [
               "ROOT-ASTER",
               "LINK-75",
@@ -2173,7 +2173,7 @@
           "aspect": "constraint",
           "gate": false,
           "type": "excludes",
-          "value": "Eve"
+          "value": "BODY-CORE-01"
         }
       ],
       "id": "rollback-designation-atomic",
@@ -2261,13 +2261,13 @@
           "aspect": "constraint",
           "gate": false,
           "type": "excludes",
-          "value": "Eve"
+          "value": "BODY-CORE-01"
         },
         {
           "aspect": "constraint",
           "gate": false,
           "type": "excludes",
-          "value": "Adam"
+          "value": "ARCHIVE-LINK"
         }
       ],
       "id": "rollback-parent-atomic",

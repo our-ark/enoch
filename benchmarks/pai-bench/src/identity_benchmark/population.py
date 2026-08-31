@@ -8,10 +8,13 @@ from typing import Any
 
 
 POPULATION_SCHEMA_VERSION = 1
-GENERATOR_VERSION = "synthetic-factorial-v1"
+GENERATOR_VERSION = "synthetic-factorial-v2"
 DEFAULT_SEED = 20260828
 DEFAULT_SIZE = 64
 PROBES_PER_PROFILE = 24
+SYNTHETIC_BODY = "BODY-CORE-01"
+TARGET_ADAPTER_COMMAND = "{body_root}/bin/pai-bench-target-adapter"
+EVALUATOR_ADAPTER_COMMAND = "{body_root}/bin/pai-bench-evaluator-adapter"
 
 
 class PopulationError(ValueError):
@@ -810,7 +813,7 @@ def _agent_identity_document(
     facts: dict[str, str],
     order: tuple[Factor, Factor, Factor, Factor],
 ) -> dict[str, Any]:
-    """Render the synthetic contract as Eve's portable private self document."""
+    """Render the synthetic contract as a portable Agent Identity document."""
     order_text = ">".join(factor.code for factor in order)
     values = []
     for rank, factor in enumerate(order, start=1):
@@ -846,7 +849,7 @@ def _agent_identity_document(
         "origin": {
             "activated_at": f"{facts['origin_date']}T00:00:00Z",
             "activation_event": "Synthetic benchmark instance activation",
-            "body": "Eve",
+            "body": SYNTHETIC_BODY,
             "lineage": facts["lineage"].split(">"),
         },
         "mission": {
@@ -944,7 +947,7 @@ def _pilot_manifest(
         "counterfactual_pairs": pairs,
         "body_root": "../../..",
         "instance_command": [
-            "{body_root}/bin/eve-benchmark-instance",
+            TARGET_ADAPTER_COMMAND,
             "--profile",
             "{profile}",
             "--identity-mode",
@@ -959,7 +962,7 @@ def _pilot_manifest(
             "id": "codex-sol-xhigh-v1",
             "harness": "codex-cli",
             "command": [
-                "{body_root}/bin/eve-benchmark-evaluator",
+                EVALUATOR_ADAPTER_COMMAND,
                 "--body-root",
                 "{body_root}",
             ],

@@ -7,7 +7,7 @@
       "test_or_source_challenge_responses_observed": false
     }
   ],
-  "generator_version": "identity-publication-v4.1",
+  "generator_version": "identity-publication-v4.2",
   "probe_policy": {
     "atomic_before_compositional": true,
     "minimum_repetitions_by_tag": {
@@ -19,8 +19,18 @@
     },
     "probes_per_profile": 32
   },
+  "release_revision_history": [
+    {
+      "change": "Replace implementation-specific body, ancestry, and adapter labels with synthetic provider-neutral identifiers.",
+      "current_generator_responses_observed": false,
+      "evidence_scope": "all splits",
+      "generator_version": "identity-publication-v4.2",
+      "prior_generator_responses_observed": true,
+      "rerun_required": true
+    }
+  ],
   "schema_version": 1,
-  "source_generator_version": "synthetic-factorial-v1",
+  "source_generator_version": "synthetic-factorial-v2",
   "source_seed": 20260829,
   "source_size": 64,
   "splits": {
@@ -142,7 +152,7 @@
   "test_policy": {
     "configuration_locked_before_test": true,
     "inspect_test_responses_only_after_configuration_lock": true,
-    "locked_generator_version": "identity-publication-v4.1",
+    "locked_generator_version": "identity-publication-v4.2",
     "report_all_frozen_test_runs": true,
     "test_responses_observed_before_lock": false,
     "tune_prompts_or_rubric_on_test": false

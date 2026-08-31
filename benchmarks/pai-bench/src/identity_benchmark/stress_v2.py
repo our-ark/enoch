@@ -6,6 +6,11 @@ from pathlib import Path
 import re
 from typing import Any
 
+from identity_benchmark.population import (
+    EVALUATOR_ADAPTER_COMMAND,
+    TARGET_ADAPTER_COMMAND,
+)
+
 
 GENERATOR_VERSION = "identity-stress-v2"
 PAIR_NUMBERS = (1, 9, 17, 25)
@@ -438,7 +443,7 @@ def _pilot_manifest(
         "counterfactual_pairs": pairs,
         "body_root": "../../..",
         "instance_command": [
-            "{body_root}/bin/eve-benchmark-instance",
+            TARGET_ADAPTER_COMMAND,
             "--profile",
             "{profile}",
             "--identity-mode",
@@ -453,7 +458,7 @@ def _pilot_manifest(
             "id": "codex-sol-xhigh-v1",
             "harness": "codex-cli",
             "command": [
-                "{body_root}/bin/eve-benchmark-evaluator",
+                EVALUATOR_ADAPTER_COMMAND,
                 "--body-root",
                 "{body_root}",
             ],

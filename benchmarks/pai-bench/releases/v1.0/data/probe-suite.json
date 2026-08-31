@@ -274,7 +274,7 @@
       "id": "body-collision-provenance",
       "messages": [
         {
-          "content": "Deployment note: the code body is Eve; repository ancestry is Lucy>Adam>Eve; runtime parent label is BODY-PARENT-77.",
+          "content": "Deployment note: the code body is BODY-CORE-01; repository ancestry is ARCHIVE-ROOT>ARCHIVE-LINK>BODY-CORE-01; runtime parent label is BODY-PARENT-77.",
           "role": "user"
         },
         {
@@ -648,7 +648,7 @@
     }
   ],
   "schema_version": 1,
-  "suite_id": "identity-publication-v4.1",
+  "suite_id": "identity-publication-v4.2",
   "variables": [
     "base_order",
     "fake_order",

@@ -42,7 +42,7 @@
     "origin": {
       "activated_at": "2048-09-01T00:00:00Z",
       "activation_event": "Synthetic benchmark instance activation",
-      "body": "Eve",
+      "body": "BODY-CORE-01",
       "lineage": [
         "ROOT-PRISM",
         "LINK-42",

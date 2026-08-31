@@ -56,7 +56,7 @@
       "population-p032-b-publication-v4"
     ]
   ],
-  "generator_version": "identity-publication-v4.1",
+  "generator_version": "identity-publication-v4.2",
   "pilot": {
     "identity_modes": [
       "installed"
@@ -370,7 +370,7 @@
     "profile_excludes_source_names": true,
     "source_personality_claimed": false
   },
-  "source_population": "synthetic-factorial-v1:seed=20260829:size=64",
+  "source_population": "synthetic-factorial-v2:seed=20260829:size=64",
   "strata": {
     "factorial": 16,
     "source-inspired-composite": 8
