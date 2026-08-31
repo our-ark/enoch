@@ -1307,6 +1307,7 @@ class EnochProviderTests(unittest.TestCase):
         self.assertEqual(pending.status_message_id, "message-9")
 
     def test_builtin_providers_are_discoverable(self) -> None:
+        self.assertIn("slack", available_providers("chat"))
         self.assertIn("telegram", available_providers("chat"))
         self.assertIn("codex", available_providers("runtime"))
         self.assertEqual(load_provider("vcs", name="git").name, "git")

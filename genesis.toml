@@ -31,6 +31,13 @@ local_source = "libraries/telegram/src"
 optional = true
 
 [[runtime_dependencies]]
+name = "slack"
+requirement = "our-ark-slack @ git+https://github.com/our-ark/enoch.git@bc3f41f342c45ce59c6765282b37ada9bbb613f5#subdirectory=libraries/slack"
+import_name = "our_ark_slack"
+local_source = "libraries/slack/src"
+optional = true
+
+[[runtime_dependencies]]
 name = "github"
 requirement = "our-ark-github @ git+https://github.com/our-ark/enoch.git@54e6f5525380cf0f3b1275992b9d73bd2f44774e#subdirectory=libraries/github"
 import_name = "our_ark_github"
