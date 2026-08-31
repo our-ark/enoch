@@ -23,10 +23,12 @@ from our_ark_provider_kit import (
 
 
 MAX_SLACK_MARKDOWN = 12_000
-SLACK_COMMAND = "/enoch"
+SECONDARY_COMMAND_PREFIX = "!"
 READ_ACK_EMOJI = "eyes"
 SPOOL_SCHEMA_VERSION = 1
 _MENTION_PREFIX = re.compile(r"^<@[A-Z0-9]+>[:,]?\s*", re.IGNORECASE)
+_SECONDARY_COMMAND = re.compile(r"^!([A-Za-z][A-Za-z0-9_-]*)(?:\s+(.*))?$", re.DOTALL)
+_SLASH_COMMAND = re.compile(r"^/[A-Za-z0-9][A-Za-z0-9_-]{0,79}$")
 _SAFE_ID = re.compile(r"^[A-Za-z0-9._-]{1,160}$")
 
 
@@ -64,7 +66,7 @@ class SlackConfig:
 class SlackClient:
     name = "slack"
     provider_kind = "chat"
-    command_prefix = f"{SLACK_COMMAND} "
+    command_prefix = SECONDARY_COMMAND_PREFIX
     capabilities = ProviderCapabilities(
         provider_kind="chat",
         capabilities=frozenset(
@@ -364,6 +366,7 @@ def slack_event(
         text = _MENTION_PREFIX.sub("", text).strip()
     if not text:
         return None
+    text = _translate_secondary_command(text)
     message_id = _optional_id(native.get("ts"))
     return ChatEvent(
         cursor=cursor,
@@ -405,7 +408,8 @@ def _slash_command_event(
     allowed_conversation_id: str | None,
     allowed_user_id: str | None,
 ) -> ChatEvent | None:
-    if str(payload.get("command") or "").strip().lower() != SLACK_COMMAND:
+    command = str(payload.get("command") or "").strip().lower()
+    if not _SLASH_COMMAND.fullmatch(command):
         return None
     conversation = _optional_id(payload.get("channel_id"))
     user = _optional_id(payload.get("user_id"))
@@ -428,6 +432,15 @@ def _slash_command_event(
         text=text,
         raw=deepcopy(payload),
     )
+
+
+def _translate_secondary_command(text: str) -> str:
+    match = _SECONDARY_COMMAND.fullmatch(text)
+    if match is None:
+        return text
+    command, argument = match.groups()
+    suffix = f" {argument}" if argument else ""
+    return f"/{command}{suffix}"
 
 
 def _sanitized_payload(payload: object) -> dict[str, Any]:

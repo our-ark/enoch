@@ -85,7 +85,7 @@ class SlackLibraryTests(ProviderContractConformanceMixin, unittest.TestCase):
 
         self.assertIsInstance(client, ChatProvider)
         self.assertEqual(client.allowed_conversation_id, "D123")
-        self.assertEqual(client.command_prefix, "/enoch ")
+        self.assertEqual(client.command_prefix, "!")
         self.assertEqual(
             client.capabilities.capabilities,
             frozenset({"chat.receive", "chat.send", "chat.edit", "chat.ack"}),
@@ -102,7 +102,7 @@ class SlackLibraryTests(ProviderContractConformanceMixin, unittest.TestCase):
                     "channel": "D123",
                     "user": "U123",
                     "ts": "1700.1",
-                    "text": "/status",
+                    "text": "!status",
                 },
             },
             cursor=7,
@@ -119,7 +119,7 @@ class SlackLibraryTests(ProviderContractConformanceMixin, unittest.TestCase):
                     "channel": "C123",
                     "user": "U123",
                     "ts": "1700.2",
-                    "text": "<@UBOT>, /queue",
+                    "text": "<@UBOT>, !queue",
                 },
             },
             cursor=8,
@@ -167,7 +167,7 @@ class SlackLibraryTests(ProviderContractConformanceMixin, unittest.TestCase):
         changed["event"]["subtype"] = "message_changed"
         self.assertIsNone(slack_event("events_api", changed, cursor=1))
 
-    def test_enoch_slash_command_maps_to_existing_command_surface(self) -> None:
+    def test_any_registered_slash_command_maps_to_existing_command_surface(self) -> None:
         payload = {
             "command": "/enoch",
             "text": "task add investigate retries",
@@ -192,6 +192,25 @@ class SlackLibraryTests(ProviderContractConformanceMixin, unittest.TestCase):
         self.assertEqual(event.text, "/task add investigate retries")
         self.assertEqual(help_event.text, "/help")
         self.assertIsNone(help_event.message_id)
+
+    def test_secondary_prefix_does_not_capture_normal_exclamations(self) -> None:
+        event = slack_event(
+            "events_api",
+            {
+                "type": "event_callback",
+                "event": {
+                    "type": "message",
+                    "channel": "D123",
+                    "user": "U123",
+                    "ts": "1700.1",
+                    "text": "! this is surprising",
+                },
+            },
+            cursor=1,
+        )
+
+        assert event is not None
+        self.assertEqual(event.text, "! this is surprising")
 
     def test_persists_before_ack_and_replays_once_after_restart(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

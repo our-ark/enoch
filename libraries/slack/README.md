@@ -13,8 +13,8 @@ not require a public HTTP endpoint.
    and your Slack user ID from Slack's UI.
 
 The manifest requests only the bot scopes used by the provider: receiving DMs
-and mentions, posting and editing messages, handling `/enoch`, and adding the
-read acknowledgment reaction.
+and mentions, posting and editing messages, and adding the read acknowledgment
+reaction.
 
 ## Install and configure
 
@@ -36,13 +36,17 @@ Credentials can instead be provided through `ENOCH_SLACK_BOT_TOKEN` and
 `SLACK_APP_TOKEN` names.
 
 Send natural language directly in the Messages tab. Slack reserves slash
-commands, so Enoch commands use one namespaced command:
+commands, so this provider uses `!` as a secondary command prefix:
 
 ```text
-/enoch help
-/enoch task add investigate retry behavior
-/enoch evolve list
+!help
+!task add investigate retry behavior
+!evolve list
 ```
+
+In a channel, mention the agent before the command, for example
+`@Enoch !help`. The agent core retains `/help`, `/task`, and the rest of its
+canonical command surface; translation happens only at the Slack boundary.
 
 The transport persists each supported Socket Mode envelope under the agent's
 private channel state before acknowledging it. Tokens and temporary Slack
