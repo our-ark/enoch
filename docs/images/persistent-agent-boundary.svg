@@ -1,0 +1,79 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="840" viewBox="0 0 1440 840" role="img" aria-labelledby="title desc">
+  <title id="title">Persistent agent boundary</title>
+  <desc id="desc">An installed persistent agent consists of identity, private durable memory, and an authorized software-body revision. It binds to replaceable reasoners, harnesses, hosts, and interaction surfaces.</desc>
+
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#52606d"/>
+    </marker>
+  </defs>
+
+  <rect width="1440" height="840" fill="#f5f6f2"/>
+
+  <text x="72" y="62" fill="#171a1f" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="32" font-weight="750">Where the persistent agent lives</text>
+  <text x="72" y="101" fill="#59616b" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="18">Continuity-bearing substrate above; replaceable deployment bindings below</text>
+
+  <rect x="72" y="134" width="1296" height="308" rx="18" fill="#ffffff" stroke="#2f6fb3" stroke-width="2.5"/>
+  <text x="104" y="176" fill="#2f6fb3" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="15" font-weight="750" letter-spacing="1.2">PERSISTENT AGENT INSTANCE</text>
+  <text x="1336" y="176" text-anchor="end" fill="#263441" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="21" font-weight="700">P(a) = (I(a), M(a), B(a))</text>
+
+  <rect x="104" y="204" width="360" height="148" rx="12" fill="#edf5ff" stroke="#3c78b5" stroke-width="1.8"/>
+  <rect x="104" y="204" width="360" height="7" rx="3.5" fill="#3c78b5"/>
+  <text x="128" y="248" fill="#234d78" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="14" font-weight="750" letter-spacing="1">IDENTITY I(a)</text>
+  <text x="128" y="281" fill="#171a1f" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="21" font-weight="700">Installed self representation</text>
+  <text x="128" y="310" fill="#52606d" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="16">self.json / relationships / values</text>
+  <text x="128" y="334" fill="#52606d" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="16">separate from body identity</text>
+
+  <rect x="540" y="204" width="360" height="148" rx="12" fill="#edf9f5" stroke="#24836b" stroke-width="1.8"/>
+  <rect x="540" y="204" width="360" height="7" rx="3.5" fill="#24836b"/>
+  <text x="564" y="248" fill="#1c6856" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="14" font-weight="750" letter-spacing="1">PRIVATE MEMORY M(a)</text>
+  <text x="564" y="281" fill="#171a1f" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="21" font-weight="700">Durable experience and work</text>
+  <text x="564" y="310" fill="#52606d" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="16">memory / tasks / workflows</text>
+  <text x="564" y="334" fill="#52606d" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="16">private state and retained evidence</text>
+
+  <rect x="976" y="204" width="360" height="148" rx="12" fill="#fff7e6" stroke="#af7414" stroke-width="1.8"/>
+  <rect x="976" y="204" width="360" height="7" rx="3.5" fill="#af7414"/>
+  <text x="1000" y="248" fill="#85570e" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="14" font-weight="750" letter-spacing="1">SOFTWARE BODY B(a)</text>
+  <text x="1000" y="281" fill="#171a1f" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="21" font-weight="700">Authorized repository revision</text>
+  <text x="1000" y="310" fill="#52606d" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="16">code / tools / tests / policies</text>
+  <text x="1000" y="334" fill="#52606d" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="16">body.yaml is the manifest, not the body</text>
+
+  <rect x="104" y="376" width="1232" height="42" rx="8" fill="#f2f5f8"/>
+  <circle cx="130" cy="397" r="5" fill="#2f6fb3"/>
+  <text x="148" y="403" fill="#3d4b59" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="16" font-weight="650">Continuity conditions: attributable lineage + governed continuation authority</text>
+  <text x="1308" y="403" text-anchor="end" fill="#697784" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="15">same agent instance across deployments</text>
+
+  <line x1="72" y1="494" x2="1368" y2="494" stroke="#9ba7b2" stroke-width="1.5" stroke-dasharray="8 8"/>
+  <rect x="462" y="458" width="516" height="72" rx="14" fill="#ffffff" stroke="#697784" stroke-width="1.8"/>
+  <text x="720" y="486" text-anchor="middle" fill="#263441" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="15" font-weight="750" letter-spacing=".8">AUTHORIZED BIND / MIGRATE</text>
+  <text x="720" y="512" text-anchor="middle" fill="#697784" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="15">persistent above; replaceable below</text>
+  <line x1="720" y1="530" x2="720" y2="562" stroke="#52606d" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <rect x="72" y="572" width="850" height="202" rx="16" fill="#ffffff" stroke="#7258a5" stroke-width="2"/>
+  <text x="104" y="612" fill="#7258a5" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="15" font-weight="750" letter-spacing="1">EXECUTION SUBSTRATE E = (R, H, D)</text>
+
+  <rect x="104" y="638" width="238" height="102" rx="10" fill="#f3effb" stroke="#8b71b7" stroke-width="1.4"/>
+  <text x="223" y="674" text-anchor="middle" fill="#3b2c59" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="18" font-weight="700">Reasoner / model</text>
+  <text x="223" y="705" text-anchor="middle" fill="#697784" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="15">version A or version B</text>
+
+  <rect x="378" y="638" width="238" height="102" rx="10" fill="#f3effb" stroke="#8b71b7" stroke-width="1.4"/>
+  <text x="497" y="674" text-anchor="middle" fill="#3b2c59" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="18" font-weight="700">Harness</text>
+  <text x="497" y="705" text-anchor="middle" fill="#697784" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="15">current orchestration</text>
+
+  <rect x="652" y="638" width="238" height="102" rx="10" fill="#f3effb" stroke="#8b71b7" stroke-width="1.4"/>
+  <text x="771" y="674" text-anchor="middle" fill="#3b2c59" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="18" font-weight="700">Host / service</text>
+  <text x="771" y="705" text-anchor="middle" fill="#697784" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="15">laptop, server, launchd, systemd</text>
+
+  <rect x="958" y="572" width="410" height="202" rx="16" fill="#ffffff" stroke="#bd5b49" stroke-width="2"/>
+  <text x="990" y="612" fill="#a24535" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="15" font-weight="750" letter-spacing="1">INTERACTION SURFACES S</text>
+  <rect x="990" y="638" width="156" height="42" rx="21" fill="#fff0ec"/>
+  <text x="1068" y="665" text-anchor="middle" fill="#823527" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="16" font-weight="650">Telegram</text>
+  <rect x="1170" y="638" width="166" height="42" rx="21" fill="#fff0ec"/>
+  <text x="1253" y="665" text-anchor="middle" fill="#823527" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="16" font-weight="650">Slack</text>
+  <rect x="990" y="698" width="156" height="42" rx="21" fill="#fff0ec"/>
+  <text x="1068" y="725" text-anchor="middle" fill="#823527" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="16" font-weight="650">API</text>
+  <rect x="1170" y="698" width="166" height="42" rx="21" fill="#fff0ec"/>
+  <text x="1253" y="725" text-anchor="middle" fill="#823527" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="16" font-weight="650">Web / UI</text>
+
+  <text x="720" y="814" text-anchor="middle" fill="#3d4b59" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="18" font-weight="650">Same continuity-bearing agent; new deployment binding.</text>
+</svg>

@@ -21,6 +21,25 @@ and operational experience into tested, reviewable changes while you control
 what is adopted. It is built for researchers, agent builders, and power users
 who want to run or fork an agent body.
 
+## Persistent Agent Boundary
+
+Enoch separates the persistent agent from the runtime that currently executes
+her:
+
+![An installed persistent agent consists of identity, private durable memory, and an authorized software-body revision above a boundary that binds it to replaceable reasoners, harnesses, hosts, and interaction surfaces.](docs/images/persistent-agent-boundary.svg)
+
+An installed agent instance is the continuity-bearing substrate
+`P=(I,M,B)`: an architectural identity representation in private
+`self.json`, durable memory and workflow state, and an authorized revision of
+the versioned software body. The body is the repository: code, tools, policies,
+tests, and provider contracts, not `body.yaml` alone.
+
+The current reasoner or model, orchestration harness, and host form the
+replaceable execution substrate `E=(R,H,D)`. Telegram, Slack, APIs, and user
+interfaces are replaceable interaction surfaces `S`. These deployment
+components may change without creating a new agent when identity, memory, body
+lineage, and governed continuation authority are preserved.
+
 ## Research Foundation
 
 Enoch is the reference implementation of
