@@ -313,10 +313,10 @@ Installed Python packages can
 add or replace chat, agent runtime, version control, code forge, and host
 service providers through the `our_ark.providers` entry-point group. Select them
 in `.enoch/config.yaml` or with `/config provider`. launchd is selected on
-macOS; systemd user services are selected on Linux. Install the normal
-deployment stack with `pip install '.[reference]'` when working from a clone;
-the source checkout discovers the optional Claude provider directly, and
-installed bodies can install `libraries/claude` independently.
+macOS; systemd user services are selected on Linux. Install the complete
+reference stack, including the Claude provider, with
+`pip install '.[reference]'` when working from a clone. The source checkout also
+discovers `libraries/claude` directly.
 
 For a new environment, install provider packages exposing `chat.<name>` and
 `vcs.<name>` entry points, then select only those two capabilities:

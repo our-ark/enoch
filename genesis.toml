@@ -39,7 +39,7 @@ optional = true
 
 [[runtime_dependencies]]
 name = "claude"
-requirement = "our-ark-claude==0.1.0"
+requirement = "our-ark-claude @ git+https://github.com/our-ark/enoch.git@d5d6eece19caa5933a1b60b564a126297c864ce8#subdirectory=libraries/claude"
 import_name = "our_ark_claude"
 local_source = "libraries/claude/src"
 optional = true

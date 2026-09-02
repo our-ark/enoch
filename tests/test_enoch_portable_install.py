@@ -75,6 +75,7 @@ class EnochPortableInstallTests(unittest.TestCase):
             self.assertEqual(provider_contract, core_contract, package)
 
     def test_claude_provider_is_a_local_optional_runtime_dependency(self) -> None:
+        root_metadata = _project_metadata(ROOT / "pyproject.toml")
         manifest = _project_metadata(ROOT / "genesis.toml")
         dependency = next(
             item
@@ -82,7 +83,12 @@ class EnochPortableInstallTests(unittest.TestCase):
             if item["name"] == "claude"
         )
 
-        self.assertEqual(dependency["requirement"], "our-ark-claude==0.1.0")
+        reference_requirement = _dependency(
+            root_metadata["project"]["optional-dependencies"]["reference"],
+            "our-ark-claude",
+        )
+        self.assertEqual(dependency["requirement"], reference_requirement)
+        self.assertIn("@d5d6eece19caa5933a1b60b564a126297c864ce8", reference_requirement)
         self.assertEqual(dependency["import_name"], "our_ark_claude")
         self.assertEqual(dependency["local_source"], "libraries/claude/src")
         self.assertTrue(dependency["optional"])
