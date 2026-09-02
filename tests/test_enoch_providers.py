@@ -1121,6 +1121,39 @@ class EnochProviderTests(unittest.TestCase):
             self.assertNotIn("executable", read_section("codex", root))
 
     @patch.dict("os.environ", {}, clear=True)
+    def test_source_claude_provider_configures_and_passes_doctor(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            executable = root / "claude"
+            executable.write_text(
+                """#!/bin/sh
+if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
+  printf '%s\\n' '{"loggedIn": true, "authMethod": "oauth"}'
+  exit 0
+fi
+exit 2
+""",
+                encoding="utf-8",
+            )
+            executable.chmod(0o755)
+
+            selected = config_command("/config provider runtime claude", root)
+            configured = config_command(
+                f"/config runtime claude executable {executable}",
+                root,
+            )
+            runtime = load_provider("runtime", root)
+            model = config_command("/config model sonnet", root, runtime=runtime)
+            check = _runtime_provider_check(root)
+
+        self.assertIn("runtime provider set to claude", selected)
+        self.assertIn(str(executable), configured)
+        self.assertIn("Claude model set to sonnet", model)
+        self.assertEqual(runtime.name, "claude")
+        self.assertTrue(check.passed)
+        self.assertEqual(check.name, "Claude runtime")
+
+    @patch.dict("os.environ", {}, clear=True)
     def test_doctor_reports_configured_codex_executable_source(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
@@ -1309,6 +1342,7 @@ class EnochProviderTests(unittest.TestCase):
     def test_builtin_providers_are_discoverable(self) -> None:
         self.assertIn("slack", available_providers("chat"))
         self.assertIn("telegram", available_providers("chat"))
+        self.assertIn("claude", available_providers("runtime"))
         self.assertIn("codex", available_providers("runtime"))
         self.assertEqual(load_provider("vcs", name="git").name, "git")
         self.assertTrue(available_providers("service"))

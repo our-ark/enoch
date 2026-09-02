@@ -66,13 +66,26 @@ class EnochPortableInstallTests(unittest.TestCase):
             if dependency["name"] == "provider-kit"
         ]
         self.assertEqual(runtime_contracts, [core_contract])
-        for package in ("github", "launchd", "slack", "systemd", "telegram"):
+        for package in ("claude", "github", "launchd", "slack", "systemd", "telegram"):
             metadata = _project_metadata(ROOT / "libraries" / package / "pyproject.toml")
             provider_contract = _dependency(
                 metadata["project"]["dependencies"],
                 "our-ark-provider-kit",
             )
             self.assertEqual(provider_contract, core_contract, package)
+
+    def test_claude_provider_is_a_local_optional_runtime_dependency(self) -> None:
+        manifest = _project_metadata(ROOT / "genesis.toml")
+        dependency = next(
+            item
+            for item in manifest["runtime_dependencies"]
+            if item["name"] == "claude"
+        )
+
+        self.assertEqual(dependency["requirement"], "our-ark-claude==0.1.0")
+        self.assertEqual(dependency["import_name"], "our_ark_claude")
+        self.assertEqual(dependency["local_source"], "libraries/claude/src")
+        self.assertTrue(dependency["optional"])
 
     def test_slack_runtime_dependencies_are_pinned_in_genesis_manifest(self) -> None:
         manifest = _project_metadata(ROOT / "genesis.toml")

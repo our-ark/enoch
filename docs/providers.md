@@ -7,7 +7,7 @@ core agent into a new environment:
 | Kind | Reference provider | Responsibility |
 | --- | --- | --- |
 | `chat` | `telegram` / `slack` | Receive normalized chat events and deliver messages |
-| `runtime` | `codex` | Answer, edit, resume sessions, report models, and cancel work |
+| `runtime` | `codex` / `claude` | Answer, edit, resume sessions, report models, and cancel work |
 | `vcs` | `git` | Manage repository revisions, working copies, and isolated workspaces |
 | `forge` | local fallback; `github` reference | Publish and govern review units; retain local changes when remote review is unavailable |
 | `service` | `launchd` / `systemd` | Install, control, inspect, and restart the agent process |
@@ -106,6 +106,39 @@ Enoch instance config, then `PATH`, then known macOS app locations. An explicit
 but invalid environment or config value fails health checks instead of silently
 falling through to another installation. The daemon reads this same instance
 config; the executable path is not copied into a service manifest.
+
+## Claude runtime
+
+The standalone `our-ark-claude` reference package executes the local Claude
+Code CLI through the same provider-neutral runtime contract. A source checkout
+discovers `libraries/claude` directly; an installed agent body installs the
+package independently. Authenticate and select it with:
+
+```text
+python -m pip install ./libraries/claude
+claude auth login
+bin/enoch config provider runtime claude
+```
+
+The generic model and reasoning commands write to the provider-owned `claude`
+section. Provider-specific configuration controls CLI discovery and an optional
+per-invocation cost boundary:
+
+```text
+/config model sonnet
+/config reasoning-effort high
+/config runtime claude executable /opt/homebrew/bin/claude
+/config runtime claude max-budget 2.00
+```
+
+Claude runs with structured streaming output and maps Enoch logical session
+keys to native Claude session IDs. Conversation turns receive read-only tools;
+task turns receive a bounded workspace tool set inside the task worktree. The
+provider uses Claude restricted mode, disables user customizations and MCP
+servers for unattended execution, and never enables bypass-permissions mode.
+Authentication, quota, rate-limit, and configured-budget failures raise the
+shared runtime-access signal, so queued work pauses and can later continue with
+`/task resume` without rewriting task history.
 
 ## Host services
 

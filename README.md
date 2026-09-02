@@ -131,10 +131,11 @@ exists and otherwise reports the body identity.
 | [`inherit`](src/enoch/skills/inherit/SKILL.md) | Discover direct-ancestor skills and changes for selective inheritance. |
 | [`skill-library`](src/enoch/skills/skill-library/SKILL.md) | Package reusable, agent-neutral skill implementations as immutable libraries with thin adapters. |
 
-The reference stack also includes `telegram-talk`, `telegram-vision`,
-`slack-talk`, and `github` integration skills. They live outside the core agent
-body and can be replaced with other provider packages. Run `/skills` on an
-active instance to inspect its complete installed skill set.
+The repository also carries reference providers for Claude Code, Telegram,
+Slack, GitHub, launchd, and systemd, plus the `telegram-talk`,
+`telegram-vision`, `slack-talk`, and `github` integration skills. They live
+outside the portable behavior boundary and can be replaced. Run `/skills` on
+an active instance to inspect its complete installed skill set.
 
 ## Requirements
 
@@ -152,7 +153,7 @@ included.
 | Capability | Reference provider | Replaceable with |
 | --- | --- | --- |
 | Chat | Telegram | Slack, Discord, another chat system, or a custom interface |
-| Agent runtime | Codex CLI | Claude or another agent runtime |
+| Agent runtime | Codex CLI / Claude Code | Another local or hosted agent runtime |
 | Version control | Git | Another version-control implementation |
 | Code forge | GitHub | GitLab, Gitea, or another forge |
 | Background service | launchd on macOS; systemd on Linux | Another process or service manager |
@@ -167,9 +168,10 @@ can be added through the
 variables. Add `runtime`, `forge`, or `service` providers only when the
 built-in or foreground behavior is not sufficient.
 
-The reference providers require a Codex CLI login, Git, GitHub CLI
-authentication for publishing, Telegram credentials for chat, and either
-launchd or a systemd user session for background operation.
+The reference providers require a login for the selected Codex or Claude CLI,
+Git, GitHub CLI authentication for publishing, credentials for the selected
+chat provider, and either launchd or a systemd user session for background
+operation.
 
 ## Quick Start
 
@@ -286,8 +288,8 @@ three separate sections:
 - code health: Python, the complete test suite, and import smoke tests;
 - environment readiness: the locked Python build backend required by the
   portable-install tests;
-- operational readiness: Codex login, forge authentication, version-control
-  workspace state, and durable `.enoch` state storage.
+- operational readiness: selected runtime access, forge authentication,
+  version-control workspace state, and durable `.enoch` state storage.
 
 Doctor preserves the beginning and end of long failures so the final exception
 is not lost. It validates existing JSON and JSONL state without replacing
@@ -305,14 +307,16 @@ python -m pip install --disable-pip-version-check --require-hashes \
 
 ## Providers
 
-Codex, Git, and a local-only forge are core defaults. Telegram, Slack, GitHub,
-launchd, and systemd are reference provider packages under `libraries/`.
+Codex, Git, and a local-only forge are core defaults. Claude, Telegram, Slack,
+GitHub, launchd, and systemd are reference provider packages under `libraries/`.
 Installed Python packages can
 add or replace chat, agent runtime, version control, code forge, and host
 service providers through the `our_ark.providers` entry-point group. Select them
 in `.enoch/config.yaml` or with `/config provider`. launchd is selected on
-macOS; systemd user services are selected on Linux. Install the complete
-reference stack with `pip install '.[reference]'` when working from a clone.
+macOS; systemd user services are selected on Linux. Install the normal
+deployment stack with `pip install '.[reference]'` when working from a clone;
+the source checkout discovers the optional Claude provider directly, and
+installed bodies can install `libraries/claude` independently.
 
 For a new environment, install provider packages exposing `chat.<name>` and
 `vcs.<name>` entry points, then select only those two capabilities:

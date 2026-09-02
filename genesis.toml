@@ -38,6 +38,13 @@ local_source = "libraries/slack/src"
 optional = true
 
 [[runtime_dependencies]]
+name = "claude"
+requirement = "our-ark-claude==0.1.0"
+import_name = "our_ark_claude"
+local_source = "libraries/claude/src"
+optional = true
+
+[[runtime_dependencies]]
 name = "slack-sdk"
 requirement = "slack-sdk==3.44.0"
 import_name = "slack_sdk"

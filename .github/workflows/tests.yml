@@ -37,6 +37,7 @@ jobs:
 
       - name: Run provider library tests
         run: |
+          python -m unittest discover -s libraries/claude/tests
           python -m unittest discover -s libraries/github/tests
           python -m unittest discover -s libraries/launchd/tests
           python -m unittest discover -s libraries/provider-kit/tests

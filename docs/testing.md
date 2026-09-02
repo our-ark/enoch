@@ -89,6 +89,13 @@ has stopped.
 This catches packaging metadata conflicts and source-checkout imports that unit
 tests can accidentally hide.
 
+The independent `libraries/claude/tests` suite runs a fake Claude Code CLI
+through the packaged runtime provider. It verifies stream-json parsing, usage
+and progress delivery, restricted read/write tool policies, logical-to-native
+session resume, stale-session recovery, authentication pause behavior, human
+cancellation, health checks, model/effort selection, and per-invocation budget
+configuration without external credentials or network access.
+
 ## Extension conformance suites
 
 `our_ark_provider_kit.conformance` publishes reusable provider and runtime

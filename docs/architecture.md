@@ -3,10 +3,10 @@
 Enoch core is organized around domain boundaries rather than infrastructure
 brands. Five provider contracts isolate chat, agent runtime, version control,
 code forge, and host-service infrastructure from agent behavior. Core includes
-portable defaults for Codex, Git, and local-only publication; reference
-Telegram, GitHub, launchd, and systemd integrations live under `libraries/`.
-Every implementation enters the application through the same provider loading
-and validation boundary.
+portable defaults for Codex, Git, and local-only publication; reference Claude,
+Telegram, Slack, GitHub, launchd, and systemd integrations live under
+`libraries/`. Every implementation enters the application through the same
+provider loading and validation boundary.
 
 ## Core packages
 
