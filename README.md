@@ -7,7 +7,8 @@
 <p align="center"><strong>Build your agent. Let her grow with you.</strong></p>
 
 <p align="center">
-  <a href="https://arxiv.org/abs/2607.28691"><img src="https://img.shields.io/badge/paper-arXiv%3A2607.28691-B31B1B" alt="arXiv:2607.28691"></a>
+  <a href="https://arxiv.org/abs/2609.00546"><img src="https://img.shields.io/badge/architecture-arXiv%3A2609.00546-B31B1B" alt="Runtime-Independent Persistent Agents, arXiv:2609.00546"></a>
+  <a href="https://arxiv.org/abs/2607.28691"><img src="https://img.shields.io/badge/software%20body-arXiv%3A2607.28691-B31B1B" alt="Code Is the Body, arXiv:2607.28691"></a>
 </p>
 
 Enoch is a personal software agent you build for yourself. She lives in your
@@ -22,9 +23,19 @@ who want to run or fork an agent body.
 
 ## Research Foundation
 
-Enoch is the reference agent implementation evaluated in
+Enoch is the reference implementation of
+[*Runtime-Independent Persistent Agents: Preserving Identity, Memory, and Code
+Across Models, Harnesses, and Servers*](https://arxiv.org/abs/2609.00546). The
+paper separates a continuity-bearing identity, memory, and body substrate from
+replaceable reasoners, harnesses, hosts, and interaction surfaces. Its frozen
+implementation evidence uses commit
+[`c8013ed`](https://github.com/our-ark/enoch/commit/c8013ed249bc11bc13f3843ed0f0cb9729f858c1)
+and reports 833 core tests plus 92 separately executed provider and library
+tests.
+
+The software-body foundation was introduced in
 [*Code Is the Body: Agent-Owned Software Bodies for Recursive Evolution and
-Descent*](https://arxiv.org/abs/2607.28691). The paper's frozen reproducibility
+Descent*](https://arxiv.org/abs/2607.28691). That paper's frozen reproducibility
 snapshot uses [Enoch
 v0.3.1](https://github.com/our-ark/enoch/releases/tag/v0.3.1) at commit
 [`1021e1d`](https://github.com/our-ark/enoch/commit/1021e1dacce85f4a2edebd865673671bb37a2142),
@@ -420,9 +431,13 @@ guidelines.
 
 ## Citation
 
-Cite [*Code Is the Body*](https://arxiv.org/abs/2607.28691) when referring to
-the OurArk architecture. When reporting experiments or implementation results,
-also cite the exact Enoch release using [CITATION.cff](CITATION.cff).
+Cite [*Runtime-Independent Persistent
+Agents*](https://arxiv.org/abs/2609.00546) when referring to the persistent-agent
+boundary, replaceable runtimes, authorized migration, or continuation
+authority. Cite [*Code Is the Body*](https://arxiv.org/abs/2607.28691) when
+referring to agent-owned software bodies, governed code evolution, or descent.
+When reporting experiments or implementation results, also cite the exact
+Enoch release using [CITATION.cff](CITATION.cff).
 
 ## License
 
