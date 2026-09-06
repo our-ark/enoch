@@ -317,6 +317,7 @@ from enoch.commands import (
     lineage_command,
     mission_command,
     pr_usage,
+    runtime_command_reference,
     skills_command,
     status_message,
     worktree_usage,
@@ -665,12 +666,19 @@ class EnochApplication:
             self.identity,
             self.root,
             chat_id,
-            startup_context_note(
-                memory_for_prompt(
-                    self.root,
-                    identity=self.identity,
-                    identity_path=self.identity_path,
-                )
+            "\n\n".join(
+                [
+                    startup_context_note(
+                        memory_for_prompt(
+                            self.root,
+                            identity=self.identity,
+                            identity_path=self.identity_path,
+                        )
+                    ),
+                    runtime_command_reference(
+                        command_prefix=self.command_prefix,
+                    ),
+                ]
             ),
             runtime=self.runtime,
             session_key=self._session_key(chat_id),
@@ -1548,7 +1556,10 @@ class EnochApplication:
         try:
             return self._invoke_runtime_response(
                 self._profile_prompt(
-                    read_only_turn_prompt(text),
+                    read_only_turn_prompt(
+                        text,
+                        command_prefix=self.command_prefix,
+                    ),
                     purpose="conversation",
                     chat_id=chat_id,
                 ),

@@ -857,6 +857,19 @@ def help_message(topic: str = "", *, command_prefix: str = "/") -> str:
     return "\n".join(lines)
 
 
+def runtime_command_reference(*, command_prefix: str = "/") -> str:
+    return "\n\n".join(
+        [
+            "Active chat command reference:",
+            (
+                "Use these exact commands when they directly perform the human's "
+                "request. Do not route configuration or inspection through a work task."
+            ),
+            *(command.usage_message(command_prefix) for command in CORE_COMMANDS),
+        ]
+    )
+
+
 def _normalize_help_topic(topic: str) -> str:
     stripped = topic.strip().lower()
     if not stripped:
@@ -985,6 +998,9 @@ def _evolve_help_usage(prefix: str) -> str:
             f"{command} remove <id> [reason] - remove a self-evolution candidate with an audit reason",
             f"{command} config - show evolution settings",
             f"{command} config mode <disabled|co-evolve|auto-evolve>",
+            "  disabled - stop scans, candidate synthesis, proposals, and scheduled evolution",
+            "  co-evolve - allow manual evolution without scheduled proposals",
+            "  auto-evolve - run scheduled proposals while preserving human approval",
             f"{command} config theme <text>",
             f"{command} config feedback-batch <1-100>",
             f"{command} config experience-batch <1-100>",

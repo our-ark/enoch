@@ -549,7 +549,9 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("Last git main pull observed:", client.sent[0][1])
         self.assertIn("/help", client.sent[0][1])
         self.sync_session_activity.assert_called_once()
-        self.assertIn("Enoch startup context:", self.sync_session_activity.call_args.args[3])
+        startup_context = self.sync_session_activity.call_args.args[3]
+        self.assertIn("Enoch startup context:", startup_context)
+        self.assertIn("Active chat command reference:", startup_context)
 
     def test_startup_notification_uses_provider_command_prefix(self) -> None:
         with TemporaryDirectory() as temp:
@@ -563,6 +565,13 @@ class EnochTelegramTests(unittest.TestCase):
 
         self.assertIn("Use !help to see available commands.", client.sent[0][1])
         self.assertNotIn("Use /help", client.sent[0][1])
+        command_context = self.sync_session_activity.call_args.args[3]
+        self.assertIn("!evolve config mode <disabled|co-evolve|auto-evolve>", command_context)
+        self.assertIn(
+            "co-evolve - allow manual evolution without scheduled proposals",
+            command_context,
+        )
+        self.assertNotIn("\n/evolve", command_context)
 
     def test_startup_notification_reports_previous_shutdown_warning(self) -> None:
         client = FakeTelegramClient(allowed_chat_id=42)
@@ -4750,6 +4759,25 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("/task", respond.call_args.args[1])
         self.sync_session_activity.assert_not_called()
         self.assertIn("Let's think through reminders first.", client.sent[0][1])
+
+    @patch("enoch.app.core.respond", return_value="Use !do disable auto evolve.")
+    def test_read_only_wrapper_uses_chat_provider_command_prefix(
+        self,
+        respond: MagicMock,
+    ) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            client = FakeTelegramClient(allowed_chat_id=42)
+            client.command_prefix = "!"
+            bot = EnochApplication(load_identity(), root, client)
+
+            _handle_update(bot, _message_update(chat_id=42, text="disable auto evolve"))
+
+        prompt = respond.call_args.args[1]
+        self.assertIn("!do", prompt)
+        self.assertIn("!task", prompt)
+        self.assertIn("!backlog", prompt)
+        self.assertNotIn("use /do", prompt)
 
     @patch("enoch.app.core.ensure_long_term_memory")
     @patch("enoch.app.core.log_conversation_turn")

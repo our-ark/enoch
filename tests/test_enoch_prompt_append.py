@@ -38,6 +38,19 @@ class EnochPromptAppendTests(unittest.TestCase):
         self.assertIn("Enoch owns regression bookkeeping", prompt)
         self.assertNotIn("Roy", prompt)
 
+    def test_read_only_prompt_uses_secondary_chat_command_prefix(self) -> None:
+        prompt = read_only_turn_prompt(
+            "make the CLI clearer",
+            command_prefix="!",
+        )
+
+        self.assertIn("!do", prompt)
+        self.assertIn("!task", prompt)
+        self.assertIn("!backlog", prompt)
+        self.assertIn("!help <command>", prompt)
+        self.assertIn("use a direct command", prompt)
+        self.assertNotIn("use /do", prompt)
+
     def test_work_request_prompt_allows_complete_jobs(self) -> None:
         prompt = work_request_prompt("Update README.")
 
