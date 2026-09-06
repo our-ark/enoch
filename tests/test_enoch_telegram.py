@@ -568,9 +568,10 @@ class EnochTelegramTests(unittest.TestCase):
         command_context = self.sync_session_activity.call_args.args[3]
         self.assertIn("!evolve config mode <disabled|co-evolve|auto-evolve>", command_context)
         self.assertIn(
-            "co-evolve - allow manual evolution without scheduled proposals",
+            "co-evolve - propose improvements for human approval; brainstorming is manual",
             command_context,
         )
+        self.assertIn("!evolve config schedule off to stop scheduled proposals", command_context)
         self.assertNotIn("\n/evolve", command_context)
 
     def test_startup_notification_reports_previous_shutdown_warning(self) -> None:

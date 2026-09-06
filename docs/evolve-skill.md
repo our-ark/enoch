@@ -33,9 +33,13 @@ Explicit non-evolution work remains available.
 `co-evolve` lets Enoch notice and recommend improvements, while a human decides
 whether to run or remove them. This is the default.
 
-`auto-evolve` schedules the same proposal pipeline. It does not grant merge
-authority and does not bypass human approval for candidate execution, retries,
-or removal.
+Both `co-evolve` and `auto-evolve` can run scheduled proposals when a schedule is
+enabled. `auto-evolve` also permits scheduled brainstorming under the configured
+theme when there are no available candidates. It does not grant merge authority
+and does not bypass human approval for candidate execution, retries, or removal.
+Use `/evolve config schedule off` to stop scheduled proposals while keeping
+manual evolution available. Changing the mode to `co-evolve` alone does not turn
+off an existing schedule.
 
 The evolution theme supplies direction to synthesis, brainstorming, curation,
 and deterministic fallback scoring. It is not evidence.

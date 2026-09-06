@@ -999,12 +999,13 @@ def _evolve_help_usage(prefix: str) -> str:
             f"{command} config - show evolution settings",
             f"{command} config mode <disabled|co-evolve|auto-evolve>",
             "  disabled - stop scans, candidate synthesis, proposals, and scheduled evolution",
-            "  co-evolve - allow manual evolution without scheduled proposals",
-            "  auto-evolve - run scheduled proposals while preserving human approval",
+            "  co-evolve - propose improvements for human approval; brainstorming is manual",
+            "  auto-evolve - also allow scheduled brainstorming; human approval is still required",
             f"{command} config theme <text>",
             f"{command} config feedback-batch <1-100>",
             f"{command} config experience-batch <1-100>",
             f"{command} config schedule <text>",
+            f"  Use {command} config schedule off to stop scheduled proposals without disabling manual evolution.",
         ]
     )
 

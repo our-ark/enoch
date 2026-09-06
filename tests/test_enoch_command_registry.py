@@ -78,9 +78,11 @@ class CoreCommandRegistryTests(unittest.TestCase):
 
         self.assertIn("!evolve config mode <disabled|co-evolve|auto-evolve>", reference)
         self.assertIn(
-            "co-evolve - allow manual evolution without scheduled proposals",
+            "co-evolve - propose improvements for human approval; brainstorming is manual",
             reference,
         )
+        self.assertIn("!evolve config schedule off to stop scheduled proposals", reference)
+        self.assertNotIn("without scheduled proposals", reference)
         self.assertIn("!task resume <id|all>", reference)
         self.assertNotIn("\n/evolve", reference)
 
