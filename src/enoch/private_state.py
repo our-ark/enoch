@@ -195,6 +195,22 @@ STATE_FILE_SCHEMAS = (
         (("current", (dict, type(None))),),
     ),
     StateFileSchema(
+        "migration_source.json",
+        1,
+        fields=(
+            ("migration_id", (str,)),
+            ("status", (str,)),
+        ),
+    ),
+    StateFileSchema(
+        "migration_target.json",
+        1,
+        fields=(
+            ("migration_id", (str,)),
+            ("status", (str,)),
+        ),
+    ),
+    StateFileSchema(
         "memory/long_term.json",
         1,
         (("memories", []),),
@@ -299,7 +315,7 @@ def migrate_private_state(
             applied=False,
             plan=plan,
         )
-    _require_daemon_stopped(root)
+    require_daemon_stopped(root)
     layout = storage_layout(root)
     manifest_path = private_state_manifest_path(root)
     with file_transaction(manifest_path):
@@ -717,7 +733,7 @@ def _restore_backup(
         manifest_path.unlink(missing_ok=True)
 
 
-def _require_daemon_stopped(root: Path | None) -> None:
+def require_daemon_stopped(root: Path | None = None) -> None:
     path = private_state_path("daemon_epoch.json", root)
     if not path.exists():
         return

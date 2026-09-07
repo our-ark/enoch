@@ -48,6 +48,7 @@ class EnochCliTests(unittest.TestCase):
         self.assertNotIn("mode        Show or set chat/work mode.", output)
         self.assertIn("doctor      Run Enoch's local health checks", output)
         self.assertIn("state       Validate or migrate private runtime state.", output)
+        self.assertIn("migration   Export, inspect, import, or verify a host migration.", output)
         self.assertIn(
             "update      Update from the authoritative repository, run doctor, and restart Enoch if safe.",
             output,

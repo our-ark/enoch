@@ -12,6 +12,21 @@ from enoch.immune import run_immune_system
 from enoch.instance import InstanceError, format_instance_init_result, init_instance
 from enoch.logs import log_system_event
 from enoch.memory.store import ensure_long_term_memory
+from enoch.migration import (
+    AgentMigrationError,
+    activate_imported_migration,
+    cancel_exported_migration,
+    export_migration_bundle,
+    format_activation,
+    format_export_result,
+    format_import_result,
+    format_inspection,
+    format_verification,
+    import_migration_bundle,
+    inspect_migration_bundle,
+    migration_status,
+    verify_imported_migration,
+)
 from enoch.paths import repo_root
 from enoch.providers.registry import load_provider
 from enoch.commands import (
@@ -114,6 +129,14 @@ ADMIN_COMMANDS = (
         "Validate or migrate private runtime state.",
         "state validate | state migrate [--dry-run]",
         "_admin_state",
+    ),
+    AdminCommand(
+        "migration",
+        "Export, inspect, import, or verify a host migration.",
+        "migration status | export <bundle> [--include-artifacts] | "
+        "inspect <bundle> | import <bundle> [--dry-run] | activate | verify | "
+        "cancel <id> --confirm-no-active-target",
+        "_admin_migration",
     ),
     AdminCommand(
         "update",
@@ -297,6 +320,65 @@ def _admin_state(text: str, _identity: Identity, root: Path) -> str:
     except PrivateStateError as error:
         return f"Private state operation failed: {error}"
     return "Use state validate or state migrate [--dry-run]."
+
+
+def _admin_migration(text: str, _identity: Identity, root: Path) -> str:
+    parts = text.split()
+    if len(parts) < 2:
+        return _migration_usage()
+    action = parts[1].lower()
+    try:
+        if action == "status" and len(parts) == 2:
+            return migration_status(root)
+        if action == "export" and len(parts) in {3, 4}:
+            include_artifacts = len(parts) == 4 and parts[3] == "--include-artifacts"
+            if len(parts) == 4 and not include_artifacts:
+                return _migration_usage()
+            return format_export_result(
+                export_migration_bundle(
+                    Path(parts[2]),
+                    root,
+                    include_artifacts=include_artifacts,
+                )
+            )
+        if action == "inspect" and len(parts) == 3:
+            return format_inspection(inspect_migration_bundle(Path(parts[2]), root))
+        if action == "import" and len(parts) in {3, 4}:
+            dry_run = len(parts) == 4 and parts[3] == "--dry-run"
+            if len(parts) == 4 and not dry_run:
+                return _migration_usage()
+            return format_import_result(
+                import_migration_bundle(Path(parts[2]), root, dry_run=dry_run)
+            )
+        if action == "verify" and len(parts) == 2:
+            return format_verification(verify_imported_migration(root))
+        if action == "activate" and len(parts) == 2:
+            return format_activation(activate_imported_migration(root))
+        if (
+            action == "cancel"
+            and len(parts) == 4
+            and parts[3] == "--confirm-no-active-target"
+        ):
+            cancel_exported_migration(parts[2], root)
+            return "Source migration fence removed. The source may be resumed."
+    except AgentMigrationError as error:
+        return f"Migration operation failed: {error}"
+    return _migration_usage()
+
+
+def _migration_usage() -> str:
+    return "\n".join(
+        [
+            "Use one of:",
+            "migration status",
+            "migration export <bundle> [--include-artifacts]",
+            "migration inspect <bundle>",
+            "migration import <bundle> [--dry-run]",
+            "migration activate",
+            "migration verify",
+            "migration cancel <id> --confirm-no-active-target",
+        ]
+    )
 
 
 def _admin_update(_text: str, _identity: Identity, root: Path) -> str:

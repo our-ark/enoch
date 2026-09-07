@@ -20,6 +20,7 @@ provider loading and validation boundary.
 | `enoch.identity` | Versioned `body.yaml` loading and legacy body-file compatibility |
 | `enoch.agent_identity` | Portable `self.json` schema validation, private installation, and startup rendering |
 | `enoch.private_state` | Manifest validation, supported-version checks, backup, migration, and rollback |
+| `enoch.migration` | Cross-host checkpoint export/import, source fencing, body-revision validation, authority handoff, and evidence reports |
 | `enoch.tasks` | Task queue state, audit events, failure policy, configuration, and isolated worktrees |
 | `enoch.evolution` | Semantic evidence scanning, candidate synthesis and ranking, decision history, and task handoff |
 | `enoch.evolution.evidence` | Durable feedback/task-history scan cursors, evidence journals, and evidence-to-candidate synthesis |

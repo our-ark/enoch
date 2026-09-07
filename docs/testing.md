@@ -89,6 +89,16 @@ has stopped.
 This catches packaging metadata conflicts and source-checkout imports that unit
 tests can accidentally hide.
 
+## Host migration
+
+`tests/test_enoch_migration.py` exercises checksummed portable-state export,
+source fencing, exact body-revision matching, read-only import preview,
+transactional import rollback, credential and native-session exclusion,
+optional artifact transfer, authority-generation handoff, verification-report
+generation, and a second migration from an already verified target. The suite
+uses temporary source and target instances and includes one real Git revision
+check without external credentials.
+
 The independent `libraries/claude/tests` suite runs a fake Claude Code CLI
 through the packaged runtime provider. It verifies stream-json parsing, usage
 and progress delivery, restricted read/write tool policies, logical-to-native

@@ -196,6 +196,13 @@ Inspect private-state compatibility with `bin/enoch state validate`. Use
 before applying it with `bin/enoch state migrate`. Migrations back up affected
 files and never rewrite artifact/evidence storage.
 
+For migration between hosts, Enoch can export a checksummed portable-state
+bundle, fence the source instance, validate and transactionally import it into the
+same software-body revision, advance continuation authority on the target, and
+write a machine-readable verification report. Credentials and provider-native
+sessions are rebound on the target rather than copied. See
+[`docs/host-migration.md`](docs/host-migration.md) for the complete procedure.
+
 ## Run
 
 ```bash

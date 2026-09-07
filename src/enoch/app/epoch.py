@@ -37,20 +37,42 @@ def begin_daemon_epoch(
     root: Path | None = None,
     *,
     provider: str = "chat",
+    migration_activation: bool = False,
 ) -> DaemonEpoch:
+    from enoch.migration import (
+        assert_runtime_start_allowed,
+        assert_source_not_fenced,
+        migration_authority_floor,
+        record_target_activation,
+    )
+
+    def require_start_allowed() -> None:
+        if migration_activation:
+            assert_source_not_fenced(root)
+        else:
+            assert_runtime_start_allowed(root)
+
+    require_start_allowed()
     path = daemon_epoch_path(root)
     with file_transaction(path):
+        require_start_allowed()
         data = _load_epoch_data(path)
         current = _parse_epoch(data.get("current"))
+        generation_floor = migration_authority_floor(root)
         epoch = DaemonEpoch(
             token=uuid4().hex,
-            generation=(current.generation if current is not None else 0) + 1,
+            generation=max(
+                current.generation if current is not None else 0,
+                generation_floor,
+            )
+            + 1,
             provider=provider.strip().lower() or "chat",
             pid=os.getpid(),
             started_at=current_time(),
         )
         _write_epoch(path, epoch)
-        return epoch
+    record_target_activation(epoch.generation, root)
+    return epoch
 
 
 def current_daemon_epoch(root: Path | None = None) -> DaemonEpoch | None:

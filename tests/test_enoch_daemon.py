@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 
 
 from enoch.operations import daemon
+from enoch.migration import AgentMigrationError
 from enoch.providers.contracts import ServiceProviderError
 
 
@@ -112,6 +113,18 @@ class EnochDaemonTests(unittest.TestCase):
             with patch("enoch.operations.daemon._has_daemon_config", return_value=False):
                 with self.assertRaisesRegex(daemon.DaemonError, "Configure the selected chat provider"):
                     daemon.start(root)
+
+    def test_start_and_restart_reject_an_exported_source(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with patch(
+                "enoch.operations.daemon.assert_runtime_start_allowed",
+                side_effect=AgentMigrationError("source is fenced"),
+            ):
+                with self.assertRaisesRegex(AgentMigrationError, "source is fenced"):
+                    daemon.start(root)
+                with self.assertRaisesRegex(AgentMigrationError, "source is fenced"):
+                    daemon.restart(root)
 
 
 if __name__ == "__main__":

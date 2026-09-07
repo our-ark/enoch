@@ -5,6 +5,7 @@ from pathlib import Path
 import sys
 
 from enoch.config import config_path
+from enoch.migration import AgentMigrationError, assert_runtime_start_allowed
 from enoch.providers.contracts import ChatProviderError, ServiceProvider, ServiceProviderError
 from enoch.providers.registry import ProviderError, load_provider, provider_name
 from enoch.runtime import DEFAULT_DAEMON_LOG_LINES
@@ -40,7 +41,7 @@ def main(argv: list[str] | None = None) -> None:
 
     try:
         message = dispatch(args.command, lines=args.lines)
-    except (DaemonError, ProviderError, ServiceProviderError) as error:
+    except (DaemonError, ProviderError, ServiceProviderError, AgentMigrationError) as error:
         print(str(error))
         raise SystemExit(1) from error
     if message:
@@ -81,12 +82,14 @@ def install(root: Path | None = None) -> str:
 
 def start(root: Path | None = None) -> str:
     resolved = _root(root)
+    assert_runtime_start_allowed(resolved)
     _require_daemon_config(resolved)
     return _service(resolved).start(resolved)
 
 
 def restart(root: Path | None = None) -> str:
     resolved = _root(root)
+    assert_runtime_start_allowed(resolved)
     _require_daemon_config(resolved)
     return _service(resolved).restart(resolved)
 
