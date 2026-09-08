@@ -48,3 +48,7 @@ skills:
     version: 0.1.0
     exposure: hidden
     path: src/enoch/skills/teach
+  - name: shop
+    version: 0.1.0
+    description: Find and compare running shoes from the configured Shopify store.
+    path: src/enoch/skills/shop

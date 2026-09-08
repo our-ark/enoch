@@ -1,0 +1,22 @@
+name: shop
+version: 0.1.0
+summary: Find and compare purchasable running-shoe variants from a configured Shopify store without modifying commerce state.
+owner: Enoch
+status: active
+mode: read-only-commerce
+entrypoint: none
+permissions:
+  filesystem:
+    read:
+      - .enoch/config.yaml
+    write: false
+  network:
+    shopify_storefront: read-only
+  commerce:
+    products: read
+    cart: false
+    checkout: false
+    customer_login: false
+    orders: false
+validation:
+  command: python3 -m unittest tests.test_enoch_skills
