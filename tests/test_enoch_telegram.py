@@ -4690,9 +4690,9 @@ class EnochTelegramTests(unittest.TestCase):
         update_from_authoritative: MagicMock,
         schedule_restart: MagicMock,
     ) -> None:
-        update_from_authoritative.return_value.message = (
-            "Noah is already up to date.\nAlready up to date."
-        )
+        display_name = f"Hosted {load_identity().name}"
+        expected_message = f"{display_name} is already up to date.\nAlready up to date."
+        update_from_authoritative.return_value.message = expected_message
         update_from_authoritative.return_value.direct_action_result = "Already up to date."
         update_from_authoritative.return_value.restart_required = False
         client = FakeTelegramClient(allowed_chat_id=42)
@@ -4700,7 +4700,7 @@ class EnochTelegramTests(unittest.TestCase):
             load_identity(),
             ROOT,
             client,
-            presentation=ApplicationPresentation(display_name="Noah"),
+            presentation=ApplicationPresentation(display_name=display_name),
         )
 
         _handle_update(bot, _message_update(chat_id=42, text="/update"))
@@ -4708,11 +4708,10 @@ class EnochTelegramTests(unittest.TestCase):
         update_from_authoritative.assert_called_once_with(
             ROOT,
             repository=ANY,
-            application_name="Noah",
+            application_name=display_name,
         )
         schedule_restart.assert_not_called()
-        self.assertIn("Noah is already up to date.", client.sent[0][1])
-        self.assertNotIn("Enoch", client.sent[0][1])
+        self.assertEqual(client.sent[0][1], expected_message)
 
     @patch("enoch.app.core.update_from_authoritative")
     def test_update_requires_locked_chat(self, update_from_authoritative: MagicMock) -> None:
