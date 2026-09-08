@@ -435,6 +435,13 @@ use this model: descendants inherit provider contracts, configuration, and core
 behavior, while `genesis.toml` keeps immutable dependencies on selected provider
 commits instead of copying concrete integrations into every descendant body.
 
+Development CI also creates two full-body generations using an immutable
+Genesis revision. This catches dependency declarations that work with the
+checkout's local libraries but fail after those libraries are excluded from a
+descendant. The `recursive-descent-evidence` CI artifact records both birth
+gates per generation, exact revisions, raw validation output, and test skips.
+Passing the normal core suite alone is not this recursive compatibility check.
+
 ## Provenance
 
 - created by: Genesis

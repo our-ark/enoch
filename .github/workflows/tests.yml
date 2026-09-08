@@ -46,3 +46,42 @@ jobs:
           python -m unittest discover -s libraries/systemd/tests
           python -m unittest discover -s libraries/telegram/tests
           python -m unittest discover -s libraries/telegram-vision/tests
+
+  recursive-descent:
+    name: Full-body depth-2 descent / Python 3.12
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: enoch
+          persist-credentials: false
+
+      - uses: actions/checkout@v7
+        with:
+          repository: our-ark/genesis
+          ref: 61723cd936c6d5f9a9ed163cf00321fc3fb79722
+          path: genesis
+          persist-credentials: false
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install locked test build backend
+        run: python -m pip install --disable-pip-version-check --require-hashes -r enoch/.github/requirements/test-build.txt
+
+      - name: Create two full-body descendants with inherited dependencies
+        run: >-
+          python genesis/scripts/verify_enoch_descent.py
+          --source enoch --ref HEAD --generations 2
+          --report "${{ runner.temp }}/recursive-descent.json"
+
+      - name: Preserve validation evidence, including failures and skips
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: recursive-descent-evidence
+          path: ${{ runner.temp }}/recursive-descent.json
+          if-no-files-found: warn
+          retention-days: 30
