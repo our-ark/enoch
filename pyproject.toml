@@ -17,8 +17,8 @@ reference = [
   "our-ark-slack @ git+https://github.com/our-ark/enoch.git@bc3f41f342c45ce59c6765282b37ada9bbb613f5#subdirectory=libraries/slack",
   "our-ark-claude @ git+https://github.com/our-ark/enoch.git@d5d6eece19caa5933a1b60b564a126297c864ce8#subdirectory=libraries/claude",
   "our-ark-github @ git+https://github.com/our-ark/enoch.git@54e6f5525380cf0f3b1275992b9d73bd2f44774e#subdirectory=libraries/github",
-  "our-ark-launchd @ git+https://github.com/our-ark/enoch.git@5a7e430dc600b2d761cd66236c87292bd0675ef4#subdirectory=libraries/launchd",
-  "our-ark-systemd @ git+https://github.com/our-ark/enoch.git@5a7e430dc600b2d761cd66236c87292bd0675ef4#subdirectory=libraries/systemd",
+  "our-ark-launchd @ git+https://github.com/our-ark/enoch.git@163319eb1eb6151caa54d4c1311249efcce9af46#subdirectory=libraries/launchd",
+  "our-ark-systemd @ git+https://github.com/our-ark/enoch.git@163319eb1eb6151caa54d4c1311249efcce9af46#subdirectory=libraries/systemd",
   "our-ark-telegram-vision @ git+https://github.com/our-ark/enoch.git@6d894d9beb882af7e5f57900b2323361510262de#subdirectory=libraries/telegram-vision",
 ]
 

@@ -22,6 +22,12 @@ delegation independently. GitHub Actions runs them on Linux alongside the core
 suite, so systemd support remains part of the required regression gate while
 launchd behavior is tested hermetically.
 
+Both service suites also exercise independent same-package installations,
+legacy-manifest ownership, and instance-scoped lifecycle commands. The core
+multi-instance test runs two real Python processes with isolated local
+workflows and checks cross-instance state and epoch isolation. See
+[`multi-instance.md`](multi-instance.md) for deployment scope and limitations.
+
 ## Hermetic evolution E2E tests
 
 `tests/test_enoch_e2e.py` exercises the reference evolution stack with real

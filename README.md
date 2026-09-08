@@ -209,6 +209,29 @@ sessions are rebound on the target rather than copied. See
 bin/enoch
 ```
 
+### Multiple independent instances
+
+Use one checkout or linked worktree per installed agent. For example, from
+the source checkout:
+
+```bash
+bin/enoch init --instance work --worktree ../enoch-work
+bin/enoch init --instance life --worktree ../enoch-life
+```
+
+Configure each instance from its own directory, then run its `bin/enoch-agent`
+in the foreground or `bin/enoch-daemon start` in the background. Each directory
+has separate `.enoch/` identity, configuration, memory, queue, and execution
+authority. Use separate chat-provider credentials/endpoints for independent
+agents; do not copy private state from one installation to another.
+
+The launchd and systemd providers assign new services a stable suffix derived
+from the resolved installation path. Start, stop, restart, status, logs, and
+uninstall therefore target that installation only. Existing package-only
+services remain manageable when their manifest points to the current
+installation. See [multi-instance deployment](docs/multi-instance.md) for
+compatibility and isolation boundaries.
+
 ## Telegram
 
 Create a Telegram bot for Enoch:

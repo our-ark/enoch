@@ -65,14 +65,14 @@ optional = true
 
 [[runtime_dependencies]]
 name = "launchd"
-requirement = "our-ark-launchd @ git+https://github.com/our-ark/enoch.git@5a7e430dc600b2d761cd66236c87292bd0675ef4#subdirectory=libraries/launchd"
+requirement = "our-ark-launchd @ git+https://github.com/our-ark/enoch.git@163319eb1eb6151caa54d4c1311249efcce9af46#subdirectory=libraries/launchd"
 import_name = "our_ark_launchd"
 local_source = "libraries/launchd/src"
 optional = true
 
 [[runtime_dependencies]]
 name = "systemd"
-requirement = "our-ark-systemd @ git+https://github.com/our-ark/enoch.git@5a7e430dc600b2d761cd66236c87292bd0675ef4#subdirectory=libraries/systemd"
+requirement = "our-ark-systemd @ git+https://github.com/our-ark/enoch.git@163319eb1eb6151caa54d4c1311249efcce9af46#subdirectory=libraries/systemd"
 import_name = "our_ark_systemd"
 local_source = "libraries/systemd/src"
 optional = true

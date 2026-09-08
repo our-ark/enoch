@@ -74,6 +74,20 @@ class EnochPortableInstallTests(unittest.TestCase):
             )
             self.assertEqual(provider_contract, core_contract, package)
 
+    def test_service_provider_install_and_descent_pins_match(self) -> None:
+        project = _project_metadata(ROOT / "pyproject.toml")["project"]
+        manifest = _project_metadata(ROOT / "genesis.toml")
+        dependencies = {item["name"]: item for item in manifest["runtime_dependencies"]}
+        for name in ("launchd", "systemd"):
+            with self.subTest(provider=name):
+                reference = _dependency(
+                    project["optional-dependencies"]["reference"], f"our-ark-{name}"
+                )
+                self.assertEqual(dependencies[name]["requirement"], reference)
+                self.assertRegex(reference, rf"@[0-9a-f]{{40}}#subdirectory=libraries/{name}$")
+                self.assertEqual(dependencies[name]["local_source"], f"libraries/{name}/src")
+                self.assertTrue(dependencies[name]["optional"])
+
     def test_claude_provider_is_a_local_optional_runtime_dependency(self) -> None:
         root_metadata = _project_metadata(ROOT / "pyproject.toml")
         manifest = _project_metadata(ROOT / "genesis.toml")
