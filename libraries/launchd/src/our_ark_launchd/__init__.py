@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from hashlib import sha256
 import os
 from pathlib import Path
 import platform
 import plistlib
 import subprocess
 import sys
+from xml.parsers.expat import ExpatError
 
 from our_ark_provider_kit import ServiceProviderError, agent_context
 
@@ -120,14 +122,28 @@ class LaunchdServiceProvider:
     def paths(self, root: Path | None = None) -> LaunchdPaths:
         resolved_root = Path(root or Path.cwd()).resolve()
         context = agent_context(resolved_root)
-        label = f"com.ourark.{context.service_slug}"
         home = self.home or Path.home()
         launch_agents = home / "Library" / "LaunchAgents"
+        legacy_label = f"com.ourark.{context.service_slug}"
+        # A package identifies the executable, not the installed agent. Resolve
+        # symlinks so aliases for one installation retain one service identity.
+        instance_id = sha256(str(resolved_root).encode("utf-8")).hexdigest()[:16]
+        label = f"{legacy_label}.{instance_id}"
+        if _owns_manifest(
+            launch_agents / f"{legacy_label}.plist", resolved_root, context.service_slug
+        ):
+            label = legacy_label
+        plist = launch_agents / f"{label}.plist"
+        if plist.exists() and not _owns_manifest(plist, resolved_root, context.service_slug):
+            raise ServiceProviderError(
+                "Service manifest belongs to another installation or is invalid: "
+                f"{plist}"
+            )
         logs = resolved_root / context.private_directory / "logs" / "daemon"
         return LaunchdPaths(
             root=resolved_root,
             launch_agents=launch_agents,
-            plist=launch_agents / f"{label}.plist",
+            plist=plist,
             logs=logs,
             stdout=logs / f"{context.service_slug}-daemon.out.log",
             stderr=logs / f"{context.service_slug}-daemon.err.log",
@@ -171,6 +187,20 @@ class LaunchdServiceProvider:
             stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
+
+
+def _owns_manifest(path: Path, root: Path, package: str) -> bool:
+    try:
+        payload = plistlib.loads(path.read_bytes())
+    except (OSError, ValueError, TypeError, ExpatError):
+        return False
+    if not isinstance(payload, dict):
+        return False
+    return (
+        payload.get("WorkingDirectory") == str(root)
+        and payload.get("ProgramArguments") == [str(root / "bin" / f"{package}-agent")]
+        and payload.get("Label") == path.stem
+    )
 
 
 def plist_bytes(paths: LaunchdPaths) -> bytes:
