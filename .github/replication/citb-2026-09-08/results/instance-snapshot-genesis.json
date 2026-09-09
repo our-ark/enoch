@@ -1,0 +1,195 @@
+{
+  "source_revision": "61723cd936c6d5f9a9ed163cf00321fc3fb79722",
+  "source_tracked_changes_before": "",
+  "source_tracked_changes_after": "",
+  "python": "3.12.14",
+  "platform": "macOS-26.4.1-arm64-arm-64bit",
+  "start_directory": "tests",
+  "top_level_directory": null,
+  "elapsed_seconds": 4.962,
+  "tests_run": 44,
+  "failures": 0,
+  "errors": 0,
+  "skipped": 0,
+  "expected_failures": 0,
+  "unexpected_successes": 0,
+  "successful": true,
+  "outcomes": [
+    {
+      "test": "test_genesis_creator.GenesisCreatorTests.test_birth_removes_ignored_private_state_created_by_validation",
+      "status": "passed"
+    },
+    {
+      "test": "test_genesis_creator.GenesisCreatorTests.test_cache_root_honors_explicit_writable_location",
+      "status": "passed"
+    },
+    {
+      "test": "test_genesis_creator.GenesisCreatorTests.test_clone_failure_message_is_generic_for_explicit_private_source",
+      "status": "passed"
+    },
+    {
+      "test": "test_genesis_creator.GenesisCreatorTests.test_clone_failure_message_redacts_source_credentials",
+      "status": "passed"
+    },
+    {
+      "test": "test_genesis_creator.GenesisCreatorTests.test_create_allows_empty_target_directory",
+      "status": "passed"
+    },
+    {
+      "test": "test_genesis_creator.GenesisCreatorTests.test_create_ignores_untracked_source_artifacts",
+      "status": "passed"
+    },
+    {
+      "test": "test_genesis_creator.GenesisCreatorTests.test_create_refuses_mismatched_source",
+      "status": "passed"
+    },
+    {
+      "test": "test_genesis_creator.GenesisCreatorTests.test_create_refuses_non_empty_target",
+      "status": "passed"
+    },
+    {
+      "test": "test_genesis_creator.GenesisCreatorTests.test_create_rejects_tracked_source_changes_without_a_commit",
+      "status": "passed"
+    },
+    {
+      "test": "test_genesis_creator.GenesisCreatorTests.test_create_validates_inherited_tests_before_birth_commit",
+      "status": "passed"
+    },
+    {
+      "test": "test_genesis_creator.GenesisCreatorTests.test_creates_agent_repo_from_adam",
+      "status": "passed"
+    },
+    {
+      "test": "test_genesis_creator.GenesisCreatorTests.test_creates_agent_repo_from_any_agent_source",
+      "status": "passed"
+    },
+    {
+      "test": "test_genesis_creator.GenesisCreatorTests.test_creates_body_yaml_descendant_from_modern_source",
+      "status": "passed"
+    },
+    {
+      "test": "test_genesis_creator.GenesisCreatorTests.test_failed_birth_preserves_preexisting_empty_target",
+      "status": "passed"
+    },
+    {
+      "test": "test_genesis_creator.GenesisCreatorTests.test_identity_named_runtime_dependency_stays_stable_and_is_not_copied",
+      "status": "passed"
+    },
+    {
+      "test": "test_genesis_creator.GenesisCreatorTests.test_inspect_source_reports_manifest_without_creating_agent",
+      "status": "passed"
+    },
+    {
+      "test": "test_genesis_creator.GenesisCreatorTests.test_legacy_source_is_upgraded_to_explicit_body_manifest",
+      "status": "passed"
+    },
+    {
+      "test": "test_genesis_creator.GenesisCreatorTests.test_lineage_remote_url_redacts_credentials_and_query",
+      "status": "passed"
+    },
+    {
+      "test": "test_genesis_creator.GenesisCreatorTests.test_local_source_ref_must_match_head",
+      "status": "passed"
+    },
+    {
+      "test": "test_genesis_creator.GenesisCreatorTests.test_manifest_copies_launcher_helpers_and_project_metadata",
+      "status": "passed"
+    },
+    {
+      "test": "test_genesis_creator.GenesisCreatorTests.test_manifest_rejects_runtime_dependency_inside_body",
+      "status": "passed"
+    },
+    {
+      "test": "test_genesis_creator.GenesisCreatorTests.test_manifest_rejects_unpinned_vcs_runtime_dependency",
+      "status": "passed"
+    },
+    {
+      "test": "test_genesis_creator.GenesisCreatorTests.test_manifest_rejects_wildcard_runtime_dependency_version",
+      "status": "passed"
+    },
+    {
+      "test": "test_genesis_creator.GenesisCreatorTests.test_multiline_mission_remains_inside_yaml_block",
+      "status": "passed"
+    },
+    {
+      "test": "test_genesis_creator.GenesisCreatorTests.test_multiword_input_uses_one_canonical_code_identity",
+      "status": "passed"
+    },
+    {
+      "test": "test_genesis_creator.GenesisCreatorTests.test_observes_both_birth_gates_and_exact_staged_trees",
+      "status": "passed"
+    },
+    {
+      "test": "test_genesis_creator.GenesisCreatorTests.test_recycle_deletes_marked_agent_repo",
+      "status": "passed"
+    },
+    {
+      "test": "test_genesis_creator.GenesisCreatorTests.test_recycle_refuses_unmarked_repo",
+      "status": "passed"
+    },
+    {
+      "test": "test_genesis_creator.GenesisCreatorTests.test_recycle_requires_confirmation_and_agent_evidence",
+      "status": "passed"
+    },
+    {
+      "test": "test_genesis_creator.GenesisCreatorTests.test_remote_creation_requires_trust_and_pinned_ref",
+      "status": "passed"
+    },
+    {
+      "test": "test_genesis_creator.GenesisCreatorTests.test_untracked_body_manifest_is_rejected",
+      "status": "passed"
+    },
+    {
+      "test": "test_genesis_extension.GenesisExtensionTests.test_cli_extend_dry_run_is_readable_and_non_mutating",
+      "status": "passed"
+    },
+    {
+      "test": "test_genesis_extension.GenesisExtensionTests.test_creates_independently_packaged_agent_extension",
+      "status": "passed"
+    },
+    {
+      "test": "test_genesis_extension.GenesisExtensionTests.test_custom_enoch_commit_is_recorded_without_claiming_a_release",
+      "status": "passed"
+    },
+    {
+      "test": "test_genesis_extension.GenesisExtensionTests.test_default_command_is_derived_from_extension_name",
+      "status": "passed"
+    },
+    {
+      "test": "test_genesis_extension.GenesisExtensionTests.test_dry_run_reports_files_without_writing_target",
+      "status": "passed"
+    },
+    {
+      "test": "test_genesis_extension.GenesisExtensionTests.test_failed_generation_preserves_preexisting_empty_target",
+      "status": "passed"
+    },
+    {
+      "test": "test_genesis_extension.GenesisExtensionTests.test_refuses_non_empty_target",
+      "status": "passed"
+    },
+    {
+      "test": "test_genesis_extension.GenesisExtensionTests.test_validates_extension_contract_inputs",
+      "status": "passed"
+    },
+    {
+      "test": "test_genesis_release_gate.ReleaseGateTests.test_failure_report_survives_rejected_birth",
+      "status": "passed"
+    },
+    {
+      "test": "test_genesis_release_gate.ReleaseGateTests.test_non_unittest_output_has_unknown_counts",
+      "status": "passed"
+    },
+    {
+      "test": "test_genesis_release_gate.ReleaseGateTests.test_second_birth_uses_first_descendant_as_source",
+      "status": "passed"
+    },
+    {
+      "test": "test_genesis_release_gate.ReleaseGateTests.test_success_with_skips_is_not_reported_as_zero_skips",
+      "status": "passed"
+    },
+    {
+      "test": "test_genesis_release_gate.ReleaseGateTests.test_unittest_summary_retains_errors_and_skips",
+      "status": "passed"
+    }
+  ]
+}

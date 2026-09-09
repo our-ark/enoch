@@ -1,0 +1,10 @@
+test_invalid_download_is_deleted_and_rejected (test_telegram_vision.TelegramVisionLibraryTests.test_invalid_download_is_deleted_and_rejected) ... ok
+test_prompt_keeps_image_instructions_untrusted_and_read_only (test_telegram_vision.TelegramVisionLibraryTests.test_prompt_keeps_image_instructions_untrusted_and_read_only) ... ok
+test_rejects_non_image_document (test_telegram_vision.TelegramVisionLibraryTests.test_rejects_non_image_document) ... ok
+test_selects_largest_photo_and_supported_document (test_telegram_vision.TelegramVisionLibraryTests.test_selects_largest_photo_and_supported_document) ... ok
+test_temporary_image_is_private_and_deleted (test_telegram_vision.TelegramVisionLibraryTests.test_temporary_image_is_private_and_deleted) ... ok
+
+----------------------------------------------------------------------
+Ran 5 tests in 0.002s
+
+OK

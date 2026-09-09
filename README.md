@@ -69,6 +69,13 @@ record the evaluated artifacts, citation, reproduction steps, and the
 difference between the paper's six body-change origins and Enoch's four
 Evolution candidate pathways.
 
+Later frozen checks for the developing CITB workshop version are retained in
+the [8 September 2026 replication records](.github/replication/citb-2026-09-08/README.md).
+They identify Genesis C1 and Enoch B2, provide reproduction commands and
+path-redacted failure/success traces, and include a separate Linux CI
+confirmation. They do not replace the published arXiv snapshot or RIPA's
+evidence.
+
 ## Why Enoch Is Different
 
 Memory changes what an agent remembers. Skills change how an agent works.

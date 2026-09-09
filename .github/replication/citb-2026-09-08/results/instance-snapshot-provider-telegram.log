@@ -1,0 +1,28 @@
+test_chunking_keeps_structured_entries_together (test_presentation.TelegramPresentationTests.test_chunking_keeps_structured_entries_together) ... ok
+test_chunking_prefers_logical_text_boundaries (test_presentation.TelegramPresentationTests.test_chunking_prefers_logical_text_boundaries) ... ok
+test_distinguishes_labels_commands_and_paths (test_presentation.TelegramPresentationTests.test_distinguishes_labels_commands_and_paths) ... ok
+test_fenced_code_is_escaped_and_balanced (test_presentation.TelegramPresentationTests.test_fenced_code_is_escaped_and_balanced) ... ok
+test_local_markdown_links_show_copyable_paths (test_presentation.TelegramPresentationTests.test_local_markdown_links_show_copyable_paths) ... ok
+test_long_code_blocks_split_into_valid_html_chunks (test_presentation.TelegramPresentationTests.test_long_code_blocks_split_into_valid_html_chunks) ... ok
+test_ordinary_bullets_do_not_render_as_cards (test_presentation.TelegramPresentationTests.test_ordinary_bullets_do_not_render_as_cards) ... ok
+test_renders_markdown_without_trusting_source_html (test_presentation.TelegramPresentationTests.test_renders_markdown_without_trusting_source_html) ... ok
+test_structured_list_entries_render_as_distinct_cards (test_presentation.TelegramPresentationTests.test_structured_list_entries_render_as_distinct_cards) ... ok
+test_worktree_cards_distinguish_branches_and_paths (test_presentation.TelegramPresentationTests.test_worktree_cards_distinguish_branches_and_paths) ... ok
+test_attachment_download_delegates_to_file_transport (test_telegram.TelegramLibraryTests.test_attachment_download_delegates_to_file_transport) ... ok
+test_chunks_messages_and_rejects_invalid_size (test_telegram.TelegramLibraryTests.test_chunks_messages_and_rejects_invalid_size) ... ok
+test_client_implements_chat_provider_contract (test_telegram.TelegramLibraryTests.test_client_implements_chat_provider_contract) ... ok
+test_conformance_provider_capabilities_match_kind (test_telegram.TelegramLibraryTests.test_conformance_provider_capabilities_match_kind) ... ok
+test_conformance_provider_matches_public_contract (test_telegram.TelegramLibraryTests.test_conformance_provider_matches_public_contract) ... ok
+test_delivery_failure_is_not_retried_as_plain_text (test_telegram.TelegramLibraryTests.test_delivery_failure_is_not_retried_as_plain_text) ... ok
+test_download_enforces_size_limit (test_telegram.TelegramLibraryTests.test_download_enforces_size_limit) ... ok
+test_edit_uses_the_same_display_only_renderer (test_telegram.TelegramLibraryTests.test_edit_uses_the_same_display_only_renderer) ... ok
+test_event_exposes_largest_photo_as_attachment (test_telegram.TelegramLibraryTests.test_event_exposes_largest_photo_as_attachment) ... ok
+test_format_rejection_falls_back_to_original_plain_text (test_telegram.TelegramLibraryTests.test_format_rejection_falls_back_to_original_plain_text) ... ok
+test_ignores_unsupported_attachment_without_text (test_telegram.TelegramLibraryTests.test_ignores_unsupported_attachment_without_text) ... ok
+test_private_bot_peer_is_strictly_authenticated_and_addressable (test_telegram.TelegramLibraryTests.test_private_bot_peer_is_strictly_authenticated_and_addressable) ... ok
+test_send_renders_html_only_in_transport_payload (test_telegram.TelegramLibraryTests.test_send_renders_html_only_in_transport_payload) ... ok
+
+----------------------------------------------------------------------
+Ran 23 tests in 0.003s
+
+OK

@@ -1,0 +1,79 @@
+{
+  "source_revision": "7ffaba854015d0854cfbb543ee934520ef2d5c30",
+  "source_tracked_changes_before": "",
+  "source_tracked_changes_after": "",
+  "python": "3.12.14",
+  "platform": "macOS-26.4.1-arm64-arm-64bit",
+  "start_directory": "libraries/github/tests",
+  "top_level_directory": null,
+  "elapsed_seconds": 0.108,
+  "tests_run": 15,
+  "failures": 0,
+  "errors": 0,
+  "skipped": 0,
+  "expected_failures": 0,
+  "unexpected_successes": 0,
+  "successful": true,
+  "outcomes": [
+    {
+      "test": "test_github_provider.GithubProviderTests.test_conformance_provider_capabilities_match_kind",
+      "status": "passed"
+    },
+    {
+      "test": "test_github_provider.GithubProviderTests.test_conformance_provider_matches_public_contract",
+      "status": "passed"
+    },
+    {
+      "test": "test_github_provider.GithubProviderTests.test_declared_skills_falls_back_to_legacy_identity_file",
+      "status": "passed"
+    },
+    {
+      "test": "test_github_provider.GithubProviderTests.test_declared_skills_prefers_published_body_file",
+      "status": "passed"
+    },
+    {
+      "test": "test_github_provider.GithubProviderTests.test_descriptor_registers_forge_factory",
+      "status": "passed"
+    },
+    {
+      "test": "test_github_provider.GithubProviderTests.test_github_adapter_rejects_stack_before_provider_side_effect",
+      "status": "passed"
+    },
+    {
+      "test": "test_github_provider.GithubProviderTests.test_github_adapter_returns_verified_review_landing_evidence",
+      "status": "passed"
+    },
+    {
+      "test": "test_github_provider.GithubProviderTests.test_github_provider_adapts_to_semantic_review_contract",
+      "status": "passed"
+    },
+    {
+      "test": "test_github_provider.GithubProviderTests.test_health_reports_authenticated_cli",
+      "status": "passed"
+    },
+    {
+      "test": "test_github_provider.GithubProviderTests.test_health_reports_invalid_authentication",
+      "status": "passed"
+    },
+    {
+      "test": "test_github_provider.GithubProviderTests.test_health_reports_missing_cli",
+      "status": "passed"
+    },
+    {
+      "test": "test_github_provider.GithubProviderTests.test_lineage_commit_diff_includes_file_stats_and_patch",
+      "status": "passed"
+    },
+    {
+      "test": "test_github_provider.GithubProviderTests.test_lineage_commit_listing_honors_limits_across_pages",
+      "status": "passed"
+    },
+    {
+      "test": "test_github_provider.GithubProviderTests.test_lineage_pr_commits_exposes_every_constituent_revision",
+      "status": "passed"
+    },
+    {
+      "test": "test_github_provider.GithubProviderTests.test_reads_published_text_through_forge_contract",
+      "status": "passed"
+    }
+  ]
+}

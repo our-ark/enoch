@@ -1,0 +1,91 @@
+{
+  "source_revision": "7ffaba854015d0854cfbb543ee934520ef2d5c30",
+  "source_tracked_changes_before": "",
+  "source_tracked_changes_after": "",
+  "python": "3.12.14",
+  "platform": "macOS-26.4.1-arm64-arm-64bit",
+  "start_directory": "libraries/provider-kit/tests",
+  "top_level_directory": null,
+  "elapsed_seconds": 0.088,
+  "tests_run": 18,
+  "failures": 0,
+  "errors": 0,
+  "skipped": 0,
+  "expected_failures": 0,
+  "unexpected_successes": 0,
+  "successful": true,
+  "outcomes": [
+    {
+      "test": "test_provider_kit.BranchlessRepositoryConformanceTests.test_conformance_repository_captures_without_staging_assumption",
+      "status": "passed"
+    },
+    {
+      "test": "test_provider_kit.BranchlessRepositoryConformanceTests.test_conformance_repository_manages_isolated_workspace",
+      "status": "passed"
+    },
+    {
+      "test": "test_provider_kit.BranchlessRepositoryConformanceTests.test_conformance_repository_uses_opaque_revisions",
+      "status": "passed"
+    },
+    {
+      "test": "test_provider_kit.IndependentReviewConformanceTests.test_conformance_review_closes_and_lands_by_opaque_identity",
+      "status": "passed"
+    },
+    {
+      "test": "test_provider_kit.IndependentReviewConformanceTests.test_conformance_review_identity_is_independent_from_revision",
+      "status": "passed"
+    },
+    {
+      "test": "test_provider_kit.IndependentReviewConformanceTests.test_conformance_review_represents_stack_and_versions",
+      "status": "passed"
+    },
+    {
+      "test": "test_provider_kit.ProviderKitTests.test_capability_contracts_normalize_and_validate_requirements",
+      "status": "passed"
+    },
+    {
+      "test": "test_provider_kit.ProviderKitTests.test_chat_event_carries_provider_neutral_attachments",
+      "status": "passed"
+    },
+    {
+      "test": "test_provider_kit.ProviderKitTests.test_chat_provider_contract_is_runtime_checkable",
+      "status": "passed"
+    },
+    {
+      "test": "test_provider_kit.ProviderKitTests.test_feature_preflight_fails_before_repository_side_effect",
+      "status": "passed"
+    },
+    {
+      "test": "test_provider_kit.ProviderKitTests.test_normalizes_provider_identifiers",
+      "status": "passed"
+    },
+    {
+      "test": "test_provider_kit.ProviderKitTests.test_notification_contract_validates_operations_and_versions",
+      "status": "passed"
+    },
+    {
+      "test": "test_provider_kit.ProviderKitTests.test_rejects_roots_without_an_agent_manifest",
+      "status": "passed"
+    },
+    {
+      "test": "test_provider_kit.ProviderKitTests.test_repository_and_review_contracts_are_versioned_and_runtime_checkable",
+      "status": "passed"
+    },
+    {
+      "test": "test_provider_kit.ProviderKitTests.test_resolves_agent_context_from_manifest_and_body",
+      "status": "passed"
+    },
+    {
+      "test": "test_provider_kit.ProviderKitTests.test_resolves_legacy_identity_file_when_body_is_absent",
+      "status": "passed"
+    },
+    {
+      "test": "test_provider_kit.ProviderKitTests.test_runtime_execution_distinguishes_timeout_from_cancellation",
+      "status": "passed"
+    },
+    {
+      "test": "test_provider_kit.ProviderKitTests.test_runtime_progress_is_provider_neutral_and_normalized",
+      "status": "passed"
+    }
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "command": [
+    ".venv/bin/python",
+    "sources/genesis-instance-snapshot/scripts/verify_enoch_descent.py",
+    "--source",
+    "sources/enoch-instance-descent",
+    "--ref",
+    "7ffaba854015d0854cfbb543ee934520ef2d5c30",
+    "--generations",
+    "2",
+    "--report",
+    "results/instance-snapshot-descent.json"
+  ],
+  "started_at_utc": "2026-09-08T09:27:55.257716+00:00",
+  "elapsed_seconds": 8.135,
+  "exit_code": 1,
+  "successful": false
+}

@@ -1,0 +1,67 @@
+{
+  "source_revision": "7ffaba854015d0854cfbb543ee934520ef2d5c30",
+  "source_tracked_changes_before": "",
+  "source_tracked_changes_after": "",
+  "python": "3.12.14",
+  "platform": "macOS-26.4.1-arm64-arm-64bit",
+  "start_directory": "libraries/launchd/tests",
+  "top_level_directory": null,
+  "elapsed_seconds": 0.104,
+  "tests_run": 12,
+  "failures": 0,
+  "errors": 0,
+  "skipped": 0,
+  "expected_failures": 0,
+  "unexpected_successes": 0,
+  "successful": true,
+  "outcomes": [
+    {
+      "test": "test_launchd_provider.LaunchdServiceProviderTests.test_conformance_provider_capabilities_match_kind",
+      "status": "passed"
+    },
+    {
+      "test": "test_launchd_provider.LaunchdServiceProviderTests.test_conformance_provider_matches_public_contract",
+      "status": "passed"
+    },
+    {
+      "test": "test_launchd_provider.LaunchdServiceProviderTests.test_descendant_package_keeps_its_own_launcher_and_service_prefix",
+      "status": "passed"
+    },
+    {
+      "test": "test_launchd_provider.LaunchdServiceProviderTests.test_descriptor_identifies_launchd_service",
+      "status": "passed"
+    },
+    {
+      "test": "test_launchd_provider.LaunchdServiceProviderTests.test_existing_legacy_service_is_used_only_by_its_owner",
+      "status": "passed"
+    },
+    {
+      "test": "test_launchd_provider.LaunchdServiceProviderTests.test_foreign_scoped_manifest_is_not_overwritten",
+      "status": "passed"
+    },
+    {
+      "test": "test_launchd_provider.LaunchdServiceProviderTests.test_install_writes_manifest_and_bootstraps_user_service",
+      "status": "passed"
+    },
+    {
+      "test": "test_launchd_provider.LaunchdServiceProviderTests.test_malformed_legacy_manifest_is_left_untouched",
+      "status": "passed"
+    },
+    {
+      "test": "test_launchd_provider.LaunchdServiceProviderTests.test_manifest_runs_enoch_agent_from_the_selected_root",
+      "status": "passed"
+    },
+    {
+      "test": "test_launchd_provider.LaunchdServiceProviderTests.test_scheduled_restart_uses_daemon_launcher",
+      "status": "passed"
+    },
+    {
+      "test": "test_launchd_provider.LaunchdServiceProviderTests.test_service_identity_is_stable_across_symlink_aliases",
+      "status": "passed"
+    },
+    {
+      "test": "test_launchd_provider.LaunchdServiceProviderTests.test_two_instances_have_independent_manifests_and_lifecycle",
+      "status": "passed"
+    }
+  ]
+}

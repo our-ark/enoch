@@ -1,0 +1,8 @@
+test_builds_catalog_and_merges_skill_metadata (test_skill_catalog.SkillCatalogTests.test_builds_catalog_and_merges_skill_metadata) ... ok
+test_missing_metadata_keeps_identity_declaration (test_skill_catalog.SkillCatalogTests.test_missing_metadata_keeps_identity_declaration) ... ok
+test_parses_manifest_yaml_subset (test_skill_catalog.SkillCatalogTests.test_parses_manifest_yaml_subset) ... ok
+
+----------------------------------------------------------------------
+Ran 3 tests in 0.000s
+
+OK

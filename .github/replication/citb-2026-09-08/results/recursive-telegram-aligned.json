@@ -1,0 +1,14 @@
+{
+  "command": [
+    ".venv/bin/python",
+    "recursive_descent.py",
+    "--source",
+    "sources/enoch-telegram-pin",
+    "--source-ref",
+    "0a3708e5565a4df3afa9279f532c45f681e01cc2"
+  ],
+  "started_at_utc": "2026-09-08T04:14:47.790385+00:00",
+  "elapsed_seconds": 160.193,
+  "exit_code": 0,
+  "successful": true
+}

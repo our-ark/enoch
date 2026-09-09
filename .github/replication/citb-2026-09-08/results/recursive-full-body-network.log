@@ -1,0 +1,30 @@
+{"name": "Cainchild", "package": "cainchild", "ancestor": "Enoch", "commit_sha": "80d16c0", "parent_commit_sha": "e40b28782f5c2633b7b28dfd48e0d7abf1456976", "birth_commit_sha": "b1a326812c3c7bc73344f133ceaa19412b794a34", "depth": 1, "evaluated_commit": "80d16c0809bf2eff70157f5215c90070d8d8ce62", "source_unchanged": true, "dependency_declarations_unchanged": true, "copied_libraries": false, "inherited_validation": "passed at both birth gates"}
+Traceback (most recent call last):
+  File "<WORKSPACE>/recursive_descent.py", line 31, in <module>
+    result = create_agent(
+             ^^^^^^^^^^^^^
+  File "<WORKSPACE>/sources/genesis/src/genesis/creator.py", line 184, in create_agent
+    birth_commit_sha = _init_git(
+                       ^^^^^^^^^^
+  File "<WORKSPACE>/sources/genesis/src/genesis/creator.py", line 1133, in _init_git
+    _validate_generated_agent(
+  File "<WORKSPACE>/sources/genesis/src/genesis/creator.py", line 1190, in _validate_generated_agent
+    raise GenesisError(f"Pre-birth validation failed:\n{details}")
+genesis.creator.GenesisError: Pre-birth validation failed:
+....................................................................................................................................................................................................................................................................................................................................................................................................................................ssssss..............................................................................................s.............................................................................................................................................................................................E..................................................................................................................................................
+======================================================================
+ERROR: test_loads_config_from_local_file (tests.test_caingrandchild_telegram.CaingrandchildTelegramTests.test_loads_config_from_local_file)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<HOME>/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/unittest/mock.py", line 1861, in _inner
+    return f(*args, **kw)
+           ^^^^^^^^^^^^^^
+  File "<TEMP>/cain-recursive-full-body-r75t7hrf/.caingrandchild.genesis-1mposvth/caingrandchild/tests/test_caingrandchild_telegram.py", line 209, in test_loads_config_from_local_file
+    self.assertEqual(config.bot_peers[0].alias, "worker")
+                     ^^^^^^^^^^^^^^^^
+AttributeError: 'TelegramConfig' object has no attribute 'bot_peers'
+
+----------------------------------------------------------------------
+Ran 857 tests in 38.378s
+
+FAILED (errors=1, skipped=7)

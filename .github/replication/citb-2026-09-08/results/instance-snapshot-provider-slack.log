@@ -1,0 +1,22 @@
+test_loads_agent_specific_environment_and_config (test_slack.SlackIntegrationTests.test_loads_agent_specific_environment_and_config) ... ok
+test_setup_saves_tokens_and_security_locks_without_echoing_secrets (test_slack.SlackIntegrationTests.test_setup_saves_tokens_and_security_locks_without_echoing_secrets) ... ok
+test_any_registered_slash_command_maps_to_existing_command_surface (test_slack.SlackLibraryTests.test_any_registered_slash_command_maps_to_existing_command_surface) ... ok
+test_api_errors_are_provider_errors (test_slack.SlackLibraryTests.test_api_errors_are_provider_errors) ... ok
+test_client_implements_chat_contract_with_explicit_capabilities (test_slack.SlackLibraryTests.test_client_implements_chat_contract_with_explicit_capabilities) ... ok
+test_conformance_provider_capabilities_match_kind (test_slack.SlackLibraryTests.test_conformance_provider_capabilities_match_kind) ... ok
+test_conformance_provider_matches_public_contract (test_slack.SlackLibraryTests.test_conformance_provider_matches_public_contract) ... ok
+test_long_progress_update_stays_in_one_message (test_slack.SlackLibraryTests.test_long_progress_update_stays_in_one_message) ... ok
+test_message_chunking_prefers_text_boundaries (test_slack.SlackLibraryTests.test_message_chunking_prefers_text_boundaries) ... ok
+test_normalizes_direct_messages_and_strips_channel_mentions (test_slack.SlackLibraryTests.test_normalizes_direct_messages_and_strips_channel_mentions) ... ok
+test_persistence_failure_is_not_acknowledged (test_slack.SlackLibraryTests.test_persistence_failure_is_not_acknowledged) ... ok
+test_persists_before_ack_and_replays_once_after_restart (test_slack.SlackLibraryTests.test_persists_before_ack_and_replays_once_after_restart) ... ok
+test_rejects_wrong_user_conversation_and_bot_events (test_slack.SlackLibraryTests.test_rejects_wrong_user_conversation_and_bot_events) ... ok
+test_secondary_prefix_does_not_capture_normal_exclamations (test_slack.SlackLibraryTests.test_secondary_prefix_does_not_capture_normal_exclamations) ... ok
+test_send_edit_and_ack_use_slack_native_message_ids (test_slack.SlackLibraryTests.test_send_edit_and_ack_use_slack_native_message_ids) ... ok
+test_slash_spool_does_not_retain_response_url (test_slack.SlackLibraryTests.test_slash_spool_does_not_retain_response_url) ... ok
+test_socket_connection_is_lazy_and_closed (test_slack.SlackLibraryTests.test_socket_connection_is_lazy_and_closed) ... ok
+
+----------------------------------------------------------------------
+Ran 17 tests in 0.012s
+
+OK

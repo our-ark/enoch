@@ -1,0 +1,31 @@
+{
+  "source_revision": "7ffaba854015d0854cfbb543ee934520ef2d5c30",
+  "source_tracked_changes_before": "",
+  "source_tracked_changes_after": "",
+  "python": "3.12.14",
+  "platform": "macOS-26.4.1-arm64-arm-64bit",
+  "start_directory": "libraries/skill-catalog/tests",
+  "top_level_directory": null,
+  "elapsed_seconds": 0.022,
+  "tests_run": 3,
+  "failures": 0,
+  "errors": 0,
+  "skipped": 0,
+  "expected_failures": 0,
+  "unexpected_successes": 0,
+  "successful": true,
+  "outcomes": [
+    {
+      "test": "test_skill_catalog.SkillCatalogTests.test_builds_catalog_and_merges_skill_metadata",
+      "status": "passed"
+    },
+    {
+      "test": "test_skill_catalog.SkillCatalogTests.test_missing_metadata_keeps_identity_declaration",
+      "status": "passed"
+    },
+    {
+      "test": "test_skill_catalog.SkillCatalogTests.test_parses_manifest_yaml_subset",
+      "status": "passed"
+    }
+  ]
+}

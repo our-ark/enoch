@@ -1,0 +1,3455 @@
+{
+  "source_revision": "7ffaba854015d0854cfbb543ee934520ef2d5c30",
+  "source_tracked_changes_before": "",
+  "source_tracked_changes_after": "",
+  "python": "3.12.14",
+  "platform": "macOS-26.4.1-arm64-arm-64bit",
+  "start_directory": "tests",
+  "top_level_directory": ".",
+  "elapsed_seconds": 44.639,
+  "tests_run": 859,
+  "failures": 0,
+  "errors": 0,
+  "skipped": 0,
+  "expected_failures": 0,
+  "unexpected_successes": 0,
+  "successful": true,
+  "outcomes": [
+    {
+      "test": "tests.test_enoch_agent_identity.EnochAgentIdentityTests.test_clear_removes_only_private_self",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_agent_identity.EnochAgentIdentityTests.test_installs_validated_identity_in_private_self_json",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_agent_identity.EnochAgentIdentityTests.test_packages_the_public_portable_identity_schema",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_agent_identity.EnochAgentIdentityTests.test_rejects_unknown_or_incomplete_identity_fields",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_agent_identity.EnochAgentIdentityTests.test_self_summary_prefers_personal_identity_and_names_the_body",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_application.ApplicationCompositionTests.test_authenticated_peer_event_is_only_offered_to_extension_hook",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_application.ApplicationCompositionTests.test_composition_rejects_identity_path_outside_instance",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_application.ApplicationCompositionTests.test_composition_reloads_mutable_identity_after_restart",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_application.ApplicationCompositionTests.test_composition_resolves_descendant_owned_startup_components",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_application.ApplicationCompositionTests.test_composition_validates_version_and_bounded_presentation",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_application.ApplicationCompositionTests.test_custom_identity_path_and_presentation_drive_application",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_application.ApplicationCompositionTests.test_run_application_delegates_to_enoch_owned_runner",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_authorization.CapabilityAuthorizationTests.test_allowing_policy_cannot_restore_missing_provider_grant",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_authorization.CapabilityAuthorizationTests.test_application_accepts_injected_authorization_policy",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_authorization.CapabilityAuthorizationTests.test_profile_command_requirements_are_checked_before_handler",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_authorization.CapabilityAuthorizationTests.test_profile_policy_can_tighten_task_authority",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_authorization.CapabilityAuthorizationTests.test_read_only_response_does_not_require_repository_work",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_authorization.CapabilityAuthorizationTests.test_task_missing_runtime_execute_fails_before_provider_call",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_authorization.CapabilityAuthorizationTests.test_task_requirements_are_persisted",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_automatic_learning.EnochAutomaticLearningTests.test_records_skill_learning_artifact_index_and_markdown",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_automatic_learning.EnochAutomaticLearningTests.test_skips_non_skill_changes",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_backlog.EnochBacklogTests.test_add_backlog_item_persists_priority_and_context",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_backlog.EnochBacklogTests.test_next_backlog_item_uses_priority_without_removing_item",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_backlog.EnochBacklogTests.test_promote_next_uses_priority_then_fifo",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_backlog.EnochBacklogTests.test_remove_backlog_item_moves_pending_item_to_history",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_backlog.EnochBacklogTests.test_reprioritize_backlog_item_updates_pending_item",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_brain.EnochBrainTests.test_act_accepts_configured_sandbox",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_brain.EnochBrainTests.test_act_in_session_does_not_retry_cancelled_session",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_brain.EnochBrainTests.test_act_in_session_resumes_with_action_sandbox",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_brain.EnochBrainTests.test_act_in_session_separates_working_directory_from_agent_state",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_brain.EnochBrainTests.test_act_uses_workspace_write_sandbox",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_brain.EnochBrainTests.test_codex_model_options_reads_visible_installed_catalog",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_brain.EnochBrainTests.test_codex_quota_exhaustion_raises_recoverable_access_error",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_brain.EnochBrainTests.test_codex_reasoning_efforts_follow_configured_model",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_brain.EnochBrainTests.test_default_progress_interval_is_one_minute",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_brain.EnochBrainTests.test_enoch_config_codex_executable_precedes_path",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_brain.EnochBrainTests.test_environment_codex_executable_precedes_enoch_config",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_brain.EnochBrainTests.test_execution_timeout_overrides_instance_timeout",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_brain.EnochBrainTests.test_falls_back_to_default_codex_app_path",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_brain.EnochBrainTests.test_invalid_explicit_codex_executable_does_not_silently_fall_back",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_brain.EnochBrainTests.test_missing_codex_login_raises_recoverable_access_error",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_brain.EnochBrainTests.test_model_summary_keeps_reasoning_when_model_env_overrides_config",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_brain.EnochBrainTests.test_model_summary_prefers_enoch_config_over_codex_config_per_setting",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_brain.EnochBrainTests.test_model_summary_reports_codex_config_model_and_reasoning",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_brain.EnochBrainTests.test_model_summary_reports_codex_default",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_brain.EnochBrainTests.test_model_summary_reports_configured_model",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_brain.EnochBrainTests.test_model_summary_reports_enoch_model_override",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_brain.EnochBrainTests.test_model_summary_reports_enoch_reasoning_override",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_brain.EnochBrainTests.test_progress_run_can_be_cancelled",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_brain.EnochBrainTests.test_progress_run_reports_timeout_separately_from_cancellation",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_brain.EnochBrainTests.test_progress_run_stops_when_cancellation_event_is_set",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_brain.EnochBrainTests.test_respond_attaches_image_when_resuming_persistent_session",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_brain.EnochBrainTests.test_respond_attaches_images_to_codex_exec",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_brain.EnochBrainTests.test_respond_does_not_retry_or_forget_timed_out_session",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_brain.EnochBrainTests.test_respond_ignores_old_persistent_codex_session_prompt_versions",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_brain.EnochBrainTests.test_respond_passes_enoch_model_to_codex",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_brain.EnochBrainTests.test_respond_passes_enoch_reasoning_effort_to_codex",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_brain.EnochBrainTests.test_respond_records_last_completed_turn_token_usage",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_brain.EnochBrainTests.test_respond_result_returns_session_usage_and_events",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_brain.EnochBrainTests.test_respond_resumes_persistent_codex_session_without_periodic_memory_sync",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_brain.EnochBrainTests.test_respond_starts_persistent_codex_session",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_brain.EnochBrainTests.test_respond_uses_configured_task_timeout",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_brain.EnochBrainTests.test_responds_through_codex_exec",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_brainstorming.EnochBrainstormingTests.test_parses_complete_strict_candidate_drafts",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_brainstorming.EnochBrainstormingTests.test_prepares_bounded_context_for_a_fresh_read_only_session",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_brainstorming.EnochBrainstormingTests.test_rejects_protected_and_duplicate_candidate_changes",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_brainstorming.EnochBrainstormingTests.test_requires_theme_and_exact_json_schema",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_cli.EnochCliTests.test_admin_registry_drives_help_and_detailed_usage",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_cli.EnochCliTests.test_ancestors_command_uses_shared_command",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_cli.EnochCliTests.test_doctor_prints_failure_diagnosis",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_cli.EnochCliTests.test_doctor_runs_local_health_checks",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_cli.EnochCliTests.test_help_shows_admin_command_surface",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_cli.EnochCliTests.test_init_can_create_linked_git_worktree_instance",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_cli.EnochCliTests.test_init_claims_current_worktree_as_instance",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_cli.EnochCliTests.test_learn_command_uses_shared_command",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_cli.EnochCliTests.test_mission_command_uses_shared_command",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_cli.EnochCliTests.test_setup_aliases_are_not_registered",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_cli.EnochCliTests.test_setup_ancestor_clear_removes_lineage_parent",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_cli.EnochCliTests.test_setup_ancestor_rejects_non_link_forms",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_cli.EnochCliTests.test_setup_ancestor_writes_repo_side_lineage_parent",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_cli.EnochCliTests.test_setup_chat_command_saves_chat_lock_from_direct_cli",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_cli.EnochCliTests.test_setup_interactively_saves_token_without_printing_secret",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_cli.EnochCliTests.test_setup_token_command_shows_next_step",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_cli.EnochCliTests.test_skills_command_uses_shared_command",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_cli.EnochCliTests.test_state_command_applies_migration",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_cli.EnochCliTests.test_state_command_validates_and_dry_runs_without_writing",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_cli.EnochCliTests.test_status_combines_identity_model_and_lineage",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_cli.EnochCliTests.test_status_uses_lineage_parent_before_identity_ancestor",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_cli.EnochCliTests.test_teach_command_is_not_user_facing",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_cli.EnochCliTests.test_thinking_command_uses_cli_command_names",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_cli.EnochCliTests.test_unknown_input_is_admin_only_message",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_cli.EnochCliTests.test_update_records_and_restarts_from_shared_result",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_command_registry.CoreCommandRegistryTests.test_evolve_help_exposes_only_the_consolidated_surface",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_command_registry.CoreCommandRegistryTests.test_help_overview_prominently_explains_detailed_help",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_command_registry.CoreCommandRegistryTests.test_help_uses_chat_provider_command_prefix",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_command_registry.CoreCommandRegistryTests.test_registry_is_the_source_for_command_names_and_help",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_command_registry.CoreCommandRegistryTests.test_removed_aliases_and_stale_thinking_help_are_not_registered",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_command_registry.CoreCommandRegistryTests.test_runtime_command_reference_exposes_exact_provider_commands",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_config.EnochConfigTests.test_invalid_task_timeout_config_falls_back_to_default",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_config.EnochConfigTests.test_memory_settings_use_defaults_and_config_overrides",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_config.EnochConfigTests.test_task_timeout_can_be_configured_and_reset",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_config.EnochConfigTests.test_task_timeout_defaults_to_ten_minutes",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_config.EnochConfigTests.test_task_timeout_parser_enforces_bounds",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_config.EnochConfigTests.test_write_section_value_adds_new_section",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_config.EnochConfigTests.test_write_section_value_removes_key_for_default",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_config.EnochConfigTests.test_write_section_value_updates_existing_key_and_preserves_other_keys",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_conformance.AgentExtensionConformanceTests.test_conformance_extension_command_queues_governed_work",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_conformance.AgentExtensionConformanceTests.test_conformance_extension_command_result_normalization",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_conformance.AgentExtensionConformanceTests.test_conformance_extension_commands_are_discoverable",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_conformance.AgentExtensionConformanceTests.test_conformance_extension_lifecycle_accepts_isolated_context",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_conformance.AgentExtensionConformanceTests.test_conformance_extension_storage_is_namespaced",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_conformance.AgentExtensionConformanceTests.test_conformance_extension_structured_request_data",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_conformance.AgentExtensionConformanceTests.test_conformance_extension_uses_public_api_version",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_conformance.AgentExtensionConformanceTests.test_conformance_extension_workflow_lifecycle_controls",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_conformance.AgentExtensionConformanceTests.test_lifecycle_hooks_were_exercised_by_extension_conformance",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_conformance.AgentProfileConformanceTests.test_conformance_profile_command_queues_governed_work",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_conformance.AgentProfileConformanceTests.test_conformance_profile_commands_are_discoverable",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_conformance.AgentProfileConformanceTests.test_conformance_profile_lifecycle_accepts_isolated_context",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_conformance.AgentProfileConformanceTests.test_conformance_profile_prompt_contributors_are_bounded",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_conformance.AgentProfileConformanceTests.test_conformance_profile_uses_public_api_version",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_conformance.AgentProfileConformanceTests.test_lifecycle_hooks_were_exercised_by_conformance_suite",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_conformance.DefaultApplicationCompositionConformanceTests.test_conformance_application_composition_owns_identity_boundary",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_conformance.DefaultApplicationCompositionConformanceTests.test_conformance_application_composition_uses_public_api_version",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_conformance.DurableNotificationConformanceTests.test_conformance_notification_deduplicates_completed_request",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_conformance.DurableNotificationConformanceTests.test_conformance_notification_recovers_retryable_partial_failure",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_conformance.DurableNotificationConformanceTests.test_conformance_notification_rejects_stale_fencing_token",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_conformance.FunctionRuntimeConformanceTests.test_conformance_provider_capabilities_match_kind",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_conformance.FunctionRuntimeConformanceTests.test_conformance_provider_matches_public_contract",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_conformance.FunctionRuntimeConformanceTests.test_conformance_runtime_honors_precancelled_execution",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_conformance.FunctionRuntimeConformanceTests.test_conformance_runtime_honors_pretimed_out_execution",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_conformance.FunctionRuntimeConformanceTests.test_conformance_runtime_returns_normalizable_results",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_conformance.LocalWorkflowConformanceTests.test_conformance_workflow_cancels_pending_work",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_conformance.LocalWorkflowConformanceTests.test_conformance_workflow_contains_partial_failure",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_conformance.LocalWorkflowConformanceTests.test_conformance_workflow_deduplicates_requests",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_conformance.LocalWorkflowConformanceTests.test_conformance_workflow_lifecycle",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_conformance.LocalWorkflowConformanceTests.test_conformance_workflow_persists_advertised_request_features",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_conformance.LocalWorkflowConformanceTests.test_conformance_workflow_reconciles_terminal_crash_point_once",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_conformance.LocalWorkflowConformanceTests.test_conformance_workflow_reconciliation_preserves_live_worker",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_conformance.LocalWorkflowConformanceTests.test_conformance_workflow_recovers_after_restart",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_conformance.LocalWorkflowConformanceTests.test_conformance_workflow_rejects_stale_fencing_token",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_cron.EnochCronTests.test_add_cron_job_persists_context_and_next_run",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_cron.EnochCronTests.test_cancel_and_record_last_task",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_cron.EnochCronTests.test_due_job_remains_claimed_until_task_is_recorded",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_cron.EnochCronTests.test_missed_runs_coalesce_and_preserve_fixed_rate_anchor",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_cron.EnochCronTests.test_parse_and_format_intervals",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_cron.EnochCronTests.test_scheduler_wait_is_bounded_by_next_target_and_claim_retry",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_daemon.EnochDaemonTests.test_dispatch_routes_status_logs_and_manifest",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_daemon.EnochDaemonTests.test_doctor_combines_chat_and_service_readiness",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_daemon.EnochDaemonTests.test_install_validates_chat_and_delegates_to_service",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_daemon.EnochDaemonTests.test_main_reports_service_provider_errors",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_daemon.EnochDaemonTests.test_restart_validates_chat_and_uses_atomic_provider_restart",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_daemon.EnochDaemonTests.test_start_and_restart_reject_an_exported_source",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_daemon.EnochDaemonTests.test_start_requires_configured_chat",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_e2e.EnochEvolutionEndToEndTests.test_codex_auth_failure_pauses_and_resume_completes_same_task",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_e2e.EnochEvolutionEndToEndTests.test_evolve_approve_publishes_ready_pr_from_latest_main_with_one_progress_message",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_e2e.EnochEvolutionEndToEndTests.test_failed_evolve_task_becomes_semantic_experience_candidate_with_causal_provenance",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_e2e.EnochEvolutionEndToEndTests.test_task_ignores_deleted_review_worktree_without_disturbing_other_workspaces",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_e2e.EnochEvolutionEndToEndTests.test_task_retry_keeps_failed_history_and_evolve_provenance",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_effects.DaemonEffectFenceTests.test_bounded_effect_completes_before_takeover",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_effects.DaemonEffectFenceTests.test_runtime_is_cancelled_when_a_new_daemon_takes_over",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_effects.DaemonEffectFenceTests.test_stale_application_rejects_runtime_and_forge_effects",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_effects.DaemonEffectFenceTests.test_stale_task_cannot_finalize_or_send_final_notification",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_evolve.EnochEvolveTests.test_approve_candidate_archives_it",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_evolve.EnochEvolveTests.test_backlog_and_inheritance_are_not_evolution_evidence",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_evolve.EnochEvolveTests.test_brainstorm_candidate_deduplicates_change_across_themes",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_evolve.EnochEvolveTests.test_brainstorm_candidates_remain_visible_across_theme_changes",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_evolve.EnochEvolveTests.test_cron_schedule_rejects_non_daily_expression",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_evolve.EnochEvolveTests.test_cron_schedule_uses_daily_cron_expression",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_evolve.EnochEvolveTests.test_daily_schedule_rejects_invalid_time",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_evolve.EnochEvolveTests.test_daily_schedule_uses_next_local_time",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_evolve.EnochEvolveTests.test_default_state_is_co_evolve",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_evolve.EnochEvolveTests.test_direct_pathways_remain_separate_candidate_sources",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_evolve.EnochEvolveTests.test_disabled_mode_does_not_collect_candidates",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_evolve.EnochEvolveTests.test_empty_proposal_does_not_curate_or_invent_candidates",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_evolve.EnochEvolveTests.test_learning_candidate_deduplicates_exact_skill_snapshot",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_evolve.EnochEvolveTests.test_legacy_execution_statuses_migrate_to_approved_archive",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_evolve.EnochEvolveTests.test_legacy_feedback_candidate_infers_split_provenance",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_evolve.EnochEvolveTests.test_legacy_selected_and_rejected_statuses_are_migrated",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_evolve.EnochEvolveTests.test_proposal_skips_approved_candidate",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_evolve.EnochEvolveTests.test_removed_candidate_status_is_persisted_across_reports",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_evolve.EnochEvolveTests.test_repeated_successes_do_not_become_hardcoded_candidates",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_evolve.EnochEvolveTests.test_schedule_can_be_set_claimed_and_disabled",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_evolve.EnochEvolveTests.test_scheduled_brainstorm_claim_is_theme_scoped_and_cooled_down",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_evolve.EnochEvolveTests.test_scheduled_brainstorm_preserves_legacy_cooldown_attempts",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_evolve.EnochEvolveTests.test_semantic_experience_candidate_keeps_task_causal_chain",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_evolve.EnochEvolveTests.test_stored_actionable_backlog_candidate_is_retired",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_evolve.EnochEvolveTests.test_task_failures_are_pending_evidence_not_hardcoded_candidates",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_evolve.EnochEvolveTests.test_task_outcomes_do_not_mutate_approved_candidate",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_evolve.EnochEvolveTests.test_theme_is_persisted",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_evolve.EnochEvolveTests.test_unstarted_cancellation_is_not_a_hardcoded_candidate",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_evolve_curation.EnochEvolveCurationTests.test_all_sources_enter_bounded_curation_with_unchanged_provenance",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_evolve_curation.EnochEvolveCurationTests.test_bounded_curation_retains_one_candidate_from_each_source",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_evolve_curation.EnochEvolveCurationTests.test_completion_evidence_loading_failure_uses_explicit_fallback",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_evolve_curation.EnochEvolveCurationTests.test_context_only_feedback_is_suggested_for_removal_not_execution",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_evolve_curation.EnochEvolveCurationTests.test_curation_cannot_invent_a_brainstorm_candidate",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_evolve_curation.EnochEvolveCurationTests.test_direct_merged_candidate_link_supports_already_resolved_evidence",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_evolve_curation.EnochEvolveCurationTests.test_duplicate_and_resolved_suggestions_are_auditable_but_do_not_remove",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_evolve_curation.EnochEvolveCurationTests.test_invalid_outputs_use_explicit_deterministic_fallback",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_evolve_curation.EnochEvolveCurationTests.test_legacy_curation_without_evidence_fields_still_loads",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_evolve_curation.EnochEvolveCurationTests.test_llm_recommendation_overrides_pre_rank_without_state_change",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_evolve_curation.EnochEvolveCurationTests.test_only_human_remove_entry_changes_status_and_records_reason",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_evolve_curation.EnochEvolveCurationTests.test_open_pr_partial_failed_and_cancelled_work_cannot_resolve_body_candidate",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_evolve_curation.EnochEvolveCurationTests.test_prompt_receives_bounded_redacted_recent_completed_work",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_evolve_curation.EnochEvolveCurationTests.test_protected_raw_candidate_is_not_recommended_even_by_fallback",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_evolve_curation.EnochEvolveCurationTests.test_semantic_resolution_without_direct_link_and_supersession_are_allowed",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_evolve_curation.EnochEvolveCurationTests.test_timeout_uses_fallback_and_no_recommendation_is_valid",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_evolve_curation.EnochEvolveCurationTests.test_unknown_and_malformed_evidence_refs_are_rejected_without_mutation",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_evolve_events.EnochEvolveEventTests.test_candidate_and_task_requirements_are_validated",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_evolve_events.EnochEvolveEventTests.test_governed_lifecycle_events_require_verified_evidence",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_evolve_events.EnochEvolveEventTests.test_legacy_feedback_event_infers_split_provenance",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_evolve_events.EnochEvolveEventTests.test_loader_skips_malformed_lines",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_evolve_events.EnochEvolveEventTests.test_malformed_evidence_refs_are_rejected_and_legacy_events_still_load",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_evolve_events.EnochEvolveEventTests.test_proposal_and_human_removal_preserve_bounded_evidence_refs",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_evolve_events.EnochEvolveEventTests.test_records_and_filters_evolution_funnel_events",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_evolve_events.EnochEvolveEventTests.test_records_runtime_trace_for_candidate_task_events",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_evolve_events.EnochEvolveEventTests.test_schema_six_promotion_replays_into_semantic_review_fields",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_evolve_events.EnochEvolveEventTests.test_tracks_each_proposal_and_closes_open_disposition",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_experience.EnochExperienceTests.test_declares_eight_task_sources_and_full_terminal_lifecycle",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_experience.EnochExperienceTests.test_deduplicates_repeated_terminal_compatibility_writes",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_experience.EnochExperienceTests.test_preserves_regression_fact_after_forward_fix_resolution",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_experience.EnochExperienceTests.test_reads_legacy_experience_records_when_event_log_is_absent",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_experience.EnochExperienceTests.test_records_structured_terminal_task_experience",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_experience.EnochExperienceTests.test_rejects_non_terminal_task",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_experience.EnochExperienceTests.test_scans_distinct_task_ids_and_rescans_changed_lifecycle",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_extension_schedules.EnochExtensionScheduleConformanceTests.test_conformance_extension_schedule_disable_preserves_history",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_extension_schedules.EnochExtensionScheduleConformanceTests.test_conformance_extension_schedule_pause_run_now_and_restart_dedup",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_extension_schedules.EnochExtensionScheduleConformanceTests.test_conformance_extension_schedule_timezone_and_missed_runs",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_extension_schedules.EnochExtensionScheduleTests.test_control_surface_is_extension_scoped",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_extension_schedules.EnochExtensionScheduleTests.test_pause_and_disable_preserve_an_inflight_claim",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_extension_schedules.EnochExtensionScheduleTests.test_schedule_spec_is_bounded_and_normalized",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_extension_schedules.EnochExtensionScheduleTests.test_schedule_upgrade_preserves_or_reanchors_next_occurrence",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_extensions.EnochExtensionTests.test_declared_extension_schedule_enqueues_governed_work",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_extensions.EnochExtensionTests.test_extension_cancel_delivers_its_durable_task_event",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_extensions.EnochExtensionTests.test_extension_cannot_shadow_core_profile_or_peer_commands",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_extensions.EnochExtensionTests.test_extension_command_can_idempotently_enqueue_multiple_tasks",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_extensions.EnochExtensionTests.test_extension_command_failures_have_typed_outcomes",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_extensions.EnochExtensionTests.test_extension_command_reports_missing_workflow_feature",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_extensions.EnochExtensionTests.test_extension_command_result_rejects_invalid_typed_fields",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_extensions.EnochExtensionTests.test_extension_command_schedule_control_records_human_actor",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_extensions.EnochExtensionTests.test_extension_command_uses_namespaced_storage_and_shared_workflow",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_extensions.EnochExtensionTests.test_extension_failures_are_isolated_and_audited",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_extensions.EnochExtensionTests.test_extension_lanes_serialize_predecessors_without_blocking_peers",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_extensions.EnochExtensionTests.test_extension_lifecycle_wraps_run_and_unwinds_in_reverse",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_extensions.EnochExtensionTests.test_extension_receives_durable_task_events_once_in_order",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_extensions.EnochExtensionTests.test_extension_registry_supports_static_entry_point_and_config",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_extensions.EnochExtensionTests.test_extension_rejects_unsupported_api_and_duplicate_names",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_extensions.EnochExtensionTests.test_extension_request_data_is_validated_before_enqueue",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_extensions.EnochExtensionTests.test_extension_request_data_requires_declared_workflow_features",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_extensions.EnochExtensionTests.test_extension_retry_preserves_and_rerun_can_replace_request_data",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_extensions.EnochExtensionTests.test_extension_running_cancel_signals_worker_and_is_epoch_fenced",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_extensions.EnochExtensionTests.test_extension_schedule_authorizes_before_workflow_enqueue",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_extensions.EnochExtensionTests.test_extension_schedule_restart_reuses_the_durable_occurrence",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_extensions.EnochExtensionTests.test_extension_workflow_controls_owned_task_lifecycle",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_extensions.EnochExtensionTests.test_extension_workflow_enforces_terminal_and_retry_rules",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_extensions.EnochExtensionTests.test_extension_workflow_rejects_unowned_tasks_before_mutation",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_extensions.EnochExtensionTests.test_extension_workflow_round_trips_structured_request_data",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_extensions.EnochExtensionTests.test_failed_extension_task_event_is_replayed_after_restart",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_extensions.EnochExtensionTests.test_paused_task_blocks_only_its_execution_lane",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_extensions.EnochExtensionTests.test_startup_hooks_run_once_without_a_chat_lock",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_extensions.EnochExtensionTests.test_status_reports_active_extension_api_versions",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_extensions.EnochExtensionTests.test_string_extension_command_result_remains_text_shorthand",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_extensions.EnochExtensionTests.test_typed_extension_command_result_links_durable_work_and_audit_refs",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_feedback.EnochFeedbackEvidenceTests.test_invalid_response_leaves_inputs_pending_and_redacts_tokens",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_feedback.EnochFeedbackEvidenceTests.test_rejects_json_wrapped_in_prose",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_feedback.EnochFeedbackEvidenceTests.test_repository_contains_no_literal_telegram_bot_tokens",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_feedback.EnochFeedbackEvidenceTests.test_scans_configured_message_batch_semantically",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_feedback.EnochFeedbackEvidenceTests.test_waits_for_threshold_and_valid_empty_result_advances_cursor",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_github_titles.EnochGithubTitleTests.test_feature_title_has_fallback",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_github_titles.EnochGithubTitleTests.test_feature_title_normalizes_and_clips_request_text",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_github_workflow.EnochGithubWorkflowTests.test_close_pull_request_reports_missing_gh",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_github_workflow.EnochGithubWorkflowTests.test_closes_pull_request_with_comment",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_github_workflow.EnochGithubWorkflowTests.test_commit_author_falls_back_to_latest_noreply_email",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_github_workflow.EnochGithubWorkflowTests.test_inaccessible_pull_request_url_reports_github_failure",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_github_workflow.EnochGithubWorkflowTests.test_inspects_draft_pull_request_without_requiring_mergeability",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_github_workflow.EnochGithubWorkflowTests.test_inspects_pull_request_merge_evidence",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_github_workflow.EnochGithubWorkflowTests.test_lists_open_pull_requests_without_mutation",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_github_workflow.EnochGithubWorkflowTests.test_merge_refuses_draft_conflicting_blocked_closed_and_merged_prs",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_github_workflow.EnochGithubWorkflowTests.test_merge_reports_github_api_failure",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_github_workflow.EnochGithubWorkflowTests.test_merges_inspected_head_with_supported_default_method",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_github_workflow.EnochGithubWorkflowTests.test_numeric_target_is_inspected_in_current_repository",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_github_workflow.EnochGithubWorkflowTests.test_parses_and_normalizes_full_github_pull_request_url",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_github_workflow.EnochGithubWorkflowTests.test_parses_numeric_pull_request_target_for_current_repository",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_github_workflow.EnochGithubWorkflowTests.test_pr_appends_evolution_provenance",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_github_workflow.EnochGithubWorkflowTests.test_pr_creates_with_gh",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_github_workflow.EnochGithubWorkflowTests.test_pr_refuses_protected_branch_by_default",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_github_workflow.EnochGithubWorkflowTests.test_pr_requires_pushed_branch",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_github_workflow.EnochGithubWorkflowTests.test_pr_returns_fallback_url_when_gh_is_missing",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_github_workflow.EnochGithubWorkflowTests.test_pr_reuses_existing_open_pr_after_ambiguous_create_failure",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_github_workflow.EnochGithubWorkflowTests.test_pr_uses_draft_only_when_explicitly_requested",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_github_workflow.EnochGithubWorkflowTests.test_publish_refuses_unexpected_files",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_github_workflow.EnochGithubWorkflowTests.test_push_compare_url_allows_dots_in_repo_name",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_github_workflow.EnochGithubWorkflowTests.test_push_count_for_new_branch_uses_base_branch",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_github_workflow.EnochGithubWorkflowTests.test_push_refuses_protected_branch_by_default",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_github_workflow.EnochGithubWorkflowTests.test_push_refuses_when_branch_has_no_ahead_commits",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_github_workflow.EnochGithubWorkflowTests.test_pushes_current_branch_and_returns_compare_url",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_github_workflow.EnochGithubWorkflowTests.test_refuses_empty_diff",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_github_workflow.EnochGithubWorkflowTests.test_refuses_protected_branch_by_default",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_github_workflow.EnochGithubWorkflowTests.test_refuses_when_doctor_fails",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_github_workflow.EnochGithubWorkflowTests.test_rejects_non_pull_request_target",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_github_workflow.EnochGithubWorkflowTests.test_review_publish_retry_accepts_revision_already_on_remote",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_github_workflow.EnochGithubWorkflowTests.test_stages_and_commits_with_existing_validation_attestation",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_identity.EnochIdentityTests.test_body_yaml_is_the_only_versioned_body_identity_source",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_identity.EnochIdentityTests.test_identity_declares_evolution_constraints",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_identity.EnochIdentityTests.test_identity_declares_skills",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_identity.EnochIdentityTests.test_identity_has_mission_and_ancestry",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_identity.EnochIdentityTests.test_legacy_identity_yaml_remains_readable_during_migration",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_identity.EnochIdentityTests.test_loads_identity_from_body",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_immune.EnochImmuneTests.test_build_backend_failure_reports_available_install_command",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_immune.EnochImmuneTests.test_build_backend_rejects_version_below_project_requirement",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_immune.EnochImmuneTests.test_codex_runtime_check_reports_expired_login",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_immune.EnochImmuneTests.test_codex_runtime_check_verifies_login",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_immune.EnochImmuneTests.test_diagnoses_missing_imports",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_immune.EnochImmuneTests.test_diagnoses_pytest_failures",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_immune.EnochImmuneTests.test_diagnoses_stale_import_names",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_immune.EnochImmuneTests.test_diagnoses_unittest_failures",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_immune.EnochImmuneTests.test_dirty_worktree_is_reported_without_failing_doctor",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_immune.EnochImmuneTests.test_empty_configured_test_command_fails_without_crashing",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_immune.EnochImmuneTests.test_environment_failure_outranks_resulting_test_failure",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_immune.EnochImmuneTests.test_forge_provider_configuration_failure_does_not_crash_doctor",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_immune.EnochImmuneTests.test_long_doctor_output_preserves_beginning_and_root_cause",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_immune.EnochImmuneTests.test_managed_environment_failure_is_reported_as_doctor_failure",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_immune.EnochImmuneTests.test_missing_backend_is_repaired_with_managed_environment",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_immune.EnochImmuneTests.test_missing_build_backend_skips_tests_without_masking_failure",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_immune.EnochImmuneTests.test_operational_failure_gets_specific_diagnosis",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_immune.EnochImmuneTests.test_python_runtime_must_satisfy_project_minimum",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_immune.EnochImmuneTests.test_runs_default_test_command",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_immune.EnochImmuneTests.test_state_storage_detects_and_preserves_corrupt_artifact_journal",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_immune.EnochImmuneTests.test_state_storage_detects_and_preserves_corrupt_json",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_immune.EnochImmuneTests.test_task_doctor_uses_resident_root_for_operational_state",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_immune.EnochImmuneTests.test_timeout_is_reported_as_failed_check",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_launchers.EnochLauncherTests.test_enoch_python_overrides_probe_when_supported",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_launchers.EnochLauncherTests.test_launchers_probe_for_supported_python",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_launchers.EnochLauncherTests.test_unsupported_enoch_python_fails_without_fallback",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_learn.EnochLearnTests.test_loads_validated_skill_snapshot_from_one_revision",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_learn.EnochLearnTests.test_parse_learn_skill_from_agent",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_learn.EnochLearnTests.test_parses_applicable_assessment_with_candidate_contents",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_learn.EnochLearnTests.test_parses_not_applicable_assessment_without_candidate",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_learn.EnochLearnTests.test_prompt_requests_one_structured_assessment_and_candidate",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_learn.EnochLearnTests.test_refuses_hidden_skill",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_learn.EnochLearnTests.test_refuses_missing_skill",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_learn.EnochLearnTests.test_rejects_protected_candidate_scope",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_learn.EnochLearnTests.test_routes_direct_parent_to_inheritance",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_lineage.EnochLineageTests.test_assessment_does_not_process_an_old_inbox_without_a_parent",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_lineage.EnochLineageTests.test_assessment_uses_configurable_fresh_batches",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_lineage.EnochLineageTests.test_codex_assesses_every_new_change_and_caches_by_source",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_lineage.EnochLineageTests.test_cursor_is_not_advanced_when_scan_limit_cannot_reach_it",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_lineage.EnochLineageTests.test_failed_assessment_preserves_change_for_retry",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_lineage.EnochLineageTests.test_format_candidate_and_adaptation_request_include_context",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_lineage.EnochLineageTests.test_format_lineage_includes_pending_change_counts",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_lineage.EnochLineageTests.test_ignore_hides_candidate_from_pending_inbox",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_lineage.EnochLineageTests.test_incremental_cursor_discovers_more_than_twenty_new_commits",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_lineage.EnochLineageTests.test_landed_review_is_required_before_linked_change_becomes_adopted",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_lineage.EnochLineageTests.test_legacy_inbox_is_read_then_migrated_to_private_state",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_lineage.EnochLineageTests.test_lineage_assessment_limits_are_configurable_and_bounded",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_lineage.EnochLineageTests.test_lineage_settings_use_semantic_assessment_defaults",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_lineage.EnochLineageTests.test_load_birth_commit_from_agent_lineage_file",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_lineage.EnochLineageTests.test_load_current_agent_profile_from_identity_yaml",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_lineage.EnochLineageTests.test_load_parent_from_agent_lineage_file",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_lineage.EnochLineageTests.test_missing_diff_is_retried_after_the_discovery_cursor_advances",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_lineage.EnochLineageTests.test_parent_inherit_report_excludes_grandparent_candidates",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_lineage.EnochLineageTests.test_parent_inherit_report_keeps_unassessed_changes_visible",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_lineage.EnochLineageTests.test_parse_declared_skills_from_identity_yaml",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_lineage.EnochLineageTests.test_parse_identity_name_from_identity_yaml",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_lineage.EnochLineageTests.test_parse_lineage_birth_provenance",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_lineage.EnochLineageTests.test_parse_lineage_parent",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_lineage.EnochLineageTests.test_parse_lineage_parent_normalizes_github_url",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_lineage.EnochLineageTests.test_pr_is_assessed_once_instead_of_as_each_constituent_commit",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_lineage.EnochLineageTests.test_refresh_all_ancestors_stores_inbox_candidates",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_lineage.EnochLineageTests.test_refresh_parent_only_stores_direct_parent_candidates",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_lineage.EnochLineageTests.test_refresh_preserves_reviewed_candidate_status",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_lineage.EnochLineageTests.test_refresh_report_includes_lineage_resolution_warnings",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_lineage.EnochLineageTests.test_refresh_stores_direct_commit_changes",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_lineage.EnochLineageTests.test_resolve_lineage_reads_parent_metadata_at_immutable_birth_commit",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_lineage.EnochLineageTests.test_resolve_lineage_reports_inaccessible_parent_lineage",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_lineage.EnochLineageTests.test_resolve_lineage_stops_at_lucy_root_ancestor",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_lineage.EnochLineageTests.test_resolves_ancestor_chain_recursively",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_lineage.EnochLineageTests.test_stored_inherit_inbox_does_not_refresh",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_lineage.EnochLineageTests.test_stored_lineage_report_reconstructs_scan_context",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_lineage_assessment_queue.EnochLineageAssessmentQueueTests.test_failed_job_is_preserved_as_the_last_result",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_lineage_assessment_queue.EnochLineageAssessmentQueueTests.test_job_lifecycle_is_durable",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_lineage_assessment_queue.EnochLineageAssessmentQueueTests.test_new_daemon_reclaims_an_interrupted_running_job",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_lineage_assessment_queue.EnochLineageAssessmentQueueTests.test_only_one_assessment_job_can_be_queued",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_lineage_assessment_queue.EnochLineageAssessmentQueueTests.test_stale_daemon_cannot_finish_a_reclaimed_job",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_logs.EnochLogsTests.test_conversation_turns_are_written_to_daily_jsonl",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_logs.EnochLogsTests.test_log_paths_can_be_computed_for_specific_days",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_logs.EnochLogsTests.test_system_events_are_written_to_daily_jsonl",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_memory.EnochMemoryTests.test_ensure_long_term_memory_initializes_prompt_memory_without_conversation_context",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_memory.EnochMemoryTests.test_long_term_memory_can_remember_dedupe_and_forget",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_memory.EnochMemoryTests.test_memory_candidates_are_validated",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_memory.EnochMemoryTests.test_memory_status_is_readable",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_memory.EnochMemoryTests.test_prompt_identity_uses_lineage_parent_before_identity_ancestor",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_memory.EnochMemoryTests.test_prompt_loads_self_from_an_isolated_state_redirect",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_memory.EnochMemoryTests.test_prompt_natively_reloads_private_self_json_for_each_session",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_migration.EnochMigrationTests.test_artifacts_are_included_only_when_requested",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_migration.EnochMigrationTests.test_export_captures_portable_state_and_fences_source",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_migration.EnochMigrationTests.test_export_rejects_running_task_and_host_local_workspace",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_migration.EnochMigrationTests.test_export_requires_current_state_and_external_destination",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_migration.EnochMigrationTests.test_export_uses_real_clean_git_body_revision",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_migration.EnochMigrationTests.test_exported_source_cannot_restart_until_explicit_cancel",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_migration.EnochMigrationTests.test_failed_import_removes_new_files_and_preserves_target_config",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_migration.EnochMigrationTests.test_import_dry_run_is_read_only_then_apply_preserves_target_config",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_migration.EnochMigrationTests.test_import_rejects_body_mismatch_and_existing_agent_state",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_migration.EnochMigrationTests.test_inspection_rejects_tampered_payload",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_migration.EnochMigrationTests.test_target_authority_advances_then_verification_writes_report",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_multi_instance.EnochMultiInstanceTests.test_two_processes_keep_identity_config_workflow_and_epochs_independent",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_notifications.EnochNotificationTests.test_ambiguous_provider_timeout_replays_only_with_idempotency",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_notifications.EnochNotificationTests.test_cancelled_delivery_is_terminal_and_not_replayed",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_notifications.EnochNotificationTests.test_crash_after_provider_success_reconciles_without_second_send",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_notifications.EnochNotificationTests.test_daemon_epoch_fences_previous_owner",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_notifications.EnochNotificationTests.test_inbox_replay_after_local_crash_does_not_repeat_reply",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_notifications.EnochNotificationTests.test_intent_is_persisted_as_pending_before_it_is_claimed",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_notifications.EnochNotificationTests.test_intent_persistence_failure_happens_before_provider_call",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_notifications.EnochNotificationTests.test_late_progress_cannot_overwrite_terminal_status",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_notifications.EnochNotificationTests.test_legacy_ambiguous_delivery_fails_closed_after_restart",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_notifications.EnochNotificationTests.test_pending_intent_is_delivered_during_restart_recovery",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_notifications.EnochNotificationTests.test_repeated_send_returns_durable_receipt_without_duplicate",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_notifications.EnochNotificationTests.test_retryable_delivery_stops_after_three_attempts",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_notifications.EnochNotificationTests.test_retryable_failure_is_bounded_and_can_recover",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_notifications.EnochNotificationTests.test_retryable_failure_is_replayed_during_restart_recovery",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_notifications.EnochNotificationTests.test_stale_application_cannot_begin_or_mutate_an_inbox_event",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_notifications.EnochNotificationTests.test_stale_service_cannot_send_or_edit",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_portable_install.EnochPortableInstallTests.test_ci_provisions_locked_build_backend_before_offline_wheel_test",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_portable_install.EnochPortableInstallTests.test_claude_provider_is_a_local_optional_runtime_dependency",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_portable_install.EnochPortableInstallTests.test_reference_providers_share_the_core_contract_pin",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_portable_install.EnochPortableInstallTests.test_release_metadata_matches_project_version",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_portable_install.EnochPortableInstallTests.test_service_provider_install_and_descent_pins_match",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_portable_install.EnochPortableInstallTests.test_slack_runtime_dependencies_are_pinned_in_genesis_manifest",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_portable_install.EnochPortableInstallTests.test_wheel_install_completes_profile_task_with_independent_packages",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_private_state.EnochPrivateStateTests.test_artifact_files_are_outside_private_state_migration",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_private_state.EnochPrivateStateTests.test_corrupt_state_is_preserved_and_not_backed_up",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_private_state.EnochPrivateStateTests.test_cron_state_migration_adds_fixed_rate_timing_metadata",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_private_state.EnochPrivateStateTests.test_empty_state_dry_run_is_read_only",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_private_state.EnochPrivateStateTests.test_extension_schedule_is_registered_private_state",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_private_state.EnochPrivateStateTests.test_failed_manifest_commit_restores_migrated_files",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_private_state.EnochPrivateStateTests.test_failed_post_migration_validation_rolls_back",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_private_state.EnochPrivateStateTests.test_future_file_schema_is_rejected_without_mutation",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_private_state.EnochPrivateStateTests.test_future_manifest_is_rejected",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_private_state.EnochPrivateStateTests.test_lineage_inbox_is_registered_private_state",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_private_state.EnochPrivateStateTests.test_live_daemon_blocks_apply_but_not_dry_run",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_private_state.EnochPrivateStateTests.test_migration_backs_up_normalizes_and_is_idempotent",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_private_state.EnochPrivateStateTests.test_portable_self_is_registered_and_schema_validated",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_private_state.EnochPrivateStateTests.test_renamed_brainstorm_schema_is_a_migratable_manifest_alias",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_profiles.EnochProfileTests.test_application_rejects_unsupported_private_state",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_profiles.EnochProfileTests.test_config_selects_profile_for_restart_and_reports_running_profile",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_profiles.EnochProfileTests.test_lifecycle_hooks_wrap_each_application_run",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_profiles.EnochProfileTests.test_profile_can_require_queued_work",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_profiles.EnochProfileTests.test_profile_cannot_shadow_core_commands",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_profiles.EnochProfileTests.test_profile_command_can_queue_work_without_core_changes",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_profiles.EnochProfileTests.test_profile_failures_are_isolated_and_audited",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_profiles.EnochProfileTests.test_profile_presentation_controls_bounded_labels",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_profiles.EnochProfileTests.test_profile_registry_rejects_invalid_factory_results",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_profiles.EnochProfileTests.test_profile_registry_supports_static_and_entry_point_packages",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_profiles.EnochProfileTests.test_profile_rejects_invalid_workflow_and_presentation_values",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_profiles.EnochProfileTests.test_profile_rejects_unsupported_api_version",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_profiles.EnochProfileTests.test_prompt_contributors_receive_purpose_and_extend_runtime_input",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_profiles.EnochProfileTests.test_status_reports_active_profile",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_prompt_append.EnochPromptAppendTests.test_extract_edit_request_strips_marker_from_visible_reply",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_prompt_append.EnochPromptAppendTests.test_extract_memory_requests_strips_markers_from_visible_reply",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_prompt_append.EnochPromptAppendTests.test_extract_task_regression_signal_strips_internal_json",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_prompt_append.EnochPromptAppendTests.test_invalid_task_regression_signal_is_hidden_and_ignored",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_prompt_append.EnochPromptAppendTests.test_read_only_prompt_points_work_to_commands",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_prompt_append.EnochPromptAppendTests.test_read_only_prompt_uses_secondary_chat_command_prefix",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_prompt_append.EnochPromptAppendTests.test_repository_handoff_note_warns_not_to_assume_landing",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_prompt_append.EnochPromptAppendTests.test_work_request_prompt_allows_complete_jobs",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_prompt_append.EnochPromptAppendTests.test_work_request_prompt_uses_local_handoff_without_remote_forge",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_providers.EnochProviderTests.test_application_passes_typed_execution_to_new_runtime",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_providers.EnochProviderTests.test_builtin_providers_are_discoverable",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_providers.EnochProviderTests.test_config_lists_and_selects_installed_providers",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_providers.EnochProviderTests.test_config_sets_shows_and_resets_codex_executable",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_providers.EnochProviderTests.test_core_starts_with_only_custom_chat_and_vcs_integrations",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_providers.EnochProviderTests.test_custom_chat_provider_persists_opaque_cursor",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_providers.EnochProviderTests.test_custom_chat_provider_supplies_image_attachment",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_providers.EnochProviderTests.test_custom_service_provider_can_be_selected",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_providers.EnochProviderTests.test_defaults_preserve_existing_stack",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_providers.EnochProviderTests.test_doctor_reports_configured_codex_executable_source",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_providers.EnochProviderTests.test_doctor_uses_selected_runtime_health",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_providers.EnochProviderTests.test_function_runtime_preserves_structured_results",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_providers.EnochProviderTests.test_git_provider_adapts_to_semantic_repository_contract",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_providers.EnochProviderTests.test_git_task_base_refuses_stale_fallback_when_fetch_fails",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_providers.EnochProviderTests.test_installed_entry_point_loads_without_core_changes",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_providers.EnochProviderTests.test_invalid_provider_reports_missing_contract_members_at_load_time",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_providers.EnochProviderTests.test_invalid_runtime_result_is_reported_without_stopping_chat",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_providers.EnochProviderTests.test_legacy_runtime_action_receives_legacy_execution_arguments",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_providers.EnochProviderTests.test_local_forge_publishes_through_semantic_vcs_contract",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_providers.EnochProviderTests.test_local_review_handoff_completes_without_remote_url",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_providers.EnochProviderTests.test_normalized_chat_event_uses_runtime_without_telegram_payloads",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_providers.EnochProviderTests.test_provider_loader_surfaces_missing_internal_dependency",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_providers.EnochProviderTests.test_queued_task_rejects_missing_workspace_feature_before_effects",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_providers.EnochProviderTests.test_queued_task_uses_branchless_repository_and_independent_review",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_providers.EnochProviderTests.test_registered_provider_can_be_selected_from_instance_config",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_providers.EnochProviderTests.test_remote_review_failure_is_retryable_and_preserves_workspace",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_providers.EnochProviderTests.test_review_retry_reuses_captured_revision",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_providers.EnochProviderTests.test_runtime_execution_distinguishes_timeout_from_cancellation",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_providers.EnochProviderTests.test_runtime_provider_owns_provider_specific_config",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_providers.EnochProviderTests.test_runtime_rejects_result_completed_after_cancellation",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_providers.EnochProviderTests.test_runtime_result_normalizes_legacy_strings",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_providers.EnochProviderTests.test_runtime_result_rejects_unsupported_contract_version",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_providers.EnochProviderTests.test_source_claude_provider_configures_and_passes_doctor",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_providers.EnochProviderTests.test_string_chat_and_message_ids_survive_task_persistence",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_providers.EnochProviderTests.test_typed_runtime_receives_execution_and_emits_typed_progress",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_providers.EnochProviderTests.test_update_uses_advanced_vcs_contract_without_raw_commands",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_reliability.EnochReliabilityTests.test_backlog_and_cron_creation_are_idempotent",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_reliability.EnochReliabilityTests.test_completed_chat_receipt_prevents_reexecution_after_restart",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_reliability.EnochReliabilityTests.test_config_round_trips_comments_quotes_and_backslashes",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_reliability.EnochReliabilityTests.test_corrupt_queue_is_preserved_and_never_replaced_with_empty_state",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_reliability.EnochReliabilityTests.test_invalid_inbox_receipt_is_preserved",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_reliability.EnochReliabilityTests.test_memory_read_modify_write_is_serialized",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_reliability.EnochReliabilityTests.test_poison_chat_event_is_quarantined_after_three_attempts",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_reliability.EnochReliabilityTests.test_reply_delivery_failure_retries_without_reexecuting_handler",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_reliability.EnochReliabilityTests.test_session_read_modify_write_is_serialized",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_reliability.EnochReliabilityTests.test_task_enqueue_is_idempotent_and_history_is_not_truncated",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_runtime_dependencies.EnochRuntimeDependencyTests.test_installs_dependency_for_selected_provider",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_runtime_dependencies.EnochRuntimeDependencyTests.test_installs_missing_dependency_once_into_private_state",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_runtime_dependencies.EnochRuntimeDependencyTests.test_rejects_invalid_provider_condition",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_runtime_dependencies.EnochRuntimeDependencyTests.test_rejects_unpinned_vcs_dependency",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_runtime_dependencies.EnochRuntimeDependencyTests.test_rejects_wildcard_package_version",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_runtime_dependencies.EnochRuntimeDependencyTests.test_replaces_incomplete_private_install",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_runtime_dependencies.EnochRuntimeDependencyTests.test_skips_dependency_for_inactive_provider",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_runtime_dependencies.EnochRuntimeDependencyTests.test_skips_missing_optional_dependency_without_installing",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_runtime_dependencies.EnochRuntimeDependencyTests.test_uses_explicit_preloaded_dependency_during_birth_validation",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_runtime_dependencies.EnochRuntimeDependencyTests.test_uses_local_source_without_installing",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_skills.EnochSkillsTests.test_body_skill_versions_match_skill_manifests",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_skills.EnochSkillsTests.test_external_vision_skill_records_direct_parent_lineage",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_skills.EnochSkillsTests.test_loads_enoch_skills_from_body_and_skill_metadata",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_skills.EnochSkillsTests.test_loads_packaged_self_skills_without_source_checkout",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_skills.EnochSkillsTests.test_published_text_uses_configured_forge",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_skills.EnochSkillsTests.test_resolves_immutable_revision_and_compatible_github_link",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_skills.EnochSkillsTests.test_skill_library_declares_shared_library_contract",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_skills.EnochSkillsTests.test_skills_command_can_inspect_explicit_local_agent_path",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_skills.EnochSkillsTests.test_skills_command_keeps_named_agent_independent_from_local_checkout",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_skills.EnochSkillsTests.test_skills_command_reads_any_named_agent_from_github_main",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_skills.EnochSkillsTests.test_skills_command_reads_named_agent_from_github_main",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_skills.EnochSkillsTests.test_skills_command_reports_missing_local_path",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_skills.EnochSkillsTests.test_skills_command_reports_missing_published_agent",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_skills.EnochSkillsTests.test_work_skill_validation_uses_canonical_doctor",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_storage.EnochStorageTests.test_artifact_home_can_be_independent",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_storage.EnochStorageTests.test_classified_paths_reject_escape_and_cross_boundary_access",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_storage.EnochStorageTests.test_core_paths_are_owned_by_their_declared_area",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_storage.EnochStorageTests.test_default_layout_separates_body_state_and_artifacts",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_storage.EnochStorageTests.test_explicit_sibling_roots_are_not_captured_by_ancestor_repo",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_storage.EnochStorageTests.test_implicit_root_discovery_still_finds_ancestor_repo",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_storage.EnochStorageTests.test_invalid_layout_overlap_is_rejected",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_storage.EnochStorageTests.test_legacy_artifact_events_remain_readable",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_storage.EnochStorageTests.test_state_redirect_matches_only_the_explicit_software_body",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_task_failures.EnochTaskFailureTests.test_dirty_worktree_is_non_retryable",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_task_failures.EnochTaskFailureTests.test_missing_runtime_is_specific_and_non_retryable",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_task_failures.EnochTaskFailureTests.test_transient_network_and_service_failures_are_retryable",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_task_failures.EnochTaskFailureTests.test_unknown_failure_defaults_to_non_retryable",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_task_failures.EnochTaskFailureTests.test_validation_and_task_timeout_are_non_retryable",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_task_queue.EnochTaskQueueTests.test_active_worker_lease_prevents_recovery_and_stale_finalization",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_task_queue.EnochTaskQueueTests.test_begin_direct_task_creates_running_job_without_pending",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_task_queue.EnochTaskQueueTests.test_begin_direct_task_refuses_existing_running_job",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_task_queue.EnochTaskQueueTests.test_cancel_pending_task_moves_it_to_history",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_task_queue.EnochTaskQueueTests.test_cancel_running_task_moves_it_to_history",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_task_queue.EnochTaskQueueTests.test_cancelled_retry_does_not_block_another_attempt",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_task_queue.EnochTaskQueueTests.test_complete_running_task_moves_it_to_history",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_task_queue.EnochTaskQueueTests.test_complete_running_task_records_pr_urls_in_history",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_task_queue.EnochTaskQueueTests.test_dead_worker_recovery_preserves_task_worktree_metadata",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_task_queue.EnochTaskQueueTests.test_direct_task_preserves_context_snapshot",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_task_queue.EnochTaskQueueTests.test_enqueue_during_completion_preserves_both_updates",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_task_queue.EnochTaskQueueTests.test_enqueue_task_front_runs_before_existing_pending_tasks",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_task_queue.EnochTaskQueueTests.test_fail_running_task_moves_it_to_history",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_task_queue.EnochTaskQueueTests.test_forward_fix_must_reference_another_completed_task",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_task_queue.EnochTaskQueueTests.test_interrupted_worker_fails_after_three_attempts",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_task_queue.EnochTaskQueueTests.test_legacy_evolve_task_infers_split_provenance",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_task_queue.EnochTaskQueueTests.test_pause_running_task_preserves_it_outside_terminal_history",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_task_queue.EnochTaskQueueTests.test_publication_tracks_arbitrary_review_identity_and_neutral_event_keys",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_task_queue.EnochTaskQueueTests.test_queued_task_preserves_context_snapshot_through_history",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_task_queue.EnochTaskQueueTests.test_recent_task_outcomes_keep_latest_terminal_state_and_publish_evidence",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_task_queue.EnochTaskQueueTests.test_reconciliation_accepts_structured_published_review_identity",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_task_queue.EnochTaskQueueTests.test_reconciliation_does_not_infer_completion_from_result_url",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_task_queue.EnochTaskQueueTests.test_reconciliation_fails_closed_on_conflicting_or_unsupported_evidence",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_task_queue.EnochTaskQueueTests.test_reconciliation_fences_same_timestamp_lease_renewal",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_task_queue.EnochTaskQueueTests.test_reconciliation_repairs_terminal_evidence_once",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_task_queue.EnochTaskQueueTests.test_reconciliation_retries_known_nonterminal_progress",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_task_queue.EnochTaskQueueTests.test_records_complete_lifecycle_with_source_and_actors",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_task_queue.EnochTaskQueueTests.test_recover_interrupted_task_requeues_with_status_message",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_task_queue.EnochTaskQueueTests.test_recovery_events_are_attributed_to_system",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_task_queue.EnochTaskQueueTests.test_regressed_task_can_be_resolved_by_completed_forward_fix",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_task_queue.EnochTaskQueueTests.test_resume_can_select_one_paused_task",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_task_queue.EnochTaskQueueTests.test_resume_moves_paused_tasks_to_front_with_same_ids",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_task_queue.EnochTaskQueueTests.test_retry_failed_task_creates_new_linked_job_with_provenance",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_task_queue.EnochTaskQueueTests.test_retry_preserves_recoverable_branch_and_reconciled_pr",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_task_queue.EnochTaskQueueTests.test_retry_refuses_non_failed_task",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_task_queue.EnochTaskQueueTests.test_retry_requires_latest_failed_task_in_retry_chain",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_task_queue.EnochTaskQueueTests.test_reverted_task_keeps_completed_regressed_and_reverted_events",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_task_queue.EnochTaskQueueTests.test_runtime_result_metadata_is_persisted_in_task_and_event_history",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_task_queue.EnochTaskQueueTests.test_schema_11_queue_is_read_and_rewritten_with_neutral_fields",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_task_queue.EnochTaskQueueTests.test_schema_6_task_event_is_read_with_empty_new_identity_fields",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_task_queue.EnochTaskQueueTests.test_transient_failure_requeues_same_task_with_attempt_metadata",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_task_worktree.TaskWorktreeTests.test_cleanup_refuses_dirty_worktree_without_explicit_discard",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_task_worktree.TaskWorktreeTests.test_cleanup_removes_clean_worktree_without_forcing_unmerged_branch",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_task_worktree.TaskWorktreeTests.test_existing_branch_publish_worktree_does_not_switch_resident",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_task_worktree.TaskWorktreeTests.test_lists_task_worktrees_with_branch_and_changed_files",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_task_worktree.TaskWorktreeTests.test_task_worktree_isolated_from_dirty_resident_checkout",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_active_cron_is_not_experience_evidence_by_itself",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_agent_records_reverted_regression_from_natural_turn",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_ancestors_reports_missing_parent",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_ancestors_reports_resolution_warnings",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_backlog_cancel_points_to_remove_without_adding_item",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_backlog_command_asks_for_clarification_before_adding",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_backlog_command_can_manually_promote",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_backlog_command_can_remove_and_reprioritize",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_backlog_command_defaults_to_p1",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_backlog_command_stores_priority_and_context_snapshot",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_backlog_idle_promotion_moves_item_to_task_queue",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_backlog_idle_promotion_waits_for_empty_task_queue",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_backlog_report_lists_pending_and_history",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_checktree_reports_clean_worktree",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_checktree_reports_dirty_worktree",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_checktree_reports_unknown_when_vcs_fails",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_client_sets_read_ack_as_message_reaction",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_client_splits_long_messages",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_completed_fix_task_automatically_resolves_original_regression",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_config_model_lists_installed_models_and_marks_current",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_config_reasoning_rejects_level_unsupported_by_current_model",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_config_requires_token",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_config_shows_sets_and_resets_codex_model_and_reasoning",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_config_shows_sets_and_resets_task_timeout",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_cron_command_can_cancel_and_report",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_cron_command_does_not_ignore_unavailable_context_snapshot",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_cron_command_schedules_recurring_work_with_context",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_cron_scheduler_runs_independently_of_chat_polling",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_default_action_sandbox_is_danger_full_access",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_direct_action_system_log_failure_does_not_abort_workflow",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_dirty_worktree_failure_is_not_automatically_retried",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_do_asks_for_clarification_before_running",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_do_closes_duplicate_reviews",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_do_command_includes_replied_message_context",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_do_marks_work_failure_status_failed",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_do_publish_existing_branch_runs_as_job_action",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_do_queues_next_when_task_is_running",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_do_runs_direct_work_as_job",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_do_starts_worker_and_keeps_telegram_responsive",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_do_uses_new_action_session_for_each_direct_task",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_doctor_runs_health_checks",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_downloads_telegram_file_with_size_limit",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_due_auto_evolve_does_not_reopen_failed_handoff",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_due_auto_evolve_schedule_does_not_requeue_running_candidate",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_due_auto_evolve_schedule_suggests_new_candidate_without_queueing",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_due_cron_job_enters_task_queue_with_status_message",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_due_cron_runs_at_front_with_only_one_outstanding_task",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_due_evolve_schedule_auto_mode_still_requires_human_approval",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_due_evolve_schedule_reports_in_co_evolve_mode",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_elapsed_time_omits_seconds",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_ensure_local_main_current_pulls_stale_main",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_environment_overrides_local_config",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_every_registered_core_command_has_a_dispatch_handler",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_evolve_approve_queues_candidate_as_task",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_evolve_approved_candidate_stays_archived_after_task_completion",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_evolve_approved_candidate_stays_archived_after_task_failure",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_evolve_brainstorm_generates_candidate_under_theme",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_evolve_brainstorm_requires_theme",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_evolve_can_list_and_remove_candidates",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_evolve_can_set_and_disable_schedule",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_evolve_can_set_cron_schedule",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_evolve_can_set_daily_schedule",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_evolve_can_set_theme_and_mode",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_evolve_candidates_is_the_canonical_list_command",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_evolve_cannot_approve_removed_candidate",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_evolve_evidence_feedback_shows_pending_unscanned_messages",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_evolve_explore_is_not_a_command",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_evolve_once_a_day_alias_accepts_time",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_evolve_once_a_day_alias_sets_daily_interval",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_evolve_reconcile_is_not_a_command",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_evolve_rejects_removed_direct_mode_aliases",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_evolve_reports_top_feedback_candidate",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_evolve_review_helper_builds_current_task_provenance",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_evolve_schedule_interprets_natural_daily_time",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_evolve_schedule_interprets_quoted_text",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_evolve_schedule_interprets_raw_cron_text",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_evolve_task_pause_and_resume_keep_candidate_archived",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_evolve_task_regression_and_resolution_stay_in_task_journal",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_evolve_task_timeout_stays_in_task_journal",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_evolve_task_worker_creates_one_status_message_for_all_progress",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_evolve_theme_shows_current_theme",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_failed_evolve_task_retries_through_standard_task_command",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_failed_fix_task_leaves_original_regression_unresolved",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_failed_task_is_not_approvable_before_semantic_evidence_scan",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_final_send_failure_preserves_event_for_redelivery",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_finished_do_checks_for_queued_work",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_help_backlog_shows_backlog_subcommands",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_help_config_shows_only_config_commands",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_help_debug_reports_unknown_command",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_help_evolve_shows_evolve_usage",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_help_inherit_shows_inherit_usage",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_help_lists_pr_and_explains_its_subcommands",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_help_lists_safe_commands",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_help_lists_worktree_commands",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_help_queue_shows_canonical_queue_command",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_help_resume_reports_removed_command",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_help_shutdown_reports_removed_command",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_help_thinking_reports_removed_command",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_help_topic_rejects_removed_work_command_aliases",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_help_topic_reports_unknown_command",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_help_topic_shows_single_command_usage",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_human_remove_applies_recorded_curation_classification_and_refs",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_ignores_disallowed_chat",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_inherit_assessment_runs_in_background_while_chat_stays_responsive",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_inherit_candidate_id_uses_lineage_adoption_flow",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_inherit_explicit_selection_overrides_not_applicable_assessment",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_inherit_inbox_is_read_only",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_inherit_inspect_syncs_candidate_context_to_codex_session",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_invalid_allowed_chat_id_is_config_error",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_invalid_poll_timeout_is_config_error",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_learn_skill_uses_isolated_assessment_to_create_candidate",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_legacy_conversation_mode_state_is_ignored",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_lifecycle_run_is_quiet_after_clean_shutdown_notice",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_lifecycle_run_records_started_head",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_lifecycle_run_warns_after_unexpected_prior_running_state",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_lifecycle_run_warns_when_shutdown_notice_was_not_sent",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_loads_config_from_environment",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_loads_config_from_local_file",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_main_exits_cleanly_without_token",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_main_pull_summary_is_unavailable_without_main_fetch",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_main_pull_summary_reports_fetch_head_timestamp_and_main_sha",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_memory_command_is_not_user_facing",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_memory_request_marker_is_saved_by_wrapper",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_memory_request_reports_save_failure",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_mission_command_shows_and_updates_identity_mission",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_natural_edit_request_does_not_auto_run_work",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_natural_feature_request_uses_read_only_wrapper",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_natural_message_without_marker_does_not_publish_pr",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_not_applicable_learning_assessment_terminates_without_candidate",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_photo_from_unlocked_chat_is_not_downloaded",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_photo_is_downloaded_attached_and_deleted",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_photo_without_caption_gets_natural_image_prompt",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_plain_marker_text_is_not_special_for_normal_chat",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_poll_timeout_must_be_positive",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_pr_lists_open_reviews",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_pr_merge_is_ignored_from_unauthorized_chat",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_pr_merge_reports_review_provider_error",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_pr_merge_reports_success_for_exact_target",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_pr_merge_requires_configured_chat_lock",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_pr_merge_requires_explicit_target",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_pr_reports_when_no_reviews_are_open",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_pr_show_reports_provider_neutral_detail",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_progress_send_failure_does_not_abort_action",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_progress_update_uses_minutes_at_default_interval",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_propose_displays_llm_recommendation_and_remove_suggestions_without_mutation",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_propose_does_not_silently_brainstorm_when_pool_is_empty",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_propose_ranks_all_sources_without_selecting_candidate",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_queue_command_shows_history_pr_url",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_queue_command_shows_queue_and_history",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_queued_evolve_task_cancellation_stays_in_task_journal",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_read_ack_failure_is_logged_without_blocking_reply",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_read_only_wrapper_uses_chat_provider_command_prefix",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_records_lifecycle_shutdown_notice_status",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_removed_candidate_closes_latest_proposal",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_removed_evolve_commands_no_longer_change_candidates",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_removed_evolve_top_level_commands_have_no_help_topics",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_removed_plural_aliases_report_unknown_command",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_repeated_proposal_marks_previous_one_no_action",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_replies_do_not_include_accumulated_input_tokens",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_replies_to_allowed_chat",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_restart_requires_locked_chat",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_restart_schedules_daemon_restart_after_reply",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_restart_triggering_update_saves_offset_before_restart",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_retry_validates_and_publishes_preserved_worktree_diff",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_run_forever_continues_after_polling_error",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_run_once_advances_offset",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_run_once_persists_offset_for_restart",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_runtime_timeout_is_logged_as_system_failure",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_selected_proposal_stops_at_task_handoff",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_self_reports_identity_without_runtime_status",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_self_uses_lineage_parent_before_identity_ancestor",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_shutdown_message_includes_reason",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_shutdown_notification_goes_to_locked_chat",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_shutdown_notification_requires_locked_chat",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_signal_reason_uses_signal_name",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_skills_command_shows_declared_skills",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_stale_worker_does_not_announce_completed_after_authoritative_failure",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_start_points_to_help",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_startup_does_not_complete_task_from_direct_action_text",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_startup_does_not_fail_task_from_direct_action_text",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_startup_notification_goes_to_locked_chat",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_startup_notification_reports_previous_shutdown_warning",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_startup_notification_requires_locked_chat",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_startup_notification_uses_provider_command_prefix",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_status_includes_setup_hint_without_chat_lock",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_status_reports_runtime_state_and_chat_lock",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_stop_cancels_running_task_and_edits_status",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_stop_reports_when_no_task_is_running",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_stop_workers_cancels_active_work_and_waits_for_workers",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_task_cancel_removes_pending_task_and_edits_status",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_task_command_asks_for_clarification_before_queueing",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_task_command_enqueues_persistent_fifo_job",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_task_command_includes_replied_message_context",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_task_command_requires_request",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_task_command_stores_conversation_context_snapshot",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_task_context_snapshot_parser_handles_sentinel_responses",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_task_context_snapshot_resolver_uses_chat_session",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_task_final_message_preserves_multiline_publish_summary",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_task_is_saved_as_paused_when_context_snapshot_has_no_codex_access",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_task_journal_is_pending_until_semantic_experience_scan",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_task_publish_existing_branch_runs_as_job_action",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_task_publish_records_pr_url_before_worker_completion",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_task_resume_selects_one_paused_task_and_all_alias_resumes_rest",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_task_retry_keeps_evolve_candidate_archived",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_task_retry_queues_new_linked_task_and_preserves_failure",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_task_retry_reconciles_existing_review_before_execution",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_task_retry_reconciles_review_from_preserved_revision",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_task_worker_does_not_rerun_task_with_recorded_pr",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_task_worker_edits_single_status_message",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_task_worker_marks_publish_failure_failed",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_task_worker_pauses_on_codex_access_error_and_resumes_same_task",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_task_worker_records_learning_only_for_skill_changes",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_task_worker_stops_queue_after_codex_access_error",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_task_worker_timeout_is_logged_as_system_failure",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_teach_command_is_not_user_facing",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_telegram_command_parser_accepts_bot_mentions",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_thinking_is_no_longer_a_telegram_command",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_transient_task_failure_retries_then_completes",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_unknown_ancestors_subcommand_returns_usage",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_unknown_slash_command_routes_to_natural_conversation",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_update_does_not_restart_when_shared_result_does_not_request_it",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_update_requires_locked_chat",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_update_uses_shared_updater_and_restarts_when_safe",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_worktree_cleanup_refuses_worktree_used_by_active_retry",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_worktree_cleanup_requires_locked_chat",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_worktree_discard_requires_explicit_force_and_removes_inactive_worktree",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_worktree_lists_branch_path_and_linked_task",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram.EnochTelegramTests.test_worktree_show_includes_changed_files",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram_vision.TelegramVisionTests.test_accepts_supported_image_document",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram_vision.TelegramVisionTests.test_image_prompt_separates_caption_from_untrusted_image_text",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram_vision.TelegramVisionTests.test_invalid_download_is_deleted_and_rejected",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram_vision.TelegramVisionTests.test_rejects_non_image_document",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram_vision.TelegramVisionTests.test_selects_largest_telegram_photo_variant",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_telegram_vision.TelegramVisionTests.test_temporary_image_is_private_and_deleted_after_use",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_test_isolation.EnochTestIsolationTests.test_canonical_discovery_loads_test_state_isolation",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_update_tools.EnochUpdateToolsTests.test_git_provider_updates_and_restores_authoritative_revision",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_update_tools.EnochUpdateToolsTests.test_scheduled_restart_uses_selected_service_provider",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_update_tools.EnochUpdateToolsTests.test_scheduled_stop_uses_selected_service_provider",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_updater.EnochUpdaterTests.test_legacy_update_doctor_module_delegates_after_package_move",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_updater.EnochUpdaterTests.test_post_update_doctor_loads_code_from_updated_worktree",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_updater.EnochUpdaterTests.test_update_activates_authoritative_revision_and_requests_restart",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_updater.EnochUpdaterTests.test_update_defaults_to_enoch_application_name",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_updater.EnochUpdaterTests.test_update_does_not_restart_when_already_up_to_date",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_updater.EnochUpdaterTests.test_update_ignores_lifecycle_for_other_process",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_updater.EnochUpdaterTests.test_update_refuses_dirty_working_copy",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_updater.EnochUpdaterTests.test_update_refuses_revision_outside_authoritative_history",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_updater.EnochUpdaterTests.test_update_rolls_back_when_doctor_fails",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_updater.EnochUpdaterTests.test_update_warns_when_running_commit_is_stale_but_disk_is_current",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_validation_environment.EnochValidationEnvironmentTests.test_failed_install_does_not_publish_partial_environment",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_validation_environment.EnochValidationEnvironmentTests.test_falls_back_to_pyproject_requirements_without_repository_lock",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_validation_environment.EnochValidationEnvironmentTests.test_lock_change_creates_a_new_content_addressed_environment",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_validation_environment.EnochValidationEnvironmentTests.test_provisions_locked_environment_once_and_reuses_it",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_version_status.EnochVersionStatusTests.test_all_revisions_equal_is_current",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_version_status.EnochVersionStatusTests.test_authoritative_revision_ahead_of_local_has_update",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_version_status.EnochVersionStatusTests.test_local_revision_ahead_is_not_published",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_version_status.EnochVersionStatusTests.test_older_running_revision_needs_restart",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_version_status.EnochVersionStatusTests.test_unavailable_revision_data_is_reported_without_error",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_workflows.WorkflowEngineTests.test_application_accepts_injected_runtime_and_workflow",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_workflows.WorkflowEngineTests.test_application_preserves_live_in_process_worker_thread",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_workflows.WorkflowEngineTests.test_application_reconciles_dead_in_process_worker_thread",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_workflows.WorkflowEngineTests.test_application_rejects_unsupported_workflow_version",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_workflows.WorkflowEngineTests.test_engine_rejects_mutation_from_stale_daemon_epoch",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_workflows.WorkflowEngineTests.test_local_engine_implements_versioned_lifecycle_contract",
+      "status": "passed"
+    },
+    {
+      "test": "tests.test_enoch_worktree_lifecycle.EnochWorktreeLifecycleTests.test_task_branch_uses_main_commit_without_checking_out_main",
+      "status": "passed"
+    }
+  ]
+}

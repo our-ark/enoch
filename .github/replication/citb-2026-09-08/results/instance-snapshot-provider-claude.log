@@ -1,0 +1,18 @@
+test_conformance_provider_capabilities_match_kind (test_claude.ClaudeRuntimeConformanceTests.test_conformance_provider_capabilities_match_kind) ... ok
+test_conformance_provider_matches_public_contract (test_claude.ClaudeRuntimeConformanceTests.test_conformance_provider_matches_public_contract) ... ok
+test_conformance_runtime_honors_precancelled_execution (test_claude.ClaudeRuntimeConformanceTests.test_conformance_runtime_honors_precancelled_execution) ... ok
+test_conformance_runtime_honors_pretimed_out_execution (test_claude.ClaudeRuntimeConformanceTests.test_conformance_runtime_honors_pretimed_out_execution) ... ok
+test_conformance_runtime_returns_normalizable_results (test_claude.ClaudeRuntimeConformanceTests.test_conformance_runtime_returns_normalizable_results) ... ok
+test_authentication_failure_uses_pauseable_access_error (test_claude.ClaudeRuntimeTests.test_authentication_failure_uses_pauseable_access_error) ... ok
+test_health_requires_cli_authentication (test_claude.ClaudeRuntimeTests.test_health_requires_cli_authentication) ... ok
+test_human_cancellation_stops_running_cli (test_claude.ClaudeRuntimeTests.test_human_cancellation_stops_running_cli) ... ok
+test_missing_stored_session_is_forgotten_and_recreated_once (test_claude.ClaudeRuntimeTests.test_missing_stored_session_is_forgotten_and_recreated_once) ... ok
+test_model_effort_budget_and_executable_are_configurable (test_claude.ClaudeRuntimeTests.test_model_effort_budget_and_executable_are_configurable) ... ok
+test_persistent_logical_session_resumes_native_claude_session (test_claude.ClaudeRuntimeTests.test_persistent_logical_session_resumes_native_claude_session) ... ok
+test_streams_structured_result_usage_progress_and_events (test_claude.ClaudeRuntimeTests.test_streams_structured_result_usage_progress_and_events) ... ok
+test_workspace_execution_uses_restricted_preapproved_tools (test_claude.ClaudeRuntimeTests.test_workspace_execution_uses_restricted_preapproved_tools) ... ok
+
+----------------------------------------------------------------------
+Ran 13 tests in 1.875s
+
+OK
