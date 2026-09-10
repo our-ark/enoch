@@ -125,6 +125,7 @@ exists and otherwise reports the body identity.
 | Skill | What Enoch can do |
 | --- | --- |
 | [`code`](src/enoch/skills/code/SKILL.md) | Inspect, modify, test, and explain changes to her local code body. |
+| [`shop`](src/enoch/skills/shop/SKILL.md) | Compare products across Shopify merchants using UCP, with Telegram cards and a local shortlist page. See the [setup guide](docs/shoop-skill.md). |
 | [`work`](src/enoch/skills/work/SKILL.md) | Run leased tasks in isolated worktrees through a queue, backlog, schedules, retries, and recovery. |
 | [`evolve`](src/enoch/skills/evolve/SKILL.md) | Semantically scan feedback and task history for durable evidence, propose bounded self-evolution, and hand approved candidates to the normal task workflow. |
 | [`learn`](src/enoch/skills/learn/SKILL.md) | Assess an immutable published skill snapshot and propose a bounded evolution candidate when applicable. |
