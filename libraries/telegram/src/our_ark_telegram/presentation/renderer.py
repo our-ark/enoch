@@ -4,9 +4,11 @@ from html import escape
 from urllib.parse import urlsplit
 
 from our_ark_telegram.presentation.model import (
+    TELEGRAM_BREAK,
     TelegramBlock,
     TelegramMessageChunk,
 )
+from our_ark_telegram.presentation.previews import preview_message_segments
 from our_ark_telegram.presentation.records import structured_text_blocks
 from our_ark_telegram.presentation.syntax import (
     FENCE_RE,
@@ -15,6 +17,7 @@ from our_ark_telegram.presentation.syntax import (
     LABEL_RE,
     LIST_RE,
     PATH_RE,
+    URL_RE,
     QUOTE_RE,
     RECORD_IDENTIFIER_RE,
     TITLE_RE,
@@ -57,17 +60,37 @@ def telegram_message_chunks(
     text: str,
     size: int,
 ) -> list[TelegramMessageChunk]:
-    """Split on logical boundaries and render independently valid HTML chunks."""
+    """Split on explicit breaks and logical boundaries into valid HTML chunks."""
 
     if size < 1:
         raise ValueError("Chunk size must be at least 1.")
+    chunks = [
+        chunk
+        for explicit in _explicit_message_segments(text)
+        for segment in preview_message_segments(explicit)
+        for chunk in _chunks_for_segment(segment, size)
+    ]
+    return chunks or [TelegramMessageChunk(html="", plain="")]
+
+
+def _explicit_message_segments(text: str) -> list[str]:
+    if TELEGRAM_BREAK not in text:
+        return [text]
+    return [
+        part.strip("\r\n")
+        for part in text.split(TELEGRAM_BREAK)
+        if part.strip()
+    ]
+
+
+def _chunks_for_segment(text: str, size: int) -> list[TelegramMessageChunk]:
     blocks = [
         piece
         for block in _parse_blocks(text)
         for piece in _split_block(block, size)
     ]
     if not blocks:
-        return [TelegramMessageChunk(html="", plain="")]
+        return []
 
     groups: list[list[TelegramBlock]] = []
     current: list[TelegramBlock] = []
@@ -450,6 +473,17 @@ def _render_inline(text: str) -> str:
 
 
 def _render_plain(text: str) -> str:
+    rendered: list[str] = []
+    position = 0
+    for match in URL_RE.finditer(text):
+        rendered.append(_render_paths(text[position:match.start()]))
+        rendered.append(escape(match.group(0), quote=False))
+        position = match.end()
+    rendered.append(_render_paths(text[position:]))
+    return "".join(rendered)
+
+
+def _render_paths(text: str) -> str:
     rendered: list[str] = []
     position = 0
     for match in PATH_RE.finditer(text):

@@ -1,6 +1,6 @@
 name: shop
-version: 0.1.0
-summary: Find and compare purchasable running-shoe variants from a configured Shopify store without modifying commerce state.
+version: 0.4.0
+summary: Help a buyer find and compare purchasable products across Shopify merchants via UCP catalog search, using budget plus category-specific constraints, then hand off one merchant URL per Telegram message without modifying commerce state.
 owner: Enoch
 status: active
 mode: read-only-commerce
@@ -11,7 +11,7 @@ permissions:
       - .enoch/config.yaml
     write: false
   network:
-    shopify_storefront: read-only
+    shopify_ucp_catalog: read-only
   commerce:
     products: read
     cart: false

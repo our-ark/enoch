@@ -49,6 +49,6 @@ skills:
     exposure: hidden
     path: src/enoch/skills/teach
   - name: shop
-    version: 0.1.0
-    description: Find and compare running shoes from the configured Shopify store.
+    version: 0.4.0
+    description: Help a buyer find and compare products across Shopify merchants using budget and category-specific constraints, then hand off one URL per Telegram message.
     path: src/enoch/skills/shop

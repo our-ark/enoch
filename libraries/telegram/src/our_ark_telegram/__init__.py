@@ -11,6 +11,7 @@ from our_ark_telegram.core import (
 )
 from our_ark_telegram.integration import load_config, setup_provider
 from our_ark_telegram.presentation import (
+    TELEGRAM_BREAK,
     TelegramMessageChunk,
     render_telegram_html,
     telegram_message_chunks,
@@ -42,6 +43,7 @@ __all__ = [
     "TelegramBotPeer",
     "TelegramConfig",
     "TelegramError",
+    "TELEGRAM_BREAK",
     "TelegramMessageChunk",
     "create_provider",
     "load_config",

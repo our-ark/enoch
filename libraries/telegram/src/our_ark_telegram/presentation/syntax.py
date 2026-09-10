@@ -24,6 +24,7 @@ LABEL_RE = re.compile(
     r"^(?P<label>[A-Za-z][A-Za-z0-9 _()/.-]{0,47}:)"
     r"(?P<space>[ \t]*)(?P<value>.*)$"
 )
+URL_RE = re.compile(r"https?://[^\s<>()\[\]{}\"']+")
 PATH_RE = re.compile(
     r"""
     (?<![\w:/])

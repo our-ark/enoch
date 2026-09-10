@@ -8,7 +8,7 @@ PROVIDER_KIT = ROOT.parent / "provider-kit"
 sys.path.insert(0, str(PROVIDER_KIT / "src"))
 sys.path.insert(0, str(ROOT / "src"))
 
-from our_ark_telegram import render_telegram_html, telegram_message_chunks
+from our_ark_telegram import TELEGRAM_BREAK, render_telegram_html, telegram_message_chunks
 
 
 class TelegramPresentationTests(unittest.TestCase):
@@ -104,6 +104,81 @@ class TelegramPresentationTests(unittest.TestCase):
         self.assertTrue(all(chunk.html.startswith("<pre><code>") for chunk in chunks))
         self.assertTrue(all(chunk.html.endswith("</code></pre>") for chunk in chunks))
         self.assertEqual(sum(chunk.plain.count("x") for chunk in chunks), 5000)
+
+    def test_bare_https_urls_are_not_treated_as_paths(self) -> None:
+        url = "https://zippmart.com/products/acer-ohr510?variant=50971076657404"
+        rendered = render_telegram_html(f"3. Acer\n{url}")
+
+        self.assertIn(url, rendered)
+        self.assertNotIn("<code>", rendered)
+
+    def test_explicit_break_splits_short_product_cards(self) -> None:
+        text = "\n".join(
+            [
+                "1. JLab GO POP+ — $24.99 USD",
+                "   https://www.jlab.com/products/go-pop-plus",
+                TELEGRAM_BREAK,
+                "2. Ulefone Buds — $29.99 USD",
+                "   https://store.ulefone.com/products/buds",
+                TELEGRAM_BREAK,
+                "3. Acer OHR510 — $45.68 USD",
+                "   https://zippmart.com/products/acer-ohr510",
+            ]
+        )
+
+        chunks = telegram_message_chunks(text, 4096)
+
+        self.assertEqual(len(chunks), 3)
+        self.assertTrue(all(TELEGRAM_BREAK not in chunk.plain for chunk in chunks))
+        self.assertTrue(all(TELEGRAM_BREAK not in chunk.html for chunk in chunks))
+        self.assertIn("https://www.jlab.com/products/go-pop-plus", chunks[0].plain)
+        self.assertNotIn("Ulefone", chunks[0].plain)
+        self.assertIn("https://store.ulefone.com/products/buds", chunks[1].plain)
+        self.assertIn("https://zippmart.com/products/acer-ohr510", chunks[2].plain)
+        self.assertEqual(chunks[0].html.count("https://"), 1)
+        self.assertEqual(chunks[1].html.count("https://"), 1)
+        self.assertEqual(chunks[2].html.count("https://"), 1)
+
+    def test_product_markdown_table_becomes_one_message_per_url(self) -> None:
+        text = "\n".join(
+            [
+                "Enoch prepared isolated workspace task-6.",
+                "",
+                "I found three currently available variants under $50.",
+                "",
+                "| Product / merchant | Exact variant | Price | Capacity |",
+                "|---|---|---:|---:|",
+                "| [Jettle Travel Electric Kettle](https://jettlecompany.com/products/jettle-electric-kettle?variant=1) — Jettle Online Store | Black | $49.99 USD | 450 ml |",
+                "| [Sakerplus Portable Travel Electric Tea Kettle](https://www.sakerplus.com/products/sakerplus-portable-travel-electric-tea-kettle?variant=2) — Sakerplus | 110V three-prong | $44.99 USD | 500 ml |",
+                "| [Nicewell Dual-Voltage Travel Kettle](https://homejoykids1.com/products/b0dbc889sc?variant=3) — Little Sparks | Dark blue; US cord | $43.21 USD | 370 ml |",
+                "",
+                "My pick: the Nicewell is the lightest.",
+                "No cart or checkout was created.",
+            ]
+        )
+
+        chunks = telegram_message_chunks(text, 4096)
+
+        self.assertEqual(len(chunks), 3)
+        self.assertIn("https://jettlecompany.com/products/jettle-electric-kettle?variant=1", chunks[0].plain)
+        self.assertNotIn("Sakerplus", chunks[0].plain)
+        self.assertIn("https://www.sakerplus.com/products/sakerplus-portable-travel-electric-tea-kettle?variant=2", chunks[1].plain)
+        self.assertIn("https://homejoykids1.com/products/b0dbc889sc?variant=3", chunks[2].plain)
+        self.assertIn("My pick: the Nicewell is the lightest.", chunks[2].plain)
+        self.assertTrue(all(chunk.plain.count("https://") == 1 for chunk in chunks))
+        self.assertTrue(all("|---" not in chunk.plain for chunk in chunks))
+
+    def test_ordinary_multi_url_prose_stays_in_one_message(self) -> None:
+        text = (
+            "See https://shopify.dev/docs/agents/get-started/quickstart "
+            "and https://github.com/our-ark/enoch for setup."
+        )
+
+        chunks = telegram_message_chunks(text, 4096)
+
+        self.assertEqual(len(chunks), 1)
+        self.assertIn("shopify.dev", chunks[0].plain)
+        self.assertIn("github.com", chunks[0].plain)
 
     def test_chunking_prefers_logical_text_boundaries(self) -> None:
         chunks = telegram_message_chunks("first paragraph\n\nsecond paragraph", 18)

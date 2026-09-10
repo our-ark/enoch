@@ -17,6 +17,7 @@ from our_ark_provider_kit import (
     ProviderContractConformanceMixin,
 )
 from our_ark_telegram import (
+    TELEGRAM_BREAK,
     TelegramBotPeer,
     TelegramClient,
     TelegramConfig,
@@ -113,6 +114,64 @@ class TelegramLibraryTests(ProviderContractConformanceMixin, unittest.TestCase):
             calls[0][1]["text"],
             "Run <code>bin/enoch doctor</code> and keep &lt;output&gt;.",
         )
+
+    def test_send_splits_explicit_breaks_into_separate_messages(self) -> None:
+        client = TelegramClient(TelegramConfig(token="test"))
+        calls = []
+        message_ids = [21, 22, 23]
+
+        def fake_call(method, payload):
+            calls.append((method, payload))
+            return {"ok": True, "result": {"message_id": message_ids[len(calls) - 1]}}
+
+        client._call = fake_call
+        text = TELEGRAM_BREAK.join(
+            [
+                "1. JLab\nhttps://www.jlab.com/products/go-pop-plus",
+                "2. Ulefone\nhttps://store.ulefone.com/products/buds",
+                "3. Acer\nhttps://zippmart.com/products/acer-ohr510",
+            ]
+        )
+
+        message_id = client.send_message(42, text)
+
+        self.assertEqual(message_id, 21)
+        self.assertEqual([method for method, _payload in calls], ["sendMessage"] * 3)
+        self.assertTrue(
+            all(TELEGRAM_BREAK not in payload["text"] for _method, payload in calls)
+        )
+        self.assertIn("jlab.com", calls[0][1]["text"])
+        self.assertIn("ulefone.com", calls[1][1]["text"])
+        self.assertIn("zippmart.com", calls[2][1]["text"])
+
+    def test_send_splits_product_tables_into_separate_preview_messages(self) -> None:
+        client = TelegramClient(TelegramConfig(token="test"))
+        calls = []
+        message_ids = [31, 32, 33]
+
+        def fake_call(method, payload):
+            calls.append((method, payload))
+            return {"ok": True, "result": {"message_id": message_ids[len(calls) - 1]}}
+
+        client._call = fake_call
+        text = "\n".join(
+            [
+                "| Product | Price |",
+                "|---|---|",
+                "| [Jettle](https://jettlecompany.com/products/jettle) | $49.99 |",
+                "| [Sakerplus](https://www.sakerplus.com/products/sakerplus) | $44.99 |",
+                "| [Nicewell](https://homejoykids1.com/products/nicewell) | $43.21 |",
+            ]
+        )
+
+        message_id = client.send_message(42, text)
+
+        self.assertEqual(message_id, 31)
+        self.assertEqual(len(calls), 3)
+        self.assertIn("jettlecompany.com", calls[0][1]["text"])
+        self.assertIn("sakerplus.com", calls[1][1]["text"])
+        self.assertIn("homejoykids1.com", calls[2][1]["text"])
+        self.assertTrue(all("|---" not in payload["text"] for _method, payload in calls))
 
     def test_private_bot_peer_is_strictly_authenticated_and_addressable(self) -> None:
         peer = TelegramBotPeer("worker", "@worker_agent_bot", 7000000001)
