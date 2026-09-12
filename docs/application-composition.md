@@ -49,6 +49,12 @@ remains the versioned executable-body contract. Legacy descendant
 application strings. Domain command wording belongs to profiles or extensions,
 not to the startup composition.
 
+`display_name` defaults to the loaded body identity's name. Core lifecycle,
+command, and task messages use it when constructing their own wording, without
+changing the body identity. It is not a replacement filter on outgoing messages:
+runtime and extension replies, quoted text, lineage references, paths, code, and
+URLs are delivered unchanged. `ready_message` is likewise delivered literally.
+
 ## Selection and precedence
 
 A composition may declare:

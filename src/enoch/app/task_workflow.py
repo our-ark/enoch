@@ -177,6 +177,9 @@ class TaskWorkflowHost(Protocol):
     workflow: WorkflowEngine
     effect_fence: DaemonEffectFence
 
+    @property
+    def display_name(self) -> str: ...
+
     def _raise_if_current_task_cancelled(self) -> None: ...
 
     def _run_forge_maintenance(self, request: ForgeMaintenanceRequest) -> str: ...
@@ -305,7 +308,7 @@ class TaskWorkflow:
         if publish_branch is not None:
             reply = app._publish_existing_branch(chat_id, publish_branch)
             app._raise_if_current_task_cancelled()
-            if reply.strip().lower().startswith("enoch could not"):
+            if reply.strip().lower().startswith(f"{app.display_name} could not".lower()):
                 failure = classify_task_failure(reply)
                 return WorkOutcome.failure(
                     reply,
@@ -322,7 +325,7 @@ class TaskWorkflow:
             task_worktree = app._prepare_task_worktree(request)
             work_root = task_worktree.path
             branch_note = (
-                f"Enoch prepared isolated workspace {task_worktree.workspace_id} at "
+                f"{app.display_name} prepared isolated workspace {task_worktree.workspace_id} at "
                 f"{work_root} from the latest authoritative revision."
             )
             app._send_step_update(chat_id, "Working.")
@@ -390,7 +393,7 @@ class TaskWorkflow:
             UnsupportedProviderFeature,
             OSError,
         ) as error:
-            message = f"Enoch could not complete the requested work yet: {error}"
+            message = f"{app.display_name} could not complete the requested work yet: {error}"
             failure = classify_task_failure(message)
             return WorkOutcome.failure(
                 message,
@@ -399,7 +402,7 @@ class TaskWorkflow:
                 retryable=failure.retryable,
             )
 
-        parts = [branch_note, result or "Enoch completed the requested work.", memory_note]
+        parts = [branch_note, result or f"{app.display_name} completed the requested work.", memory_note]
         if not action_files:
             try:
                 cleanup = app.effect_fence.run_authorized(
@@ -415,7 +418,7 @@ class TaskWorkflow:
                 parts.append("No files changed.")
                 parts.append(cleanup)
             except (RepositoryProviderError, VcsError) as error:
-                parts.append(f"Enoch could not clean up the task workspace: {error}")
+                parts.append(f"{app.display_name} could not clean up the task workspace: {error}")
             return WorkOutcome.completed(
                 "\n\n".join(part for part in parts if part),
                 completed_stages=("edited",),
@@ -536,17 +539,17 @@ class TaskWorkflow:
                     app.review.close_review,
                     ReviewCloseRequest(
                         review=ReviewIdentity(id=str(number)),
-                        note=(
-                            duplicate_close_comment(request.keep_number)
-                            if request.keep_number
-                            else duplicate_close_comment(None)
+                        note=duplicate_close_comment(
+                            request.keep_number, display_name=app.display_name
                         ),
                     ),
                     task_id=CURRENT_TASK_ID.get(),
                     root=app.root,
                 )
             )
-        return format_review_close_results(results, request.keep_number)
+        return format_review_close_results(
+            results, request.keep_number, display_name=app.display_name
+        )
 
     def run_existing_branch_publish_with_status(
         self,
@@ -719,7 +722,7 @@ class TaskWorkflow:
             CapabilityAuthorizationError,
         ) as error:
             failure = (
-                f"Enoch could not publish repository reference {branch}: {error}"
+                f"{app.display_name} could not publish repository reference {branch}: {error}"
             )
             app._send_step_update(chat_id, failure)
             return "\n\n".join([*outputs, failure]) if outputs else failure
@@ -922,7 +925,7 @@ class TaskWorkflow:
                     not review_url or review.state not in {"open", "published"}
                 ):
                     failure = (
-                        "Enoch captured the change but the review provider did not "
+                        f"{app.display_name} captured the change but the review provider did not "
                         "return a review URL. The workspace was preserved for retry."
                     )
                     app._send_step_update(chat_id, failure)
@@ -1012,7 +1015,7 @@ class TaskWorkflow:
             UnsupportedProviderFeature,
             CapabilityAuthorizationError,
         ) as error:
-            failure = f"Enoch could not publish this edit for review: {error}"
+            failure = f"{app.display_name} could not publish this edit for review: {error}"
             app._send_step_update(chat_id, failure)
             classified = classify_task_failure(failure)
             publish_started = bool(completed_stages)
@@ -1151,13 +1154,13 @@ class TaskWorkflow:
         if cleanup:
             return "\n".join(
                 [
-                    f"Enoch switched local checkout back to {resident_branch}.",
+                    f"{app.display_name} switched local checkout back to {resident_branch}.",
                     cleanup,
                     location,
                 ]
             )
         return (
-            f"Enoch switched local checkout back to {resident_branch}. "
+            f"{app.display_name} switched local checkout back to {resident_branch}. "
             f"{location}"
         )
 
@@ -1415,9 +1418,9 @@ def review_step_update(review: ReviewRecord) -> str:
     return f"Review recorded as {review.state}."
 
 
-def duplicate_close_comment(keep_number: int | None) -> str:
+def duplicate_close_comment(keep_number: int | None, *, display_name: str = "Enoch") -> str:
     if keep_number is None:
-        return "Closing this review from an Enoch maintenance task."
+        return f"Closing this review from a maintenance task by {display_name}."
     return (
         f"Closing as a duplicate of review #{keep_number}. Keeping review "
         f"#{keep_number} as the canonical review for this change."
@@ -1427,13 +1430,15 @@ def duplicate_close_comment(keep_number: int | None) -> str:
 def format_review_close_results(
     results: list[ReviewRecord],
     keep_number: int | None,
+    *,
+    display_name: str = "Enoch",
 ) -> str:
     if not results:
         return (
-            "Enoch could not close any reviews: "
+            f"{display_name} could not close any reviews: "
             "no duplicate review references were found."
         )
-    lines = ["Enoch updated reviews."]
+    lines = [f"{display_name} updated reviews."]
     if keep_number is not None:
         lines.append(f"Kept review: #{keep_number}")
     lines.append("Closed reviews:")
@@ -1449,7 +1454,7 @@ def format_review_close_results(
             )
     if failed:
         return (
-            "Enoch could not complete every review update.\n\n"
+            f"{display_name} could not complete every review update.\n\n"
             + "\n".join(lines)
         )
     return "\n".join(lines)

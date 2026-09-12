@@ -462,6 +462,7 @@ def _startup_message(
     *,
     provider: str = "chat",
     command_prefix: str = "/",
+    display_name: str = "",
 ) -> str:
     return channel_startup_message(
         identity,
@@ -469,6 +470,7 @@ def _startup_message(
         root,
         previous_shutdown_warning,
         command_prefix=command_prefix,
+        display_name=display_name,
     )
 
 
@@ -478,9 +480,10 @@ def _shutdown_message(
     reason: str = "shutdown",
     *,
     provider: str = "chat",
+    display_name: str = "",
 ) -> str:
     del root
-    return channel_shutdown_message(identity, provider, reason)
+    return channel_shutdown_message(identity, provider, reason, display_name=display_name)
 
 
 class EnochApplication:
@@ -644,6 +647,10 @@ class EnochApplication:
         finally:
             self._stop_cron_scheduler()
 
+    @property
+    def display_name(self) -> str:
+        return self.presentation.resolved_display_name(self.identity)
+
     def notify_startup(self) -> None:
         self.start()
         chat_id = _allowed_conversation_id(self.client)
@@ -657,6 +664,7 @@ class EnochApplication:
                 self.previous_shutdown_warning,
                 provider=self.channel_name,
                 command_prefix=self.command_prefix,
+                display_name=self.display_name,
             ),
             notification_key=f"daemon:{self.daemon_epoch.generation}:startup",
         )
@@ -708,7 +716,13 @@ class EnochApplication:
             return
         result = self._deliver_message(
             chat_id,
-            _shutdown_message(self.identity, self.root, reason, provider=self.channel_name),
+            _shutdown_message(
+                self.identity,
+                self.root,
+                reason,
+                provider=self.channel_name,
+                display_name=self.display_name,
+            ),
             notification_key=f"daemon:{self.daemon_epoch.generation}:shutdown",
         )
         if not result.delivered:
@@ -800,7 +814,7 @@ class EnochApplication:
         except Exception as error:
             failed = fail_event(self.channel_name, receipt.key, str(error), self.root)
             print(
-                f"Enoch could not process {self.channel_name} update "
+                f"{self.display_name} could not process {self.channel_name} update "
                 f"{receipt.key[:12]} (attempt {failed.attempts}/3): {error}"
             )
             if not failed.exhausted:
@@ -813,7 +827,7 @@ class EnochApplication:
                     ""
                     if peer_alias is not None
                     else (
-                        "Enoch skipped this update after three failed processing attempts. "
+                        f"{self.display_name} skipped this update after three failed processing attempts. "
                         f"The failure was recorded for debugging: {type(error).__name__}."
                     )
                 ),
@@ -1636,7 +1650,7 @@ class EnochApplication:
             ChatProviderError,
             ChannelAttachmentError,
         ) as error:
-            return f"Enoch could not view that image: {error}"
+            return f"{self.display_name} could not view that image: {error}"
 
     def _queue_session_sync(self, chat_id: ConversationId | None, note: str) -> None:
         if chat_id is None or not note.strip():
@@ -1693,7 +1707,7 @@ class EnochApplication:
         queue_status = self.workflow.inspect()
         if queue_status.paused_count:
             return (
-                "Enoch has paused tasks. Restore agent runtime access and use "
+                f"{self.display_name} has paused tasks. Restore agent runtime access and use "
                 "/task resume <id|all> before starting /do."
             )
         running = queue_status.running
@@ -1707,9 +1721,9 @@ class EnochApplication:
                 reason=snapshot.codex_unavailable_reason,
             )
         if snapshot.error:
-            return f"Enoch could not prepare conversation context for that /do request yet: {snapshot.error}"
+            return f"{self.display_name} could not prepare conversation context for that /do request yet: {snapshot.error}"
         if snapshot.clarification:
-            return f"Enoch needs one clarification before running that: {snapshot.clarification}"
+            return f"{self.display_name} needs one clarification before running that: {snapshot.clarification}"
         if running is not None:
             return self._queue_direct_work_next(
                 chat_id,
@@ -1781,10 +1795,10 @@ class EnochApplication:
         except RuntimeError:
             running = self.workflow.inspect().running
             if running is not None:
-                return f"Enoch is already running task #{running.id}. Use /task <request> to queue this work."
-            return "Enoch could not create a task id for this /do job."
+                return f"{self.display_name} is already running task #{running.id}. Use /task <request> to queue this work."
+            return f"{self.display_name} could not create a task id for this /do job."
         except (OSError, ValueError):
-            return "Enoch could not create a task id for this /do job."
+            return f"{self.display_name} could not create a task id for this /do job."
         context = direct_task.context
         if not session_key:
             session_key = f"{self._session_key(chat_id)}:do:{direct_task.id}"
@@ -1809,7 +1823,7 @@ class EnochApplication:
         self._start_direct_work_worker(direct_task, session_key=session_key)
         if message_id is not None:
             return ""
-        return f"Started task #{direct_task.id}. Enoch is working on it now."
+        return f"Started task #{direct_task.id}. {self.display_name} is working on it now."
 
     def _run_tracked_inline_work(
         self,
@@ -1823,7 +1837,7 @@ class EnochApplication:
     ) -> str:
         if self.workflow.inspect().paused_count:
             return (
-                "Enoch has paused tasks. Restore agent runtime access and use "
+                f"{self.display_name} has paused tasks. Restore agent runtime access and use "
                 "/task resume <id|all> before starting more work."
             )
         try:
@@ -1844,13 +1858,13 @@ class EnochApplication:
                 f"and is {duplicate.job.status}."
             )
         except RuntimeError:
-            return "Enoch cannot start that work while another task is running."
+            return f"{self.display_name} cannot start that work while another task is running."
         except (OSError, ValueError):
-            return "Enoch could not create a tracked task for that work."
+            return f"{self.display_name} could not create a tracked task for that work."
         worker_id = f"{os.getpid()}-{uuid4().hex}"
         claimed = self.workflow.claim(job.id, worker_id, os.getpid())
         if claimed is None:
-            return f"Enoch could not claim tracked task #{job.id}."
+            return f"{self.display_name} could not claim tracked task #{job.id}."
         job = claimed
         task_token = _CURRENT_TASK_ID.set(job.id)
         worker_token = _CURRENT_TASK_WORKER_ID.set(worker_id)
@@ -1926,7 +1940,7 @@ class EnochApplication:
                 reply = str(error)
                 completed_status = "cancelled"
         except Exception as error:
-            reply = f"Enoch could not complete task #{job.id}: {error}"
+            reply = f"{self.display_name} could not complete task #{job.id}: {error}"
             completed_status = "failed"
             failure = classify_task_failure(reply)
         finally:
@@ -2009,7 +2023,7 @@ class EnochApplication:
                 **self._profile_task_options(),
             )
         except (OSError, ValueError):
-            return "Enoch could not queue that /do request."
+            return f"{self.display_name} could not queue that /do request."
         message = self._format_work_status(
             WorkStatusMessage(
                 chat_id=chat_id,
@@ -2055,7 +2069,7 @@ class EnochApplication:
             command="/do",
             session_key=session_key or f"{self._session_key(job.chat_id)}:do:{job.id}",
             start_update=f"Starting direct task #{job.id}.",
-            failure_prefix=f"Enoch could not complete direct task #{job.id}",
+            failure_prefix=f"{self.display_name} could not complete direct task #{job.id}",
         )
 
     def _start_cron_scheduler(self) -> None:
@@ -2226,10 +2240,10 @@ class EnochApplication:
         if saved and failed:
             return f"Saved {saved} long-term memory item(s). {failed} memory save failed."
         if saved == 1:
-            return "Saved to Enoch long-term memory."
+            return f"Saved to {self.display_name} long-term memory."
         if saved:
             return f"Saved {saved} long-term memory items."
-        return "Enoch could not save that long-term memory."
+        return f"{self.display_name} could not save that long-term memory."
 
     def _publish_feature_pr(
         self,
@@ -2309,7 +2323,7 @@ class EnochApplication:
             return
         if self._update_work_status(message):
             return
-        self._safe_send_message(chat_id, f"Enoch update: {message}")
+        self._safe_send_message(chat_id, f"{self.display_name} update: {message}")
 
     def _deliver_message(
         self,
@@ -2498,7 +2512,7 @@ class EnochApplication:
             self.identity,
             self.root,
             identity_path=self.identity_path,
-            display_name=self.presentation.resolved_display_name(self.identity),
+            display_name=self.display_name,
         )
         if text.split(maxsplit=1)[0].lower() == "/mission" and len(text.split(maxsplit=1)) > 1:
             try:
@@ -2564,12 +2578,12 @@ class EnochApplication:
             TypeError,
             ValueError,
         ) as error:
-            return f"Enoch could not assess that skill: {error}"
+            return f"{self.display_name} could not assess that skill: {error}"
 
         if not assessment.applicable:
             return "\n".join(
                 [
-                    f"Enoch assessed {skill.agent_name}'s {skill.name} skill as not applicable.",
+                    f"{self.display_name} assessed {skill.agent_name}'s {skill.name} skill as not applicable.",
                     f"Reason: {assessment.reason}",
                     "No evolution candidate was created.",
                 ]
@@ -2584,7 +2598,7 @@ class EnochApplication:
                 theme=state.theme,
             )
         except (OSError, ValueError) as error:
-            return f"Enoch could not save that learning candidate: {error}"
+            return f"{self.display_name} could not save that learning candidate: {error}"
         action = (
             f"Created learning candidate {candidate.id}."
             if created
@@ -2593,7 +2607,7 @@ class EnochApplication:
         return "\n\n".join(
             [
                 (
-                    f"Enoch assessed {skill.agent_name}'s {skill.name} skill "
+                    f"{self.display_name} assessed {skill.agent_name}'s {skill.name} skill "
                     "as applicable."
                 ),
                 f"Reason: {assessment.reason}",
@@ -2620,7 +2634,7 @@ class EnochApplication:
         if cancel_id is not None:
             cancelled = self.workflow.cancel(cancel_id)
             if cancelled is None:
-                return f"Enoch could not cancel task #{cancel_id}. It may be running, completed, or missing."
+                return f"{self.display_name} could not cancel task #{cancel_id}. It may be running, completed, or missing."
             message_id = self._work_status_messages.pop(cancelled.id, cancelled.status_message_id)
             if message_id is not None:
                 cancelled_status = WorkStatusMessage(
@@ -2656,9 +2670,9 @@ class EnochApplication:
                 reason=snapshot.codex_unavailable_reason,
             )
         if snapshot.error:
-            return f"Enoch could not prepare conversation context for that task yet: {snapshot.error}"
+            return f"{self.display_name} could not prepare conversation context for that task yet: {snapshot.error}"
         if snapshot.clarification:
-            return f"Enoch needs one clarification before queueing that task: {snapshot.clarification}"
+            return f"{self.display_name} needs one clarification before queueing that task: {snapshot.clarification}"
         try:
             job = self.workflow.enqueue(
                 chat_id,
@@ -2669,7 +2683,7 @@ class EnochApplication:
                 **self._profile_task_options(),
             )
         except (OSError, ValueError):
-            return "Enoch could not queue that task."
+            return f"{self.display_name} could not queue that task."
         status = self.workflow.inspect()
         position = status.pending_count
         message = self._format_work_status(
@@ -2693,7 +2707,7 @@ class EnochApplication:
             self._work_status_messages[job.id] = message_id
             self.workflow.record_status_message(job.id, message_id)
             return ""
-        return f"Queued task #{job.id}. Enoch will work on it in the background when idle."
+        return f"Queued task #{job.id}. {self.display_name} will work on it in the background when idle."
 
     def _retry_task(self, task_id: int) -> str:
         original = self.workflow.find(task_id)
@@ -2708,7 +2722,7 @@ class EnochApplication:
                 reconciled_result=reconciled_result,
             )
         except (OSError, ReviewProviderError, TaskRetryError) as error:
-            return f"Enoch could not retry task #{task_id}: {error}"
+            return f"{self.display_name} could not retry task #{task_id}: {error}"
         position = self.workflow.inspect().pending_count
         message = self._format_work_status(
             WorkStatusMessage(
@@ -2768,9 +2782,9 @@ class EnochApplication:
                 trigger="runtime-unavailable",
             )
         except (OSError, ValueError):
-            return "Enoch could not preserve that task while agent runtime access is unavailable."
+            return f"{self.display_name} could not preserve that task while agent runtime access is unavailable."
         if paused is None:
-            return "Enoch could not pause that task safely."
+            return f"{self.display_name} could not pause that task safely."
         return self._publish_paused_task(paused, reason)
 
     def _publish_paused_task(self, job: TaskJob, reason: str) -> str:
@@ -2938,7 +2952,7 @@ class EnochApplication:
                 return "Use /backlog remove <id> to remove a pending backlog item."
             removed = remove_backlog_item(item_id, self.root)
             if removed is None:
-                return f"Enoch could not remove backlog #{item_id}. It may already be promoted, removed, or missing."
+                return f"{self.display_name} could not remove backlog #{item_id}. It may already be promoted, removed, or missing."
             return f"Removed backlog #{removed.id}."
         if subcommand == "priority":
             item_id, priority = _backlog_priority_update(rest)
@@ -2949,7 +2963,7 @@ class EnochApplication:
             except ValueError as error:
                 return str(error)
             if updated is None:
-                return f"Enoch could not reprioritize backlog #{item_id}. It may already be promoted, removed, or missing."
+                return f"{self.display_name} could not reprioritize backlog #{item_id}. It may already be promoted, removed, or missing."
             return f"Backlog #{updated.id} priority is now {updated.priority}."
         if subcommand == "promote":
             item_id = _backlog_item_id(rest)
@@ -2958,9 +2972,9 @@ class EnochApplication:
             try:
                 job = self._promote_backlog_item_to_queue(item_id)
             except (OSError, ValueError, RuntimeError) as error:
-                return f"Enoch could not promote backlog #{item_id}: {error}"
+                return f"{self.display_name} could not promote backlog #{item_id}: {error}"
             if job is None:
-                return f"Enoch could not promote backlog #{item_id}. It may already be promoted, removed, or missing."
+                return f"{self.display_name} could not promote backlog #{item_id}. It may already be promoted, removed, or missing."
             return f"Promoted backlog #{item_id} to task #{job.id}."
 
         try:
@@ -2971,9 +2985,9 @@ class EnochApplication:
             return _backlog_usage()
         snapshot = self._resolve_task_context_snapshot(chat_id, request)
         if snapshot.error:
-            return f"Enoch could not prepare conversation context for that backlog item yet: {snapshot.error}"
+            return f"{self.display_name} could not prepare conversation context for that backlog item yet: {snapshot.error}"
         if snapshot.clarification:
-            return f"Enoch needs one clarification before adding that to the backlog: {snapshot.clarification}"
+            return f"{self.display_name} needs one clarification before adding that to the backlog: {snapshot.clarification}"
         try:
             item = add_backlog_item(
                 chat_id,
@@ -2985,8 +2999,8 @@ class EnochApplication:
                 idempotency_key=_event_idempotency_key("backlog-add"),
             )
         except (OSError, ValueError):
-            return "Enoch could not add that backlog item."
-        return f"Backlog #{item.id} [{item.priority}] saved. Enoch will promote it when the task queue is idle."
+            return f"{self.display_name} could not add that backlog item."
+        return f"Backlog #{item.id} [{item.priority}] saved. {self.display_name} will promote it when the task queue is idle."
 
     def _evolve(self, chat_id: int, argument: str) -> str:
         parts = argument.strip().split(maxsplit=1)
@@ -3041,7 +3055,8 @@ class EnochApplication:
             if rest.strip():
                 return "Use /evolve propose."
             return _format_evolve_proposal(
-                self._propose_evolve(chat_id, trigger="evolve-propose")
+                self._propose_evolve(chat_id, trigger="evolve-propose"),
+                display_name=self.display_name,
             )
         if subcommand == "config":
             return self._evolve_config(rest)
@@ -3072,7 +3087,7 @@ class EnochApplication:
                 TypeError,
                 ValueError,
             ) as error:
-                return f"Enoch could not brainstorm evolution candidates: {error}"
+                return f"{self.display_name} could not brainstorm evolution candidates: {error}"
             report = evolve_report(self.root, refresh=False)
             if not creation.created:
                 if creation.existing:
@@ -3442,7 +3457,7 @@ class EnochApplication:
     def _evolve_approve(self, candidate_id: str) -> str:
         chat_id = _allowed_conversation_id(self.client)
         if chat_id is None:
-            return f"Enoch needs a locked {provider_label(self.channel_name)} conversation before approving evolve work."
+            return f"{self.display_name} needs a locked {provider_label(self.channel_name)} conversation before approving evolve work."
         state = evolve_report(self.root).state
         try:
             candidate = get_evolve_candidate(candidate_id, self.root, theme=state.theme)
@@ -3490,7 +3505,7 @@ class EnochApplication:
                 reason="queue-failed",
                 proposal_id=proposal_id,
             )
-            return "Enoch could not approve and queue that evolve candidate."
+            return f"{self.display_name} could not approve and queue that evolve candidate."
         candidate = approve_evolve_candidate(
             candidate.id,
             self.root,
@@ -3601,7 +3616,7 @@ class EnochApplication:
             set_evolve_schedule(interval_seconds, self.root)
             return _format_evolve_report(evolve_report(self.root))
         except ValueError:
-            return "Enoch could not understand that schedule. Try once a day, once a day at 09:30, every 1d, or 30 9 * * *."
+            return f"{self.display_name} could not understand that schedule. Try once a day, once a day at 09:30, every 1d, or 30 9 * * *."
 
     def _cron(self, chat_id: int, text: str) -> str:
         command, argument = _parse_chat_command(text)
@@ -3618,7 +3633,7 @@ class EnochApplication:
                 return "Use /cron cancel <id> to cancel a scheduled job."
             cancelled = cancel_cron_job(job_id, self.root)
             if cancelled is None:
-                return f"Enoch could not cancel cron #{job_id}. It may already be cancelled or missing."
+                return f"{self.display_name} could not cancel cron #{job_id}. It may already be cancelled or missing."
             self._cron_scheduler_wake.set()
             return f"Cancelled cron #{cancelled.id}."
         if subcommand != "every":
@@ -3634,13 +3649,13 @@ class EnochApplication:
         snapshot = self._resolve_task_context_snapshot(chat_id, request)
         if snapshot.codex_unavailable_reason:
             return (
-                "Enoch could not prepare conversation context for that scheduled "
+                f"{self.display_name} could not prepare conversation context for that scheduled "
                 f"job, so no cron job was created: {snapshot.codex_unavailable_reason}"
             )
         if snapshot.error:
-            return f"Enoch could not prepare conversation context for that scheduled job yet: {snapshot.error}"
+            return f"{self.display_name} could not prepare conversation context for that scheduled job yet: {snapshot.error}"
         if snapshot.clarification:
-            return f"Enoch needs one clarification before scheduling that job: {snapshot.clarification}"
+            return f"{self.display_name} needs one clarification before scheduling that job: {snapshot.clarification}"
         try:
             job = add_cron_job(
                 chat_id,
@@ -3652,7 +3667,7 @@ class EnochApplication:
                 idempotency_key=_event_idempotency_key("cron-add"),
             )
         except (OSError, ValueError):
-            return "Enoch could not schedule that cron job."
+            return f"{self.display_name} could not schedule that cron job."
         self._cron_scheduler_wake.set()
         return "\n".join(
             [
@@ -4041,7 +4056,8 @@ class EnochApplication:
             )
         self._safe_send_message(
             chat_id,
-            "Scheduled evolve check\n\n" + _format_evolve_proposal(proposal),
+            "Scheduled evolve check\n\n"
+            + _format_evolve_proposal(proposal, display_name=self.display_name),
             notification_key=f"evolve-schedule:{claimed.schedule_claim_id}:report",
         )
         acknowledge_evolve_schedule(
@@ -4056,7 +4072,7 @@ class EnochApplication:
             command="/task",
             session_key=f"{self._session_key(job.chat_id)}:task:{job.id}",
             start_update=f"Starting queued task #{job.id}.",
-            failure_prefix=f"Enoch could not complete queued task #{job.id}",
+            failure_prefix=f"{self.display_name} could not complete queued task #{job.id}",
         )
 
     def _run_action_job(
@@ -4339,7 +4355,7 @@ class EnochApplication:
         self.effect_fence.require_current()
         cancellation_event = self._current_task_cancellation_event()
         if cancellation_event is not None and cancellation_event.is_set():
-            raise AgentRuntimeCancelled("Enoch cancelled the active task.")
+            raise AgentRuntimeCancelled(f"{self.display_name} cancelled the active task.")
 
     def _record_automatic_learning(self, job: TaskJob, *, command: str, result: str) -> None:
         try:
@@ -4411,7 +4427,7 @@ class EnochApplication:
                 new_count=report.new_count,
             )
         except (LineageError, OSError, RuntimeError, ValueError) as error:
-            return f"Enoch could not scan the inheritance inbox: {error}"
+            return f"{self.display_name} could not scan the inheritance inbox: {error}"
         if not created:
             return (
                 f"Inheritance assessment is already {job.status}. "
@@ -4531,7 +4547,7 @@ class EnochApplication:
                     f"Processed: {processed}/{job.total_count}",
                     f"Assessed: {assessed_count}",
                     f"Failed: {failed_count}",
-                    "Enoch remains available for other messages.",
+                    f"{self.display_name} remains available for other messages.",
                 ]
             ),
             notification_key=(
@@ -4566,7 +4582,7 @@ class EnochApplication:
             return "Use /inherit <change_id>."
         candidate = _find_lineage_adopt_candidate(candidate_id, self.root)
         if candidate is None:
-            return f"Enoch could not find direct-parent change {candidate_id}. Run /inherit first."
+            return f"{self.display_name} could not find direct-parent change {candidate_id}. Run /inherit first."
         if candidate.status == STATUS_ADOPTED:
             return (
                 f"Direct-parent change {candidate.id} is already adopted"
@@ -4604,7 +4620,7 @@ class EnochApplication:
                 **self._profile_task_options(),
             )
         except (OSError, RuntimeError, ValueError):
-            return f"Enoch could not queue inheritance task for {candidate.id}."
+            return f"{self.display_name} could not queue inheritance task for {candidate.id}."
         try:
             link_inbox_candidate(
                 candidate.id,
@@ -4618,7 +4634,7 @@ class EnochApplication:
                 event_actor="system",
                 trigger="lineage-link-failed",
             )
-            return f"Enoch could not link {candidate.id} to its task: {error}"
+            return f"{self.display_name} could not link {candidate.id} to its task: {error}"
         return (
             f"Queued task #{job.id} to adapt direct-parent change {candidate.id} "
             "through the standard worktree, validation, commit, push, and PR workflow."
@@ -4656,7 +4672,7 @@ class EnochApplication:
                 self.authorization.require("vcs.list-worktrees", ("vcs.read",))
                 states = list_task_worktrees(self.root)
             except (VcsError, CapabilityAuthorizationError) as error:
-                return f"Enoch could not list task worktrees: {error}"
+                return f"{self.display_name} could not list task worktrees: {error}"
             return _format_task_worktrees(states, self.workflow.inspect())
 
         action = parts[0].lower()
@@ -4668,7 +4684,7 @@ class EnochApplication:
                 self.authorization.require("vcs.inspect-worktree", ("vcs.read",))
                 state = task_worktree_state(self.root, task_id)
             except (VcsError, CapabilityAuthorizationError) as error:
-                return f"Enoch could not inspect task #{task_id} worktree: {error}"
+                return f"{self.display_name} could not inspect task #{task_id} worktree: {error}"
             if state is None:
                 return f"Task #{task_id} has no registered task worktree."
             return _format_task_worktree(state, self.workflow.inspect())
@@ -4685,14 +4701,14 @@ class EnochApplication:
         try:
             state = task_worktree_state(self.root, task_id)
         except VcsError as error:
-            return f"Enoch could not inspect task #{task_id} worktree: {error}"
+            return f"{self.display_name} could not inspect task #{task_id} worktree: {error}"
         if state is None:
             return f"Task #{task_id} has no registered task worktree."
         active = _active_tasks_for_worktree(state, self.workflow.inspect())
         if active:
             labels = ", ".join(f"#{job.id} [{job.status}]" for job in active)
             return (
-                f"Enoch will not remove task #{task_id} worktree because it is still "
+                f"{self.display_name} will not remove task #{task_id} worktree because it is still "
                 f"used by {labels}."
             )
         try:
@@ -4705,7 +4721,7 @@ class EnochApplication:
                 discard=discard,
             )
         except (VcsError, CapabilityAuthorizationError) as error:
-            return f"Enoch could not remove task #{task_id} worktree: {error}"
+            return f"{self.display_name} could not remove task #{task_id} worktree: {error}"
         self.effect_fence.run(
             _record_system_event,
             "task_worktree_discarded" if discard else "task_worktree_cleaned",
@@ -4725,7 +4741,7 @@ class EnochApplication:
                 self.authorization.require("forge.list", ("forge.inspect",))
                 reviews = self.review.list_open_reviews(self.root)
             except (ReviewProviderError, CapabilityAuthorizationError) as error:
-                return f"Enoch could not list open reviews: {error}"
+                return f"{self.display_name} could not list open reviews: {error}"
             return _format_open_reviews(reviews)
         if len(parts) == 2 and parts[0].lower() == "show":
             try:
@@ -4735,14 +4751,14 @@ class EnochApplication:
                     self.root,
                 )
             except (ReviewProviderError, CapabilityAuthorizationError) as error:
-                return f"Enoch could not inspect that review: {error}"
+                return f"{self.display_name} could not inspect that review: {error}"
             return _format_review(review)
         if len(parts) != 2 or parts[0].lower() != "merge":
             return pr_usage()
         allowed_chat_id = _allowed_conversation_id(self.client)
         if allowed_chat_id is None or allowed_chat_id != chat_id:
             return (
-                "Enoch will only land a review from her locked "
+                f"{self.display_name} will only land a review from her locked "
                 f"{provider_label(self.channel_name)} conversation."
             )
         try:
@@ -4754,7 +4770,7 @@ class EnochApplication:
                 root=self.root,
             )
         except (ReviewProviderError, CapabilityAuthorizationError) as error:
-            return f"Enoch could not land that review: {error}"
+            return f"{self.display_name} could not land that review: {error}"
         self._reconcile_lineage_adoptions()
         return _format_review_land_result(result)
 
@@ -4793,7 +4809,7 @@ class EnochApplication:
         mode = _sandbox_description(sandbox)
         if self._update_work_status(f"Still working after {_format_elapsed(elapsed_seconds)}: {mode}."):
             return
-        self._safe_send_message(chat_id, f"Enoch is still working after {_format_elapsed(elapsed_seconds)}: {mode}.")
+        self._safe_send_message(chat_id, f"{self.display_name} is still working after {_format_elapsed(elapsed_seconds)}: {mode}.")
 
     def _action_allowed(self) -> bool:
         return _allowed_conversation_id(self.client) is not None
@@ -4806,14 +4822,14 @@ class EnochApplication:
             label = provider_label(self.channel_name)
             return "\n".join(
                 [
-                    f"Enoch will not restart from {label} unless it is locked to one conversation.",
+                    f"{self.display_name} will not restart from {label} unless it is locked to one conversation.",
                     self._action_lock_message(),
                 ]
             )
         self._restart_after_reply = True
         return "\n".join(
             [
-                "Enoch is restarting.",
+                f"{self.display_name} is restarting.",
                 "Daemon mode will restart after this reply is delivered.",
             ]
         )

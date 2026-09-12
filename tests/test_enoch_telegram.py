@@ -3783,6 +3783,48 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("GH007", client.sent[-1][1])
         log_conversation_turn.assert_called()
 
+    def test_descendant_task_failure_keeps_status_and_literal_evidence(self) -> None:
+        identity = load_identity()
+        display_name = f"Hosted {identity.name}"
+        error = f"Cannot access /tmp/{identity.name}/README.md"
+        for operation in ("workspace", "publish"):
+            with self.subTest(operation=operation), TemporaryDirectory() as temp:
+                root = Path(temp)
+                client = FakeTelegramClient(allowed_chat_id=42)
+                bot = EnochApplication(
+                    identity, root, client,
+                    repository=BranchlessRepositoryFixture(),
+                    review=IndependentReviewFixture(),
+                    presentation=ApplicationPresentation(display_name=display_name),
+                )
+                request = (
+                    "publish existing local branch `fixture/existing` as a PR against `main`"
+                    if operation == "publish" else f"Review {identity.name}'s README."
+                )
+                enqueue_task(42, request, root)
+                job = begin_next_task(root)
+                assert job is not None
+                if operation == "publish":
+                    failure = patch.object(
+                        bot, "_publish_existing_branch",
+                        return_value=f"{display_name} could not publish repository reference: {error}",
+                    )
+                else:
+                    failure = patch.object(bot, "_prepare_task_worktree", side_effect=OSError(error))
+                with failure:
+                    bot._run_task_job(job)
+                status = task_queue_status(root)
+
+            failed = status.history[-1]
+            self.assertEqual(failed.status, "failed")
+            self.assertEqual(failed.attempt, 1)
+            self.assertTrue(failed.result.startswith(f"{display_name} could not "))
+            self.assertIn(error, failed.result)
+            self.assertIn("Final status: failed", client.sent[-1][1])
+            self.assertIn(error, client.sent[-1][1])
+            self.assertIn(request, client.edited[-1][2])
+            self.assertIn("Status: failed", client.edited[-1][2])
+
     def test_dirty_worktree_failure_is_not_automatically_retried(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
@@ -4732,6 +4774,29 @@ class EnochTelegramTests(unittest.TestCase):
 
         schedule_restart.assert_called_once_with(ROOT)
         self.assertIn("Enoch is restarting.", client.sent[0][1])
+
+    @patch("enoch.app.core._schedule_daemon_restart")
+    def test_descendant_presentation_rebrands_core_reply(
+        self,
+        schedule_restart: MagicMock,
+    ) -> None:
+        display_name = f"Hosted {load_identity().name}"
+        client = FakeTelegramClient(allowed_chat_id=42)
+        bot = EnochApplication(
+            load_identity(),
+            ROOT,
+            client,
+            presentation=ApplicationPresentation(display_name=display_name),
+        )
+
+        _handle_update(bot, _message_update(chat_id=42, text="/restart"))
+
+        schedule_restart.assert_called_once_with(ROOT)
+        self.assertEqual(
+            client.sent[0][1],
+            f"{display_name} is restarting.\n"
+            "Daemon mode will restart after this reply is delivered.",
+        )
 
     @patch("enoch.app.core._schedule_daemon_restart")
     def test_restart_requires_locked_chat(self, schedule_restart: MagicMock) -> None:

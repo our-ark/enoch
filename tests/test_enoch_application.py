@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 import shutil
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
 
-from enoch.app.core import EnochApplication
+from enoch.app.core import EnochApplication, TaskContextSnapshot
 from enoch.application import (
     APPLICATION_COMPOSITION_API_VERSION,
     ApplicationComposition,
@@ -15,7 +16,8 @@ from enoch.application import (
     ApplicationProviderSelection,
     run_application,
 )
-from enoch.extensions import AgentExtension, ExtensionLifecycleHooks
+from enoch.extensions import AgentExtension, ExtensionCommandSpec, ExtensionLifecycleHooks
+from enoch.evolution.core import EvolveCandidate, EvolveProposal, EvolveReport, EvolveState
 from enoch.identity import load_identity, update_mission
 from enoch.memory.prompt import memory_for_prompt
 from enoch.profiles import AgentProfile
@@ -290,6 +292,164 @@ class ApplicationCompositionTests(unittest.TestCase):
         self.assertEqual(received, [("Enoch", "/shutdown", "lily")])
         self.assertEqual(chat.sent, [])
 
+    def test_descendant_delivery_preserves_literal_content(self) -> None:
+        identity = load_identity()
+        messages = (
+            f"Noah descends from {identity.name}.",
+            f'> Human: "Ask {identity.name} to review this."',
+            f'```python\nagent = "{identity.name}"\n```',
+            f"Source: /tmp/{identity.name}/README.md",
+            f"https://example.test/{identity.name}/review?q={identity.name}",
+        )
+        for message in messages:
+            with self.subTest(message=message), TemporaryDirectory() as temp:
+                chat = _Chat()
+                app = self._presented_application(Path(temp), chat, identity)
+                app._safe_send_message("room-1", message)
+                app._safe_edit_message("room-1", "message-1", message)
+
+                self.assertEqual(chat.sent, [("room-1", message)])
+                self.assertEqual(chat.edited, [("room-1", "message-1", message)])
+                self.assertIs(app.identity, identity)
+
+    def test_descendant_natural_reply_is_delivered_verbatim(self) -> None:
+        identity = load_identity()
+        reply = f"Noah descends from {identity.name}. See /tmp/{identity.name}/README.md."
+        chat = _Chat()
+        with TemporaryDirectory() as temp:
+            app = self._presented_application(Path(temp), chat, identity)
+            with patch.object(app, "_natural", return_value=reply):
+                app.handle_event(_event("Who is your ancestor?", "ancestor"))
+
+        self.assertEqual(chat.sent, [("room-1", reply)])
+
+    def test_descendant_progress_names_only_the_system_prefix(self) -> None:
+        identity = load_identity()
+        message = f"Review {identity.name}'s changes in /tmp/{identity.name}."
+        chat = _Chat()
+        with TemporaryDirectory() as temp:
+            app = self._presented_application(Path(temp), chat, identity)
+            app._send_step_update("room-1", message)
+
+        self.assertEqual(chat.sent, [("room-1", f"Hosted {identity.name} update: {message}")])
+
+    def test_descendant_lifecycle_preserves_context_and_body_identity(self) -> None:
+        identity = load_identity()
+        reason = f"maintenance of /tmp/{identity.name}"
+        summary = f"Last update: imported {identity.name}'s changes."
+        warning = f"Previous diagnostic: {identity.name} was unavailable."
+        chat = _Chat()
+        with TemporaryDirectory() as temp, patch(
+            "enoch.app.core._sync_session_activity"
+        ) as sync, patch("enoch.channel.repository_sync_summary", return_value=summary):
+            app = self._presented_application(
+                Path(temp), chat, identity, previous_shutdown_warning=warning
+            )
+            app.notify_startup()
+            app.notify_shutdown(reason)
+
+        self.assertEqual(
+            chat.sent[0][1].splitlines()[0],
+            f"Hosted {identity.name} restarted and is listening on Composition Chat.",
+        )
+        self.assertIn(summary, chat.sent[0][1])
+        self.assertIn(warning, chat.sent[0][1])
+        self.assertEqual(chat.sent[1][1].splitlines()[0], f"Hosted {identity.name} is shutting down.")
+        self.assertIn(f"Reason: {reason}.", chat.sent[1][1])
+        self.assertIs(app.identity, identity)
+        self.assertIs(sync.call_args.args[0], identity)
+
+    def test_display_name_defaults_to_loaded_identity(self) -> None:
+        identity = replace(load_identity(), name="Descendant")
+        chat = _Chat()
+        with TemporaryDirectory() as temp:
+            app = self._presented_application(
+                Path(temp), chat, identity, presentation=ApplicationPresentation()
+            )
+            app._send_step_update("room-1", "Working.")
+            app.notify_shutdown("test")
+
+        self.assertEqual(chat.sent[0][1], "Descendant update: Working.")
+        self.assertEqual(chat.sent[1][1].splitlines()[0], "Descendant is shutting down.")
+
+    def test_custom_ready_message_is_literal(self) -> None:
+        identity = load_identity()
+        message = f"Built on {identity.name}; ready to coordinate."
+        chat = _Chat()
+        with TemporaryDirectory() as temp:
+            app = self._presented_application(
+                Path(temp), chat, identity,
+                presentation=ApplicationPresentation(
+                    display_name=f"Hosted {identity.name}", ready_message=message
+                ),
+            )
+            app.handle_event(_event("/start", "start"))
+
+        self.assertEqual(chat.sent[0][1].splitlines()[0], message)
+
+    def test_extension_reply_is_delivered_verbatim(self) -> None:
+        identity = load_identity()
+        reply = f"Extension reports: {identity.name}'s review is ready."
+        extension = AgentExtension(
+            name="literal-output",
+            commands=(ExtensionCommandSpec("literal", "show literal text", lambda _ctx: reply),),
+        )
+        chat = _Chat()
+        with TemporaryDirectory() as temp:
+            app = self._presented_application(Path(temp), chat, identity, extensions=(extension,))
+            app.handle_event(_event("/literal", "literal"))
+
+        self.assertEqual(chat.sent, [("room-1", reply)])
+
+    def test_task_error_names_only_the_system_prefix(self) -> None:
+        identity = load_identity()
+        error = f"Cannot open /tmp/{identity.name}/README.md"
+        chat = _Chat()
+        with TemporaryDirectory() as temp:
+            app = self._presented_application(Path(temp), chat, identity)
+            with patch.object(
+                app, "_resolve_task_context_snapshot", return_value=TaskContextSnapshot(error=error)
+            ):
+                app.handle_event(_event(f"/task Review {identity.name}", "task"))
+
+        self.assertEqual(
+            chat.sent,
+            [("room-1", f"Hosted {identity.name} could not prepare conversation context for that task yet: {error}")],
+        )
+
+    def test_proposal_names_only_the_system_heading(self) -> None:
+        identity = load_identity()
+        title = f"Learn from {identity.name}"
+        candidate = EvolveCandidate(
+            id="learning-fixture", source="learning", title=title,
+            rationale=f"Inspect {identity.name}'s skill.", proposed_change="Import the skill.",
+            expected_benefit="Reuse.", risk="low", test_plan="Run tests.",
+        )
+        report = EvolveReport(EvolveState(), (candidate,), candidate, {"learning": 1})
+        proposal = EvolveProposal(report, (candidate,), candidate)
+        chat = _Chat()
+        with TemporaryDirectory() as temp:
+            app = self._presented_application(Path(temp), chat, identity)
+            with patch.object(app, "_propose_evolve", return_value=proposal):
+                app.handle_event(_event("/evolve propose", "propose"))
+
+        self.assertEqual(chat.sent[0][1].splitlines()[0], f"Hosted {identity.name} proposes:")
+        self.assertIn(title, chat.sent[0][1])
+        self.assertIn(candidate.rationale, chat.sent[0][1])
+
+    @staticmethod
+    def _presented_application(root, chat, identity, *, presentation=None, **kwargs):
+        return EnochApplication(
+            identity,
+            root,
+            chat,
+            runtime=_Runtime(),
+            repository=BranchlessRepositoryFixture(),
+            review=IndependentReviewFixture(),
+            presentation=presentation or ApplicationPresentation(display_name=f"Hosted {identity.name}"),
+            **kwargs,
+        )
+
 
 class _Chat:
     name = "composition-chat"
@@ -297,6 +457,7 @@ class _Chat:
 
     def __init__(self) -> None:
         self.sent = []
+        self.edited = []
 
     @property
     def allowed_conversation_id(self):
@@ -310,7 +471,7 @@ class _Chat:
         return "message-1"
 
     def edit_message(self, conversation_id, message_id, text):
-        return None
+        self.edited.append((conversation_id, message_id, text))
 
     def send_read_ack(self, conversation_id, message_id):
         return None
