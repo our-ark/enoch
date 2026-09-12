@@ -6,8 +6,8 @@ core agent into a new environment:
 
 | Kind | Reference provider | Responsibility |
 | --- | --- | --- |
-| `chat` | `telegram` | Receive normalized chat events and deliver messages |
-| `runtime` | `codex` | Answer, edit, resume sessions, report models, and cancel work |
+| `chat` | `telegram` / `slack` | Receive normalized chat events and deliver messages |
+| `runtime` | `codex` / `claude` | Answer, edit, resume sessions, report models, and cancel work |
 | `vcs` | `git` | Manage repository revisions, working copies, and isolated workspaces |
 | `forge` | local fallback; `github` reference | Publish and govern review units; retain local changes when remote review is unavailable |
 | `service` | `launchd` / `systemd` | Install, control, inspect, and restart the agent process |
@@ -23,6 +23,30 @@ providers:
   forge: github
   service: launchd
 ```
+
+A chat provider may expose a `command_prefix` presentation hint when its host
+reserves slash commands. The canonical default is `/`; the Slack reference
+provider uses the secondary prefix `!`, so `!help` maps to `/help` and startup
+and help text show commands that Slack will accept.
+
+The Slack reference provider uses Socket Mode and therefore does not require a
+public HTTP endpoint. Import `libraries/slack/slack-app-manifest.yaml`, install
+the package, and select it explicitly:
+
+```text
+python -m pip install ./libraries/slack
+bin/enoch config provider chat slack
+bin/enoch setup bot-token <xoxb-token>
+bin/enoch setup app-token <xapp-token>
+bin/enoch setup conversation <conversation-id>
+bin/enoch setup user <user-id>
+```
+
+Natural conversation is sent directly in the app's Messages tab. Slack owns
+the slash-command namespace, so commands use `!help`, `!task ...`, and
+`!evolve ...`; the provider translates them back to the canonical `/` command
+surface. In channels, mention the agent before the command, such as
+`@Enoch !help`.
 
 The minimal portable configuration is:
 
@@ -82,6 +106,39 @@ Enoch instance config, then `PATH`, then known macOS app locations. An explicit
 but invalid environment or config value fails health checks instead of silently
 falling through to another installation. The daemon reads this same instance
 config; the executable path is not copied into a service manifest.
+
+## Claude runtime
+
+The standalone `our-ark-claude` reference package executes the local Claude
+Code CLI through the same provider-neutral runtime contract. A source checkout
+discovers `libraries/claude` directly; an installed agent body installs the
+package independently. Authenticate and select it with:
+
+```text
+python -m pip install ./libraries/claude
+claude auth login
+bin/enoch config provider runtime claude
+```
+
+The generic model and reasoning commands write to the provider-owned `claude`
+section. Provider-specific configuration controls CLI discovery and an optional
+per-invocation cost boundary:
+
+```text
+/config model sonnet
+/config reasoning-effort high
+/config runtime claude executable /opt/homebrew/bin/claude
+/config runtime claude max-budget 2.00
+```
+
+Claude runs with structured streaming output and maps Enoch logical session
+keys to native Claude session IDs. Conversation turns receive read-only tools;
+task turns receive a bounded workspace tool set inside the task worktree. The
+provider uses Claude restricted mode, disables user customizations and MCP
+servers for unattended execution, and never enables bypass-permissions mode.
+Authentication, quota, rate-limit, and configured-budget failures raise the
+shared runtime-access signal, so queued work pauses and can later continue with
+`/task resume` without rewriting task history.
 
 ## Host services
 
@@ -283,10 +340,11 @@ reconciles first, then replays only when the provider can prove absence or
 guarantee idempotency. Transport-native request ids and lookup mechanisms stay
 inside the provider.
 
-The channel-neutral application lives in `src/enoch/app/`. Telegram's
-Bot API transport, Enoch config adapter, setup handler, and integration skill
-live in `libraries/telegram`. Core code receives only normalized `ChatEvent`
-values and does not import that package.
+The channel-neutral application lives in `src/enoch/app/`. Telegram's Bot API
+transport lives in `libraries/telegram`, while Slack's Socket Mode transport
+lives in `libraries/slack`. Their config adapters, setup handlers, presentation
+rules, and integration skills remain provider-owned. Core code receives only
+normalized `ChatEvent` values and does not import either package.
 
 Runtime providers expose `health()` so doctor checks the selected runtime
 instead of assuming a Codex binary. They should raise

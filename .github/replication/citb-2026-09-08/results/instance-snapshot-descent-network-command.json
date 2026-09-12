@@ -1,0 +1,21 @@
+{
+  "command": [
+    "env",
+    "GENESIS_CACHE_DIR=<WORKSPACE>/cache-instance-snapshot",
+    "PIP_CACHE_DIR=<WORKSPACE>/pip-cache-instance-snapshot",
+    ".venv/bin/python",
+    "sources/genesis-instance-snapshot/scripts/verify_enoch_descent.py",
+    "--source",
+    "sources/enoch-instance-descent",
+    "--ref",
+    "7ffaba854015d0854cfbb543ee934520ef2d5c30",
+    "--generations",
+    "2",
+    "--report",
+    "results/instance-snapshot-descent-network.json"
+  ],
+  "started_at_utc": "2026-09-08T09:29:17.172373+00:00",
+  "elapsed_seconds": 176.456,
+  "exit_code": 0,
+  "successful": true
+}

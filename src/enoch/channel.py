@@ -39,6 +39,17 @@ def provider_label(name: str) -> str:
     return cleaned.title() or "Chat"
 
 
+def provider_command_prefix(provider: object) -> str:
+    value = str(getattr(provider, "command_prefix", "/") or "/")
+    if re.fullmatch(r"[/!$]", value):
+        return value
+    if not re.fullmatch(r"/[A-Za-z0-9_-]+ ?", value):
+        return "/"
+    if not value.endswith(" "):
+        value += " "
+    return value
+
+
 def load_channel_cursor(name: str, root: Path | None = None) -> Cursor | None:
     path = channel_cursor_path(name, root)
     data = load_json_object(path)
@@ -134,23 +145,32 @@ def startup_message(
     name: str,
     root: Path | None = None,
     previous_shutdown_warning: str = "",
+    command_prefix: str = "/",
+    *,
+    display_name: str = "",
 ) -> str:
     label = provider_label(name)
     lines = [
-        f"{identity.name} restarted and is listening on {label}.",
+        f"{display_name or identity.name} restarted and is listening on {label}.",
         "Startup notification: daemon is running.",
         repository_sync_summary(root),
     ]
     if previous_shutdown_warning:
         lines.append(previous_shutdown_warning)
-    lines.append("Use /help to see available commands.")
+    lines.append(f"Use {command_prefix}help to see available commands.")
     return "\n".join(lines)
 
 
-def shutdown_message(identity: Identity, name: str, reason: str = "shutdown") -> str:
+def shutdown_message(
+    identity: Identity,
+    name: str,
+    reason: str = "shutdown",
+    *,
+    display_name: str = "",
+) -> str:
     return "\n".join(
         [
-            f"{identity.name} is shutting down.",
+            f"{display_name or identity.name} is shutting down.",
             f"Reason: {reason}.",
             f"{provider_label(name)} bridge is closing.",
         ]
@@ -160,9 +180,9 @@ def shutdown_message(identity: Identity, name: str, reason: str = "shutdown") ->
 def previous_shutdown_warning(previous: dict[str, Any]) -> str:
     status = str(previous.get("status") or "")
     if status == "running":
-        return "Previous shutdown: unexpected; Enoch could not send the normal shutdown message."
+        return "Previous shutdown: unexpected; the daemon could not send the normal shutdown message."
     if status == "stopped" and not bool(previous.get("shutdown_notification_sent")):
-        return "Previous shutdown: Enoch stopped, but could not send the normal shutdown message."
+        return "Previous shutdown: the daemon stopped, but could not send the normal shutdown message."
     return ""
 
 

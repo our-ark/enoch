@@ -206,11 +206,13 @@ class GitVersionControlProvider:
             root,
             "Could not inspect Git worktrees.",
         )
-        return tuple(
+        paths = (
             Path(line.removeprefix("worktree ")).expanduser().resolve()
             for line in output.splitlines()
             if line.startswith("worktree ")
         )
+        # Git retains deleted worktree registrations until they are pruned.
+        return tuple(path for path in paths if path.is_dir())
 
     def create_workspace(
         self,

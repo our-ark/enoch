@@ -1,0 +1,71 @@
+{
+  "source_revision": "7ffaba854015d0854cfbb543ee934520ef2d5c30",
+  "source_tracked_changes_before": "",
+  "source_tracked_changes_after": "",
+  "python": "3.12.14",
+  "platform": "macOS-26.4.1-arm64-arm-64bit",
+  "start_directory": "libraries/claude/tests",
+  "top_level_directory": null,
+  "elapsed_seconds": 1.964,
+  "tests_run": 13,
+  "failures": 0,
+  "errors": 0,
+  "skipped": 0,
+  "expected_failures": 0,
+  "unexpected_successes": 0,
+  "successful": true,
+  "outcomes": [
+    {
+      "test": "test_claude.ClaudeRuntimeConformanceTests.test_conformance_provider_capabilities_match_kind",
+      "status": "passed"
+    },
+    {
+      "test": "test_claude.ClaudeRuntimeConformanceTests.test_conformance_provider_matches_public_contract",
+      "status": "passed"
+    },
+    {
+      "test": "test_claude.ClaudeRuntimeConformanceTests.test_conformance_runtime_honors_precancelled_execution",
+      "status": "passed"
+    },
+    {
+      "test": "test_claude.ClaudeRuntimeConformanceTests.test_conformance_runtime_honors_pretimed_out_execution",
+      "status": "passed"
+    },
+    {
+      "test": "test_claude.ClaudeRuntimeConformanceTests.test_conformance_runtime_returns_normalizable_results",
+      "status": "passed"
+    },
+    {
+      "test": "test_claude.ClaudeRuntimeTests.test_authentication_failure_uses_pauseable_access_error",
+      "status": "passed"
+    },
+    {
+      "test": "test_claude.ClaudeRuntimeTests.test_health_requires_cli_authentication",
+      "status": "passed"
+    },
+    {
+      "test": "test_claude.ClaudeRuntimeTests.test_human_cancellation_stops_running_cli",
+      "status": "passed"
+    },
+    {
+      "test": "test_claude.ClaudeRuntimeTests.test_missing_stored_session_is_forgotten_and_recreated_once",
+      "status": "passed"
+    },
+    {
+      "test": "test_claude.ClaudeRuntimeTests.test_model_effort_budget_and_executable_are_configurable",
+      "status": "passed"
+    },
+    {
+      "test": "test_claude.ClaudeRuntimeTests.test_persistent_logical_session_resumes_native_claude_session",
+      "status": "passed"
+    },
+    {
+      "test": "test_claude.ClaudeRuntimeTests.test_streams_structured_result_usage_progress_and_events",
+      "status": "passed"
+    },
+    {
+      "test": "test_claude.ClaudeRuntimeTests.test_workspace_execution_uses_restricted_preapproved_tools",
+      "status": "passed"
+    }
+  ]
+}

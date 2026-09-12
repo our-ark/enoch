@@ -12,6 +12,7 @@ from enoch.brain import (
 )
 from enoch.command_surface import lineage_usage
 from enoch.config import write_section_value
+from enoch.agent_identity import AgentIdentityError, load_active_agent_identity
 from enoch.identity import Identity, identity_file_path, load_identity, update_mission
 from enoch.identity_context import display_ancestor
 from enoch.immune import ImmuneResult, run_immune_system
@@ -129,6 +130,38 @@ def status_message(
 
 
 def identity_summary(identity: Identity, root: Path | None = None) -> str:
+    try:
+        personal = load_active_agent_identity(root)
+    except (AgentIdentityError, OSError):
+        personal = None
+    if personal is not None:
+        names = personal["identity"]["names"]
+        localized = ", ".join(names["localized"].values())
+        origin = personal["origin"]
+        lineage = list(origin["lineage"])
+        if not lineage or lineage[-1].casefold() != names["canonical"].casefold():
+            lineage.append(names["canonical"])
+        mission = personal["mission"]
+        values = ", ".join(value["name"] for value in personal["values"])
+        relationships = "; ".join(
+            f"{relationship['name']} ({', '.join(relationship['roles'])}); "
+            f"address as {relationship['address_as']}"
+            for relationship in personal["relationships"]
+        )
+        return "\n".join(
+            [
+                f"I am {names['canonical']} ({localized}).",
+                f"Nature: {personal['identity']['nature']}",
+                f"Body: {origin['body']}",
+                f"Body role: {identity.role}",
+                f"Generation: {identity.generation}",
+                f"Lineage: {' -> '.join(lineage)}",
+                f"Mission roles: {', '.join(mission['roles'])}",
+                f"Mission: {mission['statement']}",
+                f"Relationships: {relationships}",
+                f"Values: {values}",
+            ]
+        )
     ancestor = display_ancestor(identity, root)
     return "\n".join(
         [
@@ -776,30 +809,31 @@ def doctor_command(
     return format_doctor(run_doctor(root))
 
 
-def help_message(topic: str = "", *, chat_provider: str = "chat") -> str:
-    del chat_provider
+def help_message(topic: str = "", *, command_prefix: str = "/") -> str:
     normalized_topic = _normalize_help_topic(topic)
     if normalized_topic:
         command = core_command(normalized_topic)
         if command is not None:
-            return command.usage_message("/")
+            return command.usage_message(command_prefix)
         return "\n".join(
             [
-                f"No help found for /{normalized_topic}.",
-                "Use /help to see every command.",
-                "Use /help <command> for detailed usage and subcommands.",
+                f"No help found for {command_prefix}{normalized_topic}.",
+                f"Use {command_prefix}help to see every command.",
+                f"Use {command_prefix}help <command> for detailed usage and subcommands.",
             ]
         )
 
     lines = [
         "Enoch commands:",
         "",
-        "Use /help <command> for detailed usage and subcommands.",
-        "Example: /help worktree",
+        f"Use {command_prefix}help <command> for detailed usage and subcommands.",
+        f"Example: {command_prefix}help worktree",
     ]
     standalone = [command for command in CORE_COMMANDS if not command.section]
     if standalone:
-        lines.extend(["", *(command.summary_line("/") for command in standalone)])
+        lines.extend(
+            ["", *(command.summary_line(command_prefix) for command in standalone)]
+        )
     sections = tuple(dict.fromkeys(command.section for command in CORE_COMMANDS if command.section))
     for section in sections:
         lines.extend(
@@ -807,7 +841,7 @@ def help_message(topic: str = "", *, chat_provider: str = "chat") -> str:
                 "",
                 f"{section}:",
                 *(
-                    command.summary_line("/")
+                    command.summary_line(command_prefix)
                     for command in CORE_COMMANDS
                     if command.section == section
                 ),
@@ -821,6 +855,19 @@ def help_message(topic: str = "", *, chat_provider: str = "chat") -> str:
         ]
     )
     return "\n".join(lines)
+
+
+def runtime_command_reference(*, command_prefix: str = "/") -> str:
+    return "\n\n".join(
+        [
+            "Active chat command reference:",
+            (
+                "Use these exact commands when they directly perform the human's "
+                "request. Do not route configuration or inspection through a work task."
+            ),
+            *(command.usage_message(command_prefix) for command in CORE_COMMANDS),
+        ]
+    )
 
 
 def _normalize_help_topic(topic: str) -> str:
@@ -951,10 +998,14 @@ def _evolve_help_usage(prefix: str) -> str:
             f"{command} remove <id> [reason] - remove a self-evolution candidate with an audit reason",
             f"{command} config - show evolution settings",
             f"{command} config mode <disabled|co-evolve|auto-evolve>",
+            "  disabled - stop scans, candidate synthesis, proposals, and scheduled evolution",
+            "  co-evolve - propose improvements for human approval; brainstorming is manual",
+            "  auto-evolve - also allow scheduled brainstorming; human approval is still required",
             f"{command} config theme <text>",
             f"{command} config feedback-batch <1-100>",
             f"{command} config experience-batch <1-100>",
             f"{command} config schedule <text>",
+            f"  Use {command} config schedule off to stop scheduled proposals without disabling manual evolution.",
         ]
     )
 

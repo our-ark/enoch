@@ -21,7 +21,7 @@ from enoch.skills import (
 
 
 class EnochSkillsTests(unittest.TestCase):
-    def test_loads_enoch_skills_from_identity_and_skill_metadata(self) -> None:
+    def test_loads_enoch_skills_from_body_and_skill_metadata(self) -> None:
         agent = load_agent_skills(root=ROOT)
 
         names = [skill.name for skill in agent.skills]
@@ -47,12 +47,12 @@ class EnochSkillsTests(unittest.TestCase):
         library = next(skill for skill in agent.skills if skill.name == "skill-library")
         self.assertIn("immutable public libraries", library.summary)
 
-    def test_identity_skill_versions_match_skill_manifests(self) -> None:
-        identity = _parse_enoch_yaml(
-            (ROOT / "src" / "enoch" / "identity.yaml").read_text(encoding="utf-8")
+    def test_body_skill_versions_match_skill_manifests(self) -> None:
+        body = _parse_enoch_yaml(
+            (ROOT / "src" / "enoch" / "body.yaml").read_text(encoding="utf-8")
         )
 
-        for declared in identity["skills"]:
+        for declared in body["skills"]:
             metadata = _parse_simple_yaml(
                 (ROOT / declared["path"] / "skill.yaml").read_text(encoding="utf-8")
             )
@@ -142,7 +142,7 @@ class EnochSkillsTests(unittest.TestCase):
     def test_skills_command_reads_named_agent_from_github_main(self) -> None:
         def published_text(agent: str, path: str, **_kwargs) -> str:
             self.assertEqual(agent, "lucy")
-            if path == "src/lucy/identity.yaml":
+            if path == "src/lucy/body.yaml":
                 return "\n".join(
                     [
                         "name: Lucy",
@@ -180,7 +180,7 @@ class EnochSkillsTests(unittest.TestCase):
     def test_skills_command_reads_any_named_agent_from_github_main(self) -> None:
         def published_text(agent: str, path: str, **_kwargs) -> str:
             self.assertEqual(agent, "adam")
-            if path == "src/adam/identity.yaml":
+            if path == "src/adam/body.yaml":
                 return "\n".join(
                     [
                         "name: Adam",
@@ -228,7 +228,7 @@ class EnochSkillsTests(unittest.TestCase):
 
     def test_skills_command_keeps_named_agent_independent_from_local_checkout(self) -> None:
         def published_text(agent: str, path: str, **_kwargs) -> str:
-            if path == "src/adam/identity.yaml":
+            if path == "src/adam/body.yaml":
                 return "\n".join(
                     [
                         "name: Adam",

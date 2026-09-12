@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -129,6 +130,44 @@ class EnochEvolutionEndToEndTests(unittest.TestCase):
         self.assertIn("Required pull request metadata:", prompt)
         self.assertIn("## Evolution provenance", prompt)
         self.assertIn(f"- Candidate: `{candidate_id}`", prompt)
+
+    def test_task_ignores_deleted_review_worktree_without_disturbing_other_workspaces(
+        self,
+    ) -> None:
+        deleted_review = self.base / "pr70-review"
+        active_review = self.base / "active-review"
+        for path in (deleted_review, active_review):
+            _git(self.source, "worktree", "add", "--detach", str(path), "main")
+        shutil.rmtree(deleted_review)
+        registration = _git(self.source, "worktree", "list", "--porcelain").stdout
+        self.assertIn(str(deleted_review.resolve()), registration)
+        self.assertIn("prunable", registration)
+
+        candidate_id = self._add_feedback_candidate("Handle stale workspace registrations")
+        self._command(f"/evolve approve {candidate_id}")
+
+        completed = self._run_next_task()
+
+        self.assertEqual(completed.status, "completed", completed.result)
+        self.assertEqual(completed.pr_urls, (PR_URL,))
+        self.assertTrue(self.codex_log.is_file())
+        self.assertFalse(Path(completed.worktree_path).exists())
+        workspaces = self.bot.repository.list_repository_workspaces(self.instance)
+        self.assertEqual(
+            {workspace.path for workspace in workspaces},
+            {self.source.resolve(), self.instance.resolve(), active_review.resolve()},
+        )
+        self.assertEqual(_current_branch(self.source), "main")
+        self.assertEqual(_current_branch(self.instance), RESIDENT_BRANCH)
+        self.assertEqual(_current_branch(active_review), "")
+        self.assertEqual(
+            _git(active_review, "rev-parse", "HEAD").stdout.strip(),
+            self.latest_main_head,
+        )
+        self.assertIn(
+            str(deleted_review.resolve()),
+            _git(self.source, "worktree", "list", "--porcelain").stdout,
+        )
 
     def test_task_retry_keeps_failed_history_and_evolve_provenance(self) -> None:
         candidate_id = self._add_feedback_candidate("Add a retry guardrail")

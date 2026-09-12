@@ -605,6 +605,7 @@ class ExtensionCommandContext:
     review: ReviewProvider
     workflow: ExtensionWorkflow
     schedules: ExtensionSchedules
+    chat: ChatProvider | None = None
 
     def enqueue_task(
         self,
@@ -708,6 +709,10 @@ ExtensionTaskEventHook = Callable[
     [ExtensionLifecycleContext, ExtensionTaskEvent],
     None,
 ]
+ExtensionPeerEventHook = Callable[
+    [ExtensionLifecycleContext, ChatEvent, str],
+    str | None,
+]
 
 
 @dataclass(frozen=True)
@@ -718,6 +723,7 @@ class ExtensionLifecycleHooks:
     before_run: ExtensionLifecycleHook | None = None
     after_run: ExtensionLifecycleHook | None = None
     on_shutdown: ExtensionLifecycleHook | None = None
+    on_peer_event: ExtensionPeerEventHook | None = None
 
 
 @dataclass(frozen=True)

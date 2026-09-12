@@ -19,7 +19,7 @@ from enoch.state import atomic_write, file_transaction
 LINEAGE_PATH = Path(".agent") / "lineage.yaml"
 LINEAGE_INBOX_PATH = Path("lineage") / "inbox.json"
 LEGACY_LINEAGE_INBOX_PATH = Path(".agent") / "lineage_inbox.json"
-CURRENT_IDENTITY_PATH = Path("src") / "enoch" / "identity.yaml"
+CURRENT_IDENTITY_PATH = Path("src") / "enoch" / "body.yaml"
 INBOX_SCHEMA_VERSION = 2
 ASSESSMENT_SCHEMA_VERSION = 1
 REFRESH_LIMIT = 20

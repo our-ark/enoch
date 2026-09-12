@@ -16,7 +16,7 @@ evolution candidate; it never edits Enoch directly.
 ## Procedure
 
 1. Resolve the source agent's current `main` revision to an immutable commit.
-2. Read `identity.yaml`, `skill.yaml`, and `SKILL.md` from that same commit.
+2. Read `body.yaml` (or a legacy `identity.yaml`), `skill.yaml`, and `SKILL.md` from that same commit.
 3. Reject hidden, missing, inconsistent, oversized, unsafe-path, self, and
    direct-parent packages deterministically.
 4. Build a temporary in-memory snapshot containing the source commit, package

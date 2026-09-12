@@ -14,11 +14,25 @@ repository-code: "https://github.com/our-ark/enoch"
 url: "https://github.com/our-ark/enoch/releases/tag/v0.6.1"
 keywords:
   - agent-owned software
+  - persistent agents
+  - runtime independence
+  - agent migration
+  - continuation authority
   - personal agents
   - co-evolution
   - software lineage
   - self-evolving agents
 references:
+  - type: article
+    title: "Runtime-Independent Persistent Agents: Preserving Identity, Memory, and Code Across Models, Harnesses, and Servers"
+    authors:
+      - family-names: Zhao
+        given-names: Zhenyu
+      - family-names: Zhao
+        given-names: Roy
+    year: 2026
+    doi: "10.48550/arXiv.2609.00546"
+    url: "https://arxiv.org/abs/2609.00546"
   - type: article
     title: "Code Is the Body: Agent-Owned Software Bodies for Recursive Evolution and Descent"
     authors:

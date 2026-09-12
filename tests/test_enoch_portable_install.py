@@ -66,13 +66,64 @@ class EnochPortableInstallTests(unittest.TestCase):
             if dependency["name"] == "provider-kit"
         ]
         self.assertEqual(runtime_contracts, [core_contract])
-        for package in ("github", "launchd", "systemd", "telegram"):
+        for package in ("claude", "github", "launchd", "slack", "systemd", "telegram"):
             metadata = _project_metadata(ROOT / "libraries" / package / "pyproject.toml")
             provider_contract = _dependency(
                 metadata["project"]["dependencies"],
                 "our-ark-provider-kit",
             )
             self.assertEqual(provider_contract, core_contract, package)
+
+    def test_service_provider_install_and_descent_pins_match(self) -> None:
+        project = _project_metadata(ROOT / "pyproject.toml")["project"]
+        manifest = _project_metadata(ROOT / "genesis.toml")
+        dependencies = {item["name"]: item for item in manifest["runtime_dependencies"]}
+        for name in ("launchd", "systemd"):
+            with self.subTest(provider=name):
+                reference = _dependency(
+                    project["optional-dependencies"]["reference"], f"our-ark-{name}"
+                )
+                self.assertEqual(dependencies[name]["requirement"], reference)
+                self.assertRegex(reference, rf"@[0-9a-f]{{40}}#subdirectory=libraries/{name}$")
+                self.assertEqual(dependencies[name]["local_source"], f"libraries/{name}/src")
+                self.assertTrue(dependencies[name]["optional"])
+
+    def test_claude_provider_is_a_local_optional_runtime_dependency(self) -> None:
+        root_metadata = _project_metadata(ROOT / "pyproject.toml")
+        manifest = _project_metadata(ROOT / "genesis.toml")
+        dependency = next(
+            item
+            for item in manifest["runtime_dependencies"]
+            if item["name"] == "claude"
+        )
+
+        reference_requirement = _dependency(
+            root_metadata["project"]["optional-dependencies"]["reference"],
+            "our-ark-claude",
+        )
+        self.assertEqual(dependency["requirement"], reference_requirement)
+        self.assertIn("@d5d6eece19caa5933a1b60b564a126297c864ce8", reference_requirement)
+        self.assertEqual(dependency["import_name"], "our_ark_claude")
+        self.assertEqual(dependency["local_source"], "libraries/claude/src")
+        self.assertTrue(dependency["optional"])
+
+    def test_slack_runtime_dependencies_are_pinned_in_genesis_manifest(self) -> None:
+        manifest = _project_metadata(ROOT / "genesis.toml")
+        dependencies = {
+            dependency["name"]: dependency
+            for dependency in manifest["runtime_dependencies"]
+        }
+
+        self.assertEqual(dependencies["slack-sdk"]["requirement"], "slack-sdk==3.44.0")
+        self.assertEqual(
+            dependencies["websocket-client"]["requirement"],
+            "websocket-client==1.8.0",
+        )
+        self.assertEqual(dependencies["slack-sdk"]["when_provider"], "chat.slack")
+        self.assertEqual(
+            dependencies["websocket-client"]["when_provider"],
+            "chat.slack",
+        )
 
     def test_wheel_install_completes_profile_task_with_independent_packages(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -174,6 +225,10 @@ class EnochPortableInstallTests(unittest.TestCase):
         self.assertEqual(result["runtime"], "codex")
         self.assertEqual(result["forge"], "local")
         self.assertEqual(result["enoch_version"], "0.6.1")
+        self.assertEqual(
+            result["agent_identity_schema_id"],
+            "https://our-ark.github.io/schemas/ai-agent-identity.schema.json",
+        )
         self.assertEqual(result["provider_kit_version"], "0.7.0")
         self.assertEqual(result["chat_provider_version"], "0.0.1")
         self.assertEqual(result["vcs_provider_version"], "0.0.1")
@@ -654,6 +709,7 @@ _INSTALLED_TASK_SCRIPT = textwrap.dedent(
     import subprocess
     import sys
 
+    from enoch import agent_identity_schema
     from enoch.app.core import EnochApplication
     from enoch.app.epoch import daemon_epoch_guard
     from enoch.application import (
@@ -674,8 +730,8 @@ _INSTALLED_TASK_SCRIPT = textwrap.dedent(
 
     root = Path(sys.argv[1])
     root.mkdir()
-    (root / "identity.yaml").write_text(
-        resources.files("enoch").joinpath("identity.yaml").read_text(
+    (root / "body.yaml").write_text(
+        resources.files("enoch").joinpath("body.yaml").read_text(
             encoding="utf-8"
         ),
         encoding="utf-8",
@@ -738,7 +794,7 @@ _INSTALLED_TASK_SCRIPT = textwrap.dedent(
     composition = ApplicationComposition(
         name="portable-descendant",
         identity_loader=load_identity,
-        identity_path_resolver=lambda body: body / "identity.yaml",
+        identity_path_resolver=lambda body: body / "body.yaml",
         presentation=ApplicationPresentation(
             display_name="Portable descendant",
             ready_message="Portable descendant is ready.",
@@ -850,6 +906,7 @@ _INSTALLED_TASK_SCRIPT = textwrap.dedent(
         "runtime": runtime.name,
         "forge": forge.name,
         "enoch_version": version("enoch"),
+        "agent_identity_schema_id": agent_identity_schema()["$id"],
         "provider_kit_version": version("our-ark-provider-kit"),
         "chat_provider_version": version("enoch-portable-chat-provider"),
         "vcs_provider_version": version("enoch-portable-vcs-provider"),

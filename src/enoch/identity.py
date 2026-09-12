@@ -6,6 +6,10 @@ from pathlib import Path
 from typing import Any
 
 
+BODY_FILENAME = "body.yaml"
+LEGACY_IDENTITY_FILENAME = "identity.yaml"
+
+
 @dataclass(frozen=True)
 class Origin:
     ark: str
@@ -17,11 +21,16 @@ class Origin:
 class Body:
     package: str
     source_path: str
-    identity_file: str
+    body_file: str
+
+    @property
+    def identity_file(self) -> str:
+        """Compatibility alias for callers predating body.yaml."""
+        return self.body_file
 
 
 @dataclass(frozen=True)
-class Identity:
+class BodyIdentity:
     name: str
     kind: str
     role: str
@@ -33,12 +42,23 @@ class Identity:
     body: Body
 
 
-def load_identity(path: Path | None = None) -> Identity:
-    """Load Enoch's versioned identity from her body."""
-    text = _read_identity_text(path)
+Identity = BodyIdentity
+
+
+def load_body_identity(path: Path | None = None) -> BodyIdentity:
+    """Load Enoch's versioned body identity."""
+    text = _read_body_text(path)
     data = _parse_enoch_yaml(text)
 
-    return Identity(
+    body_data = dict(data["body"])
+    body_file = body_data.pop("body_file", None) or body_data.pop(
+        "identity_file",
+        None,
+    )
+    if body_file is None:
+        raise ValueError("Body file does not declare body.body_file.")
+
+    return BodyIdentity(
         name=str(data["name"]),
         kind=str(data["kind"]),
         role=str(data["role"]),
@@ -47,20 +67,33 @@ def load_identity(path: Path | None = None) -> Identity:
         origin=Origin(**data["origin"]),
         mission=str(data["mission"]),
         principles=list(data["principles"]),
-        body=Body(**data["body"]),
+        body=Body(**body_data, body_file=str(body_file)),
     )
 
 
-def _read_identity_text(path: Path | None) -> str:
+def load_identity(path: Path | None = None) -> BodyIdentity:
+    """Compatibility alias for load_body_identity()."""
+    return load_body_identity(path)
+
+
+def _read_body_text(path: Path | None) -> str:
     if path is not None:
         return path.read_text(encoding="utf-8")
 
-    identity = resources.files("enoch").joinpath("identity.yaml")
-    return identity.read_text(encoding="utf-8")
+    body = resources.files("enoch").joinpath(BODY_FILENAME)
+    return body.read_text(encoding="utf-8")
+
+
+def body_file_path(root: Path | None = None) -> Path:
+    base = Path.cwd() if root is None else root
+    body = base / "src" / "enoch" / BODY_FILENAME
+    legacy = base / "src" / "enoch" / LEGACY_IDENTITY_FILENAME
+    return legacy if not body.exists() and legacy.exists() else body
 
 
 def identity_file_path(root: Path | None = None) -> Path:
-    return Path.cwd() / "src" / "enoch" / "identity.yaml" if root is None else root / "src" / "enoch" / "identity.yaml"
+    """Compatibility alias for body_file_path()."""
+    return body_file_path(root)
 
 
 def update_mission(
@@ -73,7 +106,7 @@ def update_mission(
     if not cleaned:
         raise ValueError("Mission cannot be empty.")
 
-    target = Path(path or identity_file_path(root))
+    target = Path(path or body_file_path(root))
     lines = target.read_text(encoding="utf-8").splitlines()
     updated: list[str] = []
     replaced = False
@@ -98,13 +131,13 @@ def update_mission(
         index += 1
 
     if not replaced:
-        raise ValueError("Identity file does not contain a mission field.")
+        raise ValueError("Body file does not contain a mission field.")
     target.write_text("\n".join(updated) + "\n", encoding="utf-8")
     return cleaned
 
 
 def _parse_enoch_yaml(text: str) -> dict[str, Any]:
-    """Parse the small YAML subset used by Enoch's identity file."""
+    """Parse the small YAML subset used by Enoch's body file."""
     data: dict[str, Any] = {}
     current_key: str | None = None
     current_list: list[Any] | None = None

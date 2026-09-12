@@ -9,8 +9,8 @@ undifferentiated workspace. The current contract is
 
 | Area | Default root | Examples | Ownership |
 | --- | --- | --- | --- |
-| Software body | repository root | source, tests, skills, versioned identity and lineage | reviewed and versioned |
-| Private state | `.enoch/` | config, memory, queue, schedules, sessions, provider cursors | local agent instance |
+| Software body | repository root | source, tests, skills, versioned `body.yaml`, and repository lineage | reviewed and versioned |
+| Private state | `.enoch/` | portable `self.json`, config, memory, queue, schedules, sessions, provider cursors | local agent instance |
 | Artifacts | `.enoch/artifacts/` | conversation and system logs, task/evolve journals, curation and learning evidence | retained evidence and outputs |
 
 The artifact root is a protected namespace inside the default private

@@ -1,0 +1,17 @@
+test_conformance_provider_capabilities_match_kind (test_systemd_provider.SystemdServiceProviderTests.test_conformance_provider_capabilities_match_kind) ... ok
+test_conformance_provider_matches_public_contract (test_systemd_provider.SystemdServiceProviderTests.test_conformance_provider_matches_public_contract) ... ok
+test_descendant_package_keeps_its_own_launcher_and_service_prefix (test_systemd_provider.SystemdServiceProviderTests.test_descendant_package_keeps_its_own_launcher_and_service_prefix) ... ok
+test_existing_legacy_service_is_used_only_by_its_owner (test_systemd_provider.SystemdServiceProviderTests.test_existing_legacy_service_is_used_only_by_its_owner) ... ok
+test_foreign_scoped_manifest_is_not_overwritten (test_systemd_provider.SystemdServiceProviderTests.test_foreign_scoped_manifest_is_not_overwritten) ... ok
+test_install_writes_unit_and_enables_user_service (test_systemd_provider.SystemdServiceProviderTests.test_install_writes_unit_and_enables_user_service) ... ok
+test_legacy_manifest_with_overridden_working_directory_is_not_claimed (test_systemd_provider.SystemdServiceProviderTests.test_legacy_manifest_with_overridden_working_directory_is_not_claimed) ... ok
+test_manifest_runs_enoch_agent_as_a_resilient_user_service (test_systemd_provider.SystemdServiceProviderTests.test_manifest_runs_enoch_agent_as_a_resilient_user_service) ... ok
+test_missing_systemctl_is_reported_as_a_host_error (test_systemd_provider.SystemdServiceProviderTests.test_missing_systemctl_is_reported_as_a_host_error) ... ok
+test_scheduled_restart_uses_systemctl_user_service (test_systemd_provider.SystemdServiceProviderTests.test_scheduled_restart_uses_systemctl_user_service) ... ok
+test_service_identity_is_stable_across_symlink_aliases (test_systemd_provider.SystemdServiceProviderTests.test_service_identity_is_stable_across_symlink_aliases) ... ok
+test_two_instances_have_independent_manifests_and_lifecycle (test_systemd_provider.SystemdServiceProviderTests.test_two_instances_have_independent_manifests_and_lifecycle) ... ok
+
+----------------------------------------------------------------------
+Ran 12 tests in 0.013s
+
+OK

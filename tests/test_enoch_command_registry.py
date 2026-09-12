@@ -7,7 +7,13 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from enoch.commands import CORE_COMMANDS, core_command, core_command_names, help_message
+from enoch.commands import (
+    CORE_COMMANDS,
+    core_command,
+    core_command_names,
+    help_message,
+    runtime_command_reference,
+)
 
 
 class CoreCommandRegistryTests(unittest.TestCase):
@@ -54,6 +60,31 @@ class CoreCommandRegistryTests(unittest.TestCase):
             overview,
         )
         self.assertIn("Example: /help worktree", overview)
+
+    def test_help_uses_chat_provider_command_prefix(self) -> None:
+        overview = help_message(command_prefix="!")
+        evolve = help_message("evolve", command_prefix="!")
+
+        self.assertIn(
+            "Use !help <command> for detailed usage and subcommands.",
+            overview,
+        )
+        self.assertIn("!status - show identity", overview)
+        self.assertIn("!evolve propose", evolve)
+        self.assertNotIn("\n/evolve propose", evolve)
+
+    def test_runtime_command_reference_exposes_exact_provider_commands(self) -> None:
+        reference = runtime_command_reference(command_prefix="!")
+
+        self.assertIn("!evolve config mode <disabled|co-evolve|auto-evolve>", reference)
+        self.assertIn(
+            "co-evolve - propose improvements for human approval; brainstorming is manual",
+            reference,
+        )
+        self.assertIn("!evolve config schedule off to stop scheduled proposals", reference)
+        self.assertNotIn("without scheduled proposals", reference)
+        self.assertIn("!task resume <id|all>", reference)
+        self.assertNotIn("\n/evolve", reference)
 
     def test_evolve_help_exposes_only_the_consolidated_surface(self) -> None:
         usage = help_message("evolve")

@@ -68,14 +68,16 @@ def load_agent_skills(target: str = "", *, root: Path | None = None) -> AgentSki
         )
 
     agent_root = resolve_agent_root(target, root=root)
-    identity_path = _identity_path(agent_root)
-    if identity_path is None:
+    body_path = _body_path(agent_root)
+    if body_path is None:
         if not _is_self_target(target):
-            raise SkillsError(f"Could not find an identity.yaml under {agent_root}.")
-        identity_text = _package_text("identity.yaml")
+            raise SkillsError(
+                f"Could not find a body.yaml or legacy identity.yaml under {agent_root}."
+            )
+        identity_text = _package_text("body.yaml")
         package_mode = True
     else:
-        identity_text = identity_path.read_text(encoding="utf-8")
+        identity_text = body_path.read_text(encoding="utf-8")
         package_mode = False
 
     return parse_agent_catalog(
@@ -171,9 +173,8 @@ def _load_published_agent_skills(
     source: PublishedSource | None = None,
 ) -> AgentSkills:
     source = source or resolve_published_source(name, root=root)
-    identity_text = _published_text(
+    identity_text = _published_body_text(
         name,
-        f"src/{name}/identity.yaml",
         root=root,
         ref=source.revision,
     )
@@ -232,16 +233,41 @@ def _target_argument(text: str, *, prefix: str) -> str:
     return stripped
 
 
-def _identity_path(root: Path) -> Path | None:
+def _body_path(root: Path) -> Path | None:
     candidates = [
+        root / "src" / root.name / "body.yaml",
+        root / "body.yaml",
         root / "src" / root.name / "identity.yaml",
         root / "identity.yaml",
     ]
     for candidate in candidates:
         if candidate.exists():
             return candidate
-    matches = sorted(root.glob("src/*/identity.yaml"))
-    return matches[0] if matches else None
+    for pattern in ("src/*/body.yaml", "src/*/identity.yaml"):
+        matches = sorted(root.glob(pattern))
+        if matches:
+            return matches[0]
+    return None
+
+
+def _published_body_text(
+    name: str,
+    *,
+    root: Path | None,
+    ref: str,
+) -> str:
+    errors: list[SkillsError] = []
+    for filename in ("body.yaml", "identity.yaml"):
+        try:
+            return _published_text(
+                name,
+                f"src/{name}/{filename}",
+                root=root,
+                ref=ref,
+            )
+        except SkillsError as error:
+            errors.append(error)
+    raise errors[-1]
 
 
 def _skill_metadata_text(

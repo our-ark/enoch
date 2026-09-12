@@ -7,6 +7,7 @@ from typing import Callable
 from our_ark_provider_kit import agent_context
 from our_ark_telegram.core import (
     DEFAULT_TELEGRAM_POLL_TIMEOUT,
+    TelegramBotPeer,
     TelegramClient,
     TelegramConfig,
     TelegramError,
@@ -48,6 +49,7 @@ def load_config(root: Path | None = None) -> TelegramConfig:
         token=token,
         allowed_chat_id=allowed_chat_id,
         poll_timeout=poll_timeout,
+        bot_peers=_bot_peers(settings),
     )
 
 
@@ -110,6 +112,8 @@ def setup_provider(
             return "Telegram poll timeout must be at least 1 second."
         write_section_value("telegram", "poll_timeout", str(timeout), root)
         return f"Telegram poll timeout saved to {config_path(root)}."
+    if action in {"peer", "bot-peer", "agent-peer"}:
+        return _setup_peer(argument, root, prefix=prefix)
     if not action:
         settings = read_section("telegram", root)
         saved = ""
@@ -131,6 +135,7 @@ def _setup_status(root: Path) -> str:
     token = settings.get("bot_token", "").strip()
     conversation = settings.get("allowed_chat_id", "").strip()
     timeout = settings.get("poll_timeout", "").strip() or str(DEFAULT_TELEGRAM_POLL_TIMEOUT)
+    peers = _bot_peers(settings)
     return "\n".join(
         [
             "Telegram provider setup:",
@@ -138,6 +143,12 @@ def _setup_status(root: Path) -> str:
             f"- bot token: {'saved' if token else 'missing'}",
             f"- conversation lock: {conversation or 'not set'}",
             f"- poll timeout: {timeout}",
+            "- bot peers: "
+            + (
+                ", ".join(f"{peer.alias}={peer.address} ({peer.user_id})" for peer in peers)
+                if peers
+                else "none"
+            ),
         ]
     )
 
@@ -151,6 +162,8 @@ def _setup_usage(prefix: str, service_slug: str) -> str:
             f"{command} token <token>",
             f"{command} chat <chat_id>",
             f"{command} poll-timeout <seconds>",
+            f"{command} peer <alias> <@username> <bot-user-id>",
+            f"{command} peer remove <alias>",
         ]
     )
 
@@ -191,3 +204,55 @@ def _integer(value: str, *, name: str) -> int:
     if parsed < 1:
         raise TelegramError(f"{name} must be at least 1.")
     return parsed
+
+
+def _bot_peers(settings: dict[str, str]) -> tuple[TelegramBotPeer, ...]:
+    peers: list[TelegramBotPeer] = []
+    for key, value in sorted(settings.items()):
+        if not key.startswith("peer_"):
+            continue
+        username, separator, raw_id = value.strip().partition("|")
+        if not separator:
+            raise TelegramError(
+                f"Telegram bot peer {key[5:]!r} must use @username|bot-user-id."
+            )
+        try:
+            peer = TelegramBotPeer(key[5:], username, int(raw_id))
+        except (TypeError, ValueError) as error:
+            raise TelegramError(f"Invalid Telegram bot peer {key[5:]!r}: {error}") from error
+        peers.append(peer)
+    return tuple(peers)
+
+
+def _setup_peer(argument: str, root: Path, *, prefix: str) -> str:
+    context = agent_context(root)
+    config = context.module("config")
+    parts = argument.split()
+    if parts and parts[0].lower() in {"remove", "clear", "delete"}:
+        if len(parts) != 2:
+            return _setup_usage(prefix, context.service_slug)
+        try:
+            alias = TelegramBotPeer(parts[1], "placeholder_bot", 1).alias
+        except ValueError as error:
+            return str(error)
+        config.write_section_value("telegram", f"peer_{alias}", None, root)
+        return f"Telegram bot peer {alias} removed. Restart {context.name} to apply it."
+    if len(parts) != 3:
+        return _setup_usage(prefix, context.service_slug)
+    try:
+        peer = TelegramBotPeer(parts[0], parts[1], int(parts[2]))
+    except (TypeError, ValueError) as error:
+        return str(error)
+    config.write_section_value(
+        "telegram",
+        f"peer_{peer.alias}",
+        peer.config_value,
+        root,
+    )
+    return "\n".join(
+        [
+            f"Telegram bot peer {peer.alias} saved as {peer.address} ({peer.user_id}).",
+            f"Restart {context.name} so the daemon loads the peer allowlist:",
+            f"bin/{context.service_slug}-daemon restart",
+        ]
+    )

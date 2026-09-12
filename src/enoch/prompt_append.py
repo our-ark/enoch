@@ -39,11 +39,11 @@ class TaskRegressionSignals:
     signals: tuple[TaskRegressionSignal, ...]
 
 
-def read_only_turn_prompt(message: str) -> str:
+def read_only_turn_prompt(message: str, *, command_prefix: str = "/") -> str:
     return _with_blocks(
         message,
         [
-            _read_only_wrapper_block(),
+            _read_only_wrapper_block(command_prefix=command_prefix),
             _state_freshness_block(),
             _memory_request_block(),
             _task_regression_block(),
@@ -162,14 +162,28 @@ def _with_blocks(message: str, blocks: list[str]) -> str:
     ).strip()
 
 
-def _read_only_wrapper_block() -> str:
+def _read_only_wrapper_block(*, command_prefix: str = "/") -> str:
     return "\n".join(
         [
             "Read-only turn:",
             "You are in read-only mode.",
             "Talk through the request, answer questions, and help the human decide what to do.",
             "Do not request an automatic edit from this conversation turn.",
-            "If the human wants Enoch to do work, tell them to use /do for foreground work, /task for queued background work, or /backlog for deferred idle-time work.",
+            (
+                "Before suggesting a generic work command, use a direct command from "
+                "the active chat command reference when one already performs the "
+                "requested operation."
+            ),
+            (
+                "If the exact syntax is uncertain, tell the human to use "
+                f"{command_prefix}help <command>; do not invent a command."
+            ),
+            (
+                "If the human wants Enoch to do work, tell them to use "
+                f"{command_prefix}do for foreground work, {command_prefix}task for "
+                f"queued background work, or {command_prefix}backlog for deferred "
+                "idle-time work."
+            ),
         ]
     )
 

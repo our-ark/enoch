@@ -542,7 +542,7 @@ def _evolve_skip_reason(proposal: EvolveProposal) -> str:
     return "no-candidate"
 
 
-def _format_evolve_proposal(proposal: EvolveProposal) -> str:
+def _format_evolve_proposal(proposal: EvolveProposal, *, display_name: str = "Enoch") -> str:
     report = proposal.report
     if report.state.mode == MODE_DISABLED:
         return (
@@ -554,11 +554,11 @@ def _format_evolve_proposal(proposal: EvolveProposal) -> str:
     if candidate is None and not (
         curation is not None and curation.remove_suggestions
     ):
-        message = "Enoch found no new evolve candidate to propose."
+        message = f"{display_name} found no new evolve candidate to propose."
         activity = _format_proposal_activity(proposal)
         return message + (f"\n\n{activity}" if activity else "")
     lines = [
-        "Enoch proposes:",
+        f"{display_name} proposes:",
         f"Theme: {report.state.theme or 'not set'}",
         f"Ranked {len(proposal.candidates)} actionable candidate(s) from the evolution pathways.",
         "Deterministic ranking was used only for bounded input ordering and fallback.",
@@ -786,7 +786,7 @@ def _format_evolve_candidates(candidates: tuple[EvolveCandidate, ...], *, includ
 
 def _evolve_next_action(report: EvolveReport) -> str:
     if report.state.mode == MODE_DISABLED:
-        return "disabled; Enoch will not collect or rank self-evolution candidates."
+        return "disabled; self-evolution candidate collection and ranking are off."
     if report.top_candidate is None:
         return "no candidate yet."
     if report.state.mode == MODE_AUTO_EVOLVE:

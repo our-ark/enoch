@@ -7,7 +7,8 @@
 <p align="center"><strong>Build your agent. Let her grow with you.</strong></p>
 
 <p align="center">
-  <a href="https://arxiv.org/abs/2607.28691"><img src="https://img.shields.io/badge/paper-arXiv%3A2607.28691-B31B1B" alt="arXiv:2607.28691"></a>
+  <a href="https://arxiv.org/abs/2609.00546"><img src="https://img.shields.io/badge/architecture-arXiv%3A2609.00546-B31B1B" alt="Runtime-Independent Persistent Agents, arXiv:2609.00546"></a>
+  <a href="https://arxiv.org/abs/2607.28691"><img src="https://img.shields.io/badge/software%20body-arXiv%3A2607.28691-B31B1B" alt="Code Is the Body, arXiv:2607.28691"></a>
 </p>
 
 Enoch is a personal software agent you build for yourself. She lives in your
@@ -20,11 +21,40 @@ and operational experience into tested, reviewable changes while you control
 what is adopted. It is built for researchers, agent builders, and power users
 who want to run or fork an agent body.
 
+## Persistent Agent Boundary
+
+Enoch separates the persistent agent from the runtime that currently executes
+her:
+
+![An installed persistent agent consists of identity, private durable memory, and an authorized software-body revision above a boundary that binds it to replaceable reasoners, harnesses, hosts, and interaction surfaces.](docs/images/persistent-agent-boundary.svg)
+
+An installed agent instance is the continuity-bearing substrate
+`P=(I,M,B)`: an architectural identity representation in private
+`self.json`, durable memory and workflow state, and an authorized revision of
+the versioned software body. The body is the repository: code, tools, policies,
+tests, and provider contracts, not `body.yaml` alone.
+
+The current reasoner or model, orchestration harness, and host form the
+replaceable execution substrate `E=(R,H,D)`. Telegram, Slack, APIs, and user
+interfaces are replaceable interaction surfaces `S`. These deployment
+components may change without creating a new agent when identity, memory, body
+lineage, and governed continuation authority are preserved.
+
 ## Research Foundation
 
-Enoch is the reference agent implementation evaluated in
+Enoch is the reference implementation of
+[*Runtime-Independent Persistent Agents: Preserving Identity, Memory, and Code
+Across Models, Harnesses, and Servers*](https://arxiv.org/abs/2609.00546). The
+paper separates a continuity-bearing identity, memory, and body substrate from
+replaceable reasoners, harnesses, hosts, and interaction surfaces. Its frozen
+implementation evidence uses commit
+[`c8013ed`](https://github.com/our-ark/enoch/commit/c8013ed249bc11bc13f3843ed0f0cb9729f858c1)
+and reports 833 core tests plus 92 separately executed provider and library
+tests.
+
+The software-body foundation was introduced in
 [*Code Is the Body: Agent-Owned Software Bodies for Recursive Evolution and
-Descent*](https://arxiv.org/abs/2607.28691). The paper's frozen reproducibility
+Descent*](https://arxiv.org/abs/2607.28691). That paper's frozen reproducibility
 snapshot uses [Enoch
 v0.3.1](https://github.com/our-ark/enoch/releases/tag/v0.3.1) at commit
 [`1021e1d`](https://github.com/our-ark/enoch/commit/1021e1dacce85f4a2edebd865673671bb37a2142),
@@ -38,6 +68,13 @@ notes](https://github.com/our-ark/.github/blob/main/docs/papers/code-is-the-body
 record the evaluated artifacts, citation, reproduction steps, and the
 difference between the paper's six body-change origins and Enoch's four
 Evolution candidate pathways.
+
+Later frozen checks for the developing CITB workshop version are retained in
+the [8 September 2026 replication records](.github/replication/citb-2026-09-08/README.md).
+They identify Genesis C1 and Enoch B2, provide reproduction commands and
+path-redacted failure/success traces, and include a separate Linux CI
+confirmation. They do not replace the published arXiv snapshot or RIPA's
+evidence.
 
 ## Why Enoch Is Different
 
@@ -71,6 +108,25 @@ Each generation inherits a versioned code body and Git history, then develops a
 new specialization. This lineage describes software provenance, not model
 checkpoints or a fictional family tree.
 
+## Body and Self
+
+Enoch keeps executable body identity separate from portable personal identity:
+
+| Contract | Location | Meaning | Lifecycle |
+| --- | --- | --- | --- |
+| Body | `src/enoch/body.yaml` | package, role, code mission, principles, and software lineage | human-readable, reviewed, and versioned with code |
+| Self | private `.enoch/self.json` | personal designation, relationships, personality, values, care behavior, and agent lineage | schema-validated, private, and portable between compatible bodies |
+
+`self.json` is JSON because it is a strict machine-governed interchange
+contract. Its public v1 schema is packaged at
+`src/enoch/schemas/ai-agent-identity.schema.json`. `body.yaml` remains YAML
+because it is a small human-authored repository manifest. At every fresh
+session, Enoch loads both into separate startup-context sections; without a
+`self.json`, Enoch runs with body identity only. A legacy `identity.yaml`
+remains readable during descendant migration but is no longer Enoch's
+canonical body file. `/self` reports the installed personal identity when one
+exists and otherwise reports the body identity.
+
 ## Core Skills
 
 | Skill | What Enoch can do |
@@ -82,10 +138,11 @@ checkpoints or a fictional family tree.
 | [`inherit`](src/enoch/skills/inherit/SKILL.md) | Discover direct-ancestor skills and changes for selective inheritance. |
 | [`skill-library`](src/enoch/skills/skill-library/SKILL.md) | Package reusable, agent-neutral skill implementations as immutable libraries with thin adapters. |
 
-The reference stack also includes `telegram-talk`, `telegram-vision`, and
-`github` integration skills. They live outside the core agent body and can be
-replaced with other provider packages. Run `/skills` on an active instance to
-inspect its complete installed skill set.
+The repository also carries reference providers for Claude Code, Telegram,
+Slack, GitHub, launchd, and systemd, plus the `telegram-talk`,
+`telegram-vision`, `slack-talk`, and `github` integration skills. They live
+outside the portable behavior boundary and can be replaced. Run `/skills` on
+an active instance to inspect its complete installed skill set.
 
 ## Requirements
 
@@ -103,7 +160,7 @@ included.
 | Capability | Reference provider | Replaceable with |
 | --- | --- | --- |
 | Chat | Telegram | Slack, Discord, another chat system, or a custom interface |
-| Agent runtime | Codex CLI | Claude or another agent runtime |
+| Agent runtime | Codex CLI / Claude Code | Another local or hosted agent runtime |
 | Version control | Git | Another version-control implementation |
 | Code forge | GitHub | GitLab, Gitea, or another forge |
 | Background service | launchd on macOS; systemd on Linux | Another process or service manager |
@@ -118,9 +175,10 @@ can be added through the
 variables. Add `runtime`, `forge`, or `service` providers only when the
 built-in or foreground behavior is not sufficient.
 
-The reference providers require a Codex CLI login, Git, GitHub CLI
-authentication for publishing, Telegram credentials for chat, and either
-launchd or a systemd user session for background operation.
+The reference providers require a login for the selected Codex or Claude CLI,
+Git, GitHub CLI authentication for publishing, credentials for the selected
+chat provider, and either launchd or a systemd user session for background
+operation.
 
 ## Quick Start
 
@@ -145,11 +203,41 @@ Inspect private-state compatibility with `bin/enoch state validate`. Use
 before applying it with `bin/enoch state migrate`. Migrations back up affected
 files and never rewrite artifact/evidence storage.
 
+For migration between hosts, Enoch can export a checksummed portable-state
+bundle, fence the source instance, validate and transactionally import it into the
+same software-body revision, advance continuation authority on the target, and
+write a machine-readable verification report. Credentials and provider-native
+sessions are rebound on the target rather than copied. See
+[`docs/host-migration.md`](docs/host-migration.md) for the complete procedure.
+
 ## Run
 
 ```bash
 bin/enoch
 ```
+
+### Multiple independent instances
+
+Use one checkout or linked worktree per installed agent. For example, from
+the source checkout:
+
+```bash
+bin/enoch init --instance work --worktree ../enoch-work
+bin/enoch init --instance life --worktree ../enoch-life
+```
+
+Configure each instance from its own directory, then run its `bin/enoch-agent`
+in the foreground or `bin/enoch-daemon start` in the background. Each directory
+has separate `.enoch/` identity, configuration, memory, queue, and execution
+authority. Use separate chat-provider credentials/endpoints for independent
+agents; do not copy private state from one installation to another.
+
+The launchd and systemd providers assign new services a stable suffix derived
+from the resolved installation path. Start, stop, restart, status, logs, and
+uninstall therefore target that installation only. Existing package-only
+services remain manageable when their manifest points to the current
+installation. See [multi-instance deployment](docs/multi-instance.md) for
+compatibility and isolation boundaries.
 
 ## Telegram
 
@@ -172,6 +260,24 @@ bin/enoch-daemon start
 ```
 
 Then open the bot in Telegram and send `/status`.
+
+### Authenticated agent peers
+
+Telegram's Bot-to-Bot Communication mode can carry structured messages between
+agents on different machines. Enable that mode for both bots in `@BotFather`,
+then allow each remote bot by a local alias, public username, and numeric bot
+user ID:
+
+```bash
+bin/enoch setup peer worker @worker_agent_bot 7000000001
+bin/enoch-daemon restart
+```
+
+Both the Telegram `from.id` and username must match. Peer messages bypass the
+owner conversation lock only to an extension that explicitly implements the
+agent-peer lifecycle hook; they never enter Enoch's owner command or natural
+conversation paths. Remove access with
+`bin/enoch setup peer remove worker` and restart the daemon.
 
 Use `/help` to see every Telegram command. Use `/help <command>` for detailed
 usage and subcommands, for example `/help task` or `/help worktree`. `/start`
@@ -219,8 +325,8 @@ three separate sections:
 - code health: Python, the complete test suite, and import smoke tests;
 - environment readiness: the locked Python build backend required by the
   portable-install tests;
-- operational readiness: Codex login, forge authentication, version-control
-  workspace state, and durable `.enoch` state storage.
+- operational readiness: selected runtime access, forge authentication,
+  version-control workspace state, and durable `.enoch` state storage.
 
 Doctor preserves the beginning and end of long failures so the final exception
 is not lost. It validates existing JSON and JSONL state without replacing
@@ -238,14 +344,16 @@ python -m pip install --disable-pip-version-check --require-hashes \
 
 ## Providers
 
-Codex, Git, and a local-only forge are core defaults. Telegram, GitHub,
-launchd, and systemd are reference provider packages under `libraries/`.
+Codex, Git, and a local-only forge are core defaults. Claude, Telegram, Slack,
+GitHub, launchd, and systemd are reference provider packages under `libraries/`.
 Installed Python packages can
 add or replace chat, agent runtime, version control, code forge, and host
 service providers through the `our_ark.providers` entry-point group. Select them
 in `.enoch/config.yaml` or with `/config provider`. launchd is selected on
 macOS; systemd user services are selected on Linux. Install the complete
-reference stack with `pip install '.[reference]'` when working from a clone.
+reference stack, including the Claude provider, with
+`pip install '.[reference]'` when working from a clone. The source checkout also
+discovers `libraries/claude` directly.
 
 For a new environment, install provider packages exposing `chat.<name>` and
 `vcs.<name>` entry points, then select only those two capabilities:
@@ -285,7 +393,7 @@ workflow without owning polling, a second scheduler, or a second task queue.
 Packages are discovered through
 `our_ark.extensions`; see [`docs/extensions.md`](docs/extensions.md).
 
-Descendant launchers can bind their own identity, mutable identity path,
+Descendant launchers can bind their own body identity, mutable body path,
 presentation, required extensions, provider selections, and fenced workflow
 factory through `ApplicationComposition` without subclassing the application
 core. Enoch retains polling and lifecycle ownership; see
@@ -357,6 +465,13 @@ use this model: descendants inherit provider contracts, configuration, and core
 behavior, while `genesis.toml` keeps immutable dependencies on selected provider
 commits instead of copying concrete integrations into every descendant body.
 
+Development CI also creates two full-body generations using an immutable
+Genesis revision. This catches dependency declarations that work with the
+checkout's local libraries but fail after those libraries are excluded from a
+descendant. The `recursive-descent-evidence` CI artifact records both birth
+gates per generation, exact revisions, raw validation output, and test skips.
+Passing the normal core suite alone is not this recursive compatibility check.
+
 ## Provenance
 
 - created by: Genesis
@@ -383,9 +498,13 @@ guidelines.
 
 ## Citation
 
-Cite [*Code Is the Body*](https://arxiv.org/abs/2607.28691) when referring to
-the OurArk architecture. When reporting experiments or implementation results,
-also cite the exact Enoch release using [CITATION.cff](CITATION.cff).
+Cite [*Runtime-Independent Persistent
+Agents*](https://arxiv.org/abs/2609.00546) when referring to the persistent-agent
+boundary, replaceable runtimes, authorized migration, or continuation
+authority. Cite [*Code Is the Body*](https://arxiv.org/abs/2607.28691) when
+referring to agent-owned software bodies, governed code evolution, or descent.
+When reporting experiments or implementation results, also cite the exact
+Enoch release using [CITATION.cff](CITATION.cff).
 
 ## License
 

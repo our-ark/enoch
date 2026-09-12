@@ -1,0 +1,10 @@
+{
+  "command": [
+    ".venv/bin/python",
+    "recursive_descent.py"
+  ],
+  "started_at_utc": "2026-09-08T04:10:22.768141+00:00",
+  "elapsed_seconds": 126.171,
+  "exit_code": 1,
+  "successful": false
+}

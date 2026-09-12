@@ -128,7 +128,9 @@ class GithubForgeProvider:
         lineage = agent_context(self.root).module("lineage.core")
 
         name = repo.split("/")[-1]
-        content = self._content_text(repo, f"src/{name}/identity.yaml", branch)
+        content = self._content_text(repo, f"src/{name}/body.yaml", branch)
+        if content is None:
+            content = self._content_text(repo, f"src/{name}/identity.yaml", branch)
         return lineage.parse_declared_skills(content) if content is not None else ()
 
     def merged_prs(self, repo: str, branch: str, limit: int = 20) -> list[dict[str, Any]]:

@@ -1,0 +1,111 @@
+{
+  "source_revision": "7ffaba854015d0854cfbb543ee934520ef2d5c30",
+  "source_tracked_changes_before": "",
+  "source_tracked_changes_after": "",
+  "python": "3.12.14",
+  "platform": "macOS-26.4.1-arm64-arm-64bit",
+  "start_directory": "libraries/telegram/tests",
+  "top_level_directory": null,
+  "elapsed_seconds": 0.094,
+  "tests_run": 23,
+  "failures": 0,
+  "errors": 0,
+  "skipped": 0,
+  "expected_failures": 0,
+  "unexpected_successes": 0,
+  "successful": true,
+  "outcomes": [
+    {
+      "test": "test_presentation.TelegramPresentationTests.test_chunking_keeps_structured_entries_together",
+      "status": "passed"
+    },
+    {
+      "test": "test_presentation.TelegramPresentationTests.test_chunking_prefers_logical_text_boundaries",
+      "status": "passed"
+    },
+    {
+      "test": "test_presentation.TelegramPresentationTests.test_distinguishes_labels_commands_and_paths",
+      "status": "passed"
+    },
+    {
+      "test": "test_presentation.TelegramPresentationTests.test_fenced_code_is_escaped_and_balanced",
+      "status": "passed"
+    },
+    {
+      "test": "test_presentation.TelegramPresentationTests.test_local_markdown_links_show_copyable_paths",
+      "status": "passed"
+    },
+    {
+      "test": "test_presentation.TelegramPresentationTests.test_long_code_blocks_split_into_valid_html_chunks",
+      "status": "passed"
+    },
+    {
+      "test": "test_presentation.TelegramPresentationTests.test_ordinary_bullets_do_not_render_as_cards",
+      "status": "passed"
+    },
+    {
+      "test": "test_presentation.TelegramPresentationTests.test_renders_markdown_without_trusting_source_html",
+      "status": "passed"
+    },
+    {
+      "test": "test_presentation.TelegramPresentationTests.test_structured_list_entries_render_as_distinct_cards",
+      "status": "passed"
+    },
+    {
+      "test": "test_presentation.TelegramPresentationTests.test_worktree_cards_distinguish_branches_and_paths",
+      "status": "passed"
+    },
+    {
+      "test": "test_telegram.TelegramLibraryTests.test_attachment_download_delegates_to_file_transport",
+      "status": "passed"
+    },
+    {
+      "test": "test_telegram.TelegramLibraryTests.test_chunks_messages_and_rejects_invalid_size",
+      "status": "passed"
+    },
+    {
+      "test": "test_telegram.TelegramLibraryTests.test_client_implements_chat_provider_contract",
+      "status": "passed"
+    },
+    {
+      "test": "test_telegram.TelegramLibraryTests.test_conformance_provider_capabilities_match_kind",
+      "status": "passed"
+    },
+    {
+      "test": "test_telegram.TelegramLibraryTests.test_conformance_provider_matches_public_contract",
+      "status": "passed"
+    },
+    {
+      "test": "test_telegram.TelegramLibraryTests.test_delivery_failure_is_not_retried_as_plain_text",
+      "status": "passed"
+    },
+    {
+      "test": "test_telegram.TelegramLibraryTests.test_download_enforces_size_limit",
+      "status": "passed"
+    },
+    {
+      "test": "test_telegram.TelegramLibraryTests.test_edit_uses_the_same_display_only_renderer",
+      "status": "passed"
+    },
+    {
+      "test": "test_telegram.TelegramLibraryTests.test_event_exposes_largest_photo_as_attachment",
+      "status": "passed"
+    },
+    {
+      "test": "test_telegram.TelegramLibraryTests.test_format_rejection_falls_back_to_original_plain_text",
+      "status": "passed"
+    },
+    {
+      "test": "test_telegram.TelegramLibraryTests.test_ignores_unsupported_attachment_without_text",
+      "status": "passed"
+    },
+    {
+      "test": "test_telegram.TelegramLibraryTests.test_private_bot_peer_is_strictly_authenticated_and_addressable",
+      "status": "passed"
+    },
+    {
+      "test": "test_telegram.TelegramLibraryTests.test_send_renders_html_only_in_transport_payload",
+      "status": "passed"
+    }
+  ]
+}

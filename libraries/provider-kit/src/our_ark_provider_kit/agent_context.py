@@ -129,10 +129,18 @@ def _discover_imported_agent() -> tuple[str, Path | None]:
 
 
 def _identity_name(root: Path, package: str) -> str:
-    path = root / "src" / package / "identity.yaml"
-    try:
-        text = path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
+    paths = (
+        root / "src" / package / "body.yaml",
+        root / "src" / package / "identity.yaml",
+    )
+    text = ""
+    for path in paths:
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        break
+    if not text:
         return ""
     match = _IDENTITY_NAME.search(text)
     return match.group(1).strip() if match else ""

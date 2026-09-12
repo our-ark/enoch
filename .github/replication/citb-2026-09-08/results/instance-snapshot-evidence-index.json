@@ -1,0 +1,664 @@
+{
+  "schema_version": 1,
+  "snapshots": {
+    "C1": "61723cd936c6d5f9a9ed163cf00321fc3fb79722",
+    "B2": "7ffaba854015d0854cfbb543ee934520ef2d5c30"
+  },
+  "environment": {
+    "python": "3.12.14",
+    "platform": "macOS-26.4.1-arm64-arm-64bit"
+  },
+  "regression_inventory_not_headline_evidence": {
+    "creator": 44,
+    "core": 859,
+    "providers": {
+      "claude": 13,
+      "github": 15,
+      "launchd": 12,
+      "provider-kit": 18,
+      "skill-catalog": 3,
+      "slack": 17,
+      "systemd": 12,
+      "telegram": 23,
+      "telegram-vision": 5
+    },
+    "provider_total": 118
+  },
+  "boundary_fixture_checks": [
+    {
+      "test": "test_genesis_creator.GenesisCreatorTests.test_birth_removes_ignored_private_state_created_by_validation",
+      "status": "passed"
+    },
+    {
+      "test": "test_genesis_creator.GenesisCreatorTests.test_create_ignores_untracked_source_artifacts",
+      "status": "passed"
+    },
+    {
+      "test": "test_genesis_creator.GenesisCreatorTests.test_manifest_rejects_runtime_dependency_inside_body",
+      "status": "passed"
+    }
+  ],
+  "focused_core_subsets_not_additional_tests": {
+    "evolution_intake_curation_events": [
+      {
+        "test": "tests.test_enoch_evolve.EnochEvolveTests.test_approve_candidate_archives_it",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_evolve.EnochEvolveTests.test_backlog_and_inheritance_are_not_evolution_evidence",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_evolve.EnochEvolveTests.test_brainstorm_candidate_deduplicates_change_across_themes",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_evolve.EnochEvolveTests.test_brainstorm_candidates_remain_visible_across_theme_changes",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_evolve.EnochEvolveTests.test_cron_schedule_rejects_non_daily_expression",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_evolve.EnochEvolveTests.test_cron_schedule_uses_daily_cron_expression",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_evolve.EnochEvolveTests.test_daily_schedule_rejects_invalid_time",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_evolve.EnochEvolveTests.test_daily_schedule_uses_next_local_time",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_evolve.EnochEvolveTests.test_default_state_is_co_evolve",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_evolve.EnochEvolveTests.test_direct_pathways_remain_separate_candidate_sources",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_evolve.EnochEvolveTests.test_disabled_mode_does_not_collect_candidates",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_evolve.EnochEvolveTests.test_empty_proposal_does_not_curate_or_invent_candidates",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_evolve.EnochEvolveTests.test_learning_candidate_deduplicates_exact_skill_snapshot",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_evolve.EnochEvolveTests.test_legacy_execution_statuses_migrate_to_approved_archive",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_evolve.EnochEvolveTests.test_legacy_feedback_candidate_infers_split_provenance",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_evolve.EnochEvolveTests.test_legacy_selected_and_rejected_statuses_are_migrated",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_evolve.EnochEvolveTests.test_proposal_skips_approved_candidate",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_evolve.EnochEvolveTests.test_removed_candidate_status_is_persisted_across_reports",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_evolve.EnochEvolveTests.test_repeated_successes_do_not_become_hardcoded_candidates",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_evolve.EnochEvolveTests.test_schedule_can_be_set_claimed_and_disabled",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_evolve.EnochEvolveTests.test_scheduled_brainstorm_claim_is_theme_scoped_and_cooled_down",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_evolve.EnochEvolveTests.test_scheduled_brainstorm_preserves_legacy_cooldown_attempts",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_evolve.EnochEvolveTests.test_semantic_experience_candidate_keeps_task_causal_chain",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_evolve.EnochEvolveTests.test_stored_actionable_backlog_candidate_is_retired",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_evolve.EnochEvolveTests.test_task_failures_are_pending_evidence_not_hardcoded_candidates",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_evolve.EnochEvolveTests.test_task_outcomes_do_not_mutate_approved_candidate",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_evolve.EnochEvolveTests.test_theme_is_persisted",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_evolve.EnochEvolveTests.test_unstarted_cancellation_is_not_a_hardcoded_candidate",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_evolve_curation.EnochEvolveCurationTests.test_all_sources_enter_bounded_curation_with_unchanged_provenance",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_evolve_curation.EnochEvolveCurationTests.test_bounded_curation_retains_one_candidate_from_each_source",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_evolve_curation.EnochEvolveCurationTests.test_completion_evidence_loading_failure_uses_explicit_fallback",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_evolve_curation.EnochEvolveCurationTests.test_context_only_feedback_is_suggested_for_removal_not_execution",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_evolve_curation.EnochEvolveCurationTests.test_curation_cannot_invent_a_brainstorm_candidate",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_evolve_curation.EnochEvolveCurationTests.test_direct_merged_candidate_link_supports_already_resolved_evidence",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_evolve_curation.EnochEvolveCurationTests.test_duplicate_and_resolved_suggestions_are_auditable_but_do_not_remove",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_evolve_curation.EnochEvolveCurationTests.test_invalid_outputs_use_explicit_deterministic_fallback",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_evolve_curation.EnochEvolveCurationTests.test_legacy_curation_without_evidence_fields_still_loads",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_evolve_curation.EnochEvolveCurationTests.test_llm_recommendation_overrides_pre_rank_without_state_change",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_evolve_curation.EnochEvolveCurationTests.test_only_human_remove_entry_changes_status_and_records_reason",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_evolve_curation.EnochEvolveCurationTests.test_open_pr_partial_failed_and_cancelled_work_cannot_resolve_body_candidate",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_evolve_curation.EnochEvolveCurationTests.test_prompt_receives_bounded_redacted_recent_completed_work",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_evolve_curation.EnochEvolveCurationTests.test_protected_raw_candidate_is_not_recommended_even_by_fallback",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_evolve_curation.EnochEvolveCurationTests.test_semantic_resolution_without_direct_link_and_supersession_are_allowed",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_evolve_curation.EnochEvolveCurationTests.test_timeout_uses_fallback_and_no_recommendation_is_valid",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_evolve_curation.EnochEvolveCurationTests.test_unknown_and_malformed_evidence_refs_are_rejected_without_mutation",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_evolve_events.EnochEvolveEventTests.test_candidate_and_task_requirements_are_validated",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_evolve_events.EnochEvolveEventTests.test_governed_lifecycle_events_require_verified_evidence",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_evolve_events.EnochEvolveEventTests.test_legacy_feedback_event_infers_split_provenance",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_evolve_events.EnochEvolveEventTests.test_loader_skips_malformed_lines",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_evolve_events.EnochEvolveEventTests.test_malformed_evidence_refs_are_rejected_and_legacy_events_still_load",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_evolve_events.EnochEvolveEventTests.test_proposal_and_human_removal_preserve_bounded_evidence_refs",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_evolve_events.EnochEvolveEventTests.test_records_and_filters_evolution_funnel_events",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_evolve_events.EnochEvolveEventTests.test_records_runtime_trace_for_candidate_task_events",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_evolve_events.EnochEvolveEventTests.test_schema_six_promotion_replays_into_semantic_review_fields",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_evolve_events.EnochEvolveEventTests.test_tracks_each_proposal_and_closes_open_disposition",
+        "status": "passed"
+      }
+    ],
+    "parent_assessment_peer_learning": [
+      {
+        "test": "tests.test_enoch_learn.EnochLearnTests.test_loads_validated_skill_snapshot_from_one_revision",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_learn.EnochLearnTests.test_parse_learn_skill_from_agent",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_learn.EnochLearnTests.test_parses_applicable_assessment_with_candidate_contents",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_learn.EnochLearnTests.test_parses_not_applicable_assessment_without_candidate",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_learn.EnochLearnTests.test_prompt_requests_one_structured_assessment_and_candidate",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_learn.EnochLearnTests.test_refuses_hidden_skill",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_learn.EnochLearnTests.test_refuses_missing_skill",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_learn.EnochLearnTests.test_rejects_protected_candidate_scope",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_learn.EnochLearnTests.test_routes_direct_parent_to_inheritance",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_lineage.EnochLineageTests.test_assessment_does_not_process_an_old_inbox_without_a_parent",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_lineage.EnochLineageTests.test_assessment_uses_configurable_fresh_batches",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_lineage.EnochLineageTests.test_codex_assesses_every_new_change_and_caches_by_source",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_lineage.EnochLineageTests.test_cursor_is_not_advanced_when_scan_limit_cannot_reach_it",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_lineage.EnochLineageTests.test_failed_assessment_preserves_change_for_retry",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_lineage.EnochLineageTests.test_format_candidate_and_adaptation_request_include_context",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_lineage.EnochLineageTests.test_format_lineage_includes_pending_change_counts",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_lineage.EnochLineageTests.test_ignore_hides_candidate_from_pending_inbox",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_lineage.EnochLineageTests.test_incremental_cursor_discovers_more_than_twenty_new_commits",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_lineage.EnochLineageTests.test_landed_review_is_required_before_linked_change_becomes_adopted",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_lineage.EnochLineageTests.test_legacy_inbox_is_read_then_migrated_to_private_state",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_lineage.EnochLineageTests.test_lineage_assessment_limits_are_configurable_and_bounded",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_lineage.EnochLineageTests.test_lineage_settings_use_semantic_assessment_defaults",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_lineage.EnochLineageTests.test_load_birth_commit_from_agent_lineage_file",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_lineage.EnochLineageTests.test_load_current_agent_profile_from_identity_yaml",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_lineage.EnochLineageTests.test_load_parent_from_agent_lineage_file",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_lineage.EnochLineageTests.test_missing_diff_is_retried_after_the_discovery_cursor_advances",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_lineage.EnochLineageTests.test_parent_inherit_report_excludes_grandparent_candidates",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_lineage.EnochLineageTests.test_parent_inherit_report_keeps_unassessed_changes_visible",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_lineage.EnochLineageTests.test_parse_declared_skills_from_identity_yaml",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_lineage.EnochLineageTests.test_parse_identity_name_from_identity_yaml",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_lineage.EnochLineageTests.test_parse_lineage_birth_provenance",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_lineage.EnochLineageTests.test_parse_lineage_parent",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_lineage.EnochLineageTests.test_parse_lineage_parent_normalizes_github_url",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_lineage.EnochLineageTests.test_pr_is_assessed_once_instead_of_as_each_constituent_commit",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_lineage.EnochLineageTests.test_refresh_all_ancestors_stores_inbox_candidates",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_lineage.EnochLineageTests.test_refresh_parent_only_stores_direct_parent_candidates",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_lineage.EnochLineageTests.test_refresh_preserves_reviewed_candidate_status",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_lineage.EnochLineageTests.test_refresh_report_includes_lineage_resolution_warnings",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_lineage.EnochLineageTests.test_refresh_stores_direct_commit_changes",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_lineage.EnochLineageTests.test_resolve_lineage_reads_parent_metadata_at_immutable_birth_commit",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_lineage.EnochLineageTests.test_resolve_lineage_reports_inaccessible_parent_lineage",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_lineage.EnochLineageTests.test_resolve_lineage_stops_at_lucy_root_ancestor",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_lineage.EnochLineageTests.test_resolves_ancestor_chain_recursively",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_lineage.EnochLineageTests.test_stored_inherit_inbox_does_not_refresh",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_lineage.EnochLineageTests.test_stored_lineage_report_reconstructs_scan_context",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_lineage_assessment_queue.EnochLineageAssessmentQueueTests.test_failed_job_is_preserved_as_the_last_result",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_lineage_assessment_queue.EnochLineageAssessmentQueueTests.test_job_lifecycle_is_durable",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_lineage_assessment_queue.EnochLineageAssessmentQueueTests.test_new_daemon_reclaims_an_interrupted_running_job",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_lineage_assessment_queue.EnochLineageAssessmentQueueTests.test_only_one_assessment_job_can_be_queued",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_lineage_assessment_queue.EnochLineageAssessmentQueueTests.test_stale_daemon_cannot_finish_a_reclaimed_job",
+        "status": "passed"
+      }
+    ],
+    "governed_workflow_and_update_recovery": [
+      {
+        "test": "tests.test_enoch_e2e.EnochEvolutionEndToEndTests.test_codex_auth_failure_pauses_and_resume_completes_same_task",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_e2e.EnochEvolutionEndToEndTests.test_evolve_approve_publishes_ready_pr_from_latest_main_with_one_progress_message",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_e2e.EnochEvolutionEndToEndTests.test_failed_evolve_task_becomes_semantic_experience_candidate_with_causal_provenance",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_e2e.EnochEvolutionEndToEndTests.test_task_ignores_deleted_review_worktree_without_disturbing_other_workspaces",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_e2e.EnochEvolutionEndToEndTests.test_task_retry_keeps_failed_history_and_evolve_provenance",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_updater.EnochUpdaterTests.test_legacy_update_doctor_module_delegates_after_package_move",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_updater.EnochUpdaterTests.test_post_update_doctor_loads_code_from_updated_worktree",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_updater.EnochUpdaterTests.test_update_activates_authoritative_revision_and_requests_restart",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_updater.EnochUpdaterTests.test_update_defaults_to_enoch_application_name",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_updater.EnochUpdaterTests.test_update_does_not_restart_when_already_up_to_date",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_updater.EnochUpdaterTests.test_update_ignores_lifecycle_for_other_process",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_updater.EnochUpdaterTests.test_update_refuses_dirty_working_copy",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_updater.EnochUpdaterTests.test_update_refuses_revision_outside_authoritative_history",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_updater.EnochUpdaterTests.test_update_rolls_back_when_doctor_fails",
+        "status": "passed"
+      },
+      {
+        "test": "tests.test_enoch_updater.EnochUpdaterTests.test_update_warns_when_running_commit_is_stale_but_disk_is_current",
+        "status": "passed"
+      }
+    ],
+    "concurrent_instance_isolation": [
+      {
+        "test": "tests.test_enoch_multi_instance.EnochMultiInstanceTests.test_two_processes_keep_identity_config_workflow_and_epochs_independent",
+        "status": "passed"
+      }
+    ]
+  },
+  "births": [
+    {
+      "depth": 1,
+      "name": "Noah",
+      "package": "noah",
+      "parent_at_birth": "7ffaba854015d0854cfbb543ee934520ef2d5c30",
+      "birth_commit": "602f56f6d0e222f724aa528aed6561f0d97eee7b",
+      "evaluated_commit": "a59225e9be29df588efc8a063e09b1ee053acf98",
+      "dependency_declarations_unchanged": true,
+      "source_unchanged": true,
+      "shared_libraries_copied": false
+    },
+    {
+      "depth": 2,
+      "name": "Noahchild",
+      "package": "noahchild",
+      "parent_at_birth": "a59225e9be29df588efc8a063e09b1ee053acf98",
+      "birth_commit": "925c8c9452db5f15af8057a59717c17e24ce387f",
+      "evaluated_commit": "72db7aa7d16c51e47ee208b70b1d2fb7a734b81b",
+      "dependency_declarations_unchanged": true,
+      "source_unchanged": true,
+      "shared_libraries_copied": false
+    }
+  ],
+  "validation_gates": [
+    {
+      "depth": 1,
+      "phase": "body",
+      "staged_tree": "812ec2a42726f9e1905951798f497facc3fa9e3f",
+      "discovered": 859,
+      "skipped": 8,
+      "passed": 851
+    },
+    {
+      "depth": 1,
+      "phase": "provenance",
+      "staged_tree": "a987d51f5a418282239ec16df7c877f925ecc8f1",
+      "discovered": 859,
+      "skipped": 8,
+      "passed": 851
+    },
+    {
+      "depth": 2,
+      "phase": "body",
+      "staged_tree": "fb48ecd93244c6f5112fbc98eb7c46ffa42c39c1",
+      "discovered": 859,
+      "skipped": 8,
+      "passed": 851
+    },
+    {
+      "depth": 2,
+      "phase": "provenance",
+      "staged_tree": "cdf73971856d5f0ae9447ceef5bc9d7788c968bd",
+      "discovered": 859,
+      "skipped": 8,
+      "passed": 851
+    }
+  ],
+  "extension_conformance": {
+    "target": "source Enoch, not an installed descendant",
+    "tests_run": 8,
+    "elapsed_seconds": 0.03,
+    "status": "OK",
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "expected_failures": 0,
+    "unexpected_successes": 0
+  },
+  "records": {
+    "creator": {
+      "path": "results/instance-snapshot-genesis.json",
+      "sha256": "993603ec0efe50c1369d733c9b7b9ddeeb84bb8de08eb67e3510545420966b34"
+    },
+    "core": {
+      "path": "results/instance-snapshot-enoch-core.json",
+      "sha256": "9dda220ce7962d78ba8583b1ec9d87f9653f43eaa4909a6cc6698f2e099693f6"
+    },
+    "claude": {
+      "path": "results/instance-snapshot-provider-claude.json",
+      "sha256": "a6093e9c8f601c0038b190ef55cded1945a06e7f0bb7bddf26e0c1c915f0d23b"
+    },
+    "github": {
+      "path": "results/instance-snapshot-provider-github.json",
+      "sha256": "f9b51700c77a3e90e667fbb7db4647d33a2255840539c3357bd45919820bd38a"
+    },
+    "launchd": {
+      "path": "results/instance-snapshot-provider-launchd.json",
+      "sha256": "7f13382fea8189ca181486adb4cc2aba3eba3f31560acbc53f46296f3df9dc42"
+    },
+    "provider-kit": {
+      "path": "results/instance-snapshot-provider-provider-kit.json",
+      "sha256": "e3ac1b10a2bb8b8b73713dfb2b6e2f00a39769d6eccf8b055750a33034c525ee"
+    },
+    "skill-catalog": {
+      "path": "results/instance-snapshot-provider-skill-catalog.json",
+      "sha256": "63d7973ee636365c268c83420f0b9e792ba6a00b9019a64fe16476764812c7ec"
+    },
+    "slack": {
+      "path": "results/instance-snapshot-provider-slack.json",
+      "sha256": "f94a2907d63a033d3ccea1a271321320de90422814dfd0de2de6d5eb5733a287"
+    },
+    "systemd": {
+      "path": "results/instance-snapshot-provider-systemd.json",
+      "sha256": "5a765d3bf5311d57e97a4dd68140fdbce1294f077fcf60b3a399c694472fb20d"
+    },
+    "telegram": {
+      "path": "results/instance-snapshot-provider-telegram.json",
+      "sha256": "e3e1d5edb8af18db25277e63a1b1fd65766e8580a60c69126b062bb3231c9b9a"
+    },
+    "telegram-vision": {
+      "path": "results/instance-snapshot-provider-telegram-vision.json",
+      "sha256": "6e21d36dfefc9ab62deeb1014c678f5bf5a5d210a2559e88f7d2e762c529ff89"
+    },
+    "descent": {
+      "path": "results/instance-snapshot-descent-network.json",
+      "sha256": "105ce9340e2b14066c199e6ed14852c599e8f3f83b3b4693f50c40f40ab5fa21"
+    },
+    "descent_command": {
+      "path": "results/instance-snapshot-descent-network-command.json",
+      "sha256": "de8a72e0bb93cf82894d575e3e32207b12ac0a9e263797acb6b80d6a7c4bcdb9"
+    }
+  },
+  "claim_limits": [
+    "Same reference implementation as RIPA; overlapping regressions are not independent evidence.",
+    "Two births and repeated gates are one linear composition check, not a population study.",
+    "Governed-change tests use reasoning/chat/review fixtures, not live installed adoption.",
+    "Concurrent local workers and service fixtures are not descendant specialization."
+  ]
+}

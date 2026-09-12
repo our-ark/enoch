@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from enoch.formatting import format_doctor_result
+from enoch.identity import load_identity
 from enoch.immune import DoctorDiagnosis
 from enoch.operations.updater import run_update_doctor, update_from_authoritative
 from our_ark_provider_kit import (
@@ -94,23 +95,25 @@ class EnochUpdaterTests(unittest.TestCase):
     ) -> None:
         repository = _repository_with_update()
         run_update_doctor.return_value = _doctor_result()
+        # A runtime-derived override stays distinct after any Genesis rename.
+        application_name = f"Hosted {load_identity().name}"
 
         result = update_from_authoritative(
             ROOT,
             repository=repository,
-            application_name="Noah",
+            application_name=application_name,
         )
 
         run_update_doctor.assert_called_once_with(ROOT)
         self.assertEqual(repository.current.id, "r1")
         self.assertTrue(result.restart_required)
-        self.assertIn(
-            "Noah updated to latest authoritative and doctor passed.",
+        self.assertEqual(
             result.message,
+            f"{application_name} updated to latest authoritative and doctor passed.\n\n"
+            f"{format_doctor_result(run_update_doctor.return_value)}\n\n"
+            "Restarting now. The startup notification will confirm "
+            f"{application_name} came back.",
         )
-        self.assertIn("Restarting now.", result.message)
-        self.assertIn("confirm Noah came back.", result.message)
-        self.assertNotIn("Enoch", result.message)
         self.assertIn("Updated repository from r0 to r1", result.direct_action_result)
         self.assertIn("Restarting into r1.", result.direct_action_result)
         self.assertEqual(result.previous_revision_id, "r0")
@@ -196,6 +199,7 @@ class EnochUpdaterTests(unittest.TestCase):
         run_update_doctor: MagicMock,
     ) -> None:
         repository = _repository_with_update()
+        application_name = f"Hosted {load_identity().name}"
         doctor = _doctor_result()
         doctor.passed = False
         doctor.diagnosis = DoctorDiagnosis(
@@ -209,15 +213,18 @@ class EnochUpdaterTests(unittest.TestCase):
         result = update_from_authoritative(
             ROOT,
             repository=repository,
-            application_name="Noah",
+            application_name=application_name,
         )
 
         self.assertEqual(repository.current.id, "r0")
         self.assertFalse(result.restart_required)
-        self.assertIn("doctor failed", result.message)
-        self.assertIn("Rolled back to r0.", result.message)
-        self.assertIn("currently running Noah process", result.message)
-        self.assertNotIn("Enoch", result.message)
+        self.assertEqual(
+            result.message,
+            f"{application_name} updated to latest authoritative, "
+            "but doctor failed. I am not restarting.\n\n"
+            f"{format_doctor_result(doctor)}\n\nRolled back to r0.\n\n"
+            f"The currently running {application_name} process is still the pre-update code.",
+        )
         self.assertEqual(result.direct_action_result, "")
 
     def test_update_refuses_revision_outside_authoritative_history(self) -> None:

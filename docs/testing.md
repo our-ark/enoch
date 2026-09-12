@@ -22,6 +22,12 @@ delegation independently. GitHub Actions runs them on Linux alongside the core
 suite, so systemd support remains part of the required regression gate while
 launchd behavior is tested hermetically.
 
+Both service suites also exercise independent same-package installations,
+legacy-manifest ownership, and instance-scoped lifecycle commands. The core
+multi-instance test runs two real Python processes with isolated local
+workflows and checks cross-instance state and epoch isolation. See
+[`multi-instance.md`](multi-instance.md) for deployment scope and limitations.
+
 ## Hermetic evolution E2E tests
 
 `tests/test_enoch_e2e.py` exercises the reference evolution stack with real
@@ -88,6 +94,23 @@ has stopped.
 
 This catches packaging metadata conflicts and source-checkout imports that unit
 tests can accidentally hide.
+
+## Host migration
+
+`tests/test_enoch_migration.py` exercises checksummed portable-state export,
+source fencing, exact body-revision matching, read-only import preview,
+transactional import rollback, credential and native-session exclusion,
+optional artifact transfer, authority-generation handoff, verification-report
+generation, and a second migration from an already verified target. The suite
+uses temporary source and target instances and includes one real Git revision
+check without external credentials.
+
+The independent `libraries/claude/tests` suite runs a fake Claude Code CLI
+through the packaged runtime provider. It verifies stream-json parsing, usage
+and progress delivery, restricted read/write tool policies, logical-to-native
+session resume, stale-session recovery, authentication pause behavior, human
+cancellation, health checks, model/effort selection, and per-invocation budget
+configuration without external credentials or network access.
 
 ## Extension conformance suites
 

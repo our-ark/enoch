@@ -1,0 +1,23 @@
+test_conformance_repository_captures_without_staging_assumption (test_provider_kit.BranchlessRepositoryConformanceTests.test_conformance_repository_captures_without_staging_assumption) ... ok
+test_conformance_repository_manages_isolated_workspace (test_provider_kit.BranchlessRepositoryConformanceTests.test_conformance_repository_manages_isolated_workspace) ... ok
+test_conformance_repository_uses_opaque_revisions (test_provider_kit.BranchlessRepositoryConformanceTests.test_conformance_repository_uses_opaque_revisions) ... ok
+test_conformance_review_closes_and_lands_by_opaque_identity (test_provider_kit.IndependentReviewConformanceTests.test_conformance_review_closes_and_lands_by_opaque_identity) ... ok
+test_conformance_review_identity_is_independent_from_revision (test_provider_kit.IndependentReviewConformanceTests.test_conformance_review_identity_is_independent_from_revision) ... ok
+test_conformance_review_represents_stack_and_versions (test_provider_kit.IndependentReviewConformanceTests.test_conformance_review_represents_stack_and_versions) ... ok
+test_capability_contracts_normalize_and_validate_requirements (test_provider_kit.ProviderKitTests.test_capability_contracts_normalize_and_validate_requirements) ... ok
+test_chat_event_carries_provider_neutral_attachments (test_provider_kit.ProviderKitTests.test_chat_event_carries_provider_neutral_attachments) ... ok
+test_chat_provider_contract_is_runtime_checkable (test_provider_kit.ProviderKitTests.test_chat_provider_contract_is_runtime_checkable) ... ok
+test_feature_preflight_fails_before_repository_side_effect (test_provider_kit.ProviderKitTests.test_feature_preflight_fails_before_repository_side_effect) ... ok
+test_normalizes_provider_identifiers (test_provider_kit.ProviderKitTests.test_normalizes_provider_identifiers) ... ok
+test_notification_contract_validates_operations_and_versions (test_provider_kit.ProviderKitTests.test_notification_contract_validates_operations_and_versions) ... ok
+test_rejects_roots_without_an_agent_manifest (test_provider_kit.ProviderKitTests.test_rejects_roots_without_an_agent_manifest) ... ok
+test_repository_and_review_contracts_are_versioned_and_runtime_checkable (test_provider_kit.ProviderKitTests.test_repository_and_review_contracts_are_versioned_and_runtime_checkable) ... ok
+test_resolves_agent_context_from_manifest_and_body (test_provider_kit.ProviderKitTests.test_resolves_agent_context_from_manifest_and_body) ... ok
+test_resolves_legacy_identity_file_when_body_is_absent (test_provider_kit.ProviderKitTests.test_resolves_legacy_identity_file_when_body_is_absent) ... ok
+test_runtime_execution_distinguishes_timeout_from_cancellation (test_provider_kit.ProviderKitTests.test_runtime_execution_distinguishes_timeout_from_cancellation) ... ok
+test_runtime_progress_is_provider_neutral_and_normalized (test_provider_kit.ProviderKitTests.test_runtime_progress_is_provider_neutral_and_normalized) ... ok
+
+----------------------------------------------------------------------
+Ran 18 tests in 0.009s
+
+OK

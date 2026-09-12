@@ -1,0 +1,17 @@
+test_conformance_provider_capabilities_match_kind (test_launchd_provider.LaunchdServiceProviderTests.test_conformance_provider_capabilities_match_kind) ... ok
+test_conformance_provider_matches_public_contract (test_launchd_provider.LaunchdServiceProviderTests.test_conformance_provider_matches_public_contract) ... ok
+test_descendant_package_keeps_its_own_launcher_and_service_prefix (test_launchd_provider.LaunchdServiceProviderTests.test_descendant_package_keeps_its_own_launcher_and_service_prefix) ... ok
+test_descriptor_identifies_launchd_service (test_launchd_provider.LaunchdServiceProviderTests.test_descriptor_identifies_launchd_service) ... ok
+test_existing_legacy_service_is_used_only_by_its_owner (test_launchd_provider.LaunchdServiceProviderTests.test_existing_legacy_service_is_used_only_by_its_owner) ... ok
+test_foreign_scoped_manifest_is_not_overwritten (test_launchd_provider.LaunchdServiceProviderTests.test_foreign_scoped_manifest_is_not_overwritten) ... ok
+test_install_writes_manifest_and_bootstraps_user_service (test_launchd_provider.LaunchdServiceProviderTests.test_install_writes_manifest_and_bootstraps_user_service) ... ok
+test_malformed_legacy_manifest_is_left_untouched (test_launchd_provider.LaunchdServiceProviderTests.test_malformed_legacy_manifest_is_left_untouched) ... ok
+test_manifest_runs_enoch_agent_from_the_selected_root (test_launchd_provider.LaunchdServiceProviderTests.test_manifest_runs_enoch_agent_from_the_selected_root) ... ok
+test_scheduled_restart_uses_daemon_launcher (test_launchd_provider.LaunchdServiceProviderTests.test_scheduled_restart_uses_daemon_launcher) ... ok
+test_service_identity_is_stable_across_symlink_aliases (test_launchd_provider.LaunchdServiceProviderTests.test_service_identity_is_stable_across_symlink_aliases) ... ok
+test_two_instances_have_independent_manifests_and_lifecycle (test_launchd_provider.LaunchdServiceProviderTests.test_two_instances_have_independent_manifests_and_lifecycle) ... ok
+
+----------------------------------------------------------------------
+Ran 12 tests in 0.018s
+
+OK

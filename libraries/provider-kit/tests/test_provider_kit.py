@@ -49,7 +49,7 @@ from our_ark_provider_kit.conformance_fixtures import (
 
 
 class ProviderKitTests(unittest.TestCase):
-    def test_resolves_agent_context_from_manifest_and_identity(self) -> None:
+    def test_resolves_agent_context_from_manifest_and_body(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "src" / "noah").mkdir(parents=True)
@@ -57,7 +57,7 @@ class ProviderKitTests(unittest.TestCase):
                 'schema_version = 1\npackage = "noah"\n',
                 encoding="utf-8",
             )
-            (root / "src" / "noah" / "identity.yaml").write_text(
+            (root / "src" / "noah" / "body.yaml").write_text(
                 'name: "Noah"\n',
                 encoding="utf-8",
             )
@@ -70,6 +70,23 @@ class ProviderKitTests(unittest.TestCase):
         self.assertEqual(context.env_prefix, "NOAH")
         self.assertEqual(context.private_directory, ".noah")
         self.assertEqual(context.service_slug, "noah")
+
+    def test_resolves_legacy_identity_file_when_body_is_absent(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "src" / "noah").mkdir(parents=True)
+            (root / "genesis.toml").write_text(
+                'schema_version = 1\npackage = "noah"\n',
+                encoding="utf-8",
+            )
+            (root / "src" / "noah" / "identity.yaml").write_text(
+                'name: "Legacy Noah"\n',
+                encoding="utf-8",
+            )
+
+            context = agent_context(root)
+
+        self.assertEqual(context.name, "Legacy Noah")
 
     def test_rejects_roots_without_an_agent_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -22,7 +22,7 @@ principles:
 body:
   package: enoch
   source_path: src/enoch
-  identity_file: src/enoch/identity.yaml
+  body_file: src/enoch/body.yaml
 
 skills:
   - name: skill-library

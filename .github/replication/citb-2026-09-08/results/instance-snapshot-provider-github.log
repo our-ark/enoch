@@ -1,0 +1,20 @@
+test_conformance_provider_capabilities_match_kind (test_github_provider.GithubProviderTests.test_conformance_provider_capabilities_match_kind) ... ok
+test_conformance_provider_matches_public_contract (test_github_provider.GithubProviderTests.test_conformance_provider_matches_public_contract) ... ok
+test_declared_skills_falls_back_to_legacy_identity_file (test_github_provider.GithubProviderTests.test_declared_skills_falls_back_to_legacy_identity_file) ... ok
+test_declared_skills_prefers_published_body_file (test_github_provider.GithubProviderTests.test_declared_skills_prefers_published_body_file) ... ok
+test_descriptor_registers_forge_factory (test_github_provider.GithubProviderTests.test_descriptor_registers_forge_factory) ... ok
+test_github_adapter_rejects_stack_before_provider_side_effect (test_github_provider.GithubProviderTests.test_github_adapter_rejects_stack_before_provider_side_effect) ... ok
+test_github_adapter_returns_verified_review_landing_evidence (test_github_provider.GithubProviderTests.test_github_adapter_returns_verified_review_landing_evidence) ... ok
+test_github_provider_adapts_to_semantic_review_contract (test_github_provider.GithubProviderTests.test_github_provider_adapts_to_semantic_review_contract) ... ok
+test_health_reports_authenticated_cli (test_github_provider.GithubProviderTests.test_health_reports_authenticated_cli) ... ok
+test_health_reports_invalid_authentication (test_github_provider.GithubProviderTests.test_health_reports_invalid_authentication) ... ok
+test_health_reports_missing_cli (test_github_provider.GithubProviderTests.test_health_reports_missing_cli) ... ok
+test_lineage_commit_diff_includes_file_stats_and_patch (test_github_provider.GithubProviderTests.test_lineage_commit_diff_includes_file_stats_and_patch) ... ok
+test_lineage_commit_listing_honors_limits_across_pages (test_github_provider.GithubProviderTests.test_lineage_commit_listing_honors_limits_across_pages) ... ok
+test_lineage_pr_commits_exposes_every_constituent_revision (test_github_provider.GithubProviderTests.test_lineage_pr_commits_exposes_every_constituent_revision) ... ok
+test_reads_published_text_through_forge_contract (test_github_provider.GithubProviderTests.test_reads_published_text_through_forge_contract) ... ok
+
+----------------------------------------------------------------------
+Ran 15 tests in 0.023s
+
+OK

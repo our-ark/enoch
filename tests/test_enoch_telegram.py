@@ -195,6 +195,7 @@ class EnochTelegramTests(unittest.TestCase):
                         '  bot_token: "file-token"',
                         "  allowed_chat_id: 42",
                         "  poll_timeout: 10",
+                        '  peer_worker: "@worker_agent_bot|7000000001"',
                     ]
                 ),
                 encoding="utf-8",
@@ -205,6 +206,9 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertEqual(config.token, "file-token")
         self.assertEqual(config.allowed_chat_id, 42)
         self.assertEqual(config.poll_timeout, 10)
+        self.assertEqual(config.bot_peers[0].alias, "worker")
+        self.assertEqual(config.bot_peers[0].username, "worker_agent_bot")
+        self.assertEqual(config.bot_peers[0].user_id, 7000000001)
 
     @patch("our_ark_telegram.core.request.urlopen")
     def test_downloads_telegram_file_with_size_limit(self, urlopen: MagicMock) -> None:
@@ -545,7 +549,30 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("Last git main pull observed:", client.sent[0][1])
         self.assertIn("/help", client.sent[0][1])
         self.sync_session_activity.assert_called_once()
-        self.assertIn("Enoch startup context:", self.sync_session_activity.call_args.args[3])
+        startup_context = self.sync_session_activity.call_args.args[3]
+        self.assertIn("Enoch startup context:", startup_context)
+        self.assertIn("Active chat command reference:", startup_context)
+
+    def test_startup_notification_uses_provider_command_prefix(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            client = FakeTelegramClient(allowed_chat_id=42)
+            client.name = "slack"
+            client.command_prefix = "!"
+            bot = EnochApplication(load_identity(), root, client)
+
+            bot.notify_startup()
+
+        self.assertIn("Use !help to see available commands.", client.sent[0][1])
+        self.assertNotIn("Use /help", client.sent[0][1])
+        command_context = self.sync_session_activity.call_args.args[3]
+        self.assertIn("!evolve config mode <disabled|co-evolve|auto-evolve>", command_context)
+        self.assertIn(
+            "co-evolve - propose improvements for human approval; brainstorming is manual",
+            command_context,
+        )
+        self.assertIn("!evolve config schedule off to stop scheduled proposals", command_context)
+        self.assertNotIn("\n/evolve", command_context)
 
     def test_startup_notification_reports_previous_shutdown_warning(self) -> None:
         client = FakeTelegramClient(allowed_chat_id=42)
@@ -3756,6 +3783,48 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("GH007", client.sent[-1][1])
         log_conversation_turn.assert_called()
 
+    def test_descendant_task_failure_keeps_status_and_literal_evidence(self) -> None:
+        identity = load_identity()
+        display_name = f"Hosted {identity.name}"
+        error = f"Cannot access /tmp/{identity.name}/README.md"
+        for operation in ("workspace", "publish"):
+            with self.subTest(operation=operation), TemporaryDirectory() as temp:
+                root = Path(temp)
+                client = FakeTelegramClient(allowed_chat_id=42)
+                bot = EnochApplication(
+                    identity, root, client,
+                    repository=BranchlessRepositoryFixture(),
+                    review=IndependentReviewFixture(),
+                    presentation=ApplicationPresentation(display_name=display_name),
+                )
+                request = (
+                    "publish existing local branch `fixture/existing` as a PR against `main`"
+                    if operation == "publish" else f"Review {identity.name}'s README."
+                )
+                enqueue_task(42, request, root)
+                job = begin_next_task(root)
+                assert job is not None
+                if operation == "publish":
+                    failure = patch.object(
+                        bot, "_publish_existing_branch",
+                        return_value=f"{display_name} could not publish repository reference: {error}",
+                    )
+                else:
+                    failure = patch.object(bot, "_prepare_task_worktree", side_effect=OSError(error))
+                with failure:
+                    bot._run_task_job(job)
+                status = task_queue_status(root)
+
+            failed = status.history[-1]
+            self.assertEqual(failed.status, "failed")
+            self.assertEqual(failed.attempt, 1)
+            self.assertTrue(failed.result.startswith(f"{display_name} could not "))
+            self.assertIn(error, failed.result)
+            self.assertIn("Final status: failed", client.sent[-1][1])
+            self.assertIn(error, client.sent[-1][1])
+            self.assertIn(request, client.edited[-1][2])
+            self.assertIn("Status: failed", client.edited[-1][2])
+
     def test_dirty_worktree_failure_is_not_automatically_retried(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
@@ -4143,9 +4212,9 @@ class EnochTelegramTests(unittest.TestCase):
     def test_mission_command_shows_and_updates_identity_mission(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
-            identity_file = root / "src" / "enoch" / "identity.yaml"
+            identity_file = root / "src" / "enoch" / "body.yaml"
             identity_file.parent.mkdir(parents=True)
-            identity_file.write_text((ROOT / "src" / "enoch" / "identity.yaml").read_text(encoding="utf-8"), encoding="utf-8")
+            identity_file.write_text((ROOT / "src" / "enoch" / "body.yaml").read_text(encoding="utf-8"), encoding="utf-8")
             client = FakeTelegramClient(allowed_chat_id=42)
             bot = EnochApplication(load_identity(), root, client)
 
@@ -4663,9 +4732,9 @@ class EnochTelegramTests(unittest.TestCase):
         update_from_authoritative: MagicMock,
         schedule_restart: MagicMock,
     ) -> None:
-        update_from_authoritative.return_value.message = (
-            "Noah is already up to date.\nAlready up to date."
-        )
+        display_name = f"Hosted {load_identity().name}"
+        expected_message = f"{display_name} is already up to date.\nAlready up to date."
+        update_from_authoritative.return_value.message = expected_message
         update_from_authoritative.return_value.direct_action_result = "Already up to date."
         update_from_authoritative.return_value.restart_required = False
         client = FakeTelegramClient(allowed_chat_id=42)
@@ -4673,7 +4742,7 @@ class EnochTelegramTests(unittest.TestCase):
             load_identity(),
             ROOT,
             client,
-            presentation=ApplicationPresentation(display_name="Noah"),
+            presentation=ApplicationPresentation(display_name=display_name),
         )
 
         _handle_update(bot, _message_update(chat_id=42, text="/update"))
@@ -4681,11 +4750,10 @@ class EnochTelegramTests(unittest.TestCase):
         update_from_authoritative.assert_called_once_with(
             ROOT,
             repository=ANY,
-            application_name="Noah",
+            application_name=display_name,
         )
         schedule_restart.assert_not_called()
-        self.assertIn("Noah is already up to date.", client.sent[0][1])
-        self.assertNotIn("Enoch", client.sent[0][1])
+        self.assertEqual(client.sent[0][1], expected_message)
 
     @patch("enoch.app.core.update_from_authoritative")
     def test_update_requires_locked_chat(self, update_from_authoritative: MagicMock) -> None:
@@ -4712,19 +4780,23 @@ class EnochTelegramTests(unittest.TestCase):
         self,
         schedule_restart: MagicMock,
     ) -> None:
+        display_name = f"Hosted {load_identity().name}"
         client = FakeTelegramClient(allowed_chat_id=42)
         bot = EnochApplication(
             load_identity(),
             ROOT,
             client,
-            presentation=ApplicationPresentation(display_name="Noah"),
+            presentation=ApplicationPresentation(display_name=display_name),
         )
 
         _handle_update(bot, _message_update(chat_id=42, text="/restart"))
 
         schedule_restart.assert_called_once_with(ROOT)
-        self.assertIn("Noah is restarting.", client.sent[0][1])
-        self.assertNotIn("Enoch", client.sent[0][1])
+        self.assertEqual(
+            client.sent[0][1],
+            f"{display_name} is restarting.\n"
+            "Daemon mode will restart after this reply is delivered.",
+        )
 
     @patch("enoch.app.core._schedule_daemon_restart")
     def test_restart_requires_locked_chat(self, schedule_restart: MagicMock) -> None:
@@ -4752,6 +4824,25 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("/task", respond.call_args.args[1])
         self.sync_session_activity.assert_not_called()
         self.assertIn("Let's think through reminders first.", client.sent[0][1])
+
+    @patch("enoch.app.core.respond", return_value="Use !do disable auto evolve.")
+    def test_read_only_wrapper_uses_chat_provider_command_prefix(
+        self,
+        respond: MagicMock,
+    ) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            client = FakeTelegramClient(allowed_chat_id=42)
+            client.command_prefix = "!"
+            bot = EnochApplication(load_identity(), root, client)
+
+            _handle_update(bot, _message_update(chat_id=42, text="disable auto evolve"))
+
+        prompt = respond.call_args.args[1]
+        self.assertIn("!do", prompt)
+        self.assertIn("!task", prompt)
+        self.assertIn("!backlog", prompt)
+        self.assertNotIn("use /do", prompt)
 
     @patch("enoch.app.core.ensure_long_term_memory")
     @patch("enoch.app.core.log_conversation_turn")

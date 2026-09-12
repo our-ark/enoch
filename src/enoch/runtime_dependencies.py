@@ -16,6 +16,7 @@ import tomllib
 from typing import Iterable, Iterator
 from uuid import uuid4
 
+from enoch.config import read_section
 from enoch.paths import private_state_path, repo_root
 
 
@@ -40,6 +41,7 @@ class RuntimeDependency:
     import_name: str
     local_source: Path | None = None
     optional: bool = False
+    when_provider: str = ""
 
 
 def activate_runtime_dependencies(root: Path | None = None) -> tuple[Path, ...]:
@@ -61,6 +63,8 @@ def runtime_dependency_paths(root: Path | None = None) -> tuple[Path, ...]:
     unresolved: list[RuntimeDependency] = []
     preloaded_paths = _preloaded_dependency_paths()
     for dependency in dependencies:
+        if not _provider_condition_matches(dependency, root_path):
+            continue
         local = root_path / dependency.local_source if dependency.local_source else None
         if local is not None and local.is_dir():
             runtime_paths.append(local.resolve())
@@ -99,6 +103,7 @@ def load_runtime_dependencies(root: Path | None = None) -> tuple[RuntimeDependen
         requirement = str(raw.get("requirement") or "").strip()
         import_name = str(raw.get("import_name") or "").strip()
         local_value = str(raw.get("local_source") or "").strip()
+        when_provider = str(raw.get("when_provider") or "").strip().lower()
         optional_value = raw.get("optional", False)
         if not isinstance(optional_value, bool):
             raise RuntimeDependencyError(
@@ -114,6 +119,8 @@ def load_runtime_dependencies(root: Path | None = None) -> tuple[RuntimeDependen
                 f"Runtime dependency {name} must pin an exact version or full VCS commit."
             )
         local_source = _safe_relative_path(local_value) if local_value else None
+        if when_provider:
+            _parse_provider_condition(when_provider)
         if local_source is not None:
             local_path = path.parent / local_source
             if local_path.exists() and not local_path.is_dir():
@@ -127,6 +134,7 @@ def load_runtime_dependencies(root: Path | None = None) -> tuple[RuntimeDependen
                 import_name=import_name,
                 local_source=local_source,
                 optional=optional,
+                when_provider=when_provider,
             )
         )
     return tuple(dependencies)
@@ -217,6 +225,33 @@ def _dependency_path(
 
 def _unique_paths(paths: Iterable[Path]) -> tuple[Path, ...]:
     return tuple(dict.fromkeys(paths))
+
+
+def _provider_condition_matches(dependency: RuntimeDependency, root: Path) -> bool:
+    if not dependency.when_provider:
+        return True
+    kind, expected = _parse_provider_condition(dependency.when_provider)
+    configured = os.environ.get(f"ENOCH_{kind.upper()}_PROVIDER", "").strip()
+    if not configured:
+        configured = read_section("providers", root).get(kind, "").strip()
+    return configured.lower().replace("_", "-") == expected
+
+
+def _parse_provider_condition(value: str) -> tuple[str, str]:
+    kind, separator, name = value.partition(".")
+    valid = "abcdefghijklmnopqrstuvwxyz0123456789-"
+    if (
+        not separator
+        or not kind
+        or not name
+        or "." in name
+        or any(character not in valid for character in kind)
+        or any(character not in valid for character in name)
+    ):
+        raise RuntimeDependencyError(
+            f"Invalid runtime dependency when_provider condition: {value!r}."
+        )
+    return kind, name
 
 
 @contextmanager

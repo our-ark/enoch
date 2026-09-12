@@ -205,7 +205,7 @@ class EnochLineageTests(unittest.TestCase):
         self.assertIn("   Pending: 1 change", formatted)
         self.assertIn("3. Enoch (current)", formatted)
         self.assertIn("   Relation: current agent", formatted)
-        self.assertIn("   Source: src/enoch/identity.yaml", formatted)
+        self.assertIn("   Source: src/enoch/body.yaml", formatted)
         self.assertIn(
             "   New skills: skill-library, evolve",
             formatted,

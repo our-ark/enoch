@@ -92,18 +92,17 @@ def load_published_skill(
     _require_non_parent_source(agent_name, source.repository, root)
 
     try:
-        identity_text = _published_text(
+        body_text = _published_body_text(
             agent_name,
-            f"src/{agent_name}/identity.yaml",
             root=root,
             ref=source.revision,
         )
     except SkillsError as error:
         raise LearnError(f"Could not read published Our-Ark agent {agent_name}.") from error
 
-    identity = _parse_simple_yaml(identity_text)
-    declared_agent_name = clean_text(str(identity.get("name") or agent_name)) or agent_name
-    raw_skills = identity.get("skills")
+    body = _parse_simple_yaml(body_text)
+    declared_agent_name = clean_text(str(body.get("name") or agent_name)) or agent_name
+    raw_skills = body.get("skills")
     if not isinstance(raw_skills, list):
         raise LearnError(f"{declared_agent_name} has no declared skills.")
 
@@ -148,7 +147,7 @@ def load_published_skill(
     manifest_name = clean_text(str(manifest.get("name") or ""))
     if manifest_name and manifest_name.lower() != declared_name.lower():
         raise LearnError(
-            f"{declared_agent_name}'s skill name differs between identity.yaml "
+            f"{declared_agent_name}'s skill name differs between body.yaml "
             "and skill.yaml."
         )
     declared_version = clean_text(str(matching_skill.get("version") or ""))
@@ -156,7 +155,7 @@ def load_published_skill(
     if declared_version and manifest_version and declared_version != manifest_version:
         raise LearnError(
             f"{declared_agent_name}'s {declared_name} version differs between "
-            "identity.yaml and skill.yaml."
+            "body.yaml and skill.yaml."
         )
 
     content_hash = hashlib.sha256(
@@ -177,6 +176,26 @@ def load_published_skill(
         instructions=instructions,
         content_hash=content_hash,
     )
+
+
+def _published_body_text(
+    agent_name: str,
+    *,
+    root: Path | None,
+    ref: str,
+) -> str:
+    errors: list[SkillsError] = []
+    for filename in ("body.yaml", "identity.yaml"):
+        try:
+            return _published_text(
+                agent_name,
+                f"src/{agent_name}/{filename}",
+                root=root,
+                ref=ref,
+            )
+        except SkillsError as error:
+            errors.append(error)
+    raise errors[-1]
 
 
 def learning_assessment_prompt(
