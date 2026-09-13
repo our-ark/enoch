@@ -18,6 +18,11 @@ body_paths = [
 validation = ["-m", "unittest", "discover", "-s", "tests", "-t", "."]
 
 [[runtime_dependencies]]
+name = "pypdf"
+requirement = "pypdf==6.18.1"
+import_name = "pypdf"
+
+[[runtime_dependencies]]
 name = "provider-kit"
 requirement = "our-ark-provider-kit @ git+https://github.com/our-ark/enoch.git@ac776973f53fd8638da7e7bee59d139480cdf48f#subdirectory=libraries/provider-kit"
 import_name = "our_ark_provider_kit"
@@ -32,7 +37,7 @@ optional = true
 
 [[runtime_dependencies]]
 name = "slack"
-requirement = "our-ark-slack @ git+https://github.com/our-ark/enoch.git@bc3f41f342c45ce59c6765282b37ada9bbb613f5#subdirectory=libraries/slack"
+requirement = "our-ark-slack @ git+https://github.com/our-ark/enoch.git@2943af46f9d849c86b85449572939498e3ea0cbd#subdirectory=libraries/slack"
 import_name = "our_ark_slack"
 local_source = "libraries/slack/src"
 optional = true

@@ -7,6 +7,7 @@ never read or modify a developer's live `.enoch` daemon state.
 from __future__ import annotations
 
 import atexit
+from importlib.util import find_spec
 import os
 from pathlib import Path
 import shutil
@@ -21,6 +22,15 @@ STATE_HOME = Path(tempfile.mkdtemp(prefix="enoch-test-state-"))
 
 os.environ["ENOCH_STATE_REDIRECT_ROOT"] = str(SOURCE_ROOT)
 os.environ["ENOCH_STATE_HOME"] = str(STATE_HOME)
+
+# Reuse the PDF dependency installed by the test environment. Private state is
+# cleared between cases, so tests must not fetch it into that state repeatedly.
+_pdf_spec = find_spec("pypdf")
+if _pdf_spec is not None and _pdf_spec.origin:
+    _preloaded = os.environ.get("OUR_ARK_RUNTIME_DEPENDENCY_PATHS", "")
+    os.environ["OUR_ARK_RUNTIME_DEPENDENCY_PATHS"] = os.pathsep.join(filter(None, (
+        _preloaded, str(Path(_pdf_spec.origin).resolve().parents[1]),
+    )))
 
 
 _original_test_case_run = unittest.TestCase.run

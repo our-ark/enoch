@@ -33,7 +33,9 @@ jobs:
         run: python -m pip install --disable-pip-version-check --require-hashes -r .github/requirements/test-build.txt
 
       - name: Run unit and hermetic E2E tests
-        run: python -m unittest discover -s tests -t .
+        run: |
+          python -m pip install 'pypdf==6.18.1'
+          python -m unittest discover -s tests -t .
 
       - name: Run provider library tests
         run: |

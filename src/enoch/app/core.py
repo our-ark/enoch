@@ -63,6 +63,7 @@ from enoch.cron import (
     parse_cron_interval,
     record_cron_task,
 )
+from enoch.documents import document_context
 from enoch.evolution.core import (
     MODE_AUTO_EVOLVE,
     MODE_DISABLED,
@@ -868,8 +869,19 @@ class EnochApplication:
             pass
         else:
             self.runtime.reset_usage()
-        image = select_image_attachment(event.attachments)
         logged_input = text
+        documents = tuple(a for a in event.attachments if a.kind != "image")
+        if documents:
+            try:
+                self.effect_fence.authorize("chat.attachment", ("chat.attachment", "runtime.respond"))
+                context = document_context(self.client, documents, self.root,
+                                           channel=self.channel_name, conversation_id=chat_id)
+            except CapabilityAuthorizationError as error:
+                return f"{self.display_name} could not access the attachments: {error}", text
+            text = (text or "Read the attached documents and acknowledge what you received.") + "\n\n" + context
+            logged_input = (logged_input + "\n[Attachments: "
+                            + ", ".join(a.filename or a.file_id for a in documents) + "]").strip()
+        image = select_image_attachment(event.attachments)
         if image is not None:
             reply = self._respond_to_image(chat_id, image, text)
             logged_input = f"[{provider_label(self.channel_name)} image]" + (
