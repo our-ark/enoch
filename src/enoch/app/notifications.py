@@ -120,12 +120,14 @@ class NotificationDeliveryService:
         )
         return self._deliver(intent)
 
-    def recover(self) -> tuple[NotificationResult, ...]:
+    def recover(self, *, exclude_key_prefixes: tuple[str, ...] = ()) -> tuple[NotificationResult, ...]:
+        """Recover ordinary deliveries; owners may defer intents needing fresh validation."""
         with daemon_epoch_guard(self.epoch, self.root):
             records = tuple(
                 record
                 for record in notification_records(self.provider_name, self.root)
                 if record.status in {PENDING, IN_FLIGHT, RETRYABLE_FAILURE}
+                and not record.idempotency_key.startswith(exclude_key_prefixes)
             )
             results: list[NotificationResult] = []
             for record in records:

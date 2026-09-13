@@ -22,6 +22,7 @@ def quota_usage(prefix: str = "/") -> str:
         "Show account quota remaining, usage windows, and reset times.",
         "With no argument, query installed runtime providers and skip missing CLIs.",
         "GPT is an alias for Codex. These are account limits, not task token counts.",
+        "The daemon also checks every minute and warns at 10%, 5%, and 1% remaining.",
     ])
 
 
@@ -30,15 +31,26 @@ def quota_command(argument: str, root: Path, *, runtime=None, prefix: str = "/")
     if selected not in {"", "all", "gpt", "codex", "claude"}:
         return quota_usage(prefix)
     selected = "codex" if selected == "gpt" else selected
+    reports = [format_quota(quota_provider_label(name), snapshot)
+               for name, snapshot in quota_snapshots(root, runtime=runtime, selected=selected)]
+    if not reports:
+        return "No quota-capable runtime CLI is available on this host."
+    return "Account quota (shared across the account, not task token counts):\n\n" + "\n\n".join(reports)
+
+
+def quota_provider_label(name: str) -> str:
+    return "GPT / Codex" if name == "codex" else _label(name.title())
+
+
+def quota_snapshots(root: Path, *, runtime=None, selected: str = ""):
+    """Yield independent provider snapshots for manual queries and monitoring."""
     installed = set(available_providers("runtime", root))
     active_name = getattr(runtime, "name", "")
     active_reader = getattr(runtime, "quota", None)
     if callable(active_reader):
         installed.add(active_name)
     names = sorted(installed) if selected in {"", "all"} else [selected]
-    reports = []
     for name in names:
-        label = "GPT / Codex" if name == "codex" else _label(name.title())
         if name not in installed:
             continue
         try:
@@ -51,13 +63,10 @@ def quota_command(argument: str, root: Path, *, runtime=None, prefix: str = "/")
                 continue
             if not isinstance(snapshot, Mapping):
                 raise ValueError("Invalid quota snapshot")
-            reports.append(format_quota(label, snapshot))
         except Exception:
             # Provider exceptions/CLI stderr can contain credentials or account IDs.
-            reports.append(f"{label}: quota query failed. Check CLI login and version on this host.")
-    if not reports:
-        return "No quota-capable runtime CLI is available on this host."
-    return "Account quota (shared across the account, not task token counts):\n\n" + "\n\n".join(reports)
+            snapshot = {"error": "quota query failed. Check CLI login and version on this host."}
+        yield name, snapshot
 
 
 def format_quota(label: str, snapshot: Mapping, *, now: datetime | None = None) -> str:
@@ -93,7 +102,10 @@ def format_quota(label: str, snapshot: Mapping, *, now: datetime | None = None) 
 def _number(value) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
-    return float(value) if math.isfinite(value) else None
+    try:
+        return float(value) if math.isfinite(value) else None
+    except OverflowError:
+        return None
 
 
 def _timestamp(value) -> datetime | None:

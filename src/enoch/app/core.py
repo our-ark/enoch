@@ -13,7 +13,8 @@ import time
 from typing import Any, Callable
 from uuid import uuid4
 
-from enoch.quota import quota_command
+from enoch.quota import quota_command, quota_snapshots
+from enoch.quota_warnings import NOTIFICATION_PREFIX as QUOTA_NOTIFICATION_PREFIX, QuotaWarningMonitor
 
 from enoch.backlog import (
     BacklogItem,
@@ -560,6 +561,14 @@ class EnochApplication:
             self.daemon_epoch,
             self.authorization,
         )
+        self.quota_warnings = QuotaWarningMonitor(
+            root, channel=self.channel_name, display_name=self.display_name,
+            collect=lambda: quota_snapshots(self.root, runtime=self.runtime),
+            destination=lambda: _allowed_conversation_id(self.client),
+            deliver=self._deliver_message,
+            require_current=self.effect_fence.require_current,
+            guard=self.effect_fence.run,
+        )
         self._notification_order_lock = threading.RLock()
         self.workflow = validate_workflow_engine(
             workflow or LocalWorkflowEngine(root, epoch=self.daemon_epoch)
@@ -617,7 +626,8 @@ class EnochApplication:
         self._work_status_messages: dict[int, MessageId] = _load_task_status_messages(
             self.workflow
         )
-        self.notifications.recover()
+        # Quota alerts are retried only after the monitor checks fresh account data.
+        self.notifications.recover(exclude_key_prefixes=(QUOTA_NOTIFICATION_PREFIX,))
         self._run_profile_hook("on_initialize")
         self._run_extension_hooks("on_initialize")
 
@@ -636,6 +646,7 @@ class EnochApplication:
         self.start()
         self._start_cron_scheduler()
         try:
+            self.quota_warnings.start()
             while True:
                 try:
                     self.run_once()
@@ -647,6 +658,7 @@ class EnochApplication:
                     print(f"Enoch {provider_label(self.channel_name)} polling error: {error}")
                     time.sleep(5)
         finally:
+            self.quota_warnings.stop()
             self._stop_cron_scheduler()
 
     @property
@@ -2148,6 +2160,7 @@ class EnochApplication:
     def stop_workers(self, timeout_seconds: float = 7.0) -> None:
         self._stopping = True
         deadline = time.monotonic() + max(0.0, timeout_seconds)
+        self.quota_warnings.stop(timeout_seconds=max(0.0, deadline - time.monotonic()))
         self._stop_cron_scheduler(
             timeout_seconds=max(0.0, deadline - time.monotonic())
         )

@@ -172,6 +172,40 @@ and `source`, and an optional safe user-facing `error`. A window contains
 (Unix seconds or an ISO timestamp with timezone). Third-party runtimes without
 this method continue to work and are skipped by `/quota`.
 
+### Automatic low-quota warnings
+
+The daemon checks these same snapshots on an independent background worker every
+60 seconds, without starting model turns or occupying the task scheduler. At
+10%, 5%, and 1% remaining, it sends one warning per provider/window/threshold to
+the configured owner conversation. A first check already below a threshold also
+warns. Crossing multiple tiers in one check produces only the most urgent tier,
+for example 12% to 4% produces one 5% warning. The message reports the actual 4%
+remaining and the reset date with host timezone, countdown, and observation time.
+
+Deduplication state lives in private `quota_warnings.json` and survives restarts.
+A later reset time rearms a window; subsecond jitter, timestamp regressions, and
+balance fluctuations within the same known window do not. If reset metadata is
+absent, the warning says so and recovery above 10% rearms that unknown window.
+Absent CLIs, query errors, invalid percentages, and expired windows stay quiet.
+Checks can miss intermediate values, so warnings reflect observed crossings.
+
+Delivery uses the existing durable notification service and daemon ownership
+fence. Pending warnings are revalidated against fresh quota before retrying;
+startup recovery does not blindly replay old warnings after a reset. Retries keep
+their original message and observation time to preserve delivery idempotency.
+No warning is sent without a configured owner conversation.
+
+Optional instance settings (read on each check; no restart needed):
+
+```yaml
+quota:
+  warnings_enabled: "true"
+  poll_interval_seconds: "60"
+```
+
+Set `warnings_enabled` to `false` to disable alerts. Poll intervals must be between
+60 and 3600 seconds; invalid values fall back to 60. Manual `/quota` still works.
+
 ## Host services
 
 The core daemon command is independent of the operating system's service

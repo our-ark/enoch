@@ -293,6 +293,13 @@ not task token totals. In Slack, use `.quota` or the compatible `!quota`.
 Descendants inherit this command; those with compact help list it in
 `/help --all`. See [provider quota support](docs/providers.md#account-quota).
 
+While the daemon runs, it also checks quota once a minute and sends a warning
+to its configured owner conversation at 10%, 5%, and 1% remaining. Each warning
+includes the affected window, actual remaining percentage, reset time, and
+countdown. Warnings are remembered across restarts and rearmed after a reset.
+If a check crosses several thresholds at once, only the most urgent warning is
+sent. Missing CLIs and unavailable or expired quota data do not trigger warnings.
+
 Use `/worktree` to inspect task worktrees that Enoch preserved for debugging.
 `/worktree show <task-id>` reports the branch, path, linked task records, and
 changed files. `/worktree cleanup <task-id>` removes only a clean inactive

@@ -148,10 +148,20 @@ time.sleep(60)
         with TemporaryDirectory() as temp:
             root = Path(temp)
             executable = self.fake_codex(root, 'time.sleep(60)')
-            with self.assertRaises(TimeoutError):
-                _read_limits(str(executable), root, 0.3)
+            children = []
+            real_popen = subprocess.Popen
+
+            def start(*args, **kwargs):
+                child = real_popen(*args, **kwargs)
+                children.append(child)
+                return child
+
+            with patch('enoch.providers.codex_quota.subprocess.Popen', side_effect=start):
+                with self.assertRaises(TimeoutError):
+                    _read_limits(str(executable), root, 0.3)
+            self.assertIsNotNone(children[0].poll())
             with self.assertRaises(ProcessLookupError):
-                os.kill(int((root / 'pid').read_text()), 0)
+                os.kill(children[0].pid, 0)
             with patch('enoch.brain.resolve_codex_executable', return_value=SimpleNamespace(path=str(executable))), \
                  patch('enoch.providers.codex_quota._read_limits', side_effect=ValueError('secret-token')):
                 result = read_quota(root)

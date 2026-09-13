@@ -5653,11 +5653,15 @@ class EnochTelegramTests(unittest.TestCase):
         client = FakeTelegramClient(allowed_chat_id=42)
         bot = EnochApplication(load_identity(), ROOT, client)
         bot.run_once = MagicMock(side_effect=[OSError("network down"), KeyboardInterrupt])
+        bot.quota_warnings.start = MagicMock()
+        bot.quota_warnings.stop = MagicMock()
 
         with self.assertRaises(KeyboardInterrupt):
             bot.run_forever()
 
         sleep.assert_called_once_with(5)
+        bot.quota_warnings.start.assert_called_once_with()
+        bot.quota_warnings.stop.assert_called_once_with()
 
     @patch("enoch.operations.update_tools.update_repository")
     @patch("enoch.operations.update_tools.current_branch", return_value="main")
