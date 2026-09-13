@@ -363,6 +363,27 @@ class EnochBrainTests(unittest.TestCase):
 
     @patch("enoch.brain.shutil.which", return_value="/usr/local/bin/codex")
     @patch("enoch.brain.subprocess.run")
+    def test_structured_quota_failure_overrides_authentication_diagnostics(self, run, _which):
+        run.return_value.returncode = 1
+        run.return_value.stderr = "Diagnostic: refresh token cache. Reading additional input from stdin..."
+        run.return_value.stdout = '\n'.join([
+            json.dumps({'type': 'error', 'message': 'Retrying after unauthorized response'}),
+            json.dumps({'type': 'turn.failed', 'error': {'message': "You've hit your usage limit. Try again at 4:29 PM."}}),
+        ])
+        with TemporaryDirectory() as temp:
+            with self.assertRaisesRegex(CodexAccessUnavailable, 'quota is currently unavailable'):
+                respond(load_identity(), 'Read the uploaded PDFs', cwd=Path(temp))
+
+    def test_failure_classifier_does_not_treat_tool_output_as_runtime_error(self):
+        output = json.dumps({'type': 'item.completed', 'item': {
+            'type': 'command_execution', 'aggregated_output': 'Research text: unauthorized access and usage limits',
+        }})
+        details = brain._codex_failure_details(output, 'Connection closed unexpectedly')
+        self.assertEqual(details, 'Connection closed unexpectedly')
+        self.assertEqual(brain._codex_access_unavailable_reason(details), '')
+
+    @patch("enoch.brain.shutil.which", return_value="/usr/local/bin/codex")
+    @patch("enoch.brain.subprocess.run")
     def test_respond_passes_enoch_reasoning_effort_to_codex(
         self, run: MagicMock, _which: MagicMock
     ) -> None:

@@ -747,11 +747,11 @@ def _run_codex_result(
             return RuntimeResult(final_text=answer, **runtime_result)
 
         if result.returncode != 0:
-            stderr = result.stderr.strip() or result.stdout.strip()
-            access_reason = _codex_access_unavailable_reason(stderr)
+            details = _codex_failure_details(result.stdout, result.stderr)
+            access_reason = _codex_access_unavailable_reason(details)
             if access_reason:
                 raise CodexAccessUnavailable(access_reason)
-            raise BrainError(f"Codex did not answer successfully: {stderr}")
+            raise BrainError(f"Codex did not answer successfully: {details}")
 
         return RuntimeResult(
             final_text=_final_message_from_jsonl(result.stdout),
@@ -811,6 +811,25 @@ def _configured_reasoning_effort(root: Path | None = None) -> str:
     if env_reasoning:
         return env_reasoning
     return _enoch_reasoning_effort(root)
+
+
+def _codex_failure_details(stdout: str, stderr: str) -> str:
+    # Startup diagnostics on stderr can mention authentication even when the
+    # actual model turn failed for a different reason. Prefer structured errors.
+    failures = []
+    errors = []
+    for line in stdout.splitlines():
+        try:
+            event = json.loads(line)
+        except (ValueError, TypeError):
+            continue
+        if not isinstance(event, dict):
+            continue
+        if event.get("type") == "turn.failed":
+            failures.append(json.dumps(event.get("error") or event, ensure_ascii=False))
+        elif event.get("type") == "error" or (not event.get("type") and event.get("error")):
+            errors.append(json.dumps(event, ensure_ascii=False))
+    return "\n".join(failures or errors) or stderr.strip() or stdout.strip()
 
 
 def _codex_access_unavailable_reason(details: str) -> str:
