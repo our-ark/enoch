@@ -41,7 +41,7 @@ def provider_label(name: str) -> str:
 
 def provider_command_prefix(provider: object) -> str:
     value = str(getattr(provider, "command_prefix", "/") or "/")
-    if re.fullmatch(r"[/!$]", value):
+    if re.fullmatch(r"[./!$]", value):
         return value
     if not re.fullmatch(r"/[A-Za-z0-9_-]+ ?", value):
         return "/"

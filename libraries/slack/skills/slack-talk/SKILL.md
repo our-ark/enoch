@@ -3,7 +3,8 @@
 Use Slack as a provider-neutral conversation boundary for Enoch.
 
 - Accept natural conversation in the configured direct message.
-- Translate `!help` to `/help` and `!task ...` to `/task ...`.
+- Use `.` as the default command prefix: translate `.help` to `/help` and `.task ...` to `/task ...`.
+- Accept `!` as a compatibility prefix and fallback for the same commands.
 - Keep the configured conversation and user locks authoritative.
 - Update an existing task-status message instead of posting repeated progress messages.
 - Persist Socket Mode events before acknowledging them to Slack.

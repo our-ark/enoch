@@ -23,11 +23,12 @@ from our_ark_provider_kit import (
 
 
 MAX_SLACK_MARKDOWN = 12_000
+DEFAULT_COMMAND_PREFIX = "."
 SECONDARY_COMMAND_PREFIX = "!"
 READ_ACK_EMOJI = "eyes"
 SPOOL_SCHEMA_VERSION = 1
 _MENTION_PREFIX = re.compile(r"^<@[A-Z0-9]+>[:,]?\s*", re.IGNORECASE)
-_SECONDARY_COMMAND = re.compile(r"^!([A-Za-z][A-Za-z0-9_-]*)(?:\s+(.*))?$", re.DOTALL)
+_SECONDARY_COMMAND = re.compile(r"^[.!]([A-Za-z][A-Za-z0-9_-]*)(?:\s+(.*))?$", re.DOTALL)
 _SLASH_COMMAND = re.compile(r"^/[A-Za-z0-9][A-Za-z0-9_-]{0,79}$")
 _SAFE_ID = re.compile(r"^[A-Za-z0-9._-]{1,160}$")
 
@@ -66,7 +67,7 @@ class SlackConfig:
 class SlackClient:
     name = "slack"
     provider_kind = "chat"
-    command_prefix = SECONDARY_COMMAND_PREFIX
+    command_prefix = DEFAULT_COMMAND_PREFIX
     capabilities = ProviderCapabilities(
         provider_kind="chat",
         capabilities=frozenset(

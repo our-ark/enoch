@@ -26,8 +26,9 @@ providers:
 
 A chat provider may expose a `command_prefix` presentation hint when its host
 reserves slash commands. The canonical default is `/`; the Slack reference
-provider uses the secondary prefix `!`, so `!help` maps to `/help` and startup
-and help text show commands that Slack will accept.
+provider uses `.` by default, so `.help` maps to `/help` and startup and help
+text show commands that Slack will accept. `!` remains a compatibility prefix
+and fallback for the same commands.
 
 The Slack reference provider uses Socket Mode and therefore does not require a
 public HTTP endpoint. Import `libraries/slack/slack-app-manifest.yaml`, install
@@ -43,10 +44,10 @@ bin/enoch setup user <user-id>
 ```
 
 Natural conversation is sent directly in the app's Messages tab. Slack owns
-the slash-command namespace, so commands use `!help`, `!task ...`, and
-`!evolve ...`; the provider translates them back to the canonical `/` command
+the slash-command namespace, so commands use `.help`, `.task ...`, and
+`.evolve ...`; the provider translates them back to the canonical `/` command
 surface. In channels, mention the agent before the command, such as
-`@Enoch !help`.
+`@Enoch .help`.
 
 The minimal portable configuration is:
 

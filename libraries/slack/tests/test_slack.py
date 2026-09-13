@@ -85,7 +85,7 @@ class SlackLibraryTests(ProviderContractConformanceMixin, unittest.TestCase):
 
         self.assertIsInstance(client, ChatProvider)
         self.assertEqual(client.allowed_conversation_id, "D123")
-        self.assertEqual(client.command_prefix, "!")
+        self.assertEqual(client.command_prefix, ".")
         self.assertEqual(
             client.capabilities.capabilities,
             frozenset({"chat.receive", "chat.send", "chat.edit", "chat.ack"}),
@@ -102,7 +102,7 @@ class SlackLibraryTests(ProviderContractConformanceMixin, unittest.TestCase):
                     "channel": "D123",
                     "user": "U123",
                     "ts": "1700.1",
-                    "text": "!status",
+                    "text": ".status",
                 },
             },
             cursor=7,
@@ -119,7 +119,7 @@ class SlackLibraryTests(ProviderContractConformanceMixin, unittest.TestCase):
                     "channel": "C123",
                     "user": "U123",
                     "ts": "1700.2",
-                    "text": "<@UBOT>, !queue",
+                    "text": "<@UBOT>, .queue",
                 },
             },
             cursor=8,
@@ -193,24 +193,44 @@ class SlackLibraryTests(ProviderContractConformanceMixin, unittest.TestCase):
         self.assertEqual(help_event.text, "/help")
         self.assertIsNone(help_event.message_id)
 
-    def test_secondary_prefix_does_not_capture_normal_exclamations(self) -> None:
-        event = slack_event(
-            "events_api",
-            {
-                "type": "event_callback",
-                "event": {
-                    "type": "message",
-                    "channel": "D123",
-                    "user": "U123",
-                    "ts": "1700.1",
-                    "text": "! this is surprising",
-                },
-            },
-            cursor=1,
-        )
+    def test_dot_and_bang_commands_preserve_arguments_and_message_identity(self) -> None:
+        for prefix in (".", "!"):
+            for command in ("help", "help --all", "paper agent memory\nwith citations"):
+                with self.subTest(prefix=prefix, command=command):
+                    payload = {
+                        "type": "event_callback",
+                        "event": {
+                            "type": "message", "channel": "D123", "user": "U123",
+                            "ts": "1700.1", "text": f"{prefix}{command}",
+                        },
+                    }
+                    event = slack_event("events_api", payload, cursor=7)
+                    assert event is not None
+                    self.assertEqual(event.text, f"/{command}")
+                    self.assertEqual(event.message_id, "1700.1")
+                    self.assertEqual(event.cursor, 7)
+                    self.assertEqual(event.raw, payload)
+                    self.assertEqual(payload["event"]["text"], f"{prefix}{command}")
 
-        assert event is not None
-        self.assertEqual(event.text, "! this is surprising")
+    def test_command_prefixes_do_not_capture_other_punctuation(self) -> None:
+        for text in (
+            ".", "...", ".5", "3.14", "./paper", "../paper", ".paper.md",
+            ". help", "Look at .help", "! this is surprising", "!", "!!help",
+        ):
+            with self.subTest(text=text):
+                event = slack_event(
+                    "events_api",
+                    {
+                        "type": "event_callback",
+                        "event": {
+                            "type": "message", "channel": "D123", "user": "U123",
+                            "ts": "1700.1", "text": text,
+                        },
+                    },
+                    cursor=1,
+                )
+                assert event is not None
+                self.assertEqual(event.text, text)
 
     def test_persists_before_ack_and_replays_once_after_restart(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

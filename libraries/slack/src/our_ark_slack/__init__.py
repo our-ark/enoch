@@ -1,4 +1,5 @@
 from our_ark_slack.core import (
+    DEFAULT_COMMAND_PREFIX,
     MAX_SLACK_MARKDOWN,
     SECONDARY_COMMAND_PREFIX,
     SlackClient,
@@ -27,6 +28,7 @@ OUR_ARK_PROVIDERS = (
 
 
 __all__ = [
+    "DEFAULT_COMMAND_PREFIX",
     "MAX_SLACK_MARKDOWN",
     "SECONDARY_COMMAND_PREFIX",
     "SlackClient",

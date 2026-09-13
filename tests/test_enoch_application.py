@@ -34,7 +34,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class ApplicationCompositionTests(unittest.TestCase):
     def test_domain_help_hides_core_but_all_restores_it_for_each_prefix(self) -> None:
-        for prefix in ("/", "!"):
+        for prefix in ("/", ".", "!"):
             with self.subTest(prefix=prefix), TemporaryDirectory() as temp:
                 chat = _Chat()
                 chat.command_prefix = prefix

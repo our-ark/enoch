@@ -36,16 +36,20 @@ Credentials can instead be provided through `ENOCH_SLACK_BOT_TOKEN` and
 `SLACK_APP_TOKEN` names.
 
 Send natural language directly in the Messages tab. Slack reserves slash
-commands, so this provider uses `!` as a secondary command prefix:
+commands, so this provider uses `.` as its default command prefix:
 
 ```text
-!help
-!task add investigate retry behavior
-!evolve list
+.help
+.task add investigate retry behavior
+.evolve list
 ```
 
+`!` remains supported as a compatibility prefix and fallback, for example
+`!help` or `!task add investigate retry behavior`. Help and startup messages use `.`.
+The prefix must immediately precede a command name at the start of the message.
+
 In a channel, mention the agent before the command, for example
-`@Enoch !help`. The agent core retains `/help`, `/task`, and the rest of its
+`@Enoch .help`. The agent core retains `/help`, `/task`, and the rest of its
 canonical command surface; translation happens only at the Slack boundary.
 
 The transport persists each supported Socket Mode envelope under the agent's
