@@ -20,7 +20,7 @@ from enoch.extensions import AgentExtension, ExtensionCommandSpec, ExtensionLife
 from enoch.evolution.core import EvolveCandidate, EvolveProposal, EvolveReport, EvolveState
 from enoch.identity import load_identity, update_mission
 from enoch.memory.prompt import memory_for_prompt
-from enoch.profiles import AgentProfile
+from enoch.profiles import AgentProfile, CommandSpec
 from enoch.providers import ChatEvent, ProviderHealth
 from enoch.workflows import LocalWorkflowEngine
 from our_ark_provider_kit import (
@@ -33,6 +33,54 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ApplicationCompositionTests(unittest.TestCase):
+    def test_domain_help_hides_core_but_all_restores_it_for_each_prefix(self) -> None:
+        for prefix in ("/", "!"):
+            with self.subTest(prefix=prefix), TemporaryDirectory() as temp:
+                chat = _Chat()
+                chat.command_prefix = prefix
+                app = EnochApplication(
+                    load_identity(), Path(temp), chat, runtime=_Runtime(),
+                    presentation=ApplicationPresentation(default_help_scope="domain"),
+                    profile=AgentProfile(name="research", commands=(
+                        CommandSpec("sources", "list research sources", lambda _: "sources"),
+                    )),
+                    extensions=(AgentExtension(name="papers", help_heading="Research", commands=(
+                        ExtensionCommandSpec("paper", "research papers", lambda _: "papers"),
+                    )),),
+                )
+                app.handle_event(_event("/help", "compact"))
+                compact = chat.sent[-1][1]
+                self.assertIn(f"{prefix}paper - research papers", compact)
+                self.assertIn(f"{prefix}sources - list research sources", compact)
+                self.assertIn(f"{prefix}help --all", compact)
+                self.assertNotIn(f"{prefix}status -", compact)
+                app.handle_event(_event("/help --all", "all"))
+                expanded = chat.sent[-1][1]
+                self.assertIn(f"{prefix}status -", expanded)
+                self.assertIn(f"{prefix}paper -", expanded)
+                self.assertIn(f"{prefix}sources -", expanded)
+                self.assertEqual(app._help("status"), app._help("/status"))
+                app.handle_event(_event("/sources", "run-profile"))
+                self.assertEqual(chat.sent[-1][1], "sources")
+                app.handle_event(_event("/paper", "run-extension"))
+                self.assertEqual(chat.sent[-1][1], "papers")
+
+    def test_default_help_remains_complete_and_empty_domain_has_escape_hatch(self) -> None:
+        with TemporaryDirectory() as temp:
+            app = EnochApplication(load_identity(), Path(temp), _Chat(), runtime=_Runtime())
+            self.assertEqual(app._help(""), app._help("--all"))
+            app.presentation = ApplicationPresentation(default_help_scope="domain")
+            self.assertIn("no domain commands", app._help(""))
+            self.assertIn("/help --all", app._help(""))
+            self.assertNotIn("/status -", app._help(""))
+            self.assertIn("/status", app._help("status"))
+            self.assertIn("/help --all", app._help("unknown-command"))
+
+    def test_help_scope_rejects_unknown_values(self) -> None:
+        for value in ("hidden", None, True):
+            with self.subTest(value=value), self.assertRaises(ApplicationCompositionError):
+                ApplicationPresentation(default_help_scope=value)
+
     def test_composition_resolves_descendant_owned_startup_components(self) -> None:
         identity = load_identity()
         chat = _Chat()

@@ -1017,6 +1017,10 @@ class EnochApplication:
         return None
 
     def _help(self, topic: str) -> str:
+        topic = topic.strip()
+        show_all = topic == "--all"
+        if show_all:
+            topic = ""
         profile_command = self.profile.command(topic) if topic.strip() else None
         if profile_command is not None:
             return profile_command.usage or (
@@ -1029,14 +1033,15 @@ class EnochApplication:
         core_help = _help_message(topic, command_prefix=self.command_prefix)
         if topic.strip():
             return core_help
-        sections = [core_help]
+        domain_only = self.presentation.default_help_scope == "domain" and not show_all
+        sections = [] if domain_only else [core_help]
         if self.profile.commands:
             sections.append(
                 "\n".join(
                     [
                         f"{self.profile.help_heading}:",
                         *(
-                            f"{spec.command} - {spec.summary}"
+                            f"{self.command_prefix}{spec.name} - {spec.summary}"
                             for spec in self.profile.commands
                         ),
                     ]
@@ -1047,7 +1052,7 @@ class EnochApplication:
                 [
                     f"{extension.help_heading}:",
                     *(
-                        f"{spec.command} - {spec.summary}"
+                        f"{self.command_prefix}{spec.name} - {spec.summary}"
                         for spec in extension.commands
                     ),
                 ]
@@ -1055,6 +1060,12 @@ class EnochApplication:
             for extension in self.extensions
             if extension.commands
         )
+        if domain_only:
+            if not sections:
+                sections.append(f"{self.display_name} has no domain commands.")
+            sections.append(
+                f"Use {self.command_prefix}help --all to see every command."
+            )
         return "\n\n".join(sections)
 
     def _run_core_command(
@@ -1092,7 +1103,9 @@ class EnochApplication:
             "start": lambda: "\n".join(
                 [
                     self.presentation.resolved_ready_message(self.identity),
-                    f"Use {self.command_prefix}help to see every command.",
+                    f"Use {self.command_prefix}help"
+                    f"{' --all' if self.presentation.default_help_scope == 'domain' else ''}"
+                    " to see every command.",
                     f"Use {self.command_prefix}help <command> for detailed usage and subcommands.",
                 ]
             ),

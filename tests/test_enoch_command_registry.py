@@ -73,6 +73,9 @@ class CoreCommandRegistryTests(unittest.TestCase):
         self.assertIn("!evolve propose", evolve)
         self.assertNotIn("\n/evolve propose", evolve)
 
+    def test_all_help_flag_matches_the_full_core_overview(self) -> None:
+        self.assertEqual(help_message(" --all "), help_message())
+
     def test_runtime_command_reference_exposes_exact_provider_commands(self) -> None:
         reference = runtime_command_reference(command_prefix="!")
 

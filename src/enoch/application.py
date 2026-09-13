@@ -40,12 +40,17 @@ def _load_default_identity(path: Path) -> Identity:
 
 @dataclass(frozen=True)
 class ApplicationPresentation:
-    """Bounded application-level strings owned by a descendant."""
+    """Bounded application presentation owned by a descendant."""
 
     display_name: str = ""
     ready_message: str = ""
+    default_help_scope: str = "all"
 
     def __post_init__(self) -> None:
+        if self.default_help_scope not in ("all", "domain"):
+            raise ApplicationCompositionError(
+                "Application presentation default_help_scope must be all or domain."
+            )
         for field_name, limit in (("display_name", 80), ("ready_message", 240)):
             value = getattr(self, field_name)
             if not isinstance(value, str):

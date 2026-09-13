@@ -45,8 +45,8 @@ reloads it into startup context for every fresh session, while `body.yaml`
 remains the versioned executable-body contract. Legacy descendant
 `identity.yaml` files remain readable during migration.
 
-`ApplicationPresentation` intentionally contains only bounded, single-line
-application strings. Domain command wording belongs to profiles or extensions,
+`ApplicationPresentation` contains bounded application strings and the default
+help scope. Domain command wording belongs to profiles or extensions,
 not to the startup composition.
 
 `display_name` defaults to the loaded body identity's name. Core lifecycle,
@@ -54,6 +54,13 @@ command, and task messages use it when constructing their own wording, without
 changing the body identity. It is not a replacement filter on outgoing messages:
 runtime and extension replies, quoted text, lineage references, paths, code, and
 URLs are delivered unchanged. `ready_message` is likewise delivered literally.
+
+`default_help_scope="domain"` shows only the active profile and extension
+commands in the default help overview, followed by a `help --all` hint. The
+default is `"all"`, preserving Enoch's full command list. `help --all` always
+includes core, profile, and extension commands; `help <command>` still provides
+specific usage, and hidden core commands remain callable. This is presentation
+only and does not change authorization. Command prefixes follow the chat provider.
 
 ## Selection and precedence
 

@@ -810,6 +810,8 @@ def doctor_command(
 
 
 def help_message(topic: str = "", *, command_prefix: str = "/") -> str:
+    if topic.strip() == "--all":
+        topic = ""
     normalized_topic = _normalize_help_topic(topic)
     if normalized_topic:
         command = core_command(normalized_topic)
@@ -818,7 +820,7 @@ def help_message(topic: str = "", *, command_prefix: str = "/") -> str:
         return "\n".join(
             [
                 f"No help found for {command_prefix}{normalized_topic}.",
-                f"Use {command_prefix}help to see every command.",
+                f"Use {command_prefix}help --all to see every command.",
                 f"Use {command_prefix}help <command> for detailed usage and subcommands.",
             ]
         )
@@ -928,7 +930,8 @@ def _help_usage(prefix: str) -> str:
     return "\n".join(
         [
             "Help commands:",
-            f"{prefix}help - show every command",
+            f"{prefix}help - show the default command list",
+            f"{prefix}help --all - show every command",
             f"{prefix}help <command> - show detailed usage and subcommands",
             f"Example: {prefix}help worktree",
         ]
