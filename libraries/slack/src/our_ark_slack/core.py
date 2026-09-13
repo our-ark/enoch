@@ -11,9 +11,12 @@ from pathlib import Path
 import re
 import threading
 from typing import Any, Callable
+from urllib.parse import urlsplit
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 from uuid import uuid4
 
 from our_ark_provider_kit import (
+    Attachment,
     ChatEvent,
     ChatProviderError,
     ConversationId,
@@ -71,7 +74,7 @@ class SlackClient:
     capabilities = ProviderCapabilities(
         provider_kind="chat",
         capabilities=frozenset(
-            {"chat.receive", "chat.send", "chat.edit", "chat.ack"}
+            {"chat.receive", "chat.send", "chat.edit", "chat.ack", "chat.attachment"}
         ),
     )
 
@@ -177,6 +180,47 @@ class SlackClient:
             close = getattr(socket, "close", None)
             if callable(close):
                 close()
+
+    def download_attachment(
+        self, attachment: Attachment, destination: Path, *, max_bytes: int,
+    ) -> None:
+        """Resolve the file through Slack; never authenticate event-supplied URLs."""
+        if max_bytes < 1 or attachment.size > max_bytes:
+            raise SlackError("Slack attachment exceeds the download size limit.")
+        file_id = attachment.file_id
+        if not re.fullmatch(r"F[A-Z0-9]+", file_id):
+            raise SlackError("Slack attachment has no valid file ID.")
+        response = self._api_call("files.info", self._web.files_info, file=file_id)
+        info = _response_value(response, "file", {})
+        if not isinstance(info, dict) or info.get("id") != file_id:
+            raise SlackError("Slack did not return the requested file.")
+        if info.get("is_external"):
+            raise SlackError("External Slack files must be opened through their original service.")
+        if _file_size(info.get("size")) > max_bytes:
+            raise SlackError("Slack attachment exceeds the download size limit.")
+        url = str(info.get("url_private_download") or info.get("url_private") or "")
+        _check_download_url(url)
+        request = Request(url, headers={"Authorization": f"Bearer {self.config.bot_token}"})
+        try:
+            with build_opener(_SlackRedirectHandler()).open(request, timeout=30) as source:
+                _check_download_url(source.geturl())
+                if _file_size(source.headers.get("Content-Length")) > max_bytes:
+                    raise SlackError("Slack attachment exceeds the download size limit.")
+                with destination.open("wb") as output:
+                    os.chmod(destination, 0o600)
+                    total = 0
+                    while chunk := source.read(min(64 * 1024, max_bytes - total + 1)):
+                        total += len(chunk)
+                        if total > max_bytes:
+                            raise SlackError("Slack attachment exceeds the download size limit.")
+                        output.write(chunk)
+                    if not total:
+                        raise SlackError("Slack returned an empty attachment.")
+        except Exception as error:
+            destination.unlink(missing_ok=True)
+            if isinstance(error, SlackError):
+                raise
+            raise SlackError("Slack file download failed; check files:read permission and file access.") from None
 
     def _ensure_connected(self) -> None:
         if self._closed:
@@ -365,7 +409,8 @@ def slack_event(
     text = str(native.get("text") or "").strip()
     if event_type == "app_mention":
         text = _MENTION_PREFIX.sub("", text).strip()
-    if not text:
+    attachments = _file_attachments(native.get("files"))
+    if not text and not attachments:
         return None
     text = _translate_secondary_command(text)
     message_id = _optional_id(native.get("ts"))
@@ -375,7 +420,53 @@ def slack_event(
         message_id=message_id,
         text=text,
         raw=deepcopy(payload),
+        attachments=attachments,
     )
+
+
+def _file_size(value: object) -> int:
+    try:
+        return max(0, int(value)) if not isinstance(value, bool) else 0
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
+def _file_attachments(files: object) -> tuple[Attachment, ...]:
+    if not isinstance(files, list):
+        return ()
+    result = []
+    for info in files:
+        if not isinstance(info, dict):
+            continue
+        file_id = str(info.get("id") or "")
+        if not re.fullmatch(r"F[A-Z0-9]+", file_id):
+            continue
+        mime = str(info.get("mimetype") or "").lower()
+        result.append(Attachment(
+            kind="image" if mime in {"image/jpeg", "image/png", "image/webp"} else "document",
+            file_id=file_id, mime_type=mime,
+            filename=str(info.get("name") or info.get("title") or file_id),
+            size=_file_size(info.get("size")),
+        ))
+    return tuple(result)
+
+
+def _check_download_url(url: str) -> None:
+    try:
+        parsed = urlsplit(url)
+        valid = (parsed.scheme == "https" and parsed.hostname == "files.slack.com"
+                 and not parsed.username and not parsed.password and parsed.port in (None, 443))
+    except ValueError:
+        valid = False
+    if not valid:
+        raise SlackError("Slack returned an unsupported file download location.")
+
+
+class _SlackRedirectHandler(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        # urllib normally forwards Authorization on redirects, including off-host.
+        _check_download_url(newurl)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
 def slack_message_chunks(text: str, size: int = MAX_SLACK_MARKDOWN) -> list[str]:

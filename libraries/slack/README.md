@@ -14,7 +14,8 @@ not require a public HTTP endpoint.
 
 The manifest requests only the bot scopes used by the provider: receiving DMs
 and mentions, posting and editing messages, and adding the read acknowledgment
-reaction.
+reaction, and reading files shared with the app (`files:read`). Existing apps
+must add that bot scope and reinstall to the workspace for file access.
 
 ## Install and configure
 
@@ -55,3 +56,10 @@ canonical command surface; translation happens only at the Slack boundary.
 The transport persists each supported Socket Mode envelope under the agent's
 private channel state before acknowledging it. Tokens and temporary Slack
 response URLs are removed before that durable write.
+
+File-only messages and captioned messages both carry all Slack file references
+to the agent. Downloads resolve file IDs with `files.info` and authenticate only
+HTTPS requests to `files.slack.com`; file-size limits also apply while streaming.
+Enoch retains documents in private channel state and supplies bounded PDF text
+previews plus local paths for later research tasks. Scans, encrypted PDFs, and
+failed downloads produce explicit status instead of silently dropping the file.

@@ -1,10 +1,11 @@
 from pathlib import Path
 from types import SimpleNamespace
 import json
+import io
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -14,7 +15,9 @@ sys.path.insert(0, str(REPOSITORY / "src"))
 sys.path.insert(0, str(PROVIDER_KIT / "src"))
 sys.path.insert(0, str(ROOT / "src"))
 
-from our_ark_provider_kit import ChatProvider, ProviderContractConformanceMixin
+from our_ark_provider_kit import Attachment, ChatProvider, ProviderContractConformanceMixin
+from our_ark_slack.core import _SlackRedirectHandler
+from urllib.request import Request
 from our_ark_slack import (
     SlackClient,
     SlackConfig,
@@ -88,8 +91,81 @@ class SlackLibraryTests(ProviderContractConformanceMixin, unittest.TestCase):
         self.assertEqual(client.command_prefix, ".")
         self.assertEqual(
             client.capabilities.capabilities,
-            frozenset({"chat.receive", "chat.send", "chat.edit", "chat.ack"}),
+            frozenset({"chat.receive", "chat.send", "chat.edit", "chat.ack", "chat.attachment"}),
         )
+
+    def test_file_only_and_captioned_messages_keep_all_files_and_owner_boundary(self):
+        for caption in ("", ".paper compare these"):
+            payload = {"type": "event_callback", "event": {
+                "type": "message", "subtype": "file_share", "channel": "D123",
+                "user": "U123", "ts": "1700.1", "text": caption,
+                "files": [{"id": "F123", "name": "one.pdf", "mimetype": "application/pdf", "size": 42},
+                          {"id": "F456", "name": "two.pdf", "mimetype": "application/pdf"}],
+            }}
+            event = slack_event("events_api", payload, cursor=1)
+            self.assertIsNotNone(event)
+            self.assertEqual([a.filename for a in event.attachments], ["one.pdf", "two.pdf"])
+            self.assertEqual(event.text, caption.replace(".paper", "/paper"))
+            self.assertIsNone(slack_event("events_api", payload, cursor=1, allowed_user_id="U999"))
+            self.assertIsNone(slack_event("events_api", payload, cursor=1, allowed_conversation_id="D999"))
+
+    def test_file_only_is_spooled_before_ack_and_deduplicated(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            client = self.create_provider(root)
+            socket = _SocketClient(root / "intake")
+            request = _request(payload={"type": "event_callback", "event_id": "EvFILE", "event": {
+                "type": "message", "channel": "D123", "user": "U123", "ts": "1700.1",
+                "files": [{"id": "F123", "name": "one.pdf"}],
+            }})
+            client._handle_request(socket, request)
+            client._handle_request(socket, request)
+            client.close()
+            replay = self.create_provider(root).receive()
+            self.assertTrue(socket.spooled_before_ack)
+            self.assertEqual(len(replay), 1)
+            self.assertEqual(replay[0].attachments[0].file_id, "F123")
+
+    def test_download_resolves_file_and_bounds_stream_without_leaking_token(self):
+        with tempfile.TemporaryDirectory() as directory:
+            client = self.create_provider(Path(directory))
+            client._web.files_info = MagicMock(return_value={"ok": True, "file": {
+                "id": "F123", "url_private": "https://files.slack.com/files-pri/test/paper.pdf",
+            }})
+            target = Path(directory) / "paper.pdf"
+            for content, fails in ((b"%PDF-1.7", False), (b"x" * 12, True)):
+                stream = io.BytesIO(content)
+                stream.headers = {}
+                stream.geturl = lambda: "https://files.slack.com/files-pri/test/paper.pdf"
+                with patch("our_ark_slack.core.build_opener") as opener:
+                    opener.return_value.open.return_value = stream
+                    attachment = Attachment(kind="document", file_id="F123", metadata={"url_private": "https://evil.test"})
+                    if fails:
+                        with self.assertRaisesRegex(SlackError, "size limit"):
+                            client.download_attachment(attachment, target, max_bytes=10)
+                        self.assertFalse(target.exists())
+                    else:
+                        client.download_attachment(attachment, target, max_bytes=10)
+                        self.assertEqual(target.read_bytes(), content)
+                        self.assertEqual(target.stat().st_mode & 0o777, 0o600)
+                    request = opener.return_value.open.call_args.args[0]
+                    self.assertEqual(request.get_header("Authorization"), "Bearer xoxb-test")
+            client._web.files_info.return_value = {"ok": False, "error": "missing_scope"}
+            with self.assertRaisesRegex(SlackError, "missing_scope"):
+                client.download_attachment(attachment, target, max_bytes=10)
+
+    def test_download_refuses_untrusted_hosts_and_off_host_redirects(self):
+        for url in ("https://evil.test/a", "http://files.slack.com/a",
+                    "https://files.slack.com.evil.test/a", "https://files.slack.com:444/a"):
+            with self.subTest(url=url), tempfile.TemporaryDirectory() as directory:
+                client = self.create_provider(Path(directory))
+                client._web.files_info = MagicMock(return_value={"file": {"id": "F123", "url_private": url}})
+                with patch("our_ark_slack.core.build_opener") as opener:
+                    with self.assertRaises(SlackError):
+                        client.download_attachment(Attachment("document", "F123"), Path(directory)/"file", max_bytes=10)
+                    opener.assert_not_called()
+                with self.assertRaises(SlackError):
+                    _SlackRedirectHandler().redirect_request(Request("https://files.slack.com/a"), None, 302, "", {}, url)
 
     def test_normalizes_direct_messages_and_strips_channel_mentions(self) -> None:
         direct = slack_event(
