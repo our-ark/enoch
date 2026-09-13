@@ -31,3 +31,10 @@ Provider-specific settings are available through:
 
 The generic `/config model` and `/config reasoning-effort` commands configure
 the selected Claude model and effort level.
+
+The optional `quota(root)` method reads plan windows through Claude Code's
+experimental `get_usage` control request (verified with CLI 2.1.258). It starts
+no model turn, disables tools/hooks/MCP, and leaves login tokens inside the CLI.
+It returns `None` when the executable is absent, a normalized snapshot on
+success, or a safe error for unavailable login/CLI support or a 20-second timeout.
+Enoch exposes this through `/quota claude`; the active runtime need not be Claude.

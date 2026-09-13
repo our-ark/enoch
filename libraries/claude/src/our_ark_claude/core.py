@@ -278,6 +278,14 @@ class ClaudeRuntime:
     def reset_usage(self) -> None:
         _LAST_USAGE.set(RuntimeUsage())
 
+    def quota(self, root: Path | None = None) -> dict | None:
+        from our_ark_claude.quota import read_quota
+
+        resolution = self.resolve_executable(root)
+        if resolution.path is None:
+            return None
+        return read_quota(resolution.path, root or self.root)
+
     def health(self, root: Path | None = None) -> ProviderHealth:
         resolution = self.resolve_executable(root)
         if resolution.path is None:
