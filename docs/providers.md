@@ -141,6 +141,37 @@ Authentication, quota, rate-limit, and configured-budget failures raise the
 shared runtime-access signal, so queued work pauses and can later continue with
 `/task resume` without rewriting task history.
 
+## Account quota
+
+`/quota [gpt|codex|claude|all]` queries installed runtime providers without changing
+the active runtime or starting model work. With no argument, it skips providers
+whose CLIs are absent. Both the provider package and its CLI must be installed;
+no installation or authentication is triggered by the command.
+
+Codex uses the [app-server](https://learn.chatgpt.com/docs/app-server)
+`initialize` / `initialized` handshake followed by `account/rateLimits/read`.
+Named limit buckets take precedence over the legacy snapshot. Windows use the
+server's actual duration; neither primary nor secondary implies a fixed period.
+
+Claude uses the CLI's experimental `get_usage` control request, verified with
+Claude Code 2.1.258. It returns the subscription windows used by
+[`/usage`](https://code.claude.com/docs/en/commands). Older CLIs can reject this
+request and will report quota unavailable. The query sends no user prompt and
+disables tools, hooks, MCP, and session persistence. Authentication remains
+inside Claude Code; the provider does not read OAuth tokens itself.
+
+Each query has a 20-second timeout. Results are queried on demand and are not
+cached. Reset dates include the host timezone and a countdown. Missing fields
+remain unknown; an expired timestamp does not imply renewed quota. Error text
+and unused account fields from CLI responses are not copied into chat replies.
+
+Quota is an optional `quota(root)` method, not a new required runtime contract.
+It returns `None` for an absent CLI, or a mapping with `windows`, optional `plan`
+and `source`, and an optional safe user-facing `error`. A window contains
+`label`, `used_percent` (0 means unused; missing means unknown), and `resets_at`
+(Unix seconds or an ISO timestamp with timezone). Third-party runtimes without
+this method continue to work and are skipped by `/quota`.
+
 ## Host services
 
 The core daemon command is independent of the operating system's service

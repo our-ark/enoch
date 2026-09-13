@@ -285,6 +285,14 @@ only shows this getting-started guidance inside Telegram; it does not start or
 restart the local daemon. Core commands use the canonical singular forms shown
 by `/help`; plural aliases such as `/tasks` and `/worktrees` are not registered.
 
+Use `/quota` to read account usage percentages, remaining quota, and reset times
+for installed runtime providers. `/quota gpt` (or `/quota codex`) and
+`/quota claude` select one provider. Missing CLIs are skipped; an installed CLI
+with unavailable quota reports that explicitly. These are shared account limits,
+not task token totals. In Slack, use `.quota` or the compatible `!quota`.
+Descendants inherit this command; those with compact help list it in
+`/help --all`. See [provider quota support](docs/providers.md#account-quota).
+
 Use `/worktree` to inspect task worktrees that Enoch preserved for debugging.
 `/worktree show <task-id>` reports the branch, path, linked task records, and
 changed files. `/worktree cleanup <task-id>` removes only a clean inactive

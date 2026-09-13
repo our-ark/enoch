@@ -44,6 +44,7 @@ from enoch.providers.registry import (
     provider_name,
 )
 from enoch.profiles import ProfileError, available_profiles, load_profile
+from enoch.quota import quota_usage
 from enoch.skills import skills_command
 from enoch.tasks.config import (
     format_task_timeout,
@@ -1043,6 +1044,10 @@ CORE_COMMANDS = (
         "Common",
         "",
         "show identity, model, local state, and chat setup",
+    ),
+    CoreCommand(
+        "quota", "quota", "Common", "[gpt|claude|all]",
+        "show account quota remaining and reset times", quota_usage,
     ),
     CoreCommand("do", "do", "Work", "<request>", "run work now instead of queueing it"),
     CoreCommand(

@@ -13,6 +13,8 @@ import time
 from typing import Any, Callable
 from uuid import uuid4
 
+from enoch.quota import quota_command
+
 from enoch.backlog import (
     BacklogItem,
     add_backlog_item,
@@ -1133,6 +1135,9 @@ class EnochApplication:
             ),
             "self": lambda: identity_summary(self.identity, self.root),
             "status": lambda: self._status(chat_id),
+            "quota": lambda: quota_command(
+                argument, self.root, runtime=self.runtime, prefix=self.command_prefix,
+            ),
             "doctor": self._doctor,
             "worktree": lambda: self._worktree(chat_id, argument),
             "pr": lambda: self._pr(chat_id, argument),

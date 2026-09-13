@@ -102,7 +102,7 @@ class EnochPortableInstallTests(unittest.TestCase):
             "our-ark-claude",
         )
         self.assertEqual(dependency["requirement"], reference_requirement)
-        self.assertIn("@d5d6eece19caa5933a1b60b564a126297c864ce8", reference_requirement)
+        self.assertRegex(reference_requirement, r"@[0-9a-f]{40}#subdirectory=libraries/claude$")
         self.assertEqual(dependency["import_name"], "our_ark_claude")
         self.assertEqual(dependency["local_source"], "libraries/claude/src")
         self.assertTrue(dependency["optional"])

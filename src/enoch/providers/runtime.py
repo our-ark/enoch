@@ -144,6 +144,11 @@ class CodexRuntime(FunctionAgentRuntime):
     model_catalog_label = "Available GPT-5.6 models:"
     model_example = "gpt-5.6-sol"
 
+    def quota(self, root: Path | None = None) -> dict | None:
+        from enoch.providers.codex_quota import read_quota
+
+        return read_quota(root)
+
     def __init__(self, root: Path | None = None) -> None:
         from enoch.brain import (
             act_in_session_result,
