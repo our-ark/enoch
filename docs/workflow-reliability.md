@@ -57,6 +57,22 @@ notification.
 
 ## Task publication
 
+Before publication, a failed code-health or build-environment doctor check can
+return to the runtime for up to two focused repair turns. The task keeps its
+workspace, session, original deadline and cancellation controls; repair turns
+do not reset the task timeout. Each turn receives the failed check commands,
+diagnostics and bounded output, then the framework runs the complete doctor
+again. Only a passing result proceeds to publication. Operational failures,
+such as missing authentication or state-storage problems, stop this repair
+loop; runtime quota loss preserves the normal paused-task behavior.
+
+Instances can set `task.validation_repair_attempts` in their private config to
+an integer from 0 to 5 (default 2); 0 disables automatic validation repair.
+Exhaustion leaves the task failed with its draft and final diagnostics intact.
+Manual `/task retry <id>` also supplies the previous failed task's diagnosis
+and result to the runtime, while preserving the original request and context.
+Slack uses `.task retry <id>` with `!` retained as a fallback prefix.
+
 Task results use `WorkOutcome`, separating status, failure code, retryability,
 artifacts, and completed stages from chat presentation text. Publication
 persists `validated`, `captured`, and `review_published` stages with opaque

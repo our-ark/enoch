@@ -4223,7 +4223,7 @@ class EnochApplication:
                     self._run_direct_work(
                         job.chat_id,
                         job.text,
-                        context=_task_worker_context(job),
+                        context=_task_worker_context(job, workflow=self.workflow),
                         session_key=session_key,
                         execution=execution,
                     )
@@ -5379,8 +5379,14 @@ def _evolve_task_context(candidate: EvolveCandidate) -> str:
     )
 
 
-def _task_worker_context(job: TaskJob) -> str:
+def _task_worker_context(job: TaskJob, *, workflow: WorkflowEngine | None = None) -> str:
     parts = [job.context.strip()]
+    if job.parent_task_id is not None and workflow is not None:
+        from enoch.app.validation_repair import retry_failure_context
+
+        previous = workflow.find(job.parent_task_id)
+        if previous is not None and previous.status == "failed":
+            parts.append(retry_failure_context(previous))
     provenance = _evolution_provenance_for_job(job)
     if provenance is not None:
         parts.extend(

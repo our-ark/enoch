@@ -19,6 +19,11 @@ from enoch.app.parsing import (
     forge_maintenance_request,
 )
 from enoch.app.presentation import clip_activity_text
+from enoch.app.validation_repair import (
+    validation_is_repairable,
+    validation_repair_attempts,
+    validation_repair_prompt,
+)
 from enoch.config import read_section
 from enoch.formatting import format_doctor_result
 from enoch.immune import ImmuneResult, run_immune_system
@@ -63,6 +68,7 @@ from enoch.runtime import (
     WORKSPACE_WRITE_SANDBOX,
 )
 from enoch.tasks.failures import classify_task_failure
+from enoch.tasks.config import task_timeout_seconds
 from enoch.tasks.queue import (
     TaskJob,
     TaskPublicationState,
@@ -332,6 +338,7 @@ class TaskWorkflow:
             runtime_execution = execution or RuntimeExecutionControl(
                 request_id=f"task:{CURRENT_TASK_ID.get() or 'inline'}",
                 session_key=session_key,
+                timeout_seconds=task_timeout_seconds(app.root),
                 cancellation_event=app._current_task_cancellation_event(),
                 progress_callback=lambda progress: app._send_progress(
                     chat_id,
@@ -339,46 +346,10 @@ class TaskWorkflow:
                     progress.sandbox,
                 ),
             )
-            runtime_result = app.effect_fence.run_runtime_authorized(
-                "runtime.execute",
-                ("runtime.execute",),
-                lambda fenced_execution: invoke_runtime_action(
-                    app.runtime,
-                    app.identity,
-                    app._profile_prompt(
-                        work_request_prompt(
-                            work_request_with_context(request, context),
-                            remote_review=bool(
-                                getattr(app.review, "supports_remote_review", True)
-                            ),
-                        ),
-                        purpose="task",
-                        chat_id=chat_id,
-                    ),
-                    cwd=work_root,
-                    sandbox=sandbox,
-                    execution=fenced_execution,
-                    state_root=app.root,
-                ),
-                runtime_execution,
-                task_id=CURRENT_TASK_ID.get(),
+            result, memory_note = self._run_work_turn(
+                chat_id, request, context=context, work_root=work_root,
+                sandbox=sandbox, execution=runtime_execution,
             )
-            record_current_task_runtime_result(
-                runtime_result,
-                provider=app.runtime.name,
-                root=app.root,
-                workflow=app.workflow,
-            )
-            result = runtime_result.final_text
-            app._raise_if_current_task_cancelled()
-            result = app._capture_task_regression_signals(result)
-            memory_result = extract_memory_requests(result)
-            result = memory_result.visible_reply
-            memory_note = app.effect_fence.run(
-                app._save_memory_requests,
-                memory_result.requests,
-            )
-            app.effect_fence.run(record_direct_action, request, result, app.root)
             action_state = app.repository.inspect_working_copy(work_root)
             action_files = tuple(sorted(action_state.changed_paths))
         except (AgentRuntimeCancelled, AgentRuntimeTimedOut, AgentRuntimeAccessUnavailable):
@@ -424,21 +395,57 @@ class TaskWorkflow:
                 completed_stages=("edited",),
             )
 
-        app._send_step_update(chat_id, "Running doctor.")
-        app._raise_if_current_task_cancelled()
-        doctor = self.dependencies.run_immune_system(
-            work_root,
-            state_root=app.root,
-        )
-        app._raise_if_current_task_cancelled()
-        parts.append(format_doctor_result(doctor))
-        app._send_step_update(
-            chat_id,
-            "Doctor passed." if doctor.passed else "Doctor failed.",
-        )
+        repair_limit = validation_repair_attempts(app.root)
+        repair_count = 0
+        while True:
+            app._send_step_update(chat_id, "Running doctor.")
+            app._raise_if_current_task_cancelled()
+            runtime_execution.raise_if_stopped()
+            doctor = self.dependencies.run_immune_system(work_root, state_root=app.root)
+            app._raise_if_current_task_cancelled()
+            runtime_execution.raise_if_stopped()
+            doctor_report = format_doctor_result(doctor)
+            if doctor.passed:
+                parts.append(doctor_report)
+                app._send_step_update(chat_id, "Doctor passed.")
+                break
+            record_current_task_result(
+                "\n\n".join(part for part in [*parts, doctor_report] if part),
+                app.root, workflow=app.workflow,
+            )
+            if repair_count >= repair_limit or not validation_is_repairable(doctor):
+                parts.append(doctor_report)
+                app._send_step_update(chat_id, "Doctor failed; automatic repair stopped.")
+                break
+            repair_count += 1
+            app._send_step_update(
+                chat_id, f"Doctor failed. Repairing validation ({repair_count}/{repair_limit}).",
+            )
+            # Keep the original start time, timeout and cancellation controls.
+            # Each invocation has a distinct request id in the same session.
+            repair_execution = replace(
+                runtime_execution,
+                request_id=f"{runtime_execution.request_id}:validation-repair:{repair_count}",
+            )
+            try:
+                repaired, note = self._run_work_turn(
+                    chat_id, request, context=context, work_root=work_root,
+                    sandbox=sandbox, execution=repair_execution,
+                    repair_prompt=validation_repair_prompt(doctor, repair_count, repair_limit),
+                )
+                parts.extend([f"Validation repair {repair_count}:\n{repaired}", note])
+                action_files = tuple(sorted(app.repository.inspect_working_copy(work_root).changed_paths))
+            except (AgentRuntimeCancelled, AgentRuntimeTimedOut, AgentRuntimeAccessUnavailable,
+                    CapabilityAuthorizationError):
+                raise
+            except (AgentRuntimeError, RepositoryProviderError, OSError, TypeError) as error:
+                parts.append(doctor_report)
+                parts.append(f"Automatic validation repair could not continue: {error}")
+                break
         if not doctor.passed:
             parts.append(
-                f"I did not publish a review because doctor failed. Task workspace "
+                f"I did not publish a review because doctor failed after {repair_count} "
+                f"automatic repair attempt(s). Task workspace "
                 f"{work_root} was preserved for inspection."
             )
             return WorkOutcome.failure(
@@ -449,6 +456,12 @@ class TaskWorkflow:
                 completed_stages=("edited",),
             )
 
+        if not action_files:
+            return WorkOutcome.failure(
+                "\n\n".join(part for part in [*parts,
+                    "Validation repair left no task changes to publish; the workspace was preserved."] if part),
+                code="validation_failed", completed_stages=("edited",),
+            )
         app._raise_if_current_task_cancelled()
         app._record_current_publish_stage("validated")
         publish_outcome = coerce_work_outcome(
@@ -471,6 +484,48 @@ class TaskWorkflow:
                 dict.fromkeys(("edited", "validated", *publish_outcome.completed_stages))
             ),
         )
+
+    def _run_work_turn(
+        self,
+        chat_id: ConversationId,
+        request: str,
+        *,
+        context: str,
+        work_root: Path,
+        sandbox: str,
+        execution: RuntimeExecutionControl,
+        repair_prompt: str = "",
+    ) -> tuple[str, str]:
+        app = self.application
+        execution.raise_if_stopped()
+        prompt = work_request_prompt(
+            work_request_with_context(request, context),
+            remote_review=bool(getattr(app.review, "supports_remote_review", True)),
+        )
+        if repair_prompt:
+            prompt += "\n\n" + repair_prompt
+        runtime_result = app.effect_fence.run_runtime_authorized(
+            "runtime.execute",
+            ("runtime.execute",),
+            lambda fenced_execution: invoke_runtime_action(
+                app.runtime, app.identity,
+                app._profile_prompt(prompt, purpose="task", chat_id=chat_id),
+                cwd=work_root, sandbox=sandbox, execution=fenced_execution,
+                state_root=app.root,
+            ),
+            execution,
+            task_id=CURRENT_TASK_ID.get(),
+        )
+        record_current_task_runtime_result(
+            runtime_result, provider=app.runtime.name, root=app.root, workflow=app.workflow,
+        )
+        app._raise_if_current_task_cancelled()
+        result = app._capture_task_regression_signals(runtime_result.final_text)
+        memory_result = extract_memory_requests(result)
+        result = memory_result.visible_reply
+        memory_note = app.effect_fence.run(app._save_memory_requests, memory_result.requests)
+        app.effect_fence.run(record_direct_action, request, result, app.root)
+        return result, memory_note
 
     def preflight_portable_task(self) -> None:
         app = self.application
