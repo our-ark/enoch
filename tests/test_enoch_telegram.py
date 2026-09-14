@@ -5508,7 +5508,7 @@ class EnochTelegramTests(unittest.TestCase):
 
             started, start_worker = self._capture_direct_work_worker(bot)
             with start_worker:
-                _handle_update(bot, _message_update(chat_id=42, text="/do 保留 #1，关闭重复的 #2 和 #3"))
+                _handle_update(bot, _message_update(chat_id=42, text="/do 保留 PR #1，关闭重复的 PR #2 和 #3"))
             self.assertEqual(len(started), 1)
             bot._run_direct_task_job(started[0][0], session_key=started[0][1])
 

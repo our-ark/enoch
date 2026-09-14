@@ -308,6 +308,12 @@ discard <task-id> force` permanently removes an inactive worktree, all of its
 uncommitted changes, and its local branch. Enoch refuses both operations while
 the worktree is still used by a queued, running, paused, or retrying task.
 
+The `/do` PR-maintenance shortcut requires a complete instruction with explicit
+PR references, such as `/do close PR #3` or
+`/do 保留 PR #1，关闭重复的 PR #2 和 #3`. Task numbers, issue numbers, quoted
+examples, and requests mixing PR maintenance with other work follow the normal
+task execution path. In Slack, the same commands use `.do` or `!do`.
+
 ## Codex configuration
 
 Enoch has her own local runtime configuration in `.enoch/config.yaml`. For the

@@ -66,28 +66,67 @@ def backlog_priority_update(argument: str) -> tuple[int | None, str | None]:
     return backlog_item_id(parts[0]), parts[1].lower()
 
 
+_PR_OBJECT = r"(?:prs?\b|pull\s+requests?\b|拉取请求|合并请求)"
+_PR_LIST_SEPARATOR = r"(?:\s*[,，、]\s*|\s+(?:and|&)\s+|\s*(?:和|与|及)\s*)"
+_PR_MAINTENANCE_CLAUSE = re.compile(
+    r"(?:please\s+|请\s*)?"
+    r"(?P<action>close|关闭|关掉|deduplicate|dedup|去重|keep|retain|保留|留下)\s*"
+    r"(?:the\s+)?(?:duplicate\s+|重复的?\s*)?"
+    rf"(?P<targets>{_PR_OBJECT}\s*#\d+"
+    rf"(?:{_PR_LIST_SEPARATOR}(?:{_PR_OBJECT}\s*)?#\d+)*)",
+    re.IGNORECASE,
+)
+_PR_CLAUSE_SEPARATOR = re.compile(
+    r"\s*(?:[,，;；。.]\s*(?:(?:and|then)\b|并且|然后|并)?|\band\b|\bthen\b|并且|然后|并)\s*",
+    re.IGNORECASE,
+)
+
+
 def forge_maintenance_request(text: str) -> ForgeMaintenanceRequest | None:
-    normalized = " ".join(text.strip().split())
+    """Recognize only complete, explicit PR maintenance instructions.
+
+    A task/issue number is not a PR reference. Every action clause must name
+    PRs, and unrelated text must stay on the ordinary task execution path.
+    """
+    normalized = " ".join(text.strip().split()).rstrip(".!。！;；")
     if not normalized:
         return None
-    lowered = normalized.lower()
-    numbers = pr_numbers(normalized)
-    if not numbers:
-        return None
-
-    dedup_words = ("dedup", "duplicate", "duplicates", "重复", "重复的")
-    close_words = ("close", "关闭", "关掉")
-    if any(word in lowered for word in dedup_words):
-        keep_number = keep_pr_number(normalized) or numbers[0]
-    elif any(word in lowered for word in close_words):
-        keep_number = keep_pr_number(normalized)
-    else:
-        return None
-    close_numbers = tuple(number for number in numbers if number != keep_number)
-    return ForgeMaintenanceRequest(
-        close_numbers=unique_numbers(close_numbers),
-        keep_number=keep_number,
-    )
+    position = 0
+    close_numbers = []
+    dedup_numbers: tuple[int, ...] = ()
+    keep_number = None
+    while position < len(normalized):
+        clause = _PR_MAINTENANCE_CLAUSE.match(normalized, position)
+        if clause is None:
+            return None
+        numbers = pr_numbers(clause["targets"])
+        if not numbers or re.search(r"#0+(?!\d)", clause["targets"]):
+            return None
+        action = clause["action"].lower()
+        if action in {"keep", "retain", "保留", "留下"}:
+            if len(numbers) != 1 or keep_number not in (None, numbers[0]):
+                return None
+            keep_number = numbers[0]
+        elif action in {"deduplicate", "dedup", "去重"}:
+            if dedup_numbers or len(numbers) < 2:
+                return None
+            dedup_numbers = numbers
+        else:
+            close_numbers.extend(numbers)
+        position = clause.end()
+        if position == len(normalized):
+            break
+        separator = _PR_CLAUSE_SEPARATOR.match(normalized, position)
+        if separator is None or separator.end() == len(normalized):
+            return None
+        position = separator.end()
+    if dedup_numbers:
+        if keep_number is not None and keep_number not in dedup_numbers:
+            return None
+        keep_number = keep_number or dedup_numbers[0]
+        close_numbers.extend(dedup_numbers)
+    selected = unique_numbers(number for number in close_numbers if number != keep_number)
+    return ForgeMaintenanceRequest(selected, keep_number) if selected else None
 
 
 def pr_numbers(text: str) -> tuple[int, ...]:
