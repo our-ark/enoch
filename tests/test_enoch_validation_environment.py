@@ -19,6 +19,63 @@ from enoch.validation_environment import (
 
 
 class EnochValidationEnvironmentTests(unittest.TestCase):
+    def test_project_venvs_keep_distinct_dependencies_and_managed_backend_precedence(self) -> None:
+        from enoch.immune import _run_check, _test_command
+
+        real_run = subprocess.run
+        with TemporaryDirectory() as temp:
+            base = Path(temp)
+            project = base / "project"
+            _write_project(project, locked=False)
+            (project / "tests").mkdir()
+            (project / "tests/test_dependencies.py").write_text(
+                "import unittest, runtime_dependency, setuptools\n"
+                "class Dependencies(unittest.TestCase):\n"
+                "    def test_imports(self):\n"
+                "        self.assertIn(runtime_dependency.VALUE, ('alpha', 'beta'))\n"
+                "        self.assertEqual(setuptools.VALUE, 'managed')\n"
+            )
+
+            def site_packages(python):
+                result = real_run([str(python), "-c", "import sysconfig; print(sysconfig.get_path('purelib'))"],
+                                  text=True, capture_output=True, check=True)
+                return Path(result.stdout.strip())
+
+            def fake_backend(path, value):
+                package = path / "setuptools"
+                package.mkdir(exist_ok=True)
+                (package / "__init__.py").write_text(f"VALUE = {value!r}\n")
+                (package / "build_meta.py").write_text("# Test build backend\n")
+
+            def offline_run(command, **kwargs):
+                if command[1:4] == ["-m", "pip", "install"]:
+                    fake_backend(site_packages(command[0]), "managed")
+                    return subprocess.CompletedProcess(command, 0, "", "")
+                return real_run(command, **kwargs)
+
+            environments = []
+            for value in ("alpha", "beta"):
+                runtime = base / value
+                real_run([sys.executable, "-m", "venv", "--without-pip", str(runtime)], check=True)
+                python = runtime / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+                packages = site_packages(python)
+                (packages / "runtime_dependency.py").write_text(f"VALUE = {value!r}\n")
+                fake_backend(packages, "runtime")
+                with patch.dict(os.environ, {VALIDATION_ENVIRONMENT_HOME: str(base / "managed")}), \
+                     patch("enoch.validation_environment.subprocess.run", side_effect=offline_run):
+                    managed = ensure_validation_environment(project, base_python=str(python))
+                    self.assertEqual(existing_validation_environment(project, base_python=str(python)).root,
+                                     managed.root)
+                environments.append(managed)
+                check = _run_check("tests", _test_command(str(managed.python), root=project), project, 30)
+                self.assertTrue(check.passed, check.output)
+                self.assertIn("Ran 1 test", check.output)
+                probe = real_run([str(managed.python), "-c", "import runtime_dependency; print(runtime_dependency.VALUE)"],
+                                 text=True, capture_output=True, check=True)
+                self.assertEqual(probe.stdout.strip(), value)
+                self.assertIn("'runtime'", (packages / "setuptools/__init__.py").read_text())
+            self.assertNotEqual(environments[0].root, environments[1].root)
+
     def test_provisions_locked_environment_once_and_reuses_it(self) -> None:
         with TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -30,7 +87,7 @@ class EnochValidationEnvironmentTests(unittest.TestCase):
                 commands.append(command)
                 if command[1:3] == ["-m", "venv"]:
                     _write_fake_venv_python(Path(command[3]))
-                return subprocess.CompletedProcess(command, 0, "", "")
+                return subprocess.CompletedProcess(command, 0, "[]" if "json.dumps(sys.path)" in command[-1] else "", "")
 
             with patch.dict(
                 os.environ,
@@ -82,7 +139,7 @@ class EnochValidationEnvironmentTests(unittest.TestCase):
             def run(command, **_kwargs):
                 if command[1:3] == ["-m", "venv"]:
                     _write_fake_venv_python(Path(command[3]))
-                return subprocess.CompletedProcess(command, 0, "", "")
+                return subprocess.CompletedProcess(command, 0, "[]" if "json.dumps(sys.path)" in command[-1] else "", "")
 
             with patch.dict(
                 os.environ,
@@ -120,7 +177,7 @@ class EnochValidationEnvironmentTests(unittest.TestCase):
             def run(command, **_kwargs):
                 if command[1:3] == ["-m", "venv"]:
                     _write_fake_venv_python(Path(command[3]))
-                    return subprocess.CompletedProcess(command, 0, "", "")
+                    return subprocess.CompletedProcess(command, 0, "[]" if "json.dumps(sys.path)" in command[-1] else "", "")
                 if len(command) > 3 and command[1:4] == ["-m", "pip", "install"]:
                     return subprocess.CompletedProcess(
                         command,
@@ -128,7 +185,7 @@ class EnochValidationEnvironmentTests(unittest.TestCase):
                         "",
                         "download failed",
                     )
-                return subprocess.CompletedProcess(command, 0, "", "")
+                return subprocess.CompletedProcess(command, 0, "[]" if "json.dumps(sys.path)" in command[-1] else "", "")
 
             with patch.dict(
                 os.environ,
@@ -165,7 +222,7 @@ class EnochValidationEnvironmentTests(unittest.TestCase):
                 commands.append(command)
                 if command[1:3] == ["-m", "venv"]:
                     _write_fake_venv_python(Path(command[3]))
-                return subprocess.CompletedProcess(command, 0, "", "")
+                return subprocess.CompletedProcess(command, 0, "[]" if "json.dumps(sys.path)" in command[-1] else "", "")
 
             with patch.dict(
                 os.environ,

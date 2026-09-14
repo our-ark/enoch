@@ -27,7 +27,7 @@ from enoch.validation_environment import (
 )
 
 
-DEFAULT_TEST_ARGS = ["-m", "unittest", "discover", "-s", "tests", "-t", "."]
+DEFAULT_TEST_ARGS = ["-m", "unittest", "discover", "-s", "tests"]
 DEFAULT_TIMEOUT_SECONDS = 120
 MAX_OUTPUT_CHARS = 12000
 MIN_PYTHON_VERSION = (3, 11)
@@ -97,7 +97,7 @@ def run_immune_system(
         if build_backend.passed:
             test_check = _run_check(
                 "tests",
-                _test_command(validation_python),
+                _test_command(validation_python, root=root_path),
                 root_path,
                 timeout,
             )
@@ -105,13 +105,13 @@ def run_immune_system(
             test_check = DoctorCheckResult(
                 name="tests",
                 passed=True,
-                command=shlex.join(_test_command(validation_python)),
+                command=shlex.join(_test_command(validation_python, root=root_path)),
                 output="",
                 summary="not run until the build-backend prerequisite passes",
                 skipped=True,
             )
     else:
-        test_check = _run_check("tests", _test_command(), root_path, timeout)
+        test_check = _run_check("tests", _test_command(root=root_path), root_path, timeout)
     checks.extend(
         [
             test_check,
@@ -133,11 +133,16 @@ def run_immune_system(
     )
 
 
-def _test_command(python: str | None = None) -> list[str]:
+def _test_command(python: str | None = None, *, root: Path | None = None) -> list[str]:
     configured = os.environ.get("ENOCH_TEST_COMMAND")
     if configured is not None:
         return _split_configured_command(configured)
-    return [python or _python_executable(), *DEFAULT_TEST_ARGS]
+    command = [python or _python_executable(), *DEFAULT_TEST_ARGS]
+    # Package discovery imports tests/__init__.py (including Enoch's state
+    # isolation). Flat descendant test directories cannot use that top level.
+    if (repo_root(root) / "tests" / "__init__.py").is_file():
+        command.extend(["-t", "."])
+    return command
 
 
 def _split_configured_command(command: str) -> list[str]:

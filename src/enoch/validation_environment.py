@@ -15,7 +15,7 @@ from enoch.paths import repo_root
 from enoch.state import atomic_write, file_transaction
 
 
-VALIDATION_ENVIRONMENT_SCHEMA_VERSION = 1
+VALIDATION_ENVIRONMENT_SCHEMA_VERSION = 2
 VALIDATION_REQUIREMENTS = Path(".github/requirements/test-build.txt")
 VALIDATION_ENVIRONMENTS_DIRECTORY = "validation"
 VALIDATION_ENVIRONMENT_HOME = "ENOCH_VALIDATION_ENVIRONMENT_HOME"
@@ -234,7 +234,10 @@ def _resolved_executable(executable: str) -> str:
             )
         candidate = Path(located)
     try:
-        return str(candidate.resolve(strict=True))
+        # Resolving the executable symlink would turn a project venv into its
+        # system Python and conflate environments with different dependencies.
+        candidate.resolve(strict=True)
+        return str(candidate.absolute())
     except OSError as error:
         raise ValidationEnvironmentError(
             f"Could not resolve configured Python executable {candidate}: {error}"
@@ -299,6 +302,7 @@ def _create_environment(spec: _EnvironmentSpec, temporary: Path) -> None:
             "The managed validation environment was created, but build backend "
             f"{spec.backend} is still unavailable."
         )
+    _inherit_runtime_import_paths(spec, python, environment)
     atomic_write(
         temporary / ".complete.json",
         json.dumps(
@@ -315,6 +319,47 @@ def _create_environment(spec: _EnvironmentSpec, temporary: Path) -> None:
         )
         + "\n",
     )
+
+
+def _inherit_runtime_import_paths(
+    spec: _EnvironmentSpec,
+    python: Path,
+    environment: dict[str, str],
+) -> None:
+    result = _run(
+        [spec.base_python, "-c", "import json, sys; print(json.dumps(sys.path))"],
+        root=spec.root,
+        environment=environment,
+        timeout=VERIFY_TIMEOUT_SECONDS,
+    )
+    try:
+        paths = json.loads(result.stdout) if result.returncode == 0 else None
+        if not isinstance(paths, list) or not all(isinstance(path, str) for path in paths):
+            raise ValueError("expected a list of Python import paths")
+        paths = [path for path in paths if Path(path).is_absolute() and Path(path).exists()
+                 and "\n" not in path and "\r" not in path]
+    except (ValueError, TypeError) as error:
+        raise ValidationEnvironmentError(
+            f"Could not read runtime dependency paths: {_command_error(result)}"
+        ) from error
+    # .pth paths follow the managed environment's own packages, so its locked
+    # build backend wins while the application's installed dependencies remain
+    # importable. Do not copy packages or modify the application environment.
+    installed = _run(
+        [str(python), "-c",
+         "import json, pathlib, sys, sysconfig; "
+         "path = pathlib.Path(sysconfig.get_path('purelib')) / 'our_ark_runtime.pth'; "
+         "path.write_text('\\n'.join(json.loads(sys.argv[1])) + '\\n', encoding='utf-8')",
+         json.dumps(paths)],
+        root=spec.root,
+        environment=environment,
+        timeout=VERIFY_TIMEOUT_SECONDS,
+    )
+    if installed.returncode != 0:
+        raise ValidationEnvironmentError(
+            "Could not preserve runtime dependencies in the validation environment: "
+            + _command_error(installed)
+        )
 
 
 def _environment_is_complete(spec: _EnvironmentSpec) -> bool:

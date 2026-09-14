@@ -19,6 +19,7 @@ from enoch.immune import (
     _forge_provider_check,
     _limit_output,
     _memory_storage_check,
+    _test_command,
     _validation_python_and_backend_check,
     diagnose_output,
     run_immune_system,
@@ -50,6 +51,53 @@ def _check(
 
 
 class EnochImmuneTests(unittest.TestCase):
+    def test_doctor_runs_flat_and_package_tests_and_preserves_failures(self) -> None:
+        for packaged in (False, True):
+            for succeeds in (False, True):
+                with self.subTest(packaged=packaged, succeeds=succeeds), TemporaryDirectory() as temp:
+                    root = Path(temp)
+                    tests = root / "tests"
+                    tests.mkdir()
+                    if packaged:
+                        (tests / "__init__.py").write_text("INITIALIZED = True\n")
+                    (tests / "test_sample.py").write_text(
+                        "import unittest\n"
+                        + ("from . import INITIALIZED\n" if packaged else "INITIALIZED = True\n")
+                        + "class SampleTests(unittest.TestCase):\n"
+                        + "    def test_sample(self):\n"
+                        + "        self.assertTrue(INITIALIZED)\n"
+                        + f"        self.assertTrue({succeeds!r})\n"
+                    )
+                    with (
+                        patch.dict("os.environ", {}, clear=True),
+                        patch("enoch.immune._validation_python_and_backend_check",
+                              return_value=(sys.executable, _check("build backend"))),
+                        patch("enoch.immune._import_smoke_command", return_value=[sys.executable, "-c", "pass"]),
+                        patch("enoch.immune._runtime_provider_check", return_value=_check("runtime")),
+                        patch("enoch.immune._forge_provider_check", return_value=_check("forge")),
+                        patch("enoch.immune._vcs_workspace_check", return_value=_check("vcs")),
+                        patch("enoch.immune._memory_storage_check", return_value=_check("storage")),
+                    ):
+                        result = run_immune_system(root)
+                    check = next(check for check in result.checks if check.name == "tests")
+                    self.assertEqual(result.passed, succeeds)
+                    self.assertEqual(check.passed, succeeds)
+                    self.assertFalse(check.skipped)
+                    self.assertIn("Ran 1 test", check.output)
+                    self.assertEqual(" -t ." in check.command, packaged)
+
+    def test_custom_test_command_remains_authoritative_for_either_layout(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "tests").mkdir()
+            for packaged in (False, True):
+                with self.subTest(packaged=packaged):
+                    if packaged:
+                        (root / "tests/__init__.py").touch()
+                    with patch.dict("os.environ", {"ENOCH_TEST_COMMAND": "custom-python -m pytest 'tests/example suite'"}):
+                        self.assertEqual(_test_command("ignored-python", root=root),
+                                         ["custom-python", "-m", "pytest", "tests/example suite"])
+
     @patch("enoch.immune._memory_storage_check")
     @patch("enoch.immune._forge_provider_check")
     @patch("enoch.immune._codex_binary_check")
