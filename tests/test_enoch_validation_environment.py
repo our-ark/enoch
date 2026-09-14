@@ -19,6 +19,66 @@ from enoch.validation_environment import (
 
 
 class EnochValidationEnvironmentTests(unittest.TestCase):
+    def test_private_runtime_dependencies_follow_the_current_project(self) -> None:
+        real_run = subprocess.run
+        with TemporaryDirectory() as temp:
+            base = Path(temp)
+            project = base / "project"
+            _write_project(project, locked=False)
+            runtime = base / "runtime"
+            real_run([sys.executable, "-m", "venv", "--without-pip", str(runtime)], check=True)
+            python = runtime / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+
+            def offline_run(command, **kwargs):
+                if command[1:4] == ["-m", "pip", "install"]:
+                    result = real_run(
+                        [command[0], "-c", "import sysconfig; print(sysconfig.get_path('purelib'))"],
+                        text=True, capture_output=True, check=True,
+                    )
+                    backend = Path(result.stdout.strip()) / "setuptools"
+                    backend.mkdir()
+                    (backend / "__init__.py").write_text("VALUE = 'managed'\n")
+                    (backend / "build_meta.py").write_text("# Fixture backend\n")
+                    return subprocess.CompletedProcess(command, 0, "", "")
+                return real_run(command, **kwargs)
+
+            environments = []
+            with patch.dict(os.environ, {VALIDATION_ENVIRONMENT_HOME: str(base / "managed")}), \
+                 patch("enoch.validation_environment.subprocess.run", side_effect=offline_run):
+                for value in ("alpha", "beta"):
+                    packages = project / ".enoch" / "dependencies" / value
+                    packages.mkdir(parents=True)
+                    (packages / "private_dependency.py").write_text(f"VALUE = {value!r}\n")
+                    # A dependency path must not override the managed build backend.
+                    (packages / "setuptools.py").write_text("VALUE = 'runtime'\n")
+                    (project / "genesis.toml").write_text(
+                        "[[runtime_dependencies]]\n"
+                        'name = "private-dependency"\n'
+                        'requirement = "private-dependency==1.0"\n'
+                        'import_name = "private_dependency"\n'
+                        f'local_source = ".enoch/dependencies/{value}"\n'
+                    )
+                    self.assertIsNone(existing_validation_environment(project, base_python=str(python)))
+                    managed = ensure_validation_environment(project, base_python=str(python))
+                    self.assertTrue(managed.created)
+                    probe = real_run(
+                        [str(managed.python), "-c",
+                         "import private_dependency, setuptools; "
+                         "print(private_dependency.VALUE, setuptools.VALUE)"],
+                        cwd=project, text=True, capture_output=True,
+                    )
+                    self.assertEqual(probe.returncode, 0, probe.stderr)
+                    self.assertEqual(probe.stdout.strip(), f"{value} managed")
+                    environments.append(managed)
+
+            self.assertNotEqual(environments[0].root, environments[1].root)
+            self.assertTrue(environments[0].root.is_dir())
+            base_probe = real_run(
+                [str(python), "-c", "import private_dependency"],
+                cwd=project, text=True, capture_output=True,
+            )
+            self.assertNotEqual(base_probe.returncode, 0)
+
     def test_project_venvs_keep_distinct_dependencies_and_managed_backend_precedence(self) -> None:
         from enoch.immune import _run_check, _test_command
 

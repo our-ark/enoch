@@ -12,10 +12,11 @@ import tomllib
 from uuid import uuid4
 
 from enoch.paths import repo_root
+from enoch.runtime_dependencies import RuntimeDependencyError, runtime_dependency_paths
 from enoch.state import atomic_write, file_transaction
 
 
-VALIDATION_ENVIRONMENT_SCHEMA_VERSION = 2
+VALIDATION_ENVIRONMENT_SCHEMA_VERSION = 3
 VALIDATION_REQUIREMENTS = Path(".github/requirements/test-build.txt")
 VALIDATION_ENVIRONMENTS_DIRECTORY = "validation"
 VALIDATION_ENVIRONMENT_HOME = "ENOCH_VALIDATION_ENVIRONMENT_HOME"
@@ -46,6 +47,7 @@ class _EnvironmentSpec:
     requirements_file: Path | None
     requirements: tuple[str, ...]
     requirements_digest: str
+    runtime_paths: tuple[Path, ...]
 
 
 def existing_validation_environment(
@@ -112,6 +114,12 @@ def _environment_spec(
     )
     backend = _build_backend(root_path)
     resolved_python = _resolved_executable(base_python)
+    try:
+        runtime_paths = runtime_dependency_paths(root_path)
+    except (RuntimeDependencyError, OSError) as error:
+        raise ValidationEnvironmentError(
+            f"Could not resolve validation runtime dependencies: {error}"
+        ) from error
     fingerprint = hashlib.sha256(
         json.dumps(
             {
@@ -120,6 +128,7 @@ def _environment_spec(
                 "backend": backend,
                 "requirements": requirements,
                 "requirements_digest": requirements_digest,
+                "runtime_paths": [str(path) for path in runtime_paths],
             },
             sort_keys=True,
         ).encode("utf-8")
@@ -135,6 +144,7 @@ def _environment_spec(
         requirements_file=requirements_file,
         requirements=requirements,
         requirements_digest=requirements_digest,
+        runtime_paths=runtime_paths,
     )
 
 
@@ -312,6 +322,7 @@ def _create_environment(spec: _EnvironmentSpec, temporary: Path) -> None:
                 "python": spec.base_python,
                 "backend": spec.backend,
                 "requirements_digest": spec.requirements_digest,
+                "runtime_paths": [str(path) for path in spec.runtime_paths],
                 "created_at": datetime.now(timezone.utc).isoformat(),
             },
             indent=2,
@@ -336,8 +347,11 @@ def _inherit_runtime_import_paths(
         paths = json.loads(result.stdout) if result.returncode == 0 else None
         if not isinstance(paths, list) or not all(isinstance(path, str) for path in paths):
             raise ValueError("expected a list of Python import paths")
+        # A bare base-Python probe does not activate the project's private dependencies.
+        paths = [str(path) for path in spec.runtime_paths] + paths
         paths = [path for path in paths if Path(path).is_absolute() and Path(path).exists()
                  and "\n" not in path and "\r" not in path]
+        paths = list(dict.fromkeys(paths))
     except (ValueError, TypeError) as error:
         raise ValidationEnvironmentError(
             f"Could not read runtime dependency paths: {_command_error(result)}"

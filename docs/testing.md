@@ -17,6 +17,12 @@ is missing or below the project requirement. When that preflight fails, Doctor
 skips the suite instead of reporting downstream packaging failures as source
 regressions.
 
+Doctor's managed validation environment inherits the project's resolved runtime
+dependency paths as well as the base interpreter's installed packages. Those
+paths are part of its cache identity, so an update that changes private runtime
+dependencies gets a matching environment. The managed, locked build backend
+retains precedence; the base Python environment is not modified.
+
 The service-provider suites verify manifest generation and lifecycle command
 delegation independently. GitHub Actions runs them on Linux alongside the core
 suite, so systemd support remains part of the required regression gate while
