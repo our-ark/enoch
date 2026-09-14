@@ -2262,7 +2262,7 @@ class EnochApplication:
             branch,
         )
 
-    def _publish_existing_branch(self, chat_id: int, branch: str) -> str:
+    def _publish_existing_branch(self, chat_id: int, branch: str) -> WorkOutcome:
         return self._task_workflow.publish_existing_branch(chat_id, branch)
 
     def _prepare_existing_branch_task_worktree(self, branch: str) -> TaskWorktree:
@@ -2767,6 +2767,7 @@ class EnochApplication:
         except (OSError, ReviewProviderError, TaskRetryError) as error:
             return f"{self.display_name} could not retry task #{task_id}: {error}"
         position = self.workflow.inspect().pending_count
+        retry_kind = "unpublished task" if original is not None and original.status == "completed" else "failed task"
         message = self._format_work_status(
             WorkStatusMessage(
                 chat_id=job.chat_id,
@@ -2777,11 +2778,11 @@ class EnochApplication:
                 status="queued",
                 latest_update=(
                     (
-                        f"Retry of failed task #{task_id} reconciled "
+                        f"Retry of {retry_kind} #{task_id} reconciled "
                         f"{len(job.review_urls)} existing review(s)."
                     )
                     if job.review_urls
-                    else f"Retry of failed task #{task_id} queued at position {position}."
+                    else f"Retry of {retry_kind} #{task_id} queued at position {position}."
                 ),
                 context=job.context,
             )
@@ -4197,7 +4198,7 @@ class EnochApplication:
         regression_signals: tuple[TaskRegressionSignal, ...] = ()
         try:
             self._authorize_task(job)
-            if job.result and job.review_urls:
+            if job.result and job.review_urls and job.review_published:
                 reply = job.result
                 outcome = WorkOutcome.completed(reply)
             elif job.publish_stage in {
@@ -5158,7 +5159,7 @@ def _reconciled_retry_result(
     logged_result = _latest_direct_action_result_for_task(job, root)
     prior_result = logged_result or job.result
     identities = []
-    if job.review_id:
+    if job.review_id and not (job.review_id.startswith("legacy-review:") and not job.review_url):
         identities.append(
             ReviewIdentity(
                 id=job.review_id,

@@ -19,6 +19,11 @@ from enoch.app.parsing import (
     forge_maintenance_request,
 )
 from enoch.app.presentation import clip_activity_text
+from enoch.app.review_publication import (
+    requires_remote_review,
+    review_publication_problem,
+    review_was_published,
+)
 from enoch.app.validation_repair import (
     validation_is_repairable,
     validation_repair_attempts,
@@ -190,7 +195,7 @@ class TaskWorkflowHost(Protocol):
 
     def _run_forge_maintenance(self, request: ForgeMaintenanceRequest) -> str: ...
 
-    def _publish_existing_branch(self, chat_id: ConversationId, branch: str) -> str: ...
+    def _publish_existing_branch(self, chat_id: ConversationId, branch: str) -> WorkOutcome | str: ...
 
     def _send_step_update(
         self,
@@ -314,6 +319,8 @@ class TaskWorkflow:
         if publish_branch is not None:
             reply = app._publish_existing_branch(chat_id, publish_branch)
             app._raise_if_current_task_cancelled()
+            if isinstance(reply, WorkOutcome):
+                return reply
             if reply.strip().lower().startswith(f"{app.display_name} could not".lower()):
                 failure = classify_task_failure(reply)
                 return WorkOutcome.failure(
@@ -633,155 +640,66 @@ class TaskWorkflow:
                 token = CURRENT_WORK_STATUS.set(status_message)
         try:
             result = app._publish_existing_branch(chat_id, branch)
+            failed = isinstance(result, WorkOutcome) and result.failed
+            message = str(result)
             if status_message is not None and status_message.message_id:
                 app._update_work_status(
-                    clip_activity_text(result, limit=800),
-                    status="completed",
+                    clip_activity_text(message, limit=800),
+                    status="failed" if failed else "completed",
                 )
                 return ""
-            return result
+            return message
         finally:
             if token is not None:
                 CURRENT_WORK_STATUS.reset(token)
 
-    def publish_existing_branch(self, chat_id: int, branch: str) -> str:
+    def publish_existing_branch(self, chat_id: int, branch: str) -> WorkOutcome:
         app = self.application
-        require_repository_features(
-            app.repository,
-            "isolated_workspaces",
-            "immutable_revisions",
-        )
+        require_repository_features(app.repository, "isolated_workspaces", "immutable_revisions")
         app.effect_fence.authorize(
             "task.publish-existing-reference",
-            (
-                "vcs.inspect",
-                "vcs.resolve",
-                "vcs.authoritative",
-                "vcs.workspace",
-                "forge.review",
-            ),
+            ("vcs.inspect", "vcs.resolve", "vcs.authoritative", "vcs.workspace", "forge.review"),
             task_id=CURRENT_TASK_ID.get(),
         )
-        resident_branch = app._resident_branch_name()
-        outputs: list[str] = []
         try:
-            app._send_step_update(
-                chat_id,
-                f"Preparing an isolated workspace for {branch}.",
-            )
+            app._send_step_update(chat_id, f"Preparing an isolated workspace for {branch}.")
             task_worktree = app._prepare_existing_branch_task_worktree(branch)
-            work_root = task_worktree.path
-            state = app.repository.inspect_working_copy(work_root)
+            state = app.repository.inspect_working_copy(task_worktree.path)
             if not state.clean:
                 raise RepositoryProviderError(
                     f"Repository reference {branch!r} has uncommitted changes."
                 )
-            workspace = task_worktree.repository_workspace
             revision = (
-                workspace.current_revision
-                if workspace is not None
-                else state.revision
+                task_worktree.repository_workspace.current_revision
+                if task_worktree.repository_workspace is not None else state.revision
             )
-            base = app.repository.authoritative_base(app.root, refresh=True)
-
-            app._send_step_update(chat_id, "Preparing the review handoff.")
-            current_job = task_by_id(
-                CURRENT_TASK_ID.get() or 0,
-                app.root,
-                workflow=app.workflow,
-            )
-            provenance = (
-                evolution_provenance_for_job(current_job)
-                if current_job is not None
-                else None
-            )
-            review = app.effect_fence.run_authorized(
-                "forge.publish-review",
-                ("forge.review",),
-                app.review.publish_review,
-                ReviewSubmission(
-                    title=self.dependencies.feature_title(
-                        f"Publish repository reference {branch}"
-                    ),
-                    body="",
-                    revision=revision,
-                    base_revision=base.revision,
-                    metadata={
-                        "base_name": base.name,
-                        "source_reference": branch,
-                        "workspace_id": task_worktree.workspace_id,
-                        "task_id": CURRENT_TASK_ID.get(),
-                        "evolution_provenance": provenance,
-                    },
-                ),
-                task_id=CURRENT_TASK_ID.get(),
-                root=work_root,
-            )
-            outputs.append(format_review_record(review))
             app._record_current_publish_stage(
-                "review_published",
-                revision_id=revision.id,
-                workspace_id=task_worktree.workspace_id,
-                review_id=review.identity.id,
-                review_url=review.identity.url,
-                review_published=True,
+                "captured", revision_id=revision.id,
+                workspace_id=task_worktree.workspace_id, review_published=False,
             )
-            if review.identity.url:
-                app._update_work_status(
-                    review_step_update(review),
-                    review_url=review.identity.url,
-                )
-                record_current_task_result(
-                    "\n\n".join(outputs),
-                    app.root,
-                    workflow=app.workflow,
-                )
-            app._send_step_update(chat_id, review_step_update(review))
-
-            app._send_step_update(
-                chat_id,
-                "Cleaning up the isolated task workspace.",
+            current_job = app.workflow.find(CURRENT_TASK_ID.get() or 0)
+            request = current_job.text if current_job else f"publish existing local branch `{branch}` as a PR"
+            # Share publication verification and retry semantics with ordinary edits.
+            return self.publish_feature_pr(
+                chat_id, request, (),
+                work_root=task_worktree.path, task_worktree=task_worktree,
+                resume_job=TaskJob(
+                    id=CURRENT_TASK_ID.get() or 0, chat_id=chat_id,
+                    text=request, created_at="",
+                    publish_stage="captured", revision_id=revision.id,
+                    workspace_id=task_worktree.workspace_id,
+                    workspace_path=str(task_worktree.path),
+                ),
             )
-            outputs.append(
-                app.effect_fence.run_authorized(
-                    "vcs.remove-workspace",
-                    ("vcs.workspace",),
-                    self.dependencies.remove_repository_task_workspace,
-                    app.repository,
-                    app.root,
-                    task_worktree,
-                    task_id=CURRENT_TASK_ID.get(),
-                    force=False,
-                )
-            )
-            app._send_step_update(
-                chat_id,
-                f"Resident checkout remains on {resident_branch}.",
-            )
-            if review.identity.url:
-                app._queue_session_sync(
-                    chat_id,
-                    repository_handoff_note(
-                        task_worktree.workspace_id,
-                        review.identity.url,
-                        resident_branch,
-                        base.name,
-                    ),
-                )
-        except (
-            VcsError,
-            ForgeProviderError,
-            RepositoryProviderError,
-            ReviewProviderError,
-            UnsupportedProviderFeature,
-            CapabilityAuthorizationError,
-        ) as error:
-            failure = (
-                f"{app.display_name} could not publish repository reference {branch}: {error}"
-            )
+        except (VcsError, ForgeProviderError, RepositoryProviderError, ReviewProviderError,
+                UnsupportedProviderFeature, CapabilityAuthorizationError) as error:
+            failure = f"{app.display_name} could not publish repository reference {branch}: {error}"
             app._send_step_update(chat_id, failure)
-            return "\n\n".join([*outputs, failure]) if outputs else failure
-        return "\n\n".join(outputs)
+            classified = classify_task_failure(failure)
+            return WorkOutcome.failure(
+                failure, code=classified.code, failure_class=classified.failure_class,
+                retryable=classified.retryable,
+            )
 
     def prepare_existing_branch_task_worktree(self, branch: str) -> TaskWorktree:
         app = self.application
@@ -838,6 +756,14 @@ class TaskWorkflow:
         workspace_id = resume_job.workspace_id if resume_job is not None else ""
         review_id = resume_job.review_id if resume_job is not None else ""
         review_url = resume_job.review_url if resume_job is not None else ""
+        if stage == "review_published" and not review_url and (
+            requires_remote_review(app.root, app.review, request) or review_id.startswith("legacy-review:")
+        ):
+            stage = "captured"
+            app._record_current_publish_stage(
+                stage, revision_id=revision_id, workspace_id=workspace_id,
+                review_id="", review_url="", review_published=False,
+            )
         review_published = stage == "review_published"
         completed_stages = [
             candidate
@@ -932,7 +858,7 @@ class TaskWorkflow:
                 )
                 base_revision = (
                     workspace.base_revision
-                    if workspace is not None
+                    if workspace is not None and resume_job is None
                     else app.repository.authoritative_base(publish_root).revision
                 )
                 current_job = task_by_id(
@@ -974,34 +900,31 @@ class TaskWorkflow:
                 )
                 review_id = review.identity.id
                 review_url = review.identity.url
-                if bool(
-                    getattr(app.review, "supports_remote_review", True)
-                ) and (
-                    not review_url or review.state not in {"open", "published"}
-                ):
+                problem = review_publication_problem(review, app.review, app.root, request)
+                if problem:
+                    local_only = not getattr(app.review, "supports_remote_review", True)
                     failure = (
-                        f"{app.display_name} captured the change but the review provider did not "
-                        "return a review URL. The workspace was preserved for retry."
+                        f"{app.display_name} captured the change but publication is incomplete. "
+                        f"{problem} The workspace was preserved for publication retry."
                     )
                     app._send_step_update(chat_id, failure)
                     return WorkOutcome.failure(
                         "\n\n".join([*outputs, failure]),
                         status="publish_incomplete",
-                        code="review_publication_failed",
-                        failure_class="transient",
-                        retryable=True,
+                        code="review_provider_required" if local_only else "review_publication_failed",
+                        failure_class="permanent" if local_only else "transient",
+                        retryable=not local_only,
                         completed_stages=tuple(dict.fromkeys(completed_stages)),
-                        revision_id=revision_id,
-                        workspace_id=workspace_id,
+                        revision_id=revision_id, workspace_id=workspace_id,
                     )
-                completed_stages.append("review_published")
+                review_published = review_was_published(review)
+                stage = "review_published" if review_published else "captured"
+                if review_published:
+                    completed_stages.append(stage)
                 app._record_current_publish_stage(
-                    "review_published",
-                    revision_id=revision_id,
-                    workspace_id=workspace_id,
-                    review_id=review_id,
-                    review_url=review_url,
-                    review_published=True,
+                    stage, revision_id=revision_id, workspace_id=workspace_id,
+                    review_id=review_id, review_url=review_url,
+                    review_published=review_published,
                 )
                 if review_url:
                     app._update_work_status(
@@ -1013,8 +936,6 @@ class TaskWorkflow:
                         app.root,
                         workflow=app.workflow,
                     )
-                review_published = True
-                stage = "review_published"
             elif review_url:
                 outputs.append(f"Review already published: {review_url}")
 
@@ -1095,7 +1016,7 @@ class TaskWorkflow:
 
         action = (
             f"published edit for review: {request}"
-            if review_url
+            if review_published
             else f"captured edit in the repository: {request}"
         )
         app.effect_fence.run(
@@ -1166,12 +1087,13 @@ class TaskWorkflow:
                 "metadata is missing.",
                 code="worktree_precondition",
             )
-        worktree = TaskWorktree(
-            task_id=job.id,
-            path=Path(job.workspace_path),
-            workspace_id=job.workspace_id,
-            created=False,
-        )
+        try:
+            worktree = self.prepare_existing_branch_task_worktree(job.revision_id)
+        except (RepositoryProviderError, VcsError) as error:
+            return WorkOutcome.failure(
+                f"Task #{job.id} cannot resume publishing: {error}",
+                code="worktree_precondition",
+            )
         return app._publish_feature_pr(
             job.chat_id,
             job.text,

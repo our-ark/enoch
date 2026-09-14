@@ -333,13 +333,16 @@ def retry_failed_task(
             (
                 job
                 for job in _history_jobs(data)
-                if job.id == task_id and job.status == "failed"
+                if job.id == task_id and (
+                    job.status == "failed"
+                    or (job.status == "completed" and _job_has_unpublished_revision(job))
+                )
             ),
             None,
         )
         if original is None:
             raise TaskRetryError(
-                f"Task #{task_id} is not a failed task available for retry."
+                f"Task #{task_id} is not a failed task or an unpublished captured task available for retry."
             )
         existing_retries = [
             job
@@ -368,6 +371,7 @@ def retry_failed_task(
                 f"in status {latest.status}."
             )
         artifact_result = reconciled_result.strip()
+        publication_only = _job_has_unpublished_revision(original) and not task_result_has_review(artifact_result)
         job = TaskJob(
             id=_next_id(data),
             chat_id=original.chat_id,
@@ -394,11 +398,11 @@ def retry_failed_task(
             ),
             workspace_path=original.workspace_path,
             workspace_id=original.workspace_id,
-            publish_stage=original.publish_stage,
+            publish_stage="captured" if publication_only else original.publish_stage,
             revision_id=original.revision_id,
-            review_id=original.review_id,
+            review_id="" if publication_only else original.review_id,
             review_url=original.review_url,
-            review_published=original.review_published,
+            review_published=False if publication_only else original.review_published,
             max_attempts=original.max_attempts,
             timeout_seconds=original.timeout_seconds,
             required_capabilities=original.required_capabilities,
@@ -1817,6 +1821,15 @@ def _job_has_confirmed_published_review(job: TaskJob) -> bool:
     return bool(
         job.review_published
         and (job.review_id or job.review_url)
+        and not (job.review_id.startswith("legacy-review:") and not job.review_url)
+    )
+
+
+def _job_has_unpublished_revision(job: TaskJob) -> bool:
+    return bool(
+        job.revision_id
+        and job.publish_stage in {"committed", "pushed", "captured", "review_published"}
+        and not _job_has_confirmed_published_review(job)
     )
 
 

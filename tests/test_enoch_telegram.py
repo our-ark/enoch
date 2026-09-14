@@ -4211,6 +4211,7 @@ class EnochTelegramTests(unittest.TestCase):
         repository.revisions[revision.id] = revision
         repository.revisions["enoch/existing"] = revision
         repository.parents[revision.id] = repository.authoritative.id
+        repository.current = revision
         review = IndependentReviewFixture()
         with TemporaryDirectory() as temp:
             root = Path(temp)
@@ -4961,6 +4962,7 @@ class EnochTelegramTests(unittest.TestCase):
         repository.revisions[revision.id] = revision
         repository.revisions["enoch/existing"] = revision
         repository.parents[revision.id] = repository.authoritative.id
+        repository.current = revision
         review = IndependentReviewFixture()
         with TemporaryDirectory() as temp:
             root = Path(temp)

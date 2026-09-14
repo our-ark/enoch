@@ -150,6 +150,39 @@ and approved evolution work now use the semantic contracts. The legacy
 protocols remain adapter inputs for existing Git and GitHub provider packages,
 not application workflow requirements.
 
+### Required remote publication
+
+Instances that require a remote review for code changes should configure their
+private `.enoch/config.yaml` explicitly:
+
+```yaml
+providers:
+  forge: github
+task:
+  require_remote_review: true
+```
+
+Install the selected forge provider and authenticate it on the host. For GitHub,
+this means `our-ark-github` plus an authenticated `gh` CLI with Git push access.
+The requirement remains active if the instance falls back to a local provider.
+A remote provider always requires an open/published review with an identity and
+URL; setting the flag to false does not weaken that check. The explicit
+publish-existing-reference command also requires remote publication.
+
+If publication cannot complete, the task keeps the captured revision and its
+workspace. Missing remote configuration requires manual intervention; transient
+publication failures use bounded automatic retries. `/task retry <id>` resumes
+publication without running the model or capturing the change again. It checks
+that the working copy is clean and still on the saved revision, and can restore
+a previously cleaned-up workspace from that revision.
+
+Purely local instances may still complete by capturing a change, but their
+unpublished/recorded local receipts are not marked `review_published`. Completed
+tasks with an unpublished captured revision, including legacy local receipts,
+can also be retried for publication after configuring a remote forge. This
+creates a linked task and preserves the original history. In Slack, use
+`.task retry <id>`; `!` remains supported.
+
 Review records carry verified landing evidence as `landed_revision` and
 `landed_at`. A legacy forge adapter obtains that evidence by inspecting the
 landed review after requesting the merge without exposing Git- or
