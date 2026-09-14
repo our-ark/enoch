@@ -1738,11 +1738,11 @@ class EnochApplication:
     def _do(self, chat_id: ConversationId, text: str) -> str:
         command, argument = _parse_chat_command(text)
         if command != "/do" or not argument:
-            return "Use /do <request> to run work now."
+            return f"Use {self.command_prefix}do <request> to run work now."
         if not self.profile.workflow.allow_direct_work:
             return (
                 f"Profile {self.profile.display_name} does not permit immediate "
-                "/do work. Use /task <request> to queue it."
+                f"{self.command_prefix}do work. Use {self.command_prefix}task <request> to queue it."
             )
         if not self._action_allowed():
             return self._action_lock_message()
@@ -1750,7 +1750,7 @@ class EnochApplication:
         if queue_status.paused_count:
             return (
                 f"{self.display_name} has paused tasks. Restore agent runtime access and use "
-                "/task resume <id|all> before starting /do."
+                f"{self.command_prefix}task resume <id|all> before starting {self.command_prefix}do."
             )
         running = queue_status.running
         snapshot = self._resolve_task_context_snapshot(chat_id, argument)
@@ -1763,7 +1763,7 @@ class EnochApplication:
                 reason=snapshot.codex_unavailable_reason,
             )
         if snapshot.error:
-            return f"{self.display_name} could not prepare conversation context for that /do request yet: {snapshot.error}"
+            return f"{self.display_name} could not prepare conversation context for that {self.command_prefix}do request yet: {snapshot.error}"
         if snapshot.clarification:
             return f"{self.display_name} needs one clarification before running that: {snapshot.clarification}"
         if running is not None:
@@ -1837,10 +1837,10 @@ class EnochApplication:
         except RuntimeError:
             running = self.workflow.inspect().running
             if running is not None:
-                return f"{self.display_name} is already running task #{running.id}. Use /task <request> to queue this work."
-            return f"{self.display_name} could not create a task id for this /do job."
+                return f"{self.display_name} is already running task #{running.id}. Use {self.command_prefix}task <request> to queue this work."
+            return f"{self.display_name} could not create a task id for this {self.command_prefix}do job."
         except (OSError, ValueError):
-            return f"{self.display_name} could not create a task id for this /do job."
+            return f"{self.display_name} could not create a task id for this {self.command_prefix}do job."
         context = direct_task.context
         if not session_key:
             session_key = f"{self._session_key(chat_id)}:do:{direct_task.id}"
@@ -1880,7 +1880,7 @@ class EnochApplication:
         if self.workflow.inspect().paused_count:
             return (
                 f"{self.display_name} has paused tasks. Restore agent runtime access and use "
-                "/task resume <id|all> before starting more work."
+                f"{self.command_prefix}task resume <id|all> before starting more work."
             )
         try:
             job = self.workflow.enqueue(
@@ -1966,7 +1966,7 @@ class EnochApplication:
                 retryable=False,
             )
         except AgentRuntimeAccessUnavailable as error:
-            reply = _codex_pause_warning(job.id, str(error))
+            reply = _codex_pause_warning(job.id, str(error), command_prefix=self.command_prefix)
             completed_status = "paused"
         except AgentRuntimeTimedOut:
             deadline.expired.set()
@@ -2065,7 +2065,7 @@ class EnochApplication:
                 **self._profile_task_options(),
             )
         except (OSError, ValueError):
-            return f"{self.display_name} could not queue that /do request."
+            return f"{self.display_name} could not queue that {self.command_prefix}do request."
         message = self._format_work_status(
             WorkStatusMessage(
                 chat_id=chat_id,
@@ -2663,17 +2663,17 @@ class EnochApplication:
     def _task(self, chat_id: int, text: str) -> str:
         command, argument = _parse_chat_command(text)
         if command != "/task" or not argument:
-            return "Use /task <request> to queue background work."
+            return f"Use {self.command_prefix}task <request> to queue background work."
         subcommand = argument.split(maxsplit=1)[0].lower()
         cancel_id = _task_cancel_id(argument)
         retry_id = _task_retry_id(argument)
         resume_target = _task_resume_target(argument)
         if subcommand == "cancel" and cancel_id is None:
-            return "Use /task cancel <id> to cancel a queued task."
+            return f"Use {self.command_prefix}task cancel <id> to cancel a queued task."
         if subcommand == "retry" and retry_id is None:
-            return "Use /task retry <id> to retry a failed task as a new linked task."
+            return f"Use {self.command_prefix}task retry <id> to retry a failed task as a new linked task."
         if subcommand == "resume" and resume_target is None:
-            return "Use /task resume <id|all> to continue paused tasks."
+            return f"Use {self.command_prefix}task resume <id|all> to continue paused tasks."
         if cancel_id is not None:
             cancelled = self.workflow.cancel(cancel_id)
             if cancelled is None:
@@ -2820,7 +2820,7 @@ class EnochApplication:
             )
             paused = self.workflow.pause(
                 job.id,
-                result=_codex_pause_warning(job.id, reason),
+                result=_codex_pause_warning(job.id, reason, command_prefix=self.command_prefix),
                 event_actor="system",
                 trigger="runtime-unavailable",
             )
@@ -2831,7 +2831,7 @@ class EnochApplication:
         return self._publish_paused_task(paused, reason)
 
     def _publish_paused_task(self, job: TaskJob, reason: str) -> str:
-        warning = _codex_pause_warning(job.id, reason)
+        warning = _codex_pause_warning(job.id, reason, command_prefix=self.command_prefix)
         message_id = self._safe_send_message_id(
             job.chat_id,
             self._format_work_status(
@@ -2843,7 +2843,7 @@ class EnochApplication:
                     task_id=job.id,
                     status="paused",
                     latest_update=(
-                        f"{reason} Use /task resume {job.id} when agent runtime access "
+                        f"{reason} Use {self.command_prefix}task resume {job.id} when agent runtime access "
                         "is available again."
                     ),
                     context=job.context,
@@ -2864,7 +2864,7 @@ class EnochApplication:
             try:
                 task_id = int(cleaned.lstrip("#"))
             except ValueError:
-                return "Use /task resume <id|all> to continue paused tasks."
+                return f"Use {self.command_prefix}task resume <id|all> to continue paused tasks."
         resumed = self.workflow.resume(
             task_id=task_id,
             trigger=trigger,
@@ -4250,7 +4250,7 @@ class EnochApplication:
                 retryable=False,
             )
         except AgentRuntimeAccessUnavailable as error:
-            reply = _codex_pause_warning(job.id, str(error))
+            reply = _codex_pause_warning(job.id, str(error), command_prefix=self.command_prefix)
             completed_status = "paused"
         except AgentRuntimeTimedOut:
             deadline.expired.set()
@@ -4372,7 +4372,7 @@ class EnochApplication:
             final_token = _CURRENT_WORK_STATUS.set(task_status)
             try:
                 self._update_work_status(
-                    _final_task_status_update(completed_status),
+                    _final_task_status_update(completed_status, command_prefix=self.command_prefix),
                     status=completed_status,
                 )
             finally:
@@ -5476,12 +5476,12 @@ def _positive_task_id(value: str) -> int | None:
     return task_id if task_id > 0 else None
 
 
-def _codex_pause_warning(task_id: int, reason: str) -> str:
+def _codex_pause_warning(task_id: int, reason: str, *, command_prefix: str = "/") -> str:
     return "\n".join(
         [
             f"Task #{task_id} was paused because agent runtime access is unavailable.",
             reason.strip() or "Agent runtime access is unavailable.",
-            f"When agent runtime access is available again, use /task resume {task_id}.",
+            f"When agent runtime access is available again, use {command_prefix}task resume {task_id}.",
         ]
     )
 

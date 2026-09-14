@@ -111,9 +111,9 @@ def format_elapsed(elapsed_seconds: int) -> str:
     return f"{hour_text} {minute_text}"
 
 
-def final_task_status_update(final_status: str) -> str:
+def final_task_status_update(final_status: str, *, command_prefix: str = "/") -> str:
     if final_status == "paused":
-        return "Paused. Use /task resume <id|all> after agent runtime access is restored."
+        return f"Paused. Use {command_prefix}task resume <id|all> after agent runtime access is restored."
     if final_status == "failed":
         return "Failed. Final summary sent below."
     if final_status == "cancelled":

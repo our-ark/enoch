@@ -2113,6 +2113,56 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("Still working after 1 minute", edited_text)
         self.assertEqual(completed.status_message_id, 2002)
 
+    def test_task_command_hints_follow_chat_prefix(self) -> None:
+        for prefix in ("/", ".", "!"):
+            with self.subTest(prefix=prefix), TemporaryDirectory() as temp:
+                client = FakeTelegramClient(allowed_chat_id=42)
+                client.command_prefix = prefix
+                bot = EnochApplication(load_identity(), Path(temp), client)
+                self.assertIn(f"Use {prefix}do <request>", bot._do(42, "/do"))
+                for argument in ("", "cancel", "retry", "resume"):
+                    self.assertIn(f"Use {prefix}task", bot._task(42, f"/task {argument}"))
+                self.assertIn(f"Use {prefix}task resume", bot._resume_tasks("invalid"))
+
+                reason = "Quota unavailable; diagnostic: /task/log, https://example.org/do/status"
+                bot._queue_paused_request(42, "preserve work", source="task", trigger="/task", reason=reason)
+                paused, = bot.workflow.inspect().paused
+                self.assertIn(f"Use {prefix}task resume {paused.id}", client.sent[-1][1])
+                self.assertIn(reason, client.sent[-1][1])
+                self.assertIn(f"use {prefix}task resume {paused.id}", paused.result)
+                with patch.object(bot, "_safe_send_message_id", return_value=None):
+                    self.assertIn(f"use {prefix}task resume {paused.id}", bot._publish_paused_task(paused, reason))
+                with patch.object(bot, "_run_direct_work") as run_work:
+                    self.assertIn(
+                        f"{prefix}task resume <id|all> before starting {prefix}do.",
+                        bot._do(42, "/do more work"),
+                    )
+                    self.assertIn(
+                        f"{prefix}task resume <id|all> before starting more work.",
+                        bot._run_tracked_inline_work(42, "work", source="test", initiated_by="human",
+                                                     trigger="test", session_key="test"),
+                    )
+                    run_work.assert_not_called()
+
+    def test_worker_pause_notifications_follow_chat_prefix(self) -> None:
+        for prefix in ("/", ".", "!"):
+            with self.subTest(prefix=prefix), TemporaryDirectory() as temp:
+                root = Path(temp)
+                client = FakeTelegramClient(allowed_chat_id=42)
+                client.command_prefix = prefix
+                bot = EnochApplication(load_identity(), root, client)
+                _handle_update(bot, _message_update(chat_id=42, text="/task queued work"))
+                job = begin_next_task(root)
+                assert job is not None
+                with patch.object(bot, "_run_direct_work", side_effect=CodexAccessUnavailable("Quota unavailable.")):
+                    bot._run_task_job(job)
+                self.assertIn(f"Use {prefix}task resume <id|all>", client.edited[-1][2])
+                self.assertIn(f"use {prefix}task resume {job.id}", client.sent[-1][1])
+                self.assertIn(f"use {prefix}task resume {job.id}", task_queue_status(root).paused[0].result)
+                with patch.object(bot, "_maybe_start_task_worker"):
+                    bot._task(42, f"/task resume {job.id}")
+                self.assertEqual(load_task_events(root, task_id=job.id)[-1].trigger, "/task resume")
+
     def test_task_worker_pauses_on_codex_access_error_and_resumes_same_task(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
