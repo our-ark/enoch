@@ -111,7 +111,7 @@ STATE_FILE_SCHEMAS = (
     ),
     StateFileSchema(
         "cron.json",
-        4,
+        5,
         (("next_id", 1), ("active", []), ("history", [])),
         (("next_id", (int,)), ("active", (list,)), ("history", (list,))),
     ),

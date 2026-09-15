@@ -4,6 +4,7 @@ import re
 from typing import Iterable
 
 from enoch.backlog import normalize_priority
+from enoch.schedules import normalize_daily_time, normalize_timezone
 from enoch.app.models import ForgeMaintenanceRequest
 
 
@@ -57,6 +58,15 @@ def backlog_item_id(argument: str) -> int | None:
 def cron_job_id(argument: str) -> int | None:
     value = argument.strip().split(maxsplit=1)[0] if argument.strip() else ""
     return _positive_id(value)
+
+
+def cron_daily_request(argument: str, *, command_prefix: str = "/") -> tuple[str, str, str]:
+    parts = argument.split(maxsplit=2)
+    if len(parts) != 3:
+        raise ValueError(f"Use {command_prefix}cron daily <HH:MM> <IANA timezone> <request> to schedule daily work.")
+    daily_time = normalize_daily_time(parts[0], label="Cron")
+    timezone = normalize_timezone(parts[1], label="Cron")
+    return daily_time, timezone, parts[2].strip()
 
 
 def backlog_priority_update(argument: str) -> tuple[int | None, str | None]:

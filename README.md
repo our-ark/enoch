@@ -338,6 +338,15 @@ The Codex executable is resolved independently in this order:
 Use `/config runtime codex executable <path|auto>` to configure or restore
 automatic discovery. The daemon reads this instance setting directly.
 
+## Recurring work
+
+Use `.cron daily <HH:MM> <IANA timezone> <request>` for work at a fixed local
+time each day, or `.cron every <interval> <request>` for fixed intervals.
+`.cron` lists jobs; `show`, `pause`, `resume`, `run-now`, and `cancel` take a job
+ID. Use your provider's configured prefix (`/cron` when it uses `/`). Results
+return to the chat bound at creation. See [cron timing and lifecycle
+semantics](docs/workflow-reliability.md#daily-cron-and-lifecycle-controls).
+
 ## Doctor
 
 Run `bin/enoch doctor` or `/doctor` before publishing changes. Doctor reports

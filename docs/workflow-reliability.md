@@ -106,6 +106,66 @@ admitted as soon as the scheduler starts. The following target is the first
 anchored interval strictly in the future, preventing acknowledgement-time
 drift and unbounded catch-up work.
 
+### Daily cron and lifecycle controls
+
+The examples below use `.` as the configured chat command prefix. Providers
+using `/` accept the same commands as `/cron` and `/help cron`.
+
+```text
+.cron daily 18:00 America/Los_Angeles summarize today's work
+.cron every 2h check queued work
+.cron
+.cron show 1
+.cron pause 1
+.cron resume 1
+.cron run-now 1
+.cron cancel 1
+.help cron
+```
+
+`daily` requires a 24-hour `HH:MM` time, a resolvable IANA timezone, and a
+request. It follows the local calendar, including daylight-saving changes;
+`every 1d` continues to mean a fixed 86,400-second interval. Both schedules use
+`enoch.schedules` for occurrence calculations. A repeated fall-back time uses
+its first occurrence. A skipped spring-forward time runs at the first existing
+instant after the jump. Each intended local date contributes one occurrence;
+when a timezone gap crosses midnight, execution can fall on the following date.
+
+Creation, listing, and `show` display the next target in both the declared local
+timezone and UTC. For example, with the clock frozen at 2026-09-15 19:00 UTC,
+the daily example next runs at 2026-09-15 18:00 PDT / 2026-09-16 01:00 UTC.
+After the November DST transition it remains at 18:00 local, now 02:00 UTC on
+the following day. These values are examples, not installation defaults.
+
+After downtime, daily jobs retain their missed target until one catch-up task
+is admitted, then advance to the next future local target. `pause` stops new
+admission while preserving the target and any existing claim. `resume` retains
+that target, so missed runs coalesce into one catch-up. Already queued or
+running tasks continue; task controls manage those separately. Pausing clears
+an unclaimed run-now request. Cancelled jobs remain visible in history and
+cannot be resumed.
+
+`run-now` requires an active job and requests one occurrence without moving the
+regular target. Requests coalesce with a pending claim or run-now request; a
+regular occurrence already due takes priority and satisfies both. The last 64
+run-now receipt keys are retained to deduplicate retries, including retries
+after acknowledgement or pause. Durable claim IDs also prevent duplicate task
+creation if the daemon crashes between enqueue and acknowledgement. Outstanding
+pending, running, or paused tasks continue to prevent overlap.
+
+Jobs belong to the private instance and capture their chat destination and
+conversation context at creation. Cron listing and controls are scoped to that
+chat, and queued tasks and their results always use the captured destination.
+A missing binding is an explicit error; Enoch never substitutes the current or
+default chat. A new instance starts without jobs.
+
+Cron state schema 5 adds cadence, daily time, timezone, and lifecycle/occurrence
+metadata. Records without cadence are read as interval jobs, preserving their
+IDs, context, bindings, history, and in-flight claims. The private-state migration
+command upgrades existing records, and the next successful cron mutation also
+writes schema 5. Invalid records or malformed state raise `StateCorruptionError`
+and preserve the original file rather than resetting or dropping jobs.
+
 Declarative extension schedules share that scheduler thread and claim/ack
 discipline. Their identities, occurrence claims, and task idempotency keys are
 scoped by extension. Interval schedules retain fixed-rate anchors; daily

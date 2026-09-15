@@ -196,7 +196,7 @@ class EnochPrivateStateTests(unittest.TestCase):
             migrated = json.loads(cron.read_text(encoding="utf-8"))
 
         self.assertTrue(result.applied)
-        self.assertEqual(migrated["schema_version"], 4)
+        self.assertEqual(migrated["schema_version"], 5)
         self.assertEqual(migrated["active"][0]["last_scheduled_at"], "")
 
     def test_renamed_brainstorm_schema_is_a_migratable_manifest_alias(self) -> None:
