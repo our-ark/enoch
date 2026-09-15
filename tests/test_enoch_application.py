@@ -21,7 +21,7 @@ from enoch.evolution.core import EvolveCandidate, EvolveProposal, EvolveReport, 
 from enoch.identity import load_identity, update_mission
 from enoch.memory.prompt import memory_for_prompt
 from enoch.profiles import AgentProfile, CommandSpec
-from enoch.providers import ChatEvent, ProviderHealth
+from enoch.providers import AgentRuntimeError, ChatEvent, ProviderHealth
 from enoch.workflows import LocalWorkflowEngine
 from our_ark_provider_kit import (
     BranchlessRepositoryFixture,
@@ -33,6 +33,81 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ApplicationCompositionTests(unittest.TestCase):
+    def test_startup_receives_commands_without_invoking_a_runtime(self) -> None:
+        for provider in ("codex", "claude", "composition-runtime"):
+            with self.subTest(provider=provider), TemporaryDirectory() as temp:
+                chat = _Chat()
+                chat.command_prefix = "."
+                runtime = _Runtime()
+                runtime.name = provider
+                app = EnochApplication(load_identity(), Path(temp), chat, runtime=runtime)
+                with patch.object(runtime, "respond", side_effect=AssertionError("unexpected inference")) as respond, \
+                     patch.object(runtime, "act_in_session", side_effect=AssertionError("unexpected work")) as act, \
+                     patch.object(chat, "receive", return_value=(_event("/help", "startup-help"),)) as receive:
+                    app.notify_startup()
+                    app.run_once()
+
+                respond.assert_not_called()
+                act.assert_not_called()
+                receive.assert_called_once()
+                self.assertEqual(len(chat.sent), 2)
+                self.assertIn(".help", chat.sent[0][1])
+                self.assertIn(".status", chat.sent[1][1])
+
+    def test_context_is_attached_to_the_first_real_request_per_session(self) -> None:
+        with TemporaryDirectory() as temp:
+            chat = _Chat()
+            chat.command_prefix = "."
+            runtime = _Runtime()
+            app = EnochApplication(load_identity(), Path(temp), chat, runtime=runtime)
+            with patch.object(runtime, "respond", return_value="response") as respond, \
+                 patch("enoch.app.core.memory_for_prompt", return_value="Private identity and memory") as memory:
+                app.notify_startup()
+                memory.assert_not_called()
+                respond.assert_not_called()
+                for session, message in (("chat:one", "First question"), ("chat:one", "Next question"), ("chat:two", "Other question")):
+                    app._respond_read_only_turn("room-1", message, session_key=session)
+
+            prompts = [call.args[1] for call in respond.call_args_list]
+            for index in (0, 2):
+                self.assertIn("Private identity and memory", prompts[index])
+                self.assertIn("Do not resume previous tasks", prompts[index])
+                self.assertIn("Active chat command reference:", prompts[index])
+                self.assertIn(".evolve config mode", prompts[index])
+                self.assertIn(".evolve config schedule off", prompts[index])
+                self.assertIn("Current request:", prompts[index])
+            self.assertIn("First question", prompts[0])
+            self.assertNotIn("Enoch startup context:", prompts[1])
+            self.assertIn("Next question", prompts[1])
+            self.assertEqual(memory.call_count, 2)
+
+    def test_failed_first_response_keeps_context_for_the_next_request(self) -> None:
+        with TemporaryDirectory() as temp:
+            runtime = _Runtime()
+            app = EnochApplication(load_identity(), Path(temp), _Chat(), runtime=runtime)
+            with patch.object(runtime, "respond", side_effect=[AgentRuntimeError("unavailable"), "response"]) as respond:
+                self.assertEqual(app._respond_read_only_turn("room-1", "First question"), "unavailable")
+                self.assertEqual(app._respond_read_only_turn("room-1", "Try again"), "response")
+
+            for call in respond.call_args_list:
+                self.assertIn("Enoch startup context:", call.args[1])
+
+    def test_restart_refreshes_context_without_a_standalone_model_turn(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            runtime = _Runtime()
+            with patch.object(runtime, "respond", return_value="response") as respond:
+                for expected_calls in (0, 1):
+                    app = EnochApplication(load_identity(), root, _Chat(), runtime=runtime)
+                    app.notify_startup()
+                    self.assertEqual(respond.call_count, expected_calls)
+                    app._respond_read_only_turn("room-1", "Current question")
+
+            self.assertEqual(respond.call_count, 2)
+            for call in respond.call_args_list:
+                self.assertIn("Enoch startup context:", call.args[1])
+                self.assertIn("Current question", call.args[1])
+
     def test_domain_help_hides_core_but_all_restores_it_for_each_prefix(self) -> None:
         for prefix in ("/", ".", "!"):
             with self.subTest(prefix=prefix), TemporaryDirectory() as temp:
@@ -405,7 +480,7 @@ class ApplicationCompositionTests(unittest.TestCase):
         self.assertEqual(chat.sent[1][1].splitlines()[0], f"Hosted {identity.name} is shutting down.")
         self.assertIn(f"Reason: {reason}.", chat.sent[1][1])
         self.assertIs(app.identity, identity)
-        self.assertIs(sync.call_args.args[0], identity)
+        sync.assert_not_called()
 
     def test_display_name_defaults_to_loaded_identity(self) -> None:
         identity = replace(load_identity(), name="Descendant")

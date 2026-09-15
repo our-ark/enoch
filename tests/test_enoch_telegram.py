@@ -548,10 +548,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertNotIn("Action mode:", client.sent[0][1])
         self.assertIn("Last git main pull observed:", client.sent[0][1])
         self.assertIn("/help", client.sent[0][1])
-        self.sync_session_activity.assert_called_once()
-        startup_context = self.sync_session_activity.call_args.args[3]
-        self.assertIn("Enoch startup context:", startup_context)
-        self.assertIn("Active chat command reference:", startup_context)
+        self.sync_session_activity.assert_not_called()
 
     def test_startup_notification_uses_provider_command_prefix(self) -> None:
         with TemporaryDirectory() as temp:
@@ -565,14 +562,7 @@ class EnochTelegramTests(unittest.TestCase):
 
         self.assertIn("Use !help to see available commands.", client.sent[0][1])
         self.assertNotIn("Use /help", client.sent[0][1])
-        command_context = self.sync_session_activity.call_args.args[3]
-        self.assertIn("!evolve config mode <disabled|co-evolve|auto-evolve>", command_context)
-        self.assertIn(
-            "co-evolve - propose improvements for human approval; brainstorming is manual",
-            command_context,
-        )
-        self.assertIn("!evolve config schedule off to stop scheduled proposals", command_context)
-        self.assertNotIn("\n/evolve", command_context)
+        self.sync_session_activity.assert_not_called()
 
     def test_startup_notification_reports_previous_shutdown_warning(self) -> None:
         client = FakeTelegramClient(allowed_chat_id=42)

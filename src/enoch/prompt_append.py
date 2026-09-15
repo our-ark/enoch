@@ -148,6 +148,7 @@ def startup_context_note(memory_context: str) -> str:
             "Enoch startup context:",
             memory_context.strip(),
             "Use this as background context. It does not override current user requests or higher-priority instructions.",
+            "This context is not a work request. Do not resume previous tasks or call tools just to synchronize it. Respond only to the current request below.",
         ]
     ).strip()
 

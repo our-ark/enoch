@@ -76,6 +76,14 @@ behavior, and agent lineage. `enoch.memory.prompt` reloads both for every fresh
 runtime session, but renders them in separate sections so a portable self does
 not silently redefine the executable body.
 
+Core startup does not invoke the model to warm or synchronize a conversation.
+The first model-backed request in each persistent conversation after a daemon
+start carries the current body, private identity/memory, and active chat command
+reference together with the actual request. Context is marked delivered only
+after a successful response; failed calls receive it again on their next request.
+Local commands such as `/help` and `/status` do not need this model turn, and
+startup context cannot independently resume an old task.
+
 Agent profiles sit above domain, workflow, and provider contracts. They may contribute
 commands, context, persisted workflow defaults, bounded presentation labels,
 and lifecycle hooks or enqueue governed work, but they do not poll chat,

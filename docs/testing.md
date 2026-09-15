@@ -112,6 +112,11 @@ session resume, stale-session recovery, authentication pause behavior, human
 cancellation, health checks, model/effort selection, and per-invocation budget
 configuration without external credentials or network access.
 
+`tests/test_enoch_application.py` covers startup through command reception and
+reply with a runtime that fails if inference or work is invoked. It also checks
+deferred context delivery per conversation and retry after the first model call
+fails. This prevents startup notifications from hiding a blocking model warm-up.
+
 ## Extension conformance suites
 
 `our_ark_provider_kit.conformance` publishes reusable provider and runtime

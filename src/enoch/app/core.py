@@ -580,6 +580,7 @@ class EnochApplication:
         self.offset: Cursor | None = _load_provider_cursor(self.channel_name, root)
         self._restart_after_reply = False
         self._pending_session_syncs: list[tuple[int, str]] = []
+        self._contextualized_sessions: set[str] = set()
         self._task_worker: threading.Thread | None = None
         self._task_worker_lock = threading.Lock()
         self._direct_workers: dict[int, threading.Thread] = {}
@@ -685,28 +686,6 @@ class EnochApplication:
         )
         if not result.delivered:
             raise ChatProviderError(result.error or "Startup notification was not delivered.")
-        _sync_session_activity(
-            self.identity,
-            self.root,
-            chat_id,
-            "\n\n".join(
-                [
-                    startup_context_note(
-                        memory_for_prompt(
-                            self.root,
-                            identity=self.identity,
-                            identity_path=self.identity_path,
-                        )
-                    ),
-                    runtime_command_reference(
-                        command_prefix=self.command_prefix,
-                    ),
-                ]
-            ),
-            runtime=self.runtime,
-            session_key=self._session_key(chat_id),
-            effect_fence=self.effect_fence,
-        )
 
     def start(self) -> None:
         """Run process-start hooks once, independently of chat notification."""
@@ -1586,7 +1565,25 @@ class EnochApplication:
         execution: RuntimeExecutionControl,
         image_paths: tuple[Path, ...] = (),
     ):
-        return self.effect_fence.run_runtime_authorized(
+        session_key = execution.session_key
+        needs_context = bool(session_key) and session_key not in self._contextualized_sessions
+        if needs_context:
+            # Context belongs to a real request, never a standalone startup model turn.
+            prompt = "\n\n".join(
+                [
+                    startup_context_note(
+                        memory_for_prompt(
+                            self.root,
+                            identity=self.identity,
+                            identity_path=self.identity_path,
+                        )
+                    ),
+                    runtime_command_reference(command_prefix=self.command_prefix),
+                    "Current request:",
+                    prompt,
+                ]
+            )
+        result = self.effect_fence.run_runtime_authorized(
             "runtime.respond",
             ("runtime.respond",),
             lambda fenced_execution: invoke_runtime_respond(
@@ -1600,6 +1597,9 @@ class EnochApplication:
             execution,
             task_id=_CURRENT_TASK_ID.get(),
         )
+        if needs_context:
+            self._contextualized_sessions.add(session_key)
+        return result
 
     def _respond_read_only_turn(
         self,
