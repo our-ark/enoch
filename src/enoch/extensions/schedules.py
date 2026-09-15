@@ -1,17 +1,23 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 import re
 from typing import Callable, Literal
 from uuid import uuid4
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from enoch.logs import log_system_event
 from enoch.paths import private_state_path
 from enoch.providers.contracts import TaskRequirements
+from enoch.schedules import (
+    ScheduleError,
+    next_daily_run,
+    next_interval_run,
+    normalize_daily_time,
+    normalize_timezone,
+)
 from enoch.state import StateCorruptionError, atomic_write, file_transaction, load_json_object
 from enoch.tasks.payloads import (
     ExtensionArtifactReference,
@@ -33,7 +39,7 @@ ExtensionScheduleOperation = Literal["status", "pause", "resume", "run_now"]
 
 _SCHEDULE_NAME = re.compile(r"[a-z][a-z0-9._-]{0,63}")
 _EXTENSION_NAME = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
-_DAILY_TIME = re.compile(r"(?P<hour>[01]\d|2[0-3]):(?P<minute>[0-5]\d)")
+_SCHEDULE_LABEL = "Extension schedule"
 _MIN_INTERVAL_SECONDS = 60
 _MAX_INTERVAL_SECONDS = 366 * 24 * 60 * 60
 _MAX_REQUEST_CHARS = 4096
@@ -750,6 +756,14 @@ def _reconcile_status(
     spec: ExtensionScheduleSpec,
     current: datetime,
 ) -> tuple[ExtensionScheduleStatus, str]:
+    """Fold a declaration into its durable record, keeping a retained target as is.
+
+    A retained ``next_run_at`` is never recalculated, so an upgrade that changes
+    how targets are calculated does not migrate the ones already persisted: a
+    target stored by an earlier Enoch stands until the occurrence is
+    acknowledged or a cadence change replaces it.
+    """
+
     changed = not _matches_spec(prior, spec)
     reenabled = prior.state == "disabled"
     cadence_changed = (
@@ -988,47 +1002,22 @@ def _status_to_dict(status: ExtensionScheduleStatus) -> dict[str, object]:
 
 def _first_run(spec: ExtensionScheduleSpec, current: datetime) -> datetime:
     if spec.cadence == "interval":
-        return current + timedelta(seconds=spec.interval_seconds)
+        return next_interval_run(None, spec.interval_seconds, current)
     return _next_daily(spec.daily_time, spec.timezone, current)
 
 
 def _next_run(status: ExtensionScheduleStatus, current: datetime) -> datetime:
     if status.cadence == "daily":
         return _next_daily(status.daily_time, status.timezone, current)
-    scheduled_for = _parse_time(status.claim_scheduled_for)
-    if scheduled_for is None:
-        return current + timedelta(seconds=status.interval_seconds)
-    candidate = scheduled_for + timedelta(seconds=status.interval_seconds)
-    if candidate > current:
-        return candidate
-    missed = int((current - candidate).total_seconds() // status.interval_seconds) + 1
-    return candidate + timedelta(seconds=missed * status.interval_seconds)
+    return next_interval_run(
+        _parse_time(status.claim_scheduled_for),
+        status.interval_seconds,
+        current,
+    )
 
 
 def _next_daily(daily_time: str, timezone_name: str, current: datetime) -> datetime:
-    zone = ZoneInfo(timezone_name)
-    local_now = _coerce_utc(current).astimezone(zone)
-    hour, minute = (int(part) for part in daily_time.split(":"))
-    target_date = local_now.date()
-    candidate = _local_candidate(target_date, hour, minute, zone)
-    if candidate <= _coerce_utc(current):
-        candidate = _local_candidate(
-            target_date + timedelta(days=1),
-            hour,
-            minute,
-            zone,
-        )
-    return candidate
-
-
-def _local_candidate(
-    target_date: date,
-    hour: int,
-    minute: int,
-    zone: ZoneInfo,
-) -> datetime:
-    local = datetime.combine(target_date, time(hour, minute), tzinfo=zone)
-    return local.astimezone(timezone.utc).replace(microsecond=0)
+    return next_daily_run(daily_time, timezone_name, current, label=_SCHEDULE_LABEL)
 
 
 def _replace_item(
@@ -1116,33 +1105,17 @@ def _extension_name(value: object) -> str:
 
 
 def _normalize_daily_time(value: object) -> str:
-    if value in (None, ""):
-        return ""
-    if not isinstance(value, str):
-        raise ExtensionScheduleError("Extension schedule daily time must be a string.")
-    daily_time = value.strip()
-    if not _DAILY_TIME.fullmatch(daily_time):
-        raise ExtensionScheduleError(
-            "Extension schedule daily time must look like HH:MM."
-        )
-    return daily_time
+    try:
+        return normalize_daily_time(value, label=_SCHEDULE_LABEL)
+    except ScheduleError as error:
+        raise ExtensionScheduleError(str(error)) from error
 
 
 def _timezone_name(value: object) -> str:
-    if not isinstance(value, str):
-        raise ExtensionScheduleError("Extension schedule timezone must be a string.")
-    name = value.strip()
-    if not name or len(name) > 128:
-        raise ExtensionScheduleError(
-            "Extension schedule timezone must contain 1 to 128 characters."
-        )
     try:
-        ZoneInfo(name)
-    except (ZoneInfoNotFoundError, ValueError) as error:
-        raise ExtensionScheduleError(
-            f"Unknown extension schedule timezone {value!r}."
-        ) from error
-    return name
+        return normalize_timezone(value, label=_SCHEDULE_LABEL)
+    except ScheduleError as error:
+        raise ExtensionScheduleError(str(error)) from error
 
 
 def _whole_number(value: object, label: str) -> int:

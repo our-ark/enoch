@@ -248,6 +248,13 @@ Request text, context, capability requirements, metadata, artifact references,
 and an optional execution lane are validated when the extension loads. Daily
 targets use Python's IANA timezone database; calendar targets are recomputed
 from local wall time after each scheduled occurrence, including DST changes.
+Occurrences are enumerated by the local calendar date they are intended for, so
+a daily schedule intends exactly one occurrence per local date: a wall-clock time
+skipped by a spring-forward jump runs at the first instant after the jump, and
+one repeated by a fall-back runs on its first occurrence only. An occurrence's
+intended local date is not always the date it executes on. A gap that crosses
+local midnight — `23:30` in `America/Nuuk`, for instance — pushes the previous
+date's occurrence onto the next local date, which then carries two executions.
 
 Enoch reconciles declarations at process startup. Request-only changes retain
 the existing next occurrence. A cadence or timezone change calculates a new
@@ -257,6 +264,14 @@ disabled is not replayed. Removing a schedule or disabling its extension marks
 the durable record `disabled`, prevents new claims, and preserves its last task
 and failure evidence for inspection. A claim already in flight remains durable
 for restart deduplication; an unclaimed manual run request is discarded.
+
+Reconciliation never rewrites a target it decided to retain, so an upgrade that
+changes how targets are calculated does not migrate the ones already persisted.
+A schedule whose stored occurrence was calculated by an earlier Enoch keeps that
+occurrence — including its DST-gap timing — until the occurrence is claimed and
+acknowledged, or until a cadence or timezone change recalculates it. Only the
+target after that acknowledgement uses the current rules, so two identical
+declarations can briefly differ by when their pending occurrence was calculated.
 
 Both command and lifecycle contexts expose the provider-neutral
 `context.schedules` façade:

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 import re
@@ -10,6 +10,7 @@ from uuid import uuid4
 from enoch.memory.paths import atomic_write, now as current_time
 from enoch.paths import private_state_path
 from enoch.providers.contracts import ConversationId, normalize_conversation_id
+from enoch.schedules import next_interval_run
 from enoch.state import StateCorruptionError, file_transaction, load_json_object
 
 
@@ -125,7 +126,7 @@ def add_cron_job(
             text=cleaned,
             interval_seconds=interval_seconds,
             created_at=_iso(current),
-            next_run_at=_iso(current + timedelta(seconds=interval_seconds)),
+            next_run_at=_iso(next_interval_run(None, interval_seconds, current)),
             context=context.strip(),
             context_source=context_source.strip(),
             idempotency_key=normalized_key,
@@ -222,7 +223,7 @@ def record_cron_task(
                             ),
                             "last_run_at": _iso(current),
                             "next_run_at": _iso(
-                                _next_interval_run(
+                                next_interval_run(
                                     scheduled_for,
                                     job.interval_seconds,
                                     current,
@@ -427,23 +428,6 @@ def _parse_time(value: str) -> datetime | None:
     except ValueError:
         return None
     return _coerce_utc(parsed)
-
-
-def _next_interval_run(
-    scheduled_for: datetime | None,
-    interval_seconds: int,
-    current: datetime,
-) -> datetime:
-    """Return the first anchored interval target strictly after ``current``."""
-
-    current = _coerce_utc(current)
-    if scheduled_for is None:
-        return current + timedelta(seconds=interval_seconds)
-    candidate = _coerce_utc(scheduled_for) + timedelta(seconds=interval_seconds)
-    if candidate > current:
-        return candidate
-    missed = int((current - candidate).total_seconds() // interval_seconds) + 1
-    return candidate + timedelta(seconds=missed * interval_seconds)
 
 
 def _utc_now() -> datetime:
