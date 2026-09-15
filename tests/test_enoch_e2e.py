@@ -26,6 +26,8 @@ from enoch.logs import log_conversation_turn
 from enoch.tasks.events import load_task_events
 from enoch.tasks.queue import begin_next_task, task_queue_status
 from enoch.app.core import EnochApplication
+from enoch.providers.runtime import CodexRuntime
+from our_ark_claude import ClaudeRuntime
 from our_ark_telegram import TelegramConfig, telegram_event
 
 
@@ -229,6 +231,75 @@ class EnochEvolutionEndToEndTests(unittest.TestCase):
         self.assertIn("resumed", events)
         self.assertEqual(events[-1], "completed")
 
+    def test_claude_session_limit_pauses_and_runtime_switch_resumes_same_task(self) -> None:
+        executable = self._create_quota_limited_claude()
+        runtime = ClaudeRuntime(
+            root=self.instance,
+            read_settings=lambda _root=None: {"executable": str(executable)},
+            session_path=self.instance / ".enoch" / "claude-sessions.json",
+        )
+        self.bot = EnochApplication(load_identity(), self.instance, self.client, runtime=runtime)
+        candidate_id = self._add_feedback_candidate("Preserve work when Claude reaches its limit")
+        self._command(f"/evolve approve {candidate_id}")
+        later = self.bot.workflow.enqueue(CHAT_ID, "Later work")
+
+        for attempt in range(2):
+            if attempt:
+                self.bot = EnochApplication(
+                    load_identity(), self.instance, self.client, runtime=runtime,
+                )
+                with patch.object(self.bot, "_maybe_start_task_worker"):
+                    self.assertEqual(self._command("/task resume 1"), "Resumed 1 task: #1.")
+            self.client.clear()
+            self.bot._run_task_worker()
+
+            status = task_queue_status(self.instance)
+            self.assertIsNone(status.running)
+            self.assertEqual(status.history, ())
+            self.assertEqual([job.id for job in status.pending], [later.id])
+            self.assertEqual([job.id for job in status.paused], [1])
+            paused = status.paused[0]
+            self.assertEqual(paused.failure_code, "")
+            self.assertIn("session limit", paused.result)
+            self.assertIn("12:20am", paused.result)
+            self.assertIn("use /task resume 1", paused.result.lower())
+            if not attempt:
+                self.assertIn("12:20am", self.client.sent[-1][1])
+                self.assertIn("use /task resume 1", self.client.sent[-1][1].lower())
+            self.assertEqual(
+                (Path(paused.worktree_path) / "PARTIAL.md").read_text(encoding="utf-8"),
+                "Work preserved before quota exhaustion.\n",
+            )
+            self.bot._maybe_start_task_worker()
+            self.assertIsNone(self.bot._task_worker)
+            self.assertEqual(task_queue_status(self.instance), status)
+
+        calls = (self.base / "claude.jsonl").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(calls), 2)
+        self.bot = EnochApplication(
+            load_identity(), self.instance, self.client, runtime=CodexRuntime(self.instance),
+        )
+        with patch.object(self.bot, "_maybe_start_task_worker"):
+            self.assertEqual(self._command("/task resume 1"), "Resumed 1 task: #1.")
+        completed = self._run_next_task()
+
+        self.assertEqual(completed.id, 1)
+        self.assertEqual(completed.status, "completed", completed.result)
+        self.assertEqual(completed.worktree_path, paused.worktree_path)
+        self.assertEqual(completed.pr_urls, (PR_URL,))
+        self.assertEqual(
+            _git(self.instance, "show", f"origin/{completed.branch_name}:PARTIAL.md").stdout,
+            "Work preserved before quota exhaustion.\n",
+        )
+        status = task_queue_status(self.instance)
+        self.assertEqual([job.id for job in status.history], [1])
+        self.assertEqual([job.id for job in status.pending], [later.id])
+        events = [event.event for event in load_task_events(self.instance, task_id=1)]
+        self.assertEqual(events.count("paused"), 2)
+        self.assertEqual(events.count("resumed"), 2)
+        self.assertNotIn("failed", events)
+        self.assertEqual(events[-1], "completed")
+
     def test_failed_evolve_task_becomes_semantic_experience_candidate_with_causal_provenance(
         self,
     ) -> None:
@@ -373,6 +444,37 @@ class EnochEvolutionEndToEndTests(unittest.TestCase):
             encoding="utf-8",
         )
         executable.chmod(0o755)
+
+    def _create_quota_limited_claude(self) -> Path:
+        executable = self.bin_dir / "claude"
+        detail = "You've hit your session limit \u00b7 resets 12:20am (America/Los_Angeles)"
+        executable.write_text(
+            f"#!{sys.executable}\n"
+            + textwrap.dedent(
+                f"""
+                import json
+                from pathlib import Path
+                import sys
+
+                sys.stdin.read()
+                with Path({str(self.base / 'claude.jsonl')!r}).open("a", encoding="utf-8") as log:
+                    log.write(json.dumps(sys.argv[1:]) + "\\n")
+                Path("PARTIAL.md").write_text(
+                    "Work preserved before quota exhaustion.\\n", encoding="utf-8",
+                )
+                print(json.dumps({{
+                    "type": "result",
+                    "subtype": "error_during_execution",
+                    "is_error": True,
+                    "result": {detail!r},
+                }}))
+                raise SystemExit(1)
+                """
+            ).lstrip(),
+            encoding="utf-8",
+        )
+        executable.chmod(0o755)
+        return executable
 
     def _create_fake_gh(self) -> None:
         executable = self.bin_dir / "gh"

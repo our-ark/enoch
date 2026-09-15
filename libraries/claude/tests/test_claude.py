@@ -19,6 +19,7 @@ from our_ark_provider_kit import (  # noqa: E402
     RuntimeExecutionControl,
 )
 from our_ark_claude import ClaudeRuntime  # noqa: E402
+from our_ark_claude.core import ClaudeRuntimeError  # noqa: E402
 
 
 class _Identity:
@@ -137,6 +138,70 @@ class ClaudeRuntimeTests(unittest.TestCase):
 
         self.assertIn("claude auth login", str(raised.exception).lower())
 
+    def test_subscription_limits_use_pauseable_access_error(self) -> None:
+        messages = (
+            "You've hit your session limit \u00b7 resets 12:20am (America/Los_Angeles)",
+            "You\u2019ve hit your weekly limit \u00b7 resets Sep 22 at 12am",
+            "You've hit your SESSION\nLIMIT - resets tomorrow",
+        )
+        for mode in ("error-json", "error-stderr", "error-stdout"):
+            for message in messages:
+                with self.subTest(mode=mode, message=message), TemporaryDirectory() as temporary:
+                    root = Path(temporary)
+                    runtime = _runtime(root, _write_fake_claude(root))
+                    environment = {
+                        "FAKE_CLAUDE_MODE": mode,
+                        "FAKE_CLAUDE_ERROR": message,
+                    }
+                    with patch.dict(os.environ, environment, clear=False):
+                        with self.assertRaises(AgentRuntimeAccessUnavailable) as raised:
+                            runtime.act_in_session(_Identity(), "work", cwd=root)
+
+                    self.assertIn("temporarily unavailable", str(raised.exception))
+                    self.assertIn(" ".join(message.split()), str(raised.exception))
+
+    def test_quota_pause_keeps_native_session_for_later_resume(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            executable = _write_fake_claude(root)
+            capture = root / "args.jsonl"
+            runtime = _runtime(root, executable)
+            with patch.dict(os.environ, {"FAKE_CLAUDE_CAPTURE": str(capture)}, clear=False):
+                runtime.act_in_session(_Identity(), "first", cwd=root, session_key="task:28")
+                with patch.dict(os.environ, {
+                    "FAKE_CLAUDE_MODE": "error-json",
+                    "FAKE_CLAUDE_ERROR": "You've hit your session limit - resets 12:20am",
+                }, clear=False):
+                    with self.assertRaises(AgentRuntimeAccessUnavailable):
+                        runtime.act_in_session(_Identity(), "next", cwd=root, session_key="task:28")
+                restarted = _runtime(root, executable)
+                result = restarted.act_in_session(
+                    _Identity(), "continue", cwd=root, session_key="task:28",
+                )
+            calls = _captured_args(capture)
+
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(_argument(calls[1], "--resume"), "claude-session-1")
+        self.assertEqual(_argument(calls[2], "--resume"), "claude-session-1")
+        self.assertEqual(result.completion_reason, "completed")
+
+    def test_execution_limits_and_other_errors_do_not_pause_for_access(self) -> None:
+        for message in (
+            "Maximum number of turns reached",
+            "Session not found",
+            "Worker execution failed",
+        ):
+            with self.subTest(message=message), TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                runtime = _runtime(root, _write_fake_claude(root))
+                with patch.dict(os.environ, {
+                    "FAKE_CLAUDE_MODE": "error-json",
+                    "FAKE_CLAUDE_ERROR": message,
+                }, clear=False):
+                    with self.assertRaises(ClaudeRuntimeError) as raised:
+                        runtime.respond(_Identity(), "hello", cwd=root)
+                self.assertNotIsInstance(raised.exception, AgentRuntimeAccessUnavailable)
+
     def test_human_cancellation_stops_running_cli(self) -> None:
         with TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -252,6 +317,18 @@ if mode == "sleep":
     time.sleep(10)
 if mode == "auth-error":
     print("Not logged in. Run claude auth login.", file=sys.stderr)
+    raise SystemExit(1)
+if mode in ("error-json", "error-stderr", "error-stdout"):
+    detail = os.environ["FAKE_CLAUDE_ERROR"]
+    if mode == "error-json":
+        print(json.dumps({
+            "type": "result",
+            "subtype": "error_during_execution",
+            "is_error": True,
+            "result": detail,
+        }))
+        raise SystemExit(0)
+    print(detail, file=sys.stderr if mode == "error-stderr" else sys.stdout)
     raise SystemExit(1)
 if mode == "missing-session-once" and "--resume" in args:
     marker = Path(os.environ["FAKE_CLAUDE_MARKER"])

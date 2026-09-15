@@ -2199,6 +2199,28 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("Status: queued", client.edited[-1][2])
         start_worker.assert_called_once()
 
+    def test_task_resume_failed_task_explains_retry_without_changing_history(self) -> None:
+        for prefix in ("/", ".", "!"):
+            with self.subTest(prefix=prefix), TemporaryDirectory() as temp:
+                root = Path(temp)
+                job = enqueue_task(42, "recover failed work", root)
+                begin_next_task(root)
+                fail_task(job.id, root, result="Previous runtime failure.")
+                client = FakeTelegramClient(allowed_chat_id=42)
+                client.command_prefix = prefix
+                bot = EnochApplication(load_identity(), root, client)
+                before = task_queue_status(root)
+                events = load_task_events(root, task_id=job.id)
+
+                with patch.object(bot, "_maybe_start_task_worker") as start_worker:
+                    _handle_update(bot, _message_update(chat_id=42, text=f"/task resume {job.id}"))
+
+                self.assertIn(f"Task #{job.id} is failed, not paused", client.sent[-1][1])
+                self.assertIn(f"{prefix}task retry {job.id}", client.sent[-1][1])
+                self.assertEqual(task_queue_status(root), before)
+                self.assertEqual(load_task_events(root, task_id=job.id), events)
+                start_worker.assert_not_called()
+
     def test_task_resume_selects_one_paused_task_and_all_alias_resumes_rest(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)

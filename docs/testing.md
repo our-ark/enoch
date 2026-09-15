@@ -32,8 +32,8 @@ workflows and checks cross-instance state and epoch isolation. See
 
 `tests/test_enoch_e2e.py` exercises the reference evolution stack with real
 temporary Git repositories, a bare `origin`, and a linked agent worktree. It
-uses protocol-compatible local substitutes for the Codex runtime, GitHub forge,
-and Telegram channel, so it needs no network access or external credentials.
+uses protocol-compatible local substitutes for the Codex and Claude runtimes,
+GitHub forge, and Telegram channel, so it needs no network access or external credentials.
 These named tools are fixtures for the reference providers, not dependencies of
 Enoch core.
 
@@ -55,6 +55,9 @@ The suite verifies:
   journaled or branch-linked PRs before starting duplicate work;
 - reference-runtime authentication failure pauses a task and `/task resume`
   completes that same task after access returns;
+- Claude session-limit failures pause the queue without losing partial work;
+  explicit resume remains paused while quota is exhausted, and switching runtime
+  after an application restart can complete the same task with its work intact;
 - reference-channel progress updates edit one Telegram status message;
 - experience scanning batches distinct task IDs, sees each task's complete
   causal chain, and does not turn failure into a candidate without semantic
@@ -108,8 +111,9 @@ check without external credentials.
 The independent `libraries/claude/tests` suite runs a fake Claude Code CLI
 through the packaged runtime provider. It verifies stream-json parsing, usage
 and progress delivery, restricted read/write tool policies, logical-to-native
-session resume, stale-session recovery, authentication pause behavior, human
-cancellation, health checks, model/effort selection, and per-invocation budget
+session resume, stale-session recovery, authentication and subscription-limit
+pause behavior (JSON results, stderr, and plain stdout), native-session retention,
+human cancellation, health checks, model/effort selection, and per-invocation budget
 configuration without external credentials or network access.
 
 `tests/test_enoch_application.py` covers startup through command reception and
