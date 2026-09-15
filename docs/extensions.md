@@ -248,6 +248,10 @@ Request text, context, capability requirements, metadata, artifact references,
 and an optional execution lane are validated when the extension loads. Daily
 targets use Python's IANA timezone database; calendar targets are recomputed
 from local wall time after each scheduled occurrence, including DST changes.
+Occurrences are enumerated by local calendar date, so a daily schedule fires at
+most once per local day: a wall-clock time skipped by a spring-forward jump runs
+at the first instant after the jump, and one repeated by a fall-back runs on its
+first occurrence only.
 
 Enoch reconciles declarations at process startup. Request-only changes retain
 the existing next occurrence. A cadence or timezone change calculates a new
