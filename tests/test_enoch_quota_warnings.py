@@ -12,6 +12,7 @@ from enoch.app.epoch import StaleDaemonEpoch, begin_daemon_epoch
 from enoch.app.notifications import NotificationDeliveryService, NotificationResult, notification_records
 from enoch.config import write_section_value
 from enoch.identity import load_identity
+from enoch.quota import quota_command
 from enoch.quota_warnings import (
     QuotaWarningMonitor, prepare_warnings, record_warning_result, warning_settings, warning_state_path,
 )
@@ -56,6 +57,7 @@ class QuotaWarningTests(unittest.TestCase):
         self.root = Path(self.temporary.name)
         self.chat = Chat()
         self.app = EnochApplication(load_identity(), self.root, self.chat)
+        self.default_collect = self.app.quota_warnings.collect
         self.sample = snapshot(12)
         self.collect = Mock(side_effect=lambda: iter([('codex', self.sample)]))
         self.app.quota_warnings.collect = self.collect
@@ -64,6 +66,61 @@ class QuotaWarningTests(unittest.TestCase):
         if remaining is not None:
             self.sample = snapshot(remaining, **kwargs)
         return self.app.quota_warnings.check_once(now=NOW)
+
+    def test_automatic_checks_query_only_the_active_runtime_and_follow_switches(self):
+        self.app.quota_warnings.collect = self.default_collect
+        with patch('enoch.quota.available_providers', return_value=('codex', 'claude')), \
+             patch('enoch.quota.load_provider') as load:
+            for name in ('claude', 'codex', 'custom'):
+                runtime = SimpleNamespace(name=name, quota=Mock(return_value=snapshot(1, label=f'{name} / 5h')))
+                self.app.runtime = runtime
+                self.assertEqual(self.poll(), 1)
+                runtime.quota.assert_called_once_with(self.root)
+                self.assertIn(f'{name} / 5h', self.chat.sent[-1][1])
+        load.assert_not_called()
+        self.assertEqual(len(self.chat.sent), 3)
+
+    def test_missing_or_unavailable_active_quota_does_not_query_other_providers(self):
+        self.app.quota_warnings.collect = self.default_collect
+        runtimes = (
+            SimpleNamespace(name='custom'),
+            SimpleNamespace(name='claude', quota=Mock(return_value=None)),
+            SimpleNamespace(name='claude', quota=Mock(side_effect=RuntimeError('unavailable'))),
+        )
+        with patch('enoch.quota.available_providers', return_value=('codex', 'claude')), \
+             patch('enoch.quota.load_provider') as load:
+            for runtime in runtimes:
+                self.app.runtime = runtime
+                self.assertEqual(self.poll(), 0)
+        load.assert_not_called()
+        self.assertEqual(self.chat.sent, [])
+
+    def test_switching_runtime_does_not_retry_an_inactive_provider_warning(self):
+        self.app.quota_warnings.collect = self.default_collect
+        self.app.runtime = SimpleNamespace(name='codex', quota=Mock(return_value=snapshot(1)))
+        self.chat.failures = 1
+        with patch('enoch.quota.available_providers', return_value=('codex', 'claude')), \
+             patch('enoch.quota.load_provider') as load:
+            self.assertEqual(self.poll(), 0)
+            self.assertTrue(warning_state_path(self.root).exists())
+            runtime = SimpleNamespace(name='claude', quota=Mock(return_value=snapshot(50)))
+            restarted = EnochApplication(load_identity(), self.root, self.chat, runtime=runtime)
+            self.assertEqual(restarted.quota_warnings.check_once(now=NOW), 0)
+        load.assert_not_called()
+        self.assertEqual(self.chat.sent, [])
+
+    def test_manual_all_still_queries_inactive_providers_without_switching_runtime(self):
+        runtime = SimpleNamespace(name='claude', quota=Mock(return_value=snapshot(50, label='claude / 5h')))
+        codex = SimpleNamespace(quota=Mock(return_value=snapshot(1)))
+        with patch('enoch.quota.available_providers', return_value=('codex', 'claude')), \
+             patch('enoch.quota.load_provider', return_value=codex) as load:
+            result = quota_command('all', self.root, runtime=runtime, prefix='.')
+        self.assertIn('GPT / Codex', result)
+        self.assertIn('Claude', result)
+        self.assertEqual(runtime.name, 'claude')
+        runtime.quota.assert_called_once_with(self.root)
+        codex.quota.assert_called_once_with(self.root)
+        load.assert_called_once_with('runtime', self.root, name='codex')
 
     def test_threshold_crossings_send_once_with_reset_and_remaining(self):
         for balance, expected in [(12, 0), (10, 1), (10, 0), (9, 0), (5, 1), (2, 0), (1, 1), (0, 0)]:
