@@ -1085,7 +1085,7 @@ def _session_unavailable(detail: str) -> bool:
 
 
 def _access_unavailable(detail: str, subtype: str = "") -> bool:
-    lowered = f"{subtype} {detail}".lower()
+    lowered = " ".join(f"{subtype} {detail}".lower().split())
     return any(
         pattern in lowered
         for pattern in (
@@ -1099,6 +1099,8 @@ def _access_unavailable(detail: str, subtype: str = "") -> bool:
             "rate limit",
             "rate_limit",
             "usage limit",
+            "session limit",
+            "weekly limit",
             "quota",
             "overloaded",
             "max budget",

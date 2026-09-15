@@ -2874,6 +2874,13 @@ class EnochApplication:
         )
         if not resumed:
             if task_id is not None:
+                job = self.workflow.find(task_id)
+                if job is not None and job.status == "failed":
+                    return (
+                        f"Task #{task_id} is failed, not paused. "
+                        f"Use {self.command_prefix}task retry {task_id} to create a new "
+                        "linked task while preserving its failure history."
+                    )
                 return f"Task #{task_id} is not paused."
             return "No tasks are paused for agent runtime access."
         for job in resumed:
