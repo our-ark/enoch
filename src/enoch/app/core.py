@@ -564,7 +564,9 @@ class EnochApplication:
         )
         self.quota_warnings = QuotaWarningMonitor(
             root, channel=self.channel_name, display_name=self.display_name,
-            collect=lambda: quota_snapshots(self.root, runtime=self.runtime),
+            collect=lambda: quota_snapshots(
+                self.root, runtime=self.runtime, selected=self.runtime.name,
+            ),
             destination=lambda: _allowed_conversation_id(self.client),
             deliver=self._deliver_message,
             require_current=self.effect_fence.require_current,

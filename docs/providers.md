@@ -174,8 +174,12 @@ this method continue to work and are skipped by `/quota`.
 
 ### Automatic low-quota warnings
 
-The daemon checks these same snapshots on an independent background worker every
-60 seconds, without starting model turns or occupying the task scheduler. At
+The daemon checks only the active runtime's quota on an independent background
+worker every 60 seconds, without starting model turns or occupying the task
+scheduler. A Claude-backed agent does not query or warn about Codex quota, and
+vice versa. Manual `/quota all` still checks all installed providers without
+switching the active runtime. Missing or unavailable active-runtime quota does
+not cause the monitor to query another provider. At
 10%, 5%, and 1% remaining, it sends one warning per provider/window/threshold to
 the configured owner conversation. A first check already below a threshold also
 warns. Crossing multiple tiers in one check produces only the most urgent tier,
@@ -193,6 +197,7 @@ Delivery uses the existing durable notification service and daemon ownership
 fence. Pending warnings are revalidated against fresh quota before retrying;
 startup recovery does not blindly replay old warnings after a reset. Retries keep
 their original message and observation time to preserve delivery idempotency.
+After a runtime switch, pending warnings for inactive providers are not retried.
 No warning is sent without a configured owner conversation.
 
 Optional instance settings (read on each check; no restart needed):
