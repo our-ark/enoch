@@ -14,8 +14,19 @@ per year need an explicit rule:
   local -> UTC -> local round trip and resolves to the first instant that
   exists after the jump.
 
-Occurrences are enumerated by local calendar date, so a daily schedule fires at
-most once per local day in either direction.
+Occurrences are enumerated by the local calendar date they are *intended* for,
+so every local date contributes exactly one intended occurrence and none is
+skipped. The instant a gap occurrence actually executes is the first one after
+the jump, which can belong to the following local date: where the gap crosses
+local midnight -- ``23:30`` in ``America/Nuuk``, for one -- the previous date's
+occurrence and the next date's own occurrence both execute on that next local
+date. Callers that need a per-execution-day guarantee cannot take it from the
+intended-date enumeration alone.
+
+This module only calculates targets; it never rewrites one a caller already
+persisted. A scheduler holding a target calculated under an earlier policy keeps
+it until that occurrence is acknowledged, and the rules above govern every
+target calculated after that.
 """
 
 from __future__ import annotations
@@ -73,8 +84,10 @@ def next_daily_run(
     """Return the next UTC instant matching one local wall-clock time.
 
     Candidates are the requested wall-clock time on today's and tomorrow's local
-    calendar date, so no local day can carry two occurrences and none can be
-    skipped.
+    calendar date, so each local date is intended exactly once and none is
+    skipped. A candidate inside a spring-forward gap executes after the jump
+    instead, so its execution can fall on the next local date and share it with
+    that date's own occurrence.
     """
 
     time_of_day = _time_of_day(daily_time, label=label)
@@ -124,7 +137,8 @@ def local_daily_instant(
 
     Ambiguous fall-back times resolve to their first occurrence. Times skipped
     by a spring-forward jump do not round trip through UTC, and resolve to the
-    instant the jump landed on.
+    instant the jump landed on -- which is the next local date when the gap
+    crosses local midnight.
     """
 
     wall_clock = datetime.combine(target_date, time_of_day)

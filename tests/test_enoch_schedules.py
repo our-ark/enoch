@@ -19,6 +19,7 @@ from enoch.schedules import (
 
 PACIFIC = "America/Los_Angeles"
 LORD_HOWE = "Australia/Lord_Howe"
+NUUK = "America/Nuuk"
 
 
 class EnochScheduleNormalizationTests(unittest.TestCase):
@@ -142,7 +143,25 @@ class EnochScheduleDaylightSavingTests(unittest.TestCase):
         self.assertEqual(repeated, datetime(2026, 11, 1, 8, 30, tzinfo=timezone.utc))
         self.assertEqual(repeated.astimezone(ZoneInfo(PACIFIC)).fold, 0)
 
-    def test_daily_run_fires_once_per_local_calendar_day(self) -> None:
+    def test_a_gap_across_local_midnight_shares_an_execution_date(self) -> None:
+        zone = ZoneInfo(NUUK)
+        current = datetime(2026, 3, 28, 20, 0, tzinfo=timezone.utc)
+        occurrences = []
+        for _ in range(2):
+            current = next_daily_run("23:30", NUUK, current)
+            occurrences.append(current.astimezone(zone))
+
+        # 2026-03-28 23:30 never happens in Nuuk: 23:00 -02:00 becomes 00:00
+        # -01:00, so the occurrence intended for the 28th executes on the 29th
+        # and shares that local date with the occurrence intended for the 29th.
+        self.assertEqual(
+            [item.strftime("%Y-%m-%d %H:%M %z") for item in occurrences],
+            ["2026-03-29 00:00 -0100", "2026-03-29 23:30 -0100"],
+        )
+        self.assertEqual(occurrences[0].date(), occurrences[1].date())
+        self.assertEqual(occurrences, sorted(occurrences))
+
+    def test_each_local_date_executes_once_when_no_gap_crosses_midnight(self) -> None:
         zone = ZoneInfo(PACIFIC)
         for daily_time, start in (
             ("02:30", datetime(2026, 3, 5, 0, 0, tzinfo=timezone.utc)),

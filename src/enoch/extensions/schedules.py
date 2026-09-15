@@ -756,6 +756,14 @@ def _reconcile_status(
     spec: ExtensionScheduleSpec,
     current: datetime,
 ) -> tuple[ExtensionScheduleStatus, str]:
+    """Fold a declaration into its durable record, keeping a retained target as is.
+
+    A retained ``next_run_at`` is never recalculated, so an upgrade that changes
+    how targets are calculated does not migrate the ones already persisted: a
+    target stored by an earlier Enoch stands until the occurrence is
+    acknowledged or a cadence change replaces it.
+    """
+
     changed = not _matches_spec(prior, spec)
     reenabled = prior.state == "disabled"
     cadence_changed = (
