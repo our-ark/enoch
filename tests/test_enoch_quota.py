@@ -117,6 +117,8 @@ class QuotaTests(unittest.TestCase):
     def test_registry_exposes_quota_in_help_and_agent_command_reference(self):
         self.assertIn('.quota [', help_message(command_prefix='.'))
         self.assertIn('GPT is an alias', help_message('quota'))
+        self.assertIn('only the active runtime', help_message('quota'))
+        self.assertIn('.quota all', help_message('quota', command_prefix='.'))
         self.assertIn('!quota [', runtime_command_reference(command_prefix='!'))
 
     def test_missing_codex_skips_launch(self):

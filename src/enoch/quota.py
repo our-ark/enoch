@@ -22,7 +22,8 @@ def quota_usage(prefix: str = "/") -> str:
         "Show account quota remaining, usage windows, and reset times.",
         "With no argument, query installed runtime providers and skip missing CLIs.",
         "GPT is an alias for Codex. These are account limits, not task token counts.",
-        "The daemon also checks every minute and warns at 10%, 5%, and 1% remaining.",
+        "Automatic warnings check only the active runtime every minute, at 10%, 5%, and 1% remaining.",
+        f"Use {prefix}quota all to manually check all installed runtime providers.",
     ])
 
 
