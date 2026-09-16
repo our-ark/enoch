@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 from collections import Counter
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from pathlib import Path
 
 from enoch.app.presentation import clip_activity_text as _clip_activity_text
 from enoch.backlog import BacklogItem, backlog_status
 from enoch.cron import CronJob, cron_status, format_cron_interval
+from enoch.providers.contracts import ConversationId
 from enoch.evolution.core import (
     MODE_AUTO_EVOLVE,
     MODE_DISABLED,
@@ -46,7 +49,7 @@ def _task_status_message(
     lines.append(f"- queued: {status.pending_count}")
     lines.append(f"- paused: {status.paused_count}")
     lines.append(f"- backlog: {backlog.pending_count}")
-    lines.append(f"- cron: {cron.active_count}")
+    lines.append(f"- cron: {cron.active_count} active, {cron.paused_count} paused")
     return "\n".join(lines)
 
 
@@ -86,7 +89,7 @@ def _format_tasks_report(
         lines.append("- none")
     lines.append("")
     lines.append(f"Backlog: {backlog.pending_count}")
-    lines.append(f"Cron: {cron.active_count}")
+    lines.append(f"Cron: {cron.active_count} active, {cron.paused_count} paused")
     return "\n".join(lines)
 
 
@@ -127,16 +130,23 @@ def _format_backlog_list_item(item: BacklogItem) -> str:
     return f"{label} (task #{item.promoted_task_id})"
 
 
-def _format_cron_report(root: Path) -> str:
-    status = cron_status(root)
+def _format_cron_report(root: Path, *, chat_id: ConversationId | None = None) -> str:
+    status = cron_status(root, chat_id=chat_id)
     lines = ["Cron:"]
     lines.append("")
     lines.append("Active:")
-    if status.active:
-        lines.extend(f"- {_format_cron_list_item(job)}" for job in status.active)
+    if status.active_count:
+        lines.extend(f"- {_format_cron_list_item(job)}" for job in status.active if job.status == "active")
     else:
         lines.append("- none")
 
+    lines.append("")
+    lines.append("Paused:")
+    paused = [job for job in status.active if job.status == "paused"]
+    if paused:
+        lines.extend(f"- {_format_cron_list_item(job)}" for job in paused)
+    else:
+        lines.append("- none")
     lines.append("")
     lines.append("Recent history:")
     if status.history:
@@ -148,12 +158,43 @@ def _format_cron_report(root: Path) -> str:
 
 def _format_cron_list_item(job: CronJob) -> str:
     label = (
-        f"#{job.id} [{job.status}] every {format_cron_interval(job.interval_seconds)} "
-        f"next {job.next_run_at} {_clip_activity_text(job.text, limit=100)}"
+        f"#{job.id} [{job.status}] {_format_cron_cadence(job)} "
+        f"next {_format_cron_next_run(job)} {_clip_activity_text(job.text, limit=100)}"
     )
     if job.last_task_id is None:
         return label
     return f"{label} (last task #{job.last_task_id})"
+
+
+def _format_cron_cadence(job: CronJob) -> str:
+    if job.cadence == "daily":
+        return f"daily {job.daily_time} {job.timezone}"
+    return f"every {format_cron_interval(job.interval_seconds)}"
+
+
+def _format_cron_next_run(job: CronJob) -> str:
+    target = datetime.fromisoformat(job.next_run_at)
+    if target.tzinfo is None:
+        target = target.replace(tzinfo=timezone.utc)
+    utc = target.astimezone(timezone.utc).isoformat()
+    if job.cadence != "daily":
+        return f"{utc} UTC"
+    local = target.astimezone(ZoneInfo(job.timezone)).isoformat()
+    return f"{local} [{job.timezone}] / {utc} UTC"
+
+
+def _format_cron_details(job: CronJob) -> str:
+    return "\n".join([
+        f"Cron #{job.id} [{job.status}]",
+        f"Schedule: {_format_cron_cadence(job)}",
+        f"Next run: {_format_cron_next_run(job)}",
+        f"Bound chat: {job.chat_id}",
+        f"Request: {job.text}",
+        f"Last scheduled: {job.last_scheduled_at or 'none'}",
+        f"Last enqueued: {job.last_run_at or 'none'}",
+        f"Last task: {job.last_task_id or 'none'}",
+        f"Pending occurrence: {job.claim_kind or ('run-now' if job.run_now_id else 'none')}",
+    ])
 
 
 def _format_feedback_report(root: Path) -> str:

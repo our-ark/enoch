@@ -59,7 +59,11 @@ from enoch.cron import (
     cancel_cron_job,
     claim_due_cron_jobs,
     cron_scheduler_wait_seconds,
-    format_cron_interval,
+    cron_task_admission,
+    find_cron_job,
+    pause_cron_job,
+    resume_cron_job,
+    request_cron_job_run,
     parse_cron_interval,
     record_cron_task,
 )
@@ -238,6 +242,7 @@ from enoch.providers.contracts import (
     ChatProvider,
     ChatProviderError,
     ConversationId,
+    normalize_conversation_id,
     Cursor,
     ForgeProvider,
     ForgeProviderError,
@@ -375,6 +380,7 @@ from enoch.app.parsing import (
     backlog_priority_and_request as _backlog_priority_and_request,
     backlog_priority_update as _backlog_priority_update,
     cron_job_id as _cron_job_id,
+    cron_daily_request as _cron_daily_request,
     parse_chat_command as _parse_chat_command,
     task_cancel_id as _task_cancel_id,
     task_resume_target as _task_resume_target,
@@ -399,6 +405,9 @@ from enoch.app.reporting import (
     _evolve_skip_reason,
     _format_backlog_report,
     _format_cron_report,
+    _format_cron_cadence,
+    _format_cron_next_run,
+    _format_cron_details,
     _format_evolve_candidate,
     _format_evolve_candidates,
     _format_evolve_config,
@@ -3671,32 +3680,61 @@ class EnochApplication:
         except ValueError:
             return f"{self.display_name} could not understand that schedule. Try once a day, once a day at 09:30, every 1d, or 30 9 * * *."
 
-    def _cron(self, chat_id: int, text: str) -> str:
+    def _cron(self, chat_id: ConversationId, text: str) -> str:
         command, argument = _parse_chat_command(text)
         if command != "/cron":
-            return _cron_usage()
+            return _cron_usage(command_prefix=self.command_prefix)
+        chat_id = normalize_conversation_id(chat_id)
+        if chat_id is None:
+            return "Cron requires a bound chat; no destination will be guessed."
         if not argument:
-            return _format_cron_report(self.root)
+            return _format_cron_report(self.root, chat_id=chat_id)
 
         first, _separator, rest = argument.partition(" ")
         subcommand = first.lower()
         if subcommand == "cancel":
             job_id = _cron_job_id(rest)
             if job_id is None:
-                return "Use /cron cancel <id> to cancel a scheduled job."
-            cancelled = cancel_cron_job(job_id, self.root)
+                return f"Use {self.command_prefix}cron cancel <id> to cancel a scheduled job."
+            cancelled = cancel_cron_job(job_id, self.root, chat_id=chat_id)
             if cancelled is None:
                 return f"{self.display_name} could not cancel cron #{job_id}. It may already be cancelled or missing."
             self._cron_scheduler_wake.set()
             return f"Cancelled cron #{cancelled.id}."
-        if subcommand != "every":
-            return _cron_usage()
+        if subcommand in {"pause", "resume", "run-now", "show"}:
+            job_id = _cron_job_id(rest) if len(rest.split()) == 1 else None
+            if job_id is None:
+                return f"Use {self.command_prefix}cron {subcommand} <id>."
+            operations = {
+                "pause": pause_cron_job, "resume": resume_cron_job,
+                "run-now": request_cron_job_run, "show": find_cron_job,
+            }
+            options = {"chat_id": chat_id}
+            if subcommand == "run-now":
+                options["idempotency_key"] = _event_idempotency_key("cron-run-now")
+            try:
+                job = operations[subcommand](job_id, self.root, **options)
+            except ValueError as error:
+                return str(error)
+            if job is None:
+                return f"Cron #{job_id} is missing from this chat or unavailable for {subcommand}."
+            if subcommand == "show":
+                return _format_cron_details(job)
+            self._cron_scheduler_wake.set()
+            label = {"pause": "Paused", "resume": "Resumed", "run-now": "Requested run-now for"}[subcommand]
+            return f"{label} cron #{job.id}.\nNext run: {_format_cron_next_run(job)}"
+        if subcommand not in {"every", "daily"}:
+            return _cron_usage(command_prefix=self.command_prefix)
 
-        interval_text, _space, request = rest.partition(" ")
-        if not interval_text or not request.strip():
-            return "Use /cron every <interval> <request> to schedule recurring work."
+        daily_time, timezone_name, interval_seconds = "", "UTC", 0
         try:
-            interval_seconds = parse_cron_interval(interval_text)
+            if subcommand == "daily":
+                daily_time, timezone_name, request = _cron_daily_request(rest, command_prefix=self.command_prefix)
+            else:
+                interval_text, _space, request = rest.partition(" ")
+                if not interval_text or not request.strip():
+                    return f"Use {self.command_prefix}cron every <interval> <request> to schedule recurring work."
+                interval_seconds = parse_cron_interval(interval_text)
         except ValueError as error:
             return str(error)
         snapshot = self._resolve_task_context_snapshot(chat_id, request)
@@ -3718,14 +3756,17 @@ class EnochApplication:
                 context=snapshot.context,
                 context_source=snapshot.source,
                 idempotency_key=_event_idempotency_key("cron-add"),
+                cadence="daily" if subcommand == "daily" else "interval",
+                daily_time=daily_time,
+                timezone=timezone_name,
             )
         except (OSError, ValueError):
             return f"{self.display_name} could not schedule that cron job."
         self._cron_scheduler_wake.set()
         return "\n".join(
             [
-                f"Cron #{job.id} scheduled every {format_cron_interval(job.interval_seconds)}.",
-                f"Next run: {job.next_run_at}",
+                f"Cron #{job.id} scheduled {_format_cron_cadence(job)}.",
+                f"Next run: {_format_cron_next_run(job)}",
             ]
         )
 
@@ -3829,29 +3870,27 @@ class EnochApplication:
                 key=lambda cron: (cron.next_run_at, cron.id),
             )
         )
-        eligible = tuple(
-            cron
-            for cron in claimed
-            if not self._cron_task_is_outstanding(cron)
-        )
         enqueued: dict[int, TaskJob] = {}
-        for cron in reversed(eligible):
-            try:
-                job = self.workflow.enqueue(
-                    cron.chat_id,
-                    cron.text,
-                    mode="front",
-                    context=cron.context,
-                    context_source=f"cron:{cron.context_source}" if cron.context_source else "cron",
-                    source="task",
-                    initiated_by="human",
-                    event_actor="system",
-                    trigger=f"cron:{cron.id}",
-                    idempotency_key=f"cron:{cron.id}:{cron.claim_id}",
-                    **self._profile_task_options(),
-                )
-            except (OSError, ValueError):
-                continue
+        for snapshot in reversed(claimed):
+            with cron_task_admission(snapshot.id, snapshot.claim_id, self.root) as cron:
+                if cron is None or self._cron_task_is_outstanding(cron):
+                    continue
+                try:
+                    job = self.workflow.enqueue(
+                        cron.chat_id,
+                        cron.text,
+                        mode="front",
+                        context=cron.context,
+                        context_source=f"cron:{cron.context_source}" if cron.context_source else "cron",
+                        source="task",
+                        initiated_by="human",
+                        event_actor="system",
+                        trigger=f"cron:{cron.id}",
+                        idempotency_key=f"cron:{cron.id}:{cron.claim_id}",
+                        **self._profile_task_options(),
+                    )
+                except (OSError, ValueError):
+                    continue
             record_cron_task(
                 cron.id,
                 job.id,
@@ -3861,7 +3900,7 @@ class EnochApplication:
             enqueued[cron.id] = job
 
         jobs: list[TaskJob] = []
-        for cron in eligible:
+        for cron in claimed:
             job = enqueued.get(cron.id)
             if job is None:
                 continue
@@ -5090,7 +5129,7 @@ def _with_replied_text_context(
         return text
     if command == "/backlog" and first_word in {"remove", "priority", "promote"}:
         return text
-    if command == "/cron" and first_word == "cancel":
+    if command == "/cron" and first_word in {"cancel", "pause", "resume", "run-now", "show"}:
         return text
     if not reply_text:
         return text

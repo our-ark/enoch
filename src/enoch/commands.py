@@ -981,6 +981,11 @@ def _cron_help_usage(prefix: str) -> str:
             "Cron commands:",
             f"{command} every <interval> <request> - schedule recurring work",
             "Intervals can be like 10m, 2h, or 1d.",
+            f"{command} daily <HH:MM> <IANA timezone> <request> - schedule daily local-time work",
+            f"{command} pause <id> - pause a scheduled job",
+            f"{command} resume <id> - resume a paused job",
+            f"{command} run-now <id> - request one run without shifting the schedule",
+            f"{command} show <id> - show schedule details and local/UTC next run",
             f"{command} cancel <id> - cancel a scheduled job",
             f"{command} - show scheduled jobs",
         ]

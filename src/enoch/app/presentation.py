@@ -204,15 +204,18 @@ def backlog_usage() -> str:
     )
 
 
-def cron_usage() -> str:
+def cron_usage(*, command_prefix: str = "/") -> str:
     return "\n".join(
         [
-            "Use /cron every <interval> <request> to schedule recurring work.",
+            f"Use {command_prefix}cron every <interval> <request> to schedule recurring work.",
             "Intervals can be like 10m, 2h, or 1d.",
             "Intervals stay anchored; missed runs coalesce into one run as soon as the agent returns.",
             "A schedule keeps at most one task outstanding, and due work goes to the front of the queue.",
-            "Use /cron cancel <id> to cancel a scheduled job.",
-            "Use /cron to show scheduled jobs.",
+            f"Use {command_prefix}cron daily <HH:MM> <IANA timezone> <request> to schedule daily local-time work.",
+            f"Use {command_prefix}cron pause <id>, {command_prefix}cron resume <id>, or {command_prefix}cron run-now <id> to control a job.",
+            f"Use {command_prefix}cron show <id> for schedule details and local/UTC next run.",
+            f"Use {command_prefix}cron cancel <id> to cancel a scheduled job.",
+            f"Use {command_prefix}cron to show scheduled jobs.",
         ]
     )
 
