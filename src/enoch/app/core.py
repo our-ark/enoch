@@ -59,6 +59,7 @@ from enoch.cron import (
     cancel_cron_job,
     claim_due_cron_jobs,
     cron_scheduler_wait_seconds,
+    cron_task_admission,
     find_cron_job,
     pause_cron_job,
     resume_cron_job,
@@ -3869,29 +3870,27 @@ class EnochApplication:
                 key=lambda cron: (cron.next_run_at, cron.id),
             )
         )
-        eligible = tuple(
-            cron
-            for cron in claimed
-            if not self._cron_task_is_outstanding(cron)
-        )
         enqueued: dict[int, TaskJob] = {}
-        for cron in reversed(eligible):
-            try:
-                job = self.workflow.enqueue(
-                    cron.chat_id,
-                    cron.text,
-                    mode="front",
-                    context=cron.context,
-                    context_source=f"cron:{cron.context_source}" if cron.context_source else "cron",
-                    source="task",
-                    initiated_by="human",
-                    event_actor="system",
-                    trigger=f"cron:{cron.id}",
-                    idempotency_key=f"cron:{cron.id}:{cron.claim_id}",
-                    **self._profile_task_options(),
-                )
-            except (OSError, ValueError):
-                continue
+        for snapshot in reversed(claimed):
+            with cron_task_admission(snapshot.id, snapshot.claim_id, self.root) as cron:
+                if cron is None or self._cron_task_is_outstanding(cron):
+                    continue
+                try:
+                    job = self.workflow.enqueue(
+                        cron.chat_id,
+                        cron.text,
+                        mode="front",
+                        context=cron.context,
+                        context_source=f"cron:{cron.context_source}" if cron.context_source else "cron",
+                        source="task",
+                        initiated_by="human",
+                        event_actor="system",
+                        trigger=f"cron:{cron.id}",
+                        idempotency_key=f"cron:{cron.id}:{cron.claim_id}",
+                        **self._profile_task_options(),
+                    )
+                except (OSError, ValueError):
+                    continue
             record_cron_task(
                 cron.id,
                 job.id,
@@ -3901,7 +3900,7 @@ class EnochApplication:
             enqueued[cron.id] = job
 
         jobs: list[TaskJob] = []
-        for cron in eligible:
+        for cron in claimed:
             job = enqueued.get(cron.id)
             if job is None:
                 continue

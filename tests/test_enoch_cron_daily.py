@@ -1,9 +1,12 @@
 """Daily cron acceptance, durable retries, and bound-chat integration."""
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import asdict
 from datetime import datetime, timezone
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
+import threading
 import unittest
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
@@ -18,7 +21,7 @@ from enoch.cron import (
 from enoch.identity import load_identity
 from our_ark_slack.core import _translate_secondary_command
 from enoch.private_state import migrate_private_state
-from enoch.state import StateCorruptionError
+from enoch.state import StateCorruptionError, file_transaction
 from enoch.tasks.queue import begin_next_task, complete_task, task_queue_status
 from tests.test_enoch_telegram import FakeTelegramClient, _handle_update, _message_update
 
@@ -261,6 +264,147 @@ class DailyCronApplicationTests(unittest.TestCase):
         pause_cron_job(job.id, self.root)
         for report in (_format_tasks_report(self.root), _task_status_message(self.root)):
             self.assertIn("0 active, 1 paused", report)
+
+    def test_pause_after_claim_prevents_admission_and_resume_preserves_occurrence(self):
+        for cadence in ("daily", "interval"):
+            for kind in ("scheduled", "run-now"):
+                with self.subTest(cadence=cadence, kind=kind), TemporaryDirectory() as temp:
+                    root = Path(temp)
+                    app = EnochApplication(load_identity(), root, self.client)
+                    job = daily(root) if cadence == "daily" else add_cron_job(
+                        42, "interval work", 3600, root, now=TODAY,
+                    )
+                    current = datetime.fromisoformat(job.next_run_at) if kind == "scheduled" else TODAY
+                    if kind == "run-now":
+                        request_cron_job_run(job.id, root, idempotency_key="manual")
+                    claimed = []
+
+                    def claim_then_pause(root):
+                        occurrences = claim_due_cron_jobs(root)
+                        claimed.extend(occurrences)
+                        self.assertIn("Paused cron #1.", app._cron(42, "/cron pause 1"))
+                        self.assertEqual(task_queue_status(root).pending_count, 0)
+                        return occurrences
+
+                    with patch("enoch.cron._utc_now", return_value=current):
+                        with patch("enoch.app.core.claim_due_cron_jobs", side_effect=claim_then_pause):
+                            self.assertEqual(app._enqueue_due_cron_jobs(), ())
+                        paused = find_cron_job(job.id, root)
+                        self.assertEqual(task_queue_status(root).pending_count, 0)
+                        self.assertEqual(paused.status, "paused")
+                        self.assertEqual(paused.claim_id, claimed[0].claim_id)
+                        self.assertEqual(paused.claim_kind, kind)
+                        self.assertEqual(paused.claim_scheduled_for, claimed[0].claim_scheduled_for)
+                        self.assertEqual(paused.next_run_at, job.next_run_at)
+                        self.assertIsNone(paused.last_task_id)
+                        self.assertEqual(app._enqueue_due_cron_jobs(), ())
+                        self.assertIn("Resumed cron #1.", app._cron(42, "/cron resume 1"))
+                        admitted, = app._enqueue_due_cron_jobs()
+                        self.assertEqual(admitted.idempotency_key, f"cron:{job.id}:{claimed[0].claim_id}")
+                        self.assertEqual(task_queue_status(root).pending_count, 1)
+                        self.assertEqual(app._enqueue_due_cron_jobs(), ())
+                        resumed = find_cron_job(job.id, root)
+                        self.assertFalse(resumed.claim_id)
+                        self.assertEqual(resumed.last_task_id, admitted.id)
+                        if kind == "run-now":
+                            self.assertEqual(resumed.next_run_at, job.next_run_at)
+                        else:
+                            self.assertGreater(resumed.next_run_at, job.next_run_at)
+
+    def test_pause_waits_for_admission_that_already_holds_the_cron_transaction(self):
+        job = daily(self.root)
+        pause_attempted = threading.Event()
+        pause_thread_id = None
+        pause_future = None
+        enqueue = self.app.workflow.enqueue
+
+        @contextmanager
+        def observe_transaction(path):
+            if threading.get_ident() == pause_thread_id:
+                pause_attempted.set()
+            with file_transaction(path):
+                yield
+
+        def pause():
+            nonlocal pause_thread_id
+            pause_thread_id = threading.get_ident()
+            reply = self.app._cron(42, "/cron pause 1")
+            return reply, task_queue_status(self.root).pending_count
+
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            def enqueue_while_pausing(*args, **kwargs):
+                nonlocal pause_future
+                pause_future = executor.submit(pause)
+                self.assertTrue(pause_attempted.wait(timeout=2))
+                with self.assertRaises(TimeoutError):
+                    pause_future.result(timeout=0.2)
+                self.assertEqual(task_queue_status(self.root).pending_count, 0)
+                return enqueue(*args, **kwargs)
+
+            with (
+                patch("enoch.cron._utc_now", return_value=datetime.fromisoformat(job.next_run_at)),
+                patch("enoch.cron.file_transaction", side_effect=observe_transaction),
+                patch.object(self.app.workflow, "enqueue", side_effect=enqueue_while_pausing),
+            ):
+                admitted, = self.app._enqueue_due_cron_jobs()
+                reply, pending_at_pause = pause_future.result(timeout=2)
+            self.assertIn("Paused cron #1.", reply)
+            self.assertEqual(pending_at_pause, 1)
+        paused = find_cron_job(job.id, self.root)
+        self.assertEqual(paused.status, "paused")
+        self.assertEqual(paused.last_task_id, admitted.id)
+        self.assertFalse(paused.claim_id)
+        self.assertEqual(self.app._enqueue_due_cron_jobs(), ())
+
+    def test_cancellation_after_claim_prevents_admission(self):
+        job = daily(self.root)
+
+        def claim_then_cancel(root):
+            claimed = claim_due_cron_jobs(root)
+            self.assertIn("Cancelled cron #1.", self.app._cron(42, "/cron cancel 1"))
+            return claimed
+
+        with (
+            patch("enoch.cron._utc_now", return_value=datetime.fromisoformat(job.next_run_at)),
+            patch("enoch.app.core.claim_due_cron_jobs", side_effect=claim_then_cancel),
+        ):
+            self.assertEqual(self.app._enqueue_due_cron_jobs(), ())
+        self.assertEqual(task_queue_status(self.root).pending_count, 0)
+        self.assertEqual(find_cron_job(job.id, self.root).status, "cancelled")
+
+    def test_stale_claim_snapshot_cannot_readmit_an_acknowledged_occurrence(self):
+        job = daily(self.root)
+        due = datetime.fromisoformat(job.next_run_at)
+        with patch("enoch.cron._utc_now", return_value=due):
+            stale = claim_due_cron_jobs(self.root)
+            self.app._enqueue_due_cron_jobs()
+            running = begin_next_task(self.root)
+            complete_task(running.id, self.root, result="Done")
+            request_cron_job_run(job.id, self.root)
+            current, = claim_due_cron_jobs(self.root)
+            with (
+                patch("enoch.app.core.claim_due_cron_jobs", return_value=stale),
+                patch.object(self.app.workflow, "enqueue", wraps=self.app.workflow.enqueue) as enqueue,
+            ):
+                self.assertEqual(self.app._enqueue_due_cron_jobs(), ())
+                enqueue.assert_not_called()
+            self.assertEqual(find_cron_job(job.id, self.root).claim_id, current.claim_id)
+            admitted, = self.app._enqueue_due_cron_jobs()
+            self.assertNotEqual(admitted.id, running.id)
+
+    def test_enqueue_failure_preserves_claim_and_releases_lock_for_pause(self):
+        job = daily(self.root)
+        with patch("enoch.cron._utc_now", return_value=datetime.fromisoformat(job.next_run_at)):
+            with patch.object(self.app.workflow, "enqueue", side_effect=OSError("queue unavailable")):
+                self.assertEqual(self.app._enqueue_due_cron_jobs(), ())
+            claimed = find_cron_job(job.id, self.root)
+            self.assertTrue(claimed.claim_id)
+            self.assertEqual(task_queue_status(self.root).pending_count, 0)
+            self.assertIn("Paused cron #1.", self.app._cron(42, "/cron pause 1"))
+            self.assertEqual(find_cron_job(job.id, self.root).claim_id, claimed.claim_id)
+            self.app._cron(42, "/cron resume 1")
+            admitted, = self.app._enqueue_due_cron_jobs()
+            self.assertEqual(admitted.idempotency_key, f"cron:{job.id}:{claimed.claim_id}")
 
     def test_crash_after_enqueue_reuses_task_and_blocks_overlap_until_completion(self):
         job = daily(self.root)

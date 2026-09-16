@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 import json
@@ -304,6 +306,32 @@ def claim_due_cron_jobs(root: Path | None = None, *, now: datetime | None = None
             data["active"] = [_job_to_dict(job) for job in active]
             _write_cron(data, root)
         return tuple(claimed)
+
+
+@contextmanager
+def cron_task_admission(
+    cron_id: int, claim_id: str, root: Path | None = None,
+) -> Iterator[CronJob | None]:
+    """Fence task admission against pause, cancellation, and stale claims.
+
+    Keep the cron transaction held while checking outstanding work and making
+    the task durable. A lifecycle change either wins before this check or waits
+    for admission. Rejected claims remain untouched for resume/recovery.
+
+    Queue operations must acquire their own locks after this cron lock. Release
+    this guard before acknowledging with ``record_cron_task`` (cron transactions
+    are not reentrant) or sending notifications. Acknowledgement can safely
+    follow a pause because the task is already durable at that point.
+    """
+    with _cron_transaction(root):
+        yield next(
+            (
+                job for job in _active_jobs(_load_cron(root))
+                if job.id == cron_id and job.status == "active"
+                and claim_id and job.claim_id == claim_id
+            ),
+            None,
+        )
 
 
 def record_cron_task(
