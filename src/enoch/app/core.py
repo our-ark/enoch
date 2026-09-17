@@ -1812,6 +1812,7 @@ class EnochApplication:
         self, event: ChatEvent, action: ConversationAction, index: int,
     ) -> ActionResult:
         # Reuse command authorization and handlers; never recursively enter the model.
+        self.effect_fence.require_current()
         if _allowed_conversation_id(self.client) != event.conversation_id:
             return ActionResult(self._action_lock_message(), stop=True)
         name = "task" if action.command == "do" and not self.profile.workflow.allow_direct_work else action.command
@@ -4920,6 +4921,7 @@ class EnochApplication:
         return result
 
     def _pr(self, chat_id: int, argument: str) -> str:
+        self.effect_fence.require_current()
         parts = argument.split()
         if not parts or (len(parts) == 1 and parts[0].lower() == "list"):
             try:

@@ -34,11 +34,9 @@ def parse_action(reply: str) -> ConversationAction | None:
     """Accept one complete structured action, never prose or a shell program."""
     if ACTION_START not in reply and ACTION_END not in reply:
         return None
-    if reply.count(ACTION_START) != 1 or reply.count(ACTION_END) != 1:
-        raise ValueError("Return exactly one complete ENOCH_ACTION block.")
     if not reply.strip().startswith(ACTION_START) or not reply.strip().endswith(ACTION_END):
         raise ValueError("Return the action block alone, without prose or code fences.")
-    payload = reply.split(ACTION_START, 1)[1].split(ACTION_END, 1)[0]
+    payload = reply.strip()[len(ACTION_START):-len(ACTION_END)]
     try:
         data = json.loads(payload)
     except json.JSONDecodeError as error:
