@@ -888,7 +888,7 @@ def pr_usage(prefix: str = "/") -> str:
             f"{prefix}pr - list open reviews in the current repository",
             f"{prefix}pr show <review id or URL> - inspect one review",
             f"{prefix}pr merge <review id or URL> - land exactly that review",
-            "A review target is required; Enoch will not infer one from the current workspace or conversation.",
+            "A specific review target is required. Natural-language requests resolve it from the conversation and inspect its current state before acting.",
         ]
     )
 

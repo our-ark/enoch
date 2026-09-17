@@ -39,6 +39,13 @@ Enoch core.
 
 The suite verifies:
 
+- natural-language action selection invokes the same tracked work, task
+  retry/resume, review, profile, and extension operations as explicit commands;
+- action results inform subsequent decisions, duplicate inbox deliveries reuse
+  receipts, interrupted operations are not blindly repeated, and loops are bounded;
+- owner conversation locks and capability policies apply to conversation actions;
+- already merged reviews succeed idempotently and legacy forge errors retain
+  their useful explanation instead of triggering three inbox retries;
 - approved evolution publishes a ready-for-review PR with full provenance;
 - each reference Git task runs in an isolated linked worktree based on that
   fixture's authoritative `origin/main`, even when the resident checkout is

@@ -84,6 +84,29 @@ after a successful response; failed calls receive it again on their next request
 Local commands such as `/help` and `/status` do not need this model turn, and
 startup context cannot independently resume an old task.
 
+Ordinary conversation can execute work. The runtime selects one structured
+`ENOCH_ACTION` containing a registered command name and argument. The host
+dispatches it through the same core, profile, or extension handler as an explicit
+chat command, preserving the owner conversation lock and capability policy.
+The command reference includes descendant operations even when compact help
+hides common commands. Explicit work requests need no second command or
+confirmation; unresolved targets can still require clarification.
+
+The conversation loop feeds actual operation results back to the runtime and
+permits at most six actions per message. Accepted tasks and daemon restarts end
+the loop and retain their normal asynchronous lifecycle. Repository work runs
+inside managed task workspaces, rather than granting the conversation runtime
+write access to the resident checkout. Commands remain available when runtime
+quota or authentication prevents conversational interpretation.
+
+Private `conversation/` journals persist each selected action before execution
+and its receipt afterwards. Inbox retries reuse completed receipts. An action
+interrupted before its receipt was saved is reported as uncertain and is not
+automatically repeated. These journals are instance state and follow the normal
+private-state storage boundary. Review landing inspects current remote state;
+already landed reviews return success without a second merge, independently of
+whether the local checkout or running package has been updated.
+
 Agent profiles sit above domain, workflow, and provider contracts. They may contribute
 commands, context, persisted workflow defaults, bounded presentation labels,
 and lifecycle hooks or enqueue governed work, but they do not poll chat,

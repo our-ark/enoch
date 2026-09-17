@@ -15,6 +15,13 @@ Enoch is a personal software agent you build for yourself. She lives in your
 environment, works with your tools and repositories, and grows through your
 shared history.
 
+Tell Enoch what you want done in ordinary conversation: "retry task 12",
+"merge PR 1", or "implement the change we discussed". She calls the same
+registered operations as chat commands, including descendant profile and
+extension capabilities. Substantial work enters the tracked task workflow and
+produces progress, validation, and review results. Commands remain optional
+shortcuts and work without a conversation-model call.
+
 This repository is the reference implementation of the OurArk agent
 architecture. It demonstrates governed code evolution: Enoch can turn feedback
 and operational experience into tested, reviewable changes while you control
