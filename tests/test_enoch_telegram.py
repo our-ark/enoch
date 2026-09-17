@@ -912,6 +912,9 @@ class EnochTelegramTests(unittest.TestCase):
 
     def test_pr_merge_reports_review_provider_error(self) -> None:
         review = IndependentReviewFixture()
+        review.publish_review(ReviewSubmission(
+            title="Draft change", body="", revision=RepositoryRevision("draft-revision"), draft=True,
+        ))
         review.land_review = MagicMock(
             side_effect=ReviewProviderError("Review review-1 is a draft.")
         )
@@ -949,7 +952,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("/pr - list open reviews", client.sent[1][1])
         self.assertIn("/pr show <review id or URL>", client.sent[1][1])
         self.assertIn("/pr merge <review id or URL>", client.sent[1][1])
-        self.assertIn("will not infer one", client.sent[1][1])
+        self.assertIn("inspect its current state", client.sent[1][1])
 
     def test_help_lists_worktree_commands(self) -> None:
         client = FakeTelegramClient(allowed_chat_id=42)
@@ -4872,7 +4875,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("locked to one conversation", client.sent[0][1])
 
     @patch("enoch.app.core.respond", return_value="Let's think through reminders first.")
-    def test_natural_feature_request_uses_read_only_wrapper(self, respond: MagicMock) -> None:
+    def test_natural_feature_request_uses_action_capable_wrapper(self, respond: MagicMock) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
@@ -4883,13 +4886,14 @@ class EnochTelegramTests(unittest.TestCase):
         respond.assert_called_once()
         self.assertEqual(respond.call_args.kwargs["session_key"], "telegram:42")
         self.assertIn("Enoch wrapper instructions:", respond.call_args.args[1])
+        self.assertIn("Action-capable conversation:", respond.call_args.args[1])
         self.assertIn("/do", respond.call_args.args[1])
         self.assertIn("/task", respond.call_args.args[1])
         self.sync_session_activity.assert_not_called()
         self.assertIn("Let's think through reminders first.", client.sent[0][1])
 
     @patch("enoch.app.core.respond", return_value="Use !do disable auto evolve.")
-    def test_read_only_wrapper_uses_chat_provider_command_prefix(
+    def test_conversation_wrapper_uses_chat_provider_command_prefix(
         self,
         respond: MagicMock,
     ) -> None:
@@ -4911,7 +4915,7 @@ class EnochTelegramTests(unittest.TestCase):
     @patch("enoch.app.core.log_conversation_turn")
     @patch("enoch.app.core.respond")
     @patch("enoch.app.core.act_in_session")
-    def test_natural_edit_request_does_not_auto_run_work(
+    def test_obsolete_edit_marker_is_hidden_without_executing_unstructured_work(
         self,
         act_in_session: MagicMock,
         respond: MagicMock,

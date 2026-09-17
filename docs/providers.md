@@ -133,8 +133,10 @@ per-invocation cost boundary:
 ```
 
 Claude runs with structured streaming output and maps Enoch logical session
-keys to native Claude session IDs. Conversation turns receive read-only tools;
-task turns receive a bounded workspace tool set inside the task worktree. The
+keys to native Claude session IDs. Conversation reasoning receives inspection
+tools and can request registered host actions through the conversation protocol;
+ordinary work requests are executed without requiring the user to type a command.
+Task turns receive a bounded workspace tool set inside the task worktree. The
 provider uses Claude restricted mode, disables user customizations and MCP
 servers for unattended execution, and never enables bypass-permissions mode.
 Authentication, quota, rate-limit, and configured-budget failures raise the

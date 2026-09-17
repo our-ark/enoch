@@ -83,6 +83,7 @@ class PrivateStateMigrationResult:
 
 STATE_FILE_SCHEMAS = (
     StateFileSchema("self.json", 1),
+    StateFileSchema("conversation/*.json", 1, (("steps", []),), (("steps", (list,)),)),
     StateFileSchema(
         "task_queue.json",
         15,

@@ -1245,7 +1245,7 @@ exit 2
                 )
 
         self.assertIsNotNone(runtime.execution)
-        self.assertEqual(runtime.execution.request_id, "conversation:room-1")
+        self.assertRegex(runtime.execution.request_id, r"^conversation:[0-9a-f]{64}$")
         self.assertEqual(runtime.execution.session_key, "test-chat:room-1")
         self.assertEqual(chat.sent[-1][1], "Hello from a typed runtime.")
 
