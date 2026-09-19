@@ -37,7 +37,7 @@ optional = true
 
 [[runtime_dependencies]]
 name = "slack"
-requirement = "our-ark-slack @ git+https://github.com/our-ark/enoch.git@2943af46f9d849c86b85449572939498e3ea0cbd#subdirectory=libraries/slack"
+requirement = "our-ark-slack @ git+https://github.com/our-ark/enoch.git@566b985f02923f97f96a614dd64b856e6aaa5897#subdirectory=libraries/slack"
 import_name = "our_ark_slack"
 local_source = "libraries/slack/src"
 optional = true
