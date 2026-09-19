@@ -30,15 +30,98 @@ from enoch.app.notifications import (
 from enoch.app.inbox import inbox_path
 from enoch.identity import load_identity
 from enoch.providers import (
+    AuthorizationDecision,
     ChatEvent,
     NotificationCapabilities,
     NotificationDeliveryError,
     NotificationIntent,
     NotificationReceipt,
+    OutboundAttachment,
+    ProviderCapabilities,
 )
+from enoch.providers.authorization import CapabilityAuthorizationError, CapabilityAuthorizer
 
 
 class EnochNotificationTests(unittest.TestCase):
+    def test_attachment_intent_persists_thread_and_legacy_provider_fallback(self) -> None:
+        attachment = OutboundAttachment(
+            id="sha256:" + "a" * 64,
+            uri="artifact://outbound/aa/file.png",
+            filename="avatar.png",
+            mime_type="image/png",
+            size=12,
+            sha256="a" * 64,
+            kind="image",
+        )
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            chat = _LegacyChat()
+            epoch = begin_daemon_epoch(root, provider="test")
+            delivery = NotificationDeliveryService(chat, "test", root, epoch)
+
+            result = delivery.send(
+                42,
+                "caption",
+                idempotency_key="attachment-fallback",
+                thread_id="parent-1",
+                attachments=(attachment,),
+            )
+            record = notification_record("test", "attachment-fallback", root)
+
+        self.assertTrue(result.delivered)
+        self.assertEqual(len(chat.sent), 1)
+        self.assertIn("caption", chat.sent[0][1])
+        self.assertIn("cannot deliver", chat.sent[0][1])
+        assert record is not None
+        self.assertEqual(record.thread_id, "parent-1")
+        self.assertEqual(record.attachments, (attachment,))
+
+    def test_attachment_recovery_rechecks_attach_authority(self) -> None:
+        attachment = OutboundAttachment(
+            id="sha256:" + "a" * 64,
+            uri="artifact://outbound/aa/file.png",
+            filename="avatar.png",
+            mime_type="image/png",
+            size=12,
+            sha256="a" * 64,
+            kind="image",
+        )
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            first_epoch = begin_daemon_epoch(root, provider="test")
+            persist_notification_intent(
+                "test",
+                NotificationIntent(
+                    idempotency_key="recover-attachment",
+                    operation="send",
+                    conversation_id=42,
+                    text="caption",
+                    attachments=(attachment,),
+                    daemon_epoch=first_epoch.token,
+                ),
+                root,
+            )
+            chat = _AttachmentChat()
+            policy = _DenyAttachPolicy()
+            authorizer = CapabilityAuthorizer(
+                lambda kind: chat if kind == "chat" else object(),
+                policy=policy,
+            )
+            second_epoch = begin_daemon_epoch(root, provider="test")
+            recovery = NotificationDeliveryService(
+                chat,
+                "test",
+                root,
+                second_epoch,
+                authorizer,
+            )
+
+            with self.assertRaises(CapabilityAuthorizationError):
+                recovery.recover()
+
+        self.assertEqual(policy.requirements, ("chat.send", "chat.attach"))
+        self.assertEqual(chat.intents, [])
+
     def test_daemon_epoch_fences_previous_owner(self) -> None:
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -450,6 +533,39 @@ class _AmbiguousDurableChat(_DurableChat):
                 ambiguous=True,
             )
         return self.receipts[intent.idempotency_key]
+
+
+class _AttachmentChat(_DurableChat):
+    capabilities = ProviderCapabilities(
+        provider_kind="chat",
+        capabilities=frozenset({"chat.send", "chat.attach"}),
+    )
+    notification_capabilities = NotificationCapabilities(
+        idempotent_delivery=True,
+        reconciliation=True,
+        attachments=True,
+    )
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.intents = []
+
+    def deliver_notification(self, intent):
+        self.intents.append(intent)
+        return super().deliver_notification(intent)
+
+
+class _DenyAttachPolicy:
+    def __init__(self) -> None:
+        self.requirements: tuple[str, ...] = ()
+
+    def authorize(self, request):
+        self.requirements = request.requirements.capabilities
+        return AuthorizationDecision(
+            allowed=False,
+            reason="Attachment delivery is disabled during recovery.",
+            denied_capabilities=("chat.attach",),
+        )
 
 
 class _CancelledChat(_LegacyChat):

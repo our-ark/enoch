@@ -21,6 +21,7 @@ DEFAULT_PROVIDER_CAPABILITIES = {
             "chat.edit",
             "chat.ack",
             "chat.attachment",
+            "chat.attach",
         }
     ),
     "runtime": frozenset({"runtime.respond", "runtime.execute"}),

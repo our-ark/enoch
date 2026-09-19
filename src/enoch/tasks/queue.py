@@ -55,6 +55,7 @@ class TaskJob:
     chat_id: ConversationId
     text: str
     created_at: str
+    thread_id: MessageId | None = None
     started_at: str = ""
     completed_at: str = ""
     status: str = "pending"
@@ -237,6 +238,7 @@ def enqueue_task(
     text: str,
     root: Path | None = None,
     *,
+    thread_id: MessageId | None = None,
     context: str = "",
     context_source: str = "",
     source: str = "task",
@@ -289,6 +291,7 @@ def enqueue_task(
             chat_id=chat_id,
             text=cleaned,
             created_at=current_time(),
+            thread_id=normalize_message_id(thread_id),
             context=context.strip(),
             context_source=context_source.strip(),
             source=source,
@@ -440,6 +443,7 @@ def enqueue_task_front(
     text: str,
     root: Path | None = None,
     *,
+    thread_id: MessageId | None = None,
     context: str = "",
     context_source: str = "",
     source: str = "chat-task",
@@ -492,6 +496,7 @@ def enqueue_task_front(
             chat_id=chat_id,
             text=cleaned,
             created_at=current_time(),
+            thread_id=normalize_message_id(thread_id),
             context=context.strip(),
             context_source=context_source.strip(),
             source=source,
@@ -527,6 +532,7 @@ def begin_direct_task(
     text: str,
     root: Path | None = None,
     *,
+    thread_id: MessageId | None = None,
     context: str = "",
     context_source: str = "",
     source: str = "chat-task",
@@ -581,6 +587,7 @@ def begin_direct_task(
             chat_id=chat_id,
             text=cleaned,
             created_at=current_time(),
+            thread_id=normalize_message_id(thread_id),
             started_at=current_time(),
             status="running",
             context=context.strip(),
@@ -2142,6 +2149,7 @@ def _parse_job(raw: object) -> TaskJob | None:
     completed_at = str(raw.get("completed_at") or "").strip()
     status = str(raw.get("status") or "").strip() or "pending"
     status_message_id = normalize_message_id(raw.get("status_message_id"))
+    thread_id = normalize_message_id(raw.get("thread_id"))
     result = str(raw.get("result") or "").strip()
     review_urls = _parse_review_urls(
         raw.get("review_urls", raw.get("pr_urls"))
@@ -2261,6 +2269,7 @@ def _parse_job(raw: object) -> TaskJob | None:
         chat_id=chat_id,
         text=text,
         created_at=created_at,
+        thread_id=thread_id,
         started_at=started_at,
         completed_at=completed_at,
         status=status,
@@ -2324,6 +2333,7 @@ def _job_to_dict(job: TaskJob | None) -> dict:
         "chat_id": job.chat_id,
         "text": job.text,
         "created_at": job.created_at,
+        "thread_id": job.thread_id,
         "started_at": job.started_at,
         "completed_at": job.completed_at,
         "status": job.status,
@@ -2389,6 +2399,7 @@ def _replace_job(job: TaskJob, **changes: object) -> TaskJob:
         "chat_id": job.chat_id,
         "text": job.text,
         "created_at": job.created_at,
+        "thread_id": job.thread_id,
         "started_at": job.started_at,
         "completed_at": job.completed_at,
         "status": job.status,

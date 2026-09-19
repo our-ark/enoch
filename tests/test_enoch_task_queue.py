@@ -61,6 +61,23 @@ from enoch.tasks import queue as task_queue
 
 
 class EnochTaskQueueTests(unittest.TestCase):
+    def test_thread_binding_survives_queue_persistence(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            queued = enqueue_task(
+                "D123",
+                "generate an image",
+                root,
+                thread_id="1700.100",
+            )
+            restored = task_queue_status(root).pending[0]
+            running = begin_next_task(root)
+
+        self.assertEqual(queued.thread_id, "1700.100")
+        self.assertEqual(restored.thread_id, "1700.100")
+        assert running is not None
+        self.assertEqual(running.thread_id, "1700.100")
+
     def test_schema_11_queue_is_read_and_rewritten_with_neutral_fields(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)

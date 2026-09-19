@@ -40,6 +40,7 @@ class WorkflowEngine(Protocol):
         request: str,
         *,
         mode: EnqueueMode = "queued",
+        thread_id: MessageId | None = None,
         context: str = "",
         context_source: str = "",
         source: str = "",

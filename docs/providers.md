@@ -49,6 +49,37 @@ the slash-command namespace, so commands use `.help`, `.task ...`, and
 surface. In channels, mention the agent before the command, such as
 `@Enoch .help`.
 
+Slack outbound attachments use the provider-neutral notification contract and
+Slack's `files.getUploadURLExternal` / binary upload /
+`files.completeUploadExternal` sequence. The app needs both `files:write` for
+delivery and `files:read` to reconcile an interrupted completion without
+uploading a duplicate. Attachments are always bound to the configured Slack
+conversation lock and retain the parent `thread_ts` when the request arrived in
+a thread.
+
+The core imports runtime file references into the instance artifact store before
+offering them to a provider. It accepts only validated files already in that
+store or in the generated-image root. The default generated-image root is
+`$CODEX_HOME/generated_images` (falling back to `~/.codex/generated_images`),
+and an instance may narrow it explicitly:
+
+```yaml
+codex:
+  generated_images_root: /absolute/controlled/generated-images
+outbound:
+  max_attachment_bytes: "20971520"
+slack:
+  max_upload_bytes: "20971520"
+```
+
+Neither the generated-image root nor any arbitrary runtime path is exposed to
+the Slack provider. The core copies verified content to a digest-addressed
+`artifact://` location, and the provider independently rechecks containment,
+regular-file and symlink status, size, extension, MIME signature, digest, and
+sensitive-file rules immediately before upload. Providers without outbound
+attachment support preserve the text response and add an explicit fallback
+notice.
+
 The minimal portable configuration is:
 
 ```yaml
