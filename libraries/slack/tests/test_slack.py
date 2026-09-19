@@ -308,6 +308,53 @@ class SlackLibraryTests(ProviderContractConformanceMixin, unittest.TestCase):
                 assert event is not None
                 self.assertEqual(event.text, text)
 
+    def test_command_urls_use_slack_link_targets_and_preserve_raw_payload(self) -> None:
+        url = "https://github.com/our-ark/enoch/pull/81"
+        for prefix in (".", "!", "/"):
+            for target in (url, f"<{url}>", f"<{url}|Enoch PR #81>", f"<{url}|https://github.com/other/repo/pull/2>"):
+                with self.subTest(prefix=prefix, target=target):
+                    text = f"{prefix}pr merge {target}"
+                    payload = {"type": "event_callback", "event": {
+                        "type": "message", "channel": "D123", "user": "U123", "ts": "1700.1", "text": text,
+                    }}
+                    event = slack_event("events_api", payload, cursor=7)
+                    self.assertEqual(event.text, f"/pr merge {url}")
+                    self.assertEqual(event.raw["event"]["text"], text)
+                    self.assertEqual(payload["event"]["text"], text)
+                    self.assertEqual(event.message_id, "1700.1")
+
+    def test_mention_and_registered_slash_commands_normalize_link_arguments(self) -> None:
+        url = "https://github.com/our-ark/enoch/pull/81"
+        mention = slack_event("events_api", {"type": "event_callback", "event": {
+            "type": "app_mention", "channel": "D123", "user": "U123",
+            "text": f"<@U456> .pr show <{url}|PR with spaces>",
+        }}, cursor=1)
+        slash = slack_event("slash_commands", {
+            "command": "/enoch", "channel_id": "D123", "user_id": "U123",
+            "text": f"pr show <{url}|PR with spaces>",
+        }, cursor=2)
+        self.assertEqual(mention.text, f"/pr show {url}")
+        self.assertEqual(slash.text, f"/pr show {url}")
+
+    def test_url_entities_decode_once_without_changing_ordinary_text_or_code(self) -> None:
+        cases = (
+            (".paper <https://example.org/?a=1&amp;b=2&amp;literal=amp;lt;|source>",
+             "/paper https://example.org/?a=1&b=2&literal=amp;lt;"),
+            (".paper <https://example.org/?literal=&amp;lt;|source>",
+             "/paper https://example.org/?literal=&lt;"),
+            ("看看 <https://example.org|这篇论文>", "看看 <https://example.org|这篇论文>"),
+            (".do explain `<https://example.org|label>`", "/do explain `<https://example.org|label>`"),
+            (".do explain ```\n<https://example.org|label>\n```", "/do explain ```\n<https://example.org|label>\n```"),
+            (".pr merge 81", "/pr merge 81"),
+            (".paper <mailto:me@example.org|email> <@U123> &amp;", "/paper <mailto:me@example.org|email> <@U123> &amp;"),
+        )
+        for text, expected in cases:
+            with self.subTest(text=text):
+                event = slack_event("events_api", {"type": "event_callback", "event": {
+                    "type": "message", "channel": "D123", "user": "U123", "text": text,
+                }}, cursor=1)
+                self.assertEqual(event.text, expected)
+
     def test_persists_before_ack_and_replays_once_after_restart(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             state_dir = Path(directory) / "intake"

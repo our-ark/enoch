@@ -33,6 +33,11 @@ SPOOL_SCHEMA_VERSION = 1
 _MENTION_PREFIX = re.compile(r"^<@[A-Z0-9]+>[:,]?\s*", re.IGNORECASE)
 _SECONDARY_COMMAND = re.compile(r"^[.!]([A-Za-z][A-Za-z0-9_-]*)(?:\s+(.*))?$", re.DOTALL)
 _SLASH_COMMAND = re.compile(r"^/[A-Za-z0-9][A-Za-z0-9_-]{0,79}$")
+_COMMAND_LINK = re.compile(
+    r"```.*?```|`[^`\n]*`|<(?P<url>https?://[^<>\s|]+)(?:\|[^<>]*)?>",
+    re.DOTALL,
+)
+_SLACK_ENTITY = re.compile(r"&(amp|lt|gt);")
 _SAFE_ID = re.compile(r"^[A-Za-z0-9._-]{1,160}$")
 
 
@@ -521,7 +526,7 @@ def _slash_command_event(
     return ChatEvent(
         cursor=cursor,
         conversation_id=conversation,
-        text=text,
+        text=_normalize_command_links(text),
         raw=deepcopy(payload),
     )
 
@@ -529,10 +534,29 @@ def _slash_command_event(
 def _translate_secondary_command(text: str) -> str:
     match = _SECONDARY_COMMAND.fullmatch(text)
     if match is None:
-        return text
+        return _normalize_command_links(text)
     command, argument = match.groups()
     suffix = f" {argument}" if argument else ""
-    return f"/{command}{suffix}"
+    return _normalize_command_links(f"/{command}{suffix}")
+
+
+def _normalize_command_links(text: str) -> str:
+    """Restore command URL arguments from Slack's transport markup.
+
+    Use the URL target, never its display label. Keep normal conversation and
+    inline/fenced code intact; those may intentionally discuss literal markup.
+    """
+    if not text or not _SLASH_COMMAND.fullmatch(text.split(maxsplit=1)[0]):
+        return text
+
+    def replace_link(match: re.Match[str]) -> str:
+        url = match.group("url")
+        if url is None:
+            return match.group(0)
+        # Slack escapes these three characters. Decode once, not arbitrary HTML.
+        return _SLACK_ENTITY.sub(lambda entity: {"amp": "&", "lt": "<", "gt": ">"}[entity.group(1)], url)
+
+    return _COMMAND_LINK.sub(replace_link, text)
 
 
 def _sanitized_payload(payload: object) -> dict[str, Any]:

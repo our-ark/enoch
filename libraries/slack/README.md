@@ -3,6 +3,13 @@
 `our-ark-slack` connects an Our Ark agent to Slack through Socket Mode. It does
 not require a public HTTP endpoint.
 
+Command arguments accept Slack's `<https://...>` and `<https://...|label>`
+link formats. The provider restores the actual URL before dispatch, so pasting
+a cross-repository PR link into `.pr show` or `.pr merge` works normally. Display
+labels never determine the target. Ordinary conversation, code spans, and the
+original event payload remain intact. A bare PR number still refers to the
+agent's current repository; use a full link for another repository.
+
 ## Create the Slack app
 
 1. Create a Slack app from [`slack-app-manifest.yaml`](slack-app-manifest.yaml).
