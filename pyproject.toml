@@ -15,7 +15,7 @@ dependencies = [
 [project.optional-dependencies]
 reference = [
   "our-ark-telegram @ git+https://github.com/our-ark/enoch.git@566b985f02923f97f96a614dd64b856e6aaa5897#subdirectory=libraries/telegram",
-  "our-ark-slack @ git+https://github.com/our-ark/enoch.git@566b985f02923f97f96a614dd64b856e6aaa5897#subdirectory=libraries/slack",
+  "our-ark-slack @ git+https://github.com/our-ark/enoch.git@722918b72edde036bb8e4b261d7f245660ff17a7#subdirectory=libraries/slack",
   "our-ark-claude @ git+https://github.com/our-ark/enoch.git@566b985f02923f97f96a614dd64b856e6aaa5897#subdirectory=libraries/claude",
   "our-ark-github @ git+https://github.com/our-ark/enoch.git@566b985f02923f97f96a614dd64b856e6aaa5897#subdirectory=libraries/github",
   "our-ark-launchd @ git+https://github.com/our-ark/enoch.git@566b985f02923f97f96a614dd64b856e6aaa5897#subdirectory=libraries/launchd",
