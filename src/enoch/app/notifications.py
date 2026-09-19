@@ -18,6 +18,7 @@ from enoch.providers.contracts import (
     NotificationDeliveryError,
     NotificationIntent,
     NotificationReceipt,
+    OutboundAttachment,
     normalize_conversation_id,
     normalize_message_id,
 )
@@ -49,8 +50,11 @@ class NotificationRecord:
     text: str
     status: str
     message_id: MessageId | None = None
+    thread_id: MessageId | None = None
+    attachments: tuple[OutboundAttachment, ...] = ()
     receipt_message_id: MessageId | None = None
     provider_reference: str = ""
+    attachment_references: tuple[str, ...] = ()
     owner_epoch: str = ""
     attempts: int = 0
     error: str = ""
@@ -90,13 +94,20 @@ class NotificationDeliveryService:
         text: str,
         *,
         idempotency_key: str,
+        thread_id: MessageId | None = None,
+        attachments: tuple[OutboundAttachment, ...] = (),
     ) -> NotificationResult:
-        self._authorize("notification.send", ("chat.send",))
+        self._authorize(
+            "notification.send",
+            self._authorization_requirements("send", attachments),
+        )
         intent = NotificationIntent(
             idempotency_key=idempotency_key,
             operation="send",
             conversation_id=conversation_id,
             text=text,
+            thread_id=thread_id,
+            attachments=attachments,
             daemon_epoch=self.epoch.token,
         )
         return self._deliver(intent)
@@ -133,7 +144,10 @@ class NotificationDeliveryService:
             for record in records:
                 self._authorize(
                     f"notification.recover-{record.operation}",
-                    (f"chat.{record.operation}",),
+                    self._authorization_requirements(
+                        record.operation,
+                        record.attachments,
+                    ),
                 )
                 if record.status == IN_FLIGHT:
                     results.append(self._recover_in_flight(record))
@@ -352,9 +366,18 @@ class NotificationDeliveryService:
     def _provider_delivery(self, intent: NotificationIntent) -> NotificationReceipt:
         durable = _durable_provider(self.provider)
         if durable is not None:
+            if intent.attachments and not durable.notification_capabilities.attachments:
+                intent = replace(
+                    intent,
+                    text=_attachment_fallback_text(intent.text, len(intent.attachments)),
+                    attachments=(),
+                )
             return durable.deliver_notification(intent)
+        text = intent.text
+        if intent.attachments:
+            text = _attachment_fallback_text(text, len(intent.attachments))
         if intent.operation == "send":
-            message_id = self.provider.send_message(intent.conversation_id, intent.text)
+            message_id = self.provider.send_message(intent.conversation_id, text)
         else:
             assert intent.message_id is not None
             self.provider.edit_message(
@@ -372,6 +395,20 @@ class NotificationDeliveryService:
     def _authorize(self, action: str, requirements: tuple[str, ...]) -> None:
         if self.authorizer is not None:
             self.authorizer.require(action, requirements)
+
+    def _authorization_requirements(
+        self,
+        operation: str,
+        attachments: tuple[OutboundAttachment, ...],
+    ) -> tuple[str, ...]:
+        requirements = (f"chat.{operation}",)
+        if (
+            operation == "send"
+            and attachments
+            and _capabilities(self.provider).attachments
+        ):
+            return (*requirements, "chat.attach")
+        return requirements
 
 
 def notifications_path(provider: str, root: Path | None = None) -> Path:
@@ -426,6 +463,8 @@ def persist_notification_intent(
             conversation_id=intent.conversation_id,
             text=intent.text,
             message_id=intent.message_id,
+            thread_id=intent.thread_id,
+            attachments=intent.attachments,
             status=PENDING,
             owner_epoch="",
             attempts=0,
@@ -486,6 +525,7 @@ def complete_notification(
         status=DELIVERED,
         receipt_message_id=receipt.message_id,
         provider_reference=receipt.provider_reference,
+        attachment_references=receipt.attachment_references,
         error="",
     )
 
@@ -565,6 +605,8 @@ def _parse_record(key: str, raw: object) -> NotificationRecord:
     message_id = normalize_message_id(raw.get("message_id"))
     receipt_message_id = normalize_message_id(raw.get("receipt_message_id"))
     text = str(raw.get("text") or "")
+    thread_id = normalize_message_id(raw.get("thread_id"))
+    attachments = _parse_attachments(raw.get("attachments"))
     if (
         not key.strip()
         or operation not in {"send", "edit"}
@@ -580,8 +622,11 @@ def _parse_record(key: str, raw: object) -> NotificationRecord:
         text=text,
         status=status,
         message_id=message_id,
+        thread_id=thread_id,
+        attachments=attachments,
         receipt_message_id=receipt_message_id,
         provider_reference=str(raw.get("provider_reference") or ""),
+        attachment_references=_string_tuple(raw.get("attachment_references")),
         owner_epoch=str(raw.get("owner_epoch") or ""),
         attempts=max(0, _int(raw.get("attempts"))),
         error=str(raw.get("error") or ""),
@@ -597,8 +642,11 @@ def _record_json(record: NotificationRecord) -> dict[str, Any]:
         "text": record.text,
         "status": record.status,
         "message_id": record.message_id,
+        "thread_id": record.thread_id,
+        "attachments": [_attachment_json(value) for value in record.attachments],
         "receipt_message_id": record.receipt_message_id,
         "provider_reference": record.provider_reference,
+        "attachment_references": list(record.attachment_references),
         "owner_epoch": record.owner_epoch,
         "attempts": record.attempts,
         "error": record.error,
@@ -617,6 +665,8 @@ def _record_intent(
         conversation_id=record.conversation_id,
         text=record.text,
         message_id=record.message_id,
+        thread_id=record.thread_id,
+        attachments=record.attachments,
         daemon_epoch=epoch.token,
     )
 
@@ -629,6 +679,8 @@ def _intent_mismatch(
         record.operation != intent.operation
         or record.conversation_id != intent.conversation_id
         or record.message_id != intent.message_id
+        or record.thread_id != intent.thread_id
+        or record.attachments != intent.attachments
         or record.text != intent.text
     ):
         return (
@@ -672,6 +724,60 @@ def _result(record: NotificationRecord) -> NotificationResult:
         terminal=record.status == TERMINAL_FAILURE,
         record=record,
     )
+
+
+def _attachment_fallback_text(text: str, count: int) -> str:
+    note = (
+        f"[Attachment unavailable: this chat provider cannot deliver {count} "
+        f"file{'s' if count != 1 else ''}.]"
+    )
+    return "\n\n".join(value for value in (text, note) if value)
+
+
+def _parse_attachments(raw: object) -> tuple[OutboundAttachment, ...]:
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        raise StateCorruptionError(Path("<notification>"), "invalid outbound attachments")
+    result = []
+    try:
+        if len(raw) > 16:
+            raise ValueError
+        for value in raw:
+            if not isinstance(value, dict):
+                raise ValueError
+            result.append(
+                OutboundAttachment(
+                    id=str(value.get("id") or ""),
+                    uri=str(value.get("uri") or ""),
+                    filename=str(value.get("filename") or ""),
+                    mime_type=str(value.get("mime_type") or ""),
+                    size=int(value.get("size") or 0),
+                    sha256=str(value.get("sha256") or ""),
+                    kind=str(value.get("kind") or "file"),
+                )
+            )
+    except (TypeError, ValueError) as error:
+        raise StateCorruptionError(Path("<notification>"), "invalid outbound attachments") from error
+    return tuple(result)
+
+
+def _attachment_json(value: OutboundAttachment) -> dict[str, object]:
+    return {
+        "id": value.id,
+        "uri": value.uri,
+        "filename": value.filename,
+        "mime_type": value.mime_type,
+        "size": value.size,
+        "sha256": value.sha256,
+        "kind": value.kind,
+    }
+
+
+def _string_tuple(raw: object) -> tuple[str, ...]:
+    if not isinstance(raw, list):
+        return ()
+    return tuple(str(value).strip() for value in raw if str(value).strip())
 
 
 def _int(value: object) -> int:

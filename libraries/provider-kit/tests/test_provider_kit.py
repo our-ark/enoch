@@ -24,6 +24,7 @@ from our_ark_provider_kit import (
     NotificationCapabilities,
     NotificationIntent,
     NotificationReceipt,
+    OutboundAttachment,
     ProviderCapabilities,
     REPOSITORY_CONTRACT_VERSION,
     REVIEW_CONTRACT_VERSION,
@@ -154,11 +155,22 @@ class ProviderKitTests(unittest.TestCase):
         self.assertIsInstance(FakeDurableChatProvider(), DurableNotificationProvider)
 
     def test_notification_contract_validates_operations_and_versions(self) -> None:
+        attachment = OutboundAttachment(
+            id="sha256:" + "a" * 64,
+            uri="artifact://outbound/aa/file.png",
+            filename="avatar.png",
+            mime_type="image/png",
+            size=123,
+            sha256="a" * 64,
+            kind="image",
+        )
         intent = NotificationIntent(
             idempotency_key="task:1:final",
             operation="send",
             conversation_id=42,
             text="done",
+            thread_id="parent-1",
+            attachments=(attachment,),
             daemon_epoch="epoch-1",
         )
         receipt = NotificationReceipt(
@@ -168,6 +180,8 @@ class ProviderKitTests(unittest.TestCase):
         )
 
         self.assertEqual(intent.operation, "send")
+        self.assertEqual(intent.thread_id, "parent-1")
+        self.assertEqual(intent.attachments, (attachment,))
         self.assertEqual(receipt.message_id, 7)
         with self.assertRaisesRegex(ValueError, "require a message id"):
             NotificationIntent(
@@ -180,6 +194,24 @@ class ProviderKitTests(unittest.TestCase):
             NotificationReceipt(
                 idempotency_key=" ",
                 status="delivered",
+            )
+        with self.assertRaisesRegex(ValueError, "artifact URI"):
+            OutboundAttachment(
+                id="bad",
+                uri="artifact://../secret.txt",
+                filename="secret.txt",
+                mime_type="text/plain",
+                size=1,
+                sha256="a" * 64,
+            )
+        with self.assertRaisesRegex(ValueError, "cannot add attachments"):
+            NotificationIntent(
+                idempotency_key="edit-with-file",
+                operation="edit",
+                conversation_id=42,
+                message_id=7,
+                text="progress",
+                attachments=(attachment,),
             )
 
     def test_runtime_progress_is_provider_neutral_and_normalized(self) -> None:

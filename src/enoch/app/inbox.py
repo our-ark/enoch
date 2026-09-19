@@ -8,7 +8,7 @@ from typing import Any
 
 from enoch.memory.paths import atomic_write, now as current_time
 from enoch.paths import private_state_path
-from enoch.providers.contracts import ChatEvent, Cursor
+from enoch.providers.contracts import ChatEvent, Cursor, OutboundAttachment
 from enoch.state import StateCorruptionError, file_transaction, load_json_object
 
 
@@ -23,6 +23,7 @@ class InboxReceipt:
     attempts: int
     cursor: Cursor | None
     reply: str = ""
+    attachments: tuple[OutboundAttachment, ...] = ()
     logged_input: str = ""
     reply_sent: bool = False
     error: str = ""
@@ -50,6 +51,7 @@ def event_key(provider: str, event: ChatEvent) -> str:
         "cursor": event.cursor,
         "conversation_id": event.conversation_id,
         "message_id": event.message_id,
+        "thread_id": event.thread_id,
         "text": event.text,
         "replied_text": event.replied_text,
         "attachments": [
@@ -97,6 +99,7 @@ def complete_event(
     *,
     reply: str,
     logged_input: str,
+    attachments: tuple[OutboundAttachment, ...] = (),
 ) -> InboxReceipt:
     return _update_receipt(
         provider,
@@ -104,6 +107,7 @@ def complete_event(
         root,
         status="completed",
         reply=reply,
+        attachments=tuple(attachments),
         logged_input=logged_input,
         error="",
     )
@@ -198,6 +202,7 @@ def _receipt(key: str, raw: object) -> InboxReceipt | None:
         attempts=attempts,
         cursor=cursor,
         reply=str(raw.get("reply") or ""),
+        attachments=_parse_attachments(raw.get("attachments")),
         logged_input=str(raw.get("logged_input") or ""),
         reply_sent=bool(raw.get("reply_sent", False)),
         error=str(raw.get("error") or ""),
@@ -210,9 +215,50 @@ def _receipt_to_json(receipt: InboxReceipt) -> dict[str, Any]:
         "attempts": receipt.attempts,
         "cursor": receipt.cursor,
         "reply": receipt.reply,
+        "attachments": [_attachment_json(value) for value in receipt.attachments],
         "logged_input": receipt.logged_input,
         "reply_sent": receipt.reply_sent,
         "error": receipt.error,
+    }
+
+
+def _parse_attachments(raw: object) -> tuple[OutboundAttachment, ...]:
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        raise StateCorruptionError(Path("<inbox>"), "invalid outbound attachments")
+    result = []
+    try:
+        if len(raw) > 16:
+            raise ValueError
+        for value in raw:
+            if not isinstance(value, dict):
+                raise ValueError
+            result.append(
+                OutboundAttachment(
+                    id=str(value.get("id") or ""),
+                    uri=str(value.get("uri") or ""),
+                    filename=str(value.get("filename") or ""),
+                    mime_type=str(value.get("mime_type") or ""),
+                    size=int(value.get("size") or 0),
+                    sha256=str(value.get("sha256") or ""),
+                    kind=str(value.get("kind") or "file"),
+                )
+            )
+    except (TypeError, ValueError) as error:
+        raise StateCorruptionError(Path("<inbox>"), "invalid outbound attachments") from error
+    return tuple(result)
+
+
+def _attachment_json(value: OutboundAttachment) -> dict[str, object]:
+    return {
+        "id": value.id,
+        "uri": value.uri,
+        "filename": value.filename,
+        "mime_type": value.mime_type,
+        "size": value.size,
+        "sha256": value.sha256,
+        "kind": value.kind,
     }
 
 

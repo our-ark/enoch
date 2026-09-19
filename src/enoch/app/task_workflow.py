@@ -526,6 +526,7 @@ class TaskWorkflow:
         record_current_task_runtime_result(
             runtime_result, provider=app.runtime.name, root=app.root, workflow=app.workflow,
         )
+        app._capture_runtime_output(runtime_result)
         app._raise_if_current_task_cancelled()
         result = app._capture_task_regression_signals(runtime_result.final_text)
         memory_result = extract_memory_requests(result)

@@ -14,8 +14,9 @@ not require a public HTTP endpoint.
 
 The manifest requests only the bot scopes used by the provider: receiving DMs
 and mentions, posting and editing messages, and adding the read acknowledgment
-reaction, and reading files shared with the app (`files:read`). Existing apps
-must add that bot scope and reinstall to the workspace for file access.
+reaction, reading files shared with the app (`files:read`), and sending governed
+outbound artifacts (`files:write`). Existing apps must add both file scopes and
+reinstall to the workspace for file access and upload.
 
 ## Install and configure
 
@@ -63,3 +64,19 @@ HTTPS requests to `files.slack.com`; file-size limits also apply while streaming
 Enoch retains documents in private channel state and supplies bounded PDF text
 previews plus local paths for later research tasks. Scans, encrypted PDFs, and
 failed downloads produce explicit status instead of silently dropping the file.
+
+Outbound files use Slack's external upload sequence: `files.getUploadURLExternal`,
+binary upload, then `files.completeUploadExternal`. The provider accepts only
+verified `artifact://` references under the current instance artifact store,
+rechecks content type, extension, size, digest, regular-file status, and symlink
+containment before reading, and shares only to the configured conversation lock.
+Generated images are imported into that store by Enoch before delivery. PNG,
+JPEG, WebP, GIF, PDF, UTF-8 text formats, and validated Office Open XML files are
+supported. `slack.max_upload_bytes` defaults to 20 MiB and may be configured up
+to 100 MiB.
+
+For interruption-safe upload reconciliation, retain both `files:write` and
+`files:read`. The latter lets the provider confirm that a file returned by a
+timed-out completion call was already shared instead of completing or posting it
+again. Permission failures and files rejected by the safety boundary preserve
+the text reply and append an actionable attachment fallback notice.

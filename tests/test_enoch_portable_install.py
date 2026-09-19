@@ -78,7 +78,7 @@ class EnochPortableInstallTests(unittest.TestCase):
         project = _project_metadata(ROOT / "pyproject.toml")["project"]
         manifest = _project_metadata(ROOT / "genesis.toml")
         dependencies = {item["name"]: item for item in manifest["runtime_dependencies"]}
-        for name in ("launchd", "systemd"):
+        for name in ("claude", "github", "launchd", "slack", "systemd", "telegram"):
             with self.subTest(provider=name):
                 reference = _dependency(
                     project["optional-dependencies"]["reference"], f"our-ark-{name}"
@@ -229,7 +229,7 @@ class EnochPortableInstallTests(unittest.TestCase):
             result["agent_identity_schema_id"],
             "https://our-ark.github.io/schemas/ai-agent-identity.schema.json",
         )
-        self.assertEqual(result["provider_kit_version"], "0.7.0")
+        self.assertEqual(result["provider_kit_version"], "0.8.0")
         self.assertEqual(result["chat_provider_version"], "0.0.1")
         self.assertEqual(result["vcs_provider_version"], "0.0.1")
         self.assertEqual(result["profile"], "researcher")

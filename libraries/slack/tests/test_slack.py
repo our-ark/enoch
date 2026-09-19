@@ -1,5 +1,6 @@
 from pathlib import Path
 from types import SimpleNamespace
+import hashlib
 import json
 import io
 import sys
@@ -15,7 +16,14 @@ sys.path.insert(0, str(REPOSITORY / "src"))
 sys.path.insert(0, str(PROVIDER_KIT / "src"))
 sys.path.insert(0, str(ROOT / "src"))
 
-from our_ark_provider_kit import Attachment, ChatProvider, ProviderContractConformanceMixin
+from our_ark_provider_kit import (
+    Attachment,
+    ChatProvider,
+    NotificationDeliveryError,
+    NotificationIntent,
+    OutboundAttachment,
+    ProviderContractConformanceMixin,
+)
 from our_ark_slack.core import _SlackRedirectHandler
 from urllib.request import Request
 from our_ark_slack import (
@@ -33,6 +41,8 @@ class _WebClient:
     def __init__(self) -> None:
         self.calls = []
         self.next_ts = 1
+        self.next_file = 1
+        self.shared_files = set()
 
     def chat_postMessage(self, **kwargs):
         self.calls.append(("chat.postMessage", kwargs))
@@ -47,6 +57,26 @@ class _WebClient:
     def reactions_add(self, **kwargs):
         self.calls.append(("reactions.add", kwargs))
         return {"ok": True}
+
+    def files_getUploadURLExternal(self, **kwargs):
+        self.calls.append(("files.getUploadURLExternal", kwargs))
+        file_id = f"F{self.next_file:03d}"
+        self.next_file += 1
+        return {
+            "ok": True,
+            "file_id": file_id,
+            "upload_url": f"https://files.slack.com/upload/v1/{file_id}",
+        }
+
+    def files_completeUploadExternal(self, **kwargs):
+        self.calls.append(("files.completeUploadExternal", kwargs))
+        self.shared_files.update(value["id"] for value in kwargs["files"])
+        return {"ok": True, "files": kwargs["files"]}
+
+    def files_info(self, **kwargs):
+        self.calls.append(("files.info", kwargs))
+        shares = {"private": {"D123": [{}]}} if kwargs["file"] in self.shared_files else {}
+        return {"ok": True, "file": {"id": kwargs["file"], "shares": shares}}
 
 
 class _SocketClient:
@@ -91,7 +121,7 @@ class SlackLibraryTests(ProviderContractConformanceMixin, unittest.TestCase):
         self.assertEqual(client.command_prefix, ".")
         self.assertEqual(
             client.capabilities.capabilities,
-            frozenset({"chat.receive", "chat.send", "chat.edit", "chat.ack", "chat.attachment"}),
+            frozenset({"chat.receive", "chat.send", "chat.edit", "chat.ack", "chat.attachment", "chat.attach"}),
         )
 
     def test_file_only_and_captioned_messages_keep_all_files_and_owner_boundary(self):
@@ -496,6 +526,301 @@ class SlackLibraryTests(ProviderContractConformanceMixin, unittest.TestCase):
             with self.assertRaisesRegex(SlackError, "not_authed"):
                 client.send_message("D123", "hello")
 
+    def test_external_upload_preserves_caption_governed_channel_and_thread(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            uploads = []
+            web = _WebClient()
+            attachment = _artifact(root / "artifacts", "avatar.png", _png_bytes())
+            client = SlackClient(
+                SlackConfig("xoxb-test", "xapp-test", "D123", "U123"),
+                root / "channels" / "slack" / "intake",
+                web_client=web,
+                approved_artifact_roots=(root / "artifacts",),
+                binary_uploader=lambda url, data, mime: uploads.append((url, data, mime)),
+            )
+            intent = NotificationIntent(
+                idempotency_key="reply-with-avatar",
+                operation="send",
+                conversation_id="D123",
+                thread_id="1700.100",
+                text="Generated avatar",
+                attachments=(attachment,),
+            )
+
+            receipt = client.deliver_notification(intent)
+            repeated = client.deliver_notification(intent)
+
+        self.assertEqual(receipt.status, "delivered")
+        self.assertEqual(repeated.attachment_references, ("F001",))
+        self.assertEqual(len(uploads), 1)
+        self.assertEqual(uploads[0][1], _png_bytes())
+        self.assertEqual(uploads[0][2], "image/png")
+        complete = [call for call in web.calls if call[0] == "files.completeUploadExternal"]
+        self.assertEqual(len(complete), 1)
+        self.assertEqual(complete[0][1]["channel_id"], "D123")
+        self.assertEqual(complete[0][1]["thread_ts"], "1700.100")
+        self.assertEqual(complete[0][1]["initial_comment"], "Generated avatar")
+        self.assertEqual(complete[0][1]["files"], [{"id": "F001", "title": "avatar.png"}])
+
+    def test_external_upload_completes_multiple_files_together(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            web = _WebClient()
+            uploads = []
+            attachments = (
+                _artifact(root / "artifacts", "avatar.png", _png_bytes()),
+                _artifact(root / "artifacts", "notes.txt", b"safe notes"),
+            )
+            client = SlackClient(
+                SlackConfig("xoxb-test", "xapp-test", "D123", "U123"),
+                root / "state" / "intake",
+                web_client=web,
+                approved_artifact_roots=(root / "artifacts",),
+                binary_uploader=lambda url, data, mime: uploads.append((url, data, mime)),
+            )
+
+            receipt = client.deliver_notification(NotificationIntent(
+                idempotency_key="multiple-files",
+                operation="send",
+                conversation_id="D123",
+                text="two files",
+                attachments=attachments,
+            ))
+
+        self.assertEqual(receipt.attachment_references, ("F001", "F002"))
+        self.assertEqual(len(uploads), 2)
+        complete = [call for call in web.calls if call[0] == "files.completeUploadExternal"]
+        self.assertEqual(len(complete), 1)
+        self.assertEqual([value["title"] for value in complete[0][1]["files"]], ["avatar.png", "notes.txt"])
+
+    def test_missing_file_scope_preserves_text_with_actionable_fallback(self) -> None:
+        class MissingScopeWeb(_WebClient):
+            def files_getUploadURLExternal(self, **kwargs):
+                self.calls.append(("files.getUploadURLExternal", kwargs))
+                return {"ok": False, "error": "missing_scope", "needed": "files:write"}
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            web = MissingScopeWeb()
+            attachment = _artifact(root / "artifacts", "avatar.png", _png_bytes())
+            client = SlackClient(
+                SlackConfig("xoxb-test", "xapp-test", "D123", "U123"),
+                root / "state" / "intake",
+                web_client=web,
+                approved_artifact_roots=(root / "artifacts",),
+            )
+
+            receipt = client.deliver_notification(NotificationIntent(
+                idempotency_key="missing-scope",
+                operation="send",
+                conversation_id="D123",
+                text="reply body",
+                attachments=(attachment,),
+            ))
+
+        self.assertEqual(receipt.status, "delivered")
+        posts = [call for call in web.calls if call[0] == "chat.postMessage"]
+        self.assertEqual(len(posts), 1)
+        self.assertIn("reply body", posts[0][1]["markdown_text"])
+        self.assertIn("files:write", posts[0][1]["markdown_text"])
+
+    def test_binary_failure_retries_without_reusing_failed_upload_ticket(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            web = _WebClient()
+            attachment = _artifact(root / "artifacts", "avatar.png", _png_bytes())
+            attempts = []
+
+            def upload(url, data, mime):
+                attempts.append((url, data, mime))
+                if len(attempts) == 1:
+                    raise SlackError("temporary binary failure")
+
+            client = SlackClient(
+                SlackConfig("xoxb-test", "xapp-test", "D123", "U123"),
+                root / "state" / "intake",
+                web_client=web,
+                approved_artifact_roots=(root / "artifacts",),
+                binary_uploader=upload,
+            )
+            intent = NotificationIntent(
+                idempotency_key="binary-retry",
+                operation="send",
+                conversation_id="D123",
+                text="reply",
+                attachments=(attachment,),
+            )
+
+            with self.assertRaises(NotificationDeliveryError):
+                client.deliver_notification(intent)
+            receipt = client.deliver_notification(intent)
+
+        self.assertEqual(receipt.status, "delivered")
+        self.assertEqual(len(attempts), 2)
+        self.assertNotEqual(attempts[0][0], attempts[1][0])
+        self.assertEqual(len([c for c in web.calls if c[0] == "files.completeUploadExternal"]), 1)
+
+    def test_completion_timeout_reconciles_shared_file_without_second_complete(self) -> None:
+        class CompletedThenTimedOutWeb(_WebClient):
+            def __init__(self):
+                super().__init__()
+                self.failed_once = False
+
+            def files_completeUploadExternal(self, **kwargs):
+                self.calls.append(("files.completeUploadExternal", kwargs))
+                self.shared_files.update(value["id"] for value in kwargs["files"])
+                if not self.failed_once:
+                    self.failed_once = True
+                    raise TimeoutError("connection ended after response")
+                return {"ok": True, "files": kwargs["files"]}
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            web = CompletedThenTimedOutWeb()
+            attachment = _artifact(root / "artifacts", "avatar.png", _png_bytes())
+            client = SlackClient(
+                SlackConfig("xoxb-test", "xapp-test", "D123", "U123"),
+                root / "state" / "intake",
+                web_client=web,
+                approved_artifact_roots=(root / "artifacts",),
+                binary_uploader=lambda *_args: None,
+            )
+            intent = NotificationIntent(
+                idempotency_key="complete-timeout",
+                operation="send",
+                conversation_id="D123",
+                text="reply",
+                attachments=(attachment,),
+            )
+
+            with self.assertRaises(NotificationDeliveryError):
+                client.deliver_notification(intent)
+            receipt = client.deliver_notification(intent)
+
+        self.assertEqual(receipt.status, "delivered")
+        self.assertEqual(len([c for c in web.calls if c[0] == "files.completeUploadExternal"]), 1)
+        self.assertEqual(len([c for c in web.calls if c[0] == "files.info"]), 1)
+
+    def test_provider_rejects_unsafe_artifacts_and_preserves_text(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            artifacts = root / "artifacts"
+            outside = root / "outside.png"
+            outside.write_bytes(_png_bytes())
+            linked = artifacts / "outbound" / "linked.png"
+            linked.parent.mkdir(parents=True)
+            linked.symlink_to(outside)
+            digest = hashlib.sha256(_png_bytes()).hexdigest()
+            attachment = OutboundAttachment(
+                id="unsafe",
+                uri="artifact://outbound/linked.png",
+                filename="linked.png",
+                mime_type="image/png",
+                size=len(_png_bytes()),
+                sha256=digest,
+                kind="image",
+            )
+            web = _WebClient()
+            client = SlackClient(
+                SlackConfig("xoxb-test", "xapp-test", "D123", "U123"),
+                root / "state" / "intake",
+                web_client=web,
+                approved_artifact_roots=(artifacts,),
+            )
+
+            receipt = client.deliver_notification(NotificationIntent(
+                idempotency_key="unsafe-path",
+                operation="send",
+                conversation_id="D123",
+                text="safe body",
+                attachments=(attachment,),
+            ))
+
+        self.assertEqual(receipt.status, "delivered")
+        self.assertFalse(any(call[0].startswith("files.") for call in web.calls))
+        self.assertIn("safety checks", web.calls[0][1]["markdown_text"])
+
+    def test_provider_rejects_hardlinked_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            artifacts = root / "artifacts"
+            outside = root / "outside.txt"
+            outside.write_bytes(b"safe-looking secret")
+            linked = artifacts / "outbound" / "linked.txt"
+            linked.parent.mkdir(parents=True)
+            linked.hardlink_to(outside)
+            digest = hashlib.sha256(outside.read_bytes()).hexdigest()
+            attachment = OutboundAttachment(
+                id="hardlink",
+                uri="artifact://outbound/linked.txt",
+                filename="linked.txt",
+                mime_type="text/plain",
+                size=outside.stat().st_size,
+                sha256=digest,
+            )
+            web = _WebClient()
+            client = SlackClient(
+                SlackConfig("xoxb-test", "xapp-test", "D123", "U123"),
+                root / "state" / "intake",
+                web_client=web,
+                approved_artifact_roots=(artifacts,),
+            )
+
+            receipt = client.deliver_notification(NotificationIntent(
+                idempotency_key="hardlinked-path",
+                operation="send",
+                conversation_id="D123",
+                text="safe body",
+                attachments=(attachment,),
+            ))
+
+        self.assertEqual(receipt.provider_reference, "slack:text-fallback")
+        self.assertFalse(any(call[0].startswith("files.") for call in web.calls))
+
+    def test_attachment_destination_requires_conversation_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            attachment = _artifact(root / "artifacts", "avatar.png", _png_bytes())
+            web = _WebClient()
+            client = SlackClient(
+                SlackConfig("xoxb-test", "xapp-test"),
+                root / "state" / "intake",
+                web_client=web,
+                approved_artifact_roots=(root / "artifacts",),
+            )
+
+            receipt = client.deliver_notification(NotificationIntent(
+                idempotency_key="unlocked",
+                operation="send",
+                conversation_id="D123",
+                text="body",
+                attachments=(attachment,),
+            ))
+
+        self.assertEqual(receipt.provider_reference, "slack:text-fallback")
+        self.assertIn("conversation lock", web.calls[0][1]["markdown_text"])
+
+    def test_incoming_thread_and_gif_are_preserved(self) -> None:
+        event = slack_event(
+            "events_api",
+            {"type": "event_callback", "event": {
+                "type": "message",
+                "subtype": "file_share",
+                "channel": "D123",
+                "user": "U123",
+                "ts": "1700.2",
+                "thread_ts": "1700.1",
+                "text": "look",
+                "files": [{"id": "F123", "name": "loop.gif", "mimetype": "image/gif"}],
+            }},
+            cursor=1,
+        )
+
+        assert event is not None
+        self.assertEqual(event.thread_id, "1700.1")
+        self.assertEqual(event.attachments[0].kind, "image")
+
 
 class SlackIntegrationTests(unittest.TestCase):
     def test_loads_agent_specific_environment_and_config(self) -> None:
@@ -551,6 +876,44 @@ class SlackIntegrationTests(unittest.TestCase):
         self.assertIn('allowed_user_id: "U123"', saved)
         self.assertIn("- bot token: saved", status)
         self.assertIn("- app token: saved", status)
+
+
+def _artifact(root: Path, filename: str, content: bytes) -> OutboundAttachment:
+    digest = hashlib.sha256(content).hexdigest()
+    relative = Path("outbound") / digest[:2] / f"{digest}{Path(filename).suffix.lower()}"
+    path = root / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(content)
+    mime = "image/png" if filename.endswith(".png") else "text/plain"
+    return OutboundAttachment(
+        id=f"sha256:{digest}:{filename}",
+        uri=f"artifact://{relative.as_posix()}",
+        filename=filename,
+        mime_type=mime,
+        size=len(content),
+        sha256=digest,
+        kind="image" if mime.startswith("image/") else "file",
+    )
+
+
+def _png_bytes() -> bytes:
+    import struct
+    import zlib
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(data))
+            + kind
+            + data
+            + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+        )
+
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 6, 0, 0, 0))
+        + chunk(b"IDAT", zlib.compress(b"\x00\xff\xff\xff\xff"))
+        + chunk(b"IEND", b"")
+    )
 
 
 def _request(

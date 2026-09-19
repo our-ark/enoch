@@ -10,9 +10,14 @@ from our_ark_slack.core import SlackClient, SlackConfig, SlackError
 
 def create_provider(root: Path | None = None) -> SlackClient:
     context = agent_context(root)
-    private_state_path = context.module("paths").private_state_path
+    paths = context.module("paths")
+    private_state_path = paths.private_state_path
     state_dir = private_state_path(Path("channels") / "slack" / "intake", root)
-    return SlackClient(load_config(root), state_dir)
+    return SlackClient(
+        load_config(root),
+        state_dir,
+        approved_artifact_roots=(paths.storage_layout(root).artifacts,),
+    )
 
 
 def load_config(root: Path | None = None) -> SlackConfig:
@@ -48,6 +53,16 @@ def load_config(root: Path | None = None) -> SlackConfig:
         timeout = int(timeout_text)
     except ValueError as error:
         raise SlackError("Slack receive timeout must be a whole number.") from error
+    max_upload_text = _setting(
+        settings,
+        "max_upload_bytes",
+        f"{prefix}_SLACK_MAX_UPLOAD_BYTES",
+        "OUR_ARK_SLACK_MAX_UPLOAD_BYTES",
+    ) or str(20 * 1024 * 1024)
+    try:
+        max_upload_bytes = int(max_upload_text)
+    except ValueError as error:
+        raise SlackError("Slack max upload bytes must be a whole number.") from error
     try:
         return SlackConfig(
             bot_token=bot_token,
@@ -67,6 +82,7 @@ def load_config(root: Path | None = None) -> SlackConfig:
             )
             or None,
             receive_timeout=timeout,
+            max_upload_bytes=max_upload_bytes,
         )
     except ValueError as error:
         raise SlackError(str(error)) from error
@@ -147,6 +163,8 @@ def _setup_status(root: Path) -> str:
             + (settings.get("allowed_user_id", "").strip() or "not set"),
             "- receive timeout: "
             + (settings.get("receive_timeout", "").strip() or "30"),
+            "- max upload bytes: "
+            + (settings.get("max_upload_bytes", "").strip() or str(20 * 1024 * 1024)),
         ]
     )
 

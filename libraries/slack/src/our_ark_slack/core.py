@@ -5,15 +5,18 @@ from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
+from io import BytesIO
 import json
 import os
 from pathlib import Path
 import re
+import stat
 import threading
 from typing import Any, Callable
+import zipfile
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
-from uuid import uuid4
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from our_ark_provider_kit import (
     Attachment,
@@ -21,11 +24,17 @@ from our_ark_provider_kit import (
     ChatProviderError,
     ConversationId,
     MessageId,
+    NotificationCapabilities,
+    NotificationDeliveryError,
+    NotificationIntent,
+    NotificationReceipt,
+    OutboundAttachment,
     ProviderCapabilities,
 )
 
 
 MAX_SLACK_MARKDOWN = 12_000
+DEFAULT_MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 DEFAULT_COMMAND_PREFIX = "."
 SECONDARY_COMMAND_PREFIX = "!"
 READ_ACK_EMOJI = "eyes"
@@ -47,6 +56,7 @@ class SlackConfig:
     allowed_conversation_id: str | None = None
     allowed_user_id: str | None = None
     receive_timeout: int = 30
+    max_upload_bytes: int = DEFAULT_MAX_UPLOAD_BYTES
 
     def __post_init__(self) -> None:
         bot_token = self.bot_token.strip()
@@ -54,17 +64,21 @@ class SlackConfig:
         conversation = _optional_id(self.allowed_conversation_id)
         user = _optional_id(self.allowed_user_id)
         timeout = int(self.receive_timeout)
+        max_upload_bytes = int(self.max_upload_bytes)
         if not bot_token:
             raise ValueError("Slack bot token is required.")
         if not app_token:
             raise ValueError("Slack app token is required.")
         if timeout < 1:
             raise ValueError("Slack receive timeout must be at least 1 second.")
+        if max_upload_bytes < 1 or max_upload_bytes > 100 * 1024 * 1024:
+            raise ValueError("Slack max upload bytes must be between 1 and 104857600.")
         object.__setattr__(self, "bot_token", bot_token)
         object.__setattr__(self, "app_token", app_token)
         object.__setattr__(self, "allowed_conversation_id", conversation)
         object.__setattr__(self, "allowed_user_id", user)
         object.__setattr__(self, "receive_timeout", timeout)
+        object.__setattr__(self, "max_upload_bytes", max_upload_bytes)
 
 
 class SlackClient:
@@ -74,8 +88,16 @@ class SlackClient:
     capabilities = ProviderCapabilities(
         provider_kind="chat",
         capabilities=frozenset(
-            {"chat.receive", "chat.send", "chat.edit", "chat.ack", "chat.attachment"}
+            {
+                "chat.receive", "chat.send", "chat.edit", "chat.ack",
+                "chat.attachment", "chat.attach",
+            }
         ),
+    )
+    notification_capabilities = NotificationCapabilities(
+        idempotent_delivery=True,
+        reconciliation=True,
+        attachments=True,
     )
 
     def __init__(
@@ -85,11 +107,18 @@ class SlackClient:
         *,
         web_client: Any | None = None,
         socket_factory: Callable[[Any], Any] | None = None,
+        approved_artifact_roots: tuple[Path, ...] = (),
+        binary_uploader: Callable[[str, bytes, str], None] | None = None,
     ) -> None:
         self.config = config
         self.state_dir = state_dir
         self._web = web_client if web_client is not None else _create_web_client(config)
         self._socket_factory = socket_factory or self._create_socket_client
+        self._approved_artifact_roots = tuple(
+            Path(path).expanduser().resolve() for path in approved_artifact_roots
+        )
+        self._binary_uploader = binary_uploader or _upload_binary
+        self._outbound_state_dir = self.state_dir.parent / "outbound"
         self._socket: Any | None = None
         self._condition = threading.Condition(threading.RLock())
         self._listener_error = ""
@@ -134,6 +163,359 @@ class SlackClient:
             if first_message_id is None and message_id:
                 first_message_id = message_id
         return first_message_id
+
+    def deliver_notification(self, intent: NotificationIntent) -> NotificationReceipt:
+        if intent.operation == "edit":
+            assert intent.message_id is not None
+            self.edit_message(intent.conversation_id, intent.message_id, intent.text)
+            return NotificationReceipt(
+                idempotency_key=intent.idempotency_key,
+                status="delivered",
+                message_id=intent.message_id,
+            )
+        if not intent.attachments:
+            message_id = self._post_notification_text(intent)
+            return NotificationReceipt(
+                idempotency_key=intent.idempotency_key,
+                status="delivered",
+                message_id=message_id,
+            )
+        return self._deliver_attachments(intent)
+
+    def reconcile_notification(self, intent: NotificationIntent) -> NotificationReceipt:
+        if not intent.attachments:
+            return NotificationReceipt(
+                idempotency_key=intent.idempotency_key,
+                status="unknown",
+                detail="Slack text delivery cannot be reconciled without additional history scopes.",
+            )
+        state = self._load_outbound_state(intent)
+        if state.get("status") == "delivered":
+            return _state_receipt(intent, state)
+        file_ids = _state_file_ids(state)
+        if not file_ids:
+            return NotificationReceipt(idempotency_key=intent.idempotency_key, status="not_found")
+        try:
+            shared = [self._slack_file_shared(file_id, str(intent.conversation_id)) for file_id in file_ids]
+        except SlackError as error:
+            return NotificationReceipt(
+                idempotency_key=intent.idempotency_key,
+                status="unknown",
+                detail=str(error),
+            )
+        if all(shared):
+            state.update(
+                status="completing",
+                attachment_references=file_ids,
+                provider_reference=f"slack-files:{','.join(file_ids)}",
+            )
+            self._write_outbound_state(intent, state)
+            chunks = slack_message_chunks(intent.text) if intent.text else [""]
+            return self._finish_attachment_delivery(intent, state, chunks)
+        if not any(shared):
+            return NotificationReceipt(idempotency_key=intent.idempotency_key, status="not_found")
+        return NotificationReceipt(
+            idempotency_key=intent.idempotency_key,
+            status="unknown",
+            detail="Slack reported a partial attachment share; delivery was not repeated.",
+        )
+
+    def _post_notification_text(self, intent: NotificationIntent) -> MessageId | None:
+        first_message_id: str | None = None
+        for index, chunk in enumerate(slack_message_chunks(intent.text)):
+            kwargs: dict[str, Any] = {
+                "channel": str(intent.conversation_id),
+                "markdown_text": chunk,
+                "client_msg_id": str(uuid5(NAMESPACE_URL, f"{intent.idempotency_key}:{index}")),
+            }
+            if intent.thread_id is not None:
+                kwargs["thread_ts"] = str(intent.thread_id)
+            response = self._api_call("chat.postMessage", self._web.chat_postMessage, **kwargs)
+            message_id = _response_value(response, "ts")
+            if first_message_id is None and message_id:
+                first_message_id = str(message_id)
+        return first_message_id
+
+    def _deliver_attachments(self, intent: NotificationIntent) -> NotificationReceipt:
+        conversation = str(intent.conversation_id)
+        if not self.config.allowed_conversation_id:
+            return self._attachment_fallback(
+                intent,
+                "Attachment not sent because the Slack conversation lock is not configured.",
+            )
+        if conversation != self.config.allowed_conversation_id:
+            raise NotificationDeliveryError(
+                "Slack attachment destination is outside the governed conversation.",
+                retryable=False,
+            )
+        state = self._load_outbound_state(intent)
+        if state.get("status") == "delivered":
+            return _state_receipt(intent, state)
+        if state.get("status") == "completing":
+            reconciled = self.reconcile_notification(intent)
+            if reconciled.status == "delivered":
+                return reconciled
+            if reconciled.status == "unknown" and "partial" in reconciled.detail.lower():
+                return self._partial_attachment_fallback(intent, state)
+            if reconciled.status == "unknown":
+                raise NotificationDeliveryError(
+                    "Slack could not reconcile an interrupted attachment upload; "
+                    "ensure the app retains files:read.",
+                    retryable=True,
+                    ambiguous=True,
+                )
+        attempts = int(state.get("attempts") or 0) + 1
+        state["attempts"] = attempts
+        self._write_outbound_state(intent, state)
+        try:
+            payloads = [self._verified_artifact(value) for value in intent.attachments]
+            files_state = state.setdefault("files", {})
+            for attachment, data in zip(intent.attachments, payloads):
+                entry = files_state.setdefault(attachment.id, {})
+                if entry.get("stage") == "uploaded" and entry.get("file_id"):
+                    continue
+                response = self._api_call(
+                    "files.getUploadURLExternal",
+                    self._web.files_getUploadURLExternal,
+                    filename=attachment.filename,
+                    length=attachment.size,
+                    **({"alt_txt": attachment.filename} if attachment.kind == "image" else {}),
+                )
+                upload_url = str(_response_value(response, "upload_url") or "")
+                file_id = str(_response_value(response, "file_id") or "")
+                _check_upload_url(upload_url)
+                if not re.fullmatch(r"F[A-Z0-9]+", file_id):
+                    raise SlackError("Slack returned an invalid external upload file reference.")
+                entry.update(file_id=file_id, stage="url_allocated")
+                self._write_outbound_state(intent, state)
+                self._binary_uploader(upload_url, data, attachment.mime_type)
+                entry["stage"] = "uploaded"
+                self._write_outbound_state(intent, state)
+
+            file_payload = [
+                {"id": files_state[value.id]["file_id"], "title": value.filename}
+                for value in intent.attachments
+            ]
+            state["status"] = "completing"
+            self._write_outbound_state(intent, state)
+            chunks = slack_message_chunks(intent.text) if intent.text else [""]
+            kwargs: dict[str, Any] = {
+                "files": file_payload,
+                "channel_id": conversation,
+            }
+            if chunks[0]:
+                kwargs["initial_comment"] = chunks[0]
+            if intent.thread_id is not None:
+                kwargs["thread_ts"] = str(intent.thread_id)
+            response = self._api_call(
+                "files.completeUploadExternal",
+                self._web.files_completeUploadExternal,
+                **kwargs,
+            )
+            file_ids = tuple(value["id"] for value in file_payload)
+            state.update(
+                status="completing",
+                attachment_references=list(file_ids),
+                provider_reference=f"slack-files:{','.join(file_ids)}",
+            )
+            self._write_outbound_state(intent, state)
+            return self._finish_attachment_delivery(
+                intent,
+                state,
+                chunks,
+                message_id=_response_value(response, "ts") or None,
+            )
+        except SlackError as error:
+            message = str(error)
+            if state.get("attachment_references"):
+                if attempts >= 3:
+                    return self._partial_attachment_fallback(intent, state)
+                raise NotificationDeliveryError(
+                    "Slack shared the attachments but a trailing text chunk failed temporarily.",
+                    retryable=True,
+                    ambiguous=False,
+                ) from error
+            permission = "missing_scope" in message or "not_allowed_token_type" in message
+            if permission:
+                return self._attachment_fallback(
+                    intent,
+                    "Attachment not sent because the Slack app lacks files:write; add the scope and reinstall the app.",
+                )
+            if attempts >= 3 or _permanent_upload_error(message):
+                return self._attachment_fallback(
+                    intent,
+                    "Attachment upload failed after validation; the text reply was preserved.",
+                )
+            raise NotificationDeliveryError(
+                "Slack attachment upload failed temporarily.",
+                retryable=True,
+                ambiguous=False,
+            ) from error
+        except (OSError, ValueError) as error:
+            if attempts >= 3 or isinstance(error, ValueError):
+                return self._attachment_fallback(
+                    intent,
+                    "Attachment did not pass the Slack provider safety checks; the text reply was preserved.",
+                )
+            raise NotificationDeliveryError(
+                "Slack attachment upload failed temporarily.", retryable=True,
+            ) from error
+
+    def _finish_attachment_delivery(
+        self,
+        intent: NotificationIntent,
+        state: dict[str, Any],
+        chunks: list[str],
+        *,
+        message_id: MessageId | None = None,
+    ) -> NotificationReceipt:
+        sent = {
+            int(value)
+            for value in state.get("text_chunks_sent", ())
+            if isinstance(value, int) or (isinstance(value, str) and value.isdigit())
+        }
+        for index, chunk in enumerate(chunks[1:], 1):
+            if index in sent:
+                continue
+            trailing = NotificationIntent(
+                idempotency_key=f"{intent.idempotency_key}:text:{index}",
+                operation="send",
+                conversation_id=intent.conversation_id,
+                text=chunk,
+                thread_id=intent.thread_id,
+            )
+            self._post_notification_text(trailing)
+            sent.add(index)
+            state["text_chunks_sent"] = sorted(sent)
+            self._write_outbound_state(intent, state)
+        state["status"] = "delivered"
+        self._write_outbound_state(intent, state)
+        receipt = _state_receipt(intent, state)
+        return NotificationReceipt(
+            idempotency_key=receipt.idempotency_key,
+            status=receipt.status,
+            message_id=message_id,
+            provider_reference=receipt.provider_reference,
+            attachment_references=receipt.attachment_references,
+        )
+
+    def _partial_attachment_fallback(
+        self,
+        intent: NotificationIntent,
+        state: dict[str, Any],
+    ) -> NotificationReceipt:
+        file_ids = _state_file_ids(state)
+        fallback = NotificationIntent(
+            idempotency_key=f"{intent.idempotency_key}:partial",
+            operation="send",
+            conversation_id=intent.conversation_id,
+            text="[Some attachments could not be confirmed after an interrupted Slack upload.]",
+            thread_id=intent.thread_id,
+        )
+        self._post_notification_text(fallback)
+        state.update(
+            status="delivered",
+            attachment_references=list(file_ids),
+            provider_reference=f"slack-files-partial:{','.join(file_ids)}",
+        )
+        self._write_outbound_state(intent, state)
+        return _state_receipt(intent, state)
+
+    def _attachment_fallback(self, intent: NotificationIntent, note: str) -> NotificationReceipt:
+        fallback = NotificationIntent(
+            idempotency_key=f"{intent.idempotency_key}:fallback",
+            operation="send",
+            conversation_id=intent.conversation_id,
+            text="\n\n".join(value for value in (intent.text, f"[{note}]") if value),
+            thread_id=intent.thread_id,
+        )
+        message_id = self._post_notification_text(fallback)
+        state = self._load_outbound_state(intent)
+        state.update(status="delivered", provider_reference="slack:text-fallback")
+        self._write_outbound_state(intent, state)
+        return NotificationReceipt(
+            idempotency_key=intent.idempotency_key,
+            status="delivered",
+            message_id=message_id,
+            provider_reference="slack:text-fallback",
+            detail=note,
+        )
+
+    def _verified_artifact(self, attachment: OutboundAttachment) -> bytes:
+        relative = _artifact_relative(attachment.uri)
+        attachment_suffix = Path(attachment.filename).suffix.lower()
+        attachment_stem = Path(attachment.filename).stem.lower()
+        if attachment.filename.startswith(".") or attachment_suffix in {
+            ".key", ".pem", ".p12", ".pfx", ".kdb", ".keystore",
+        } or attachment_stem in {
+            "secret", "secrets", "credential", "credentials", "token", "tokens",
+        }:
+            raise ValueError("Slack attachment filename is sensitive.")
+        for root in self._approved_artifact_roots:
+            candidate = root / relative
+            try:
+                resolved = candidate.resolve(strict=True)
+            except OSError:
+                continue
+            if root not in resolved.parents:
+                continue
+            if any((root.joinpath(*relative.parts[:index])).is_symlink() for index in range(1, len(relative.parts) + 1)):
+                raise ValueError("Slack attachment path contains a symbolic link.")
+            info = resolved.stat()
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or info.st_nlink != 1
+                or info.st_size != attachment.size
+            ):
+                raise ValueError("Slack attachment size or file type changed before upload.")
+            if info.st_size > self.config.max_upload_bytes:
+                raise ValueError("Slack attachment exceeds the configured upload limit.")
+            data = _read_verified_file(resolved, self.config.max_upload_bytes)
+            if hashlib.sha256(data).hexdigest() != attachment.sha256:
+                raise ValueError("Slack attachment digest changed before upload.")
+            if attachment_suffix != resolved.suffix.lower():
+                raise ValueError("Slack attachment extension does not match its artifact.")
+            if _detected_mime(attachment_suffix, data) != attachment.mime_type:
+                raise ValueError("Slack attachment MIME type does not match its content.")
+            if _looks_sensitive_content(data):
+                raise ValueError("Slack attachment content is sensitive.")
+            return data
+        raise ValueError("Slack attachment is outside approved artifact roots.")
+
+    def _load_outbound_state(self, intent: NotificationIntent) -> dict[str, Any]:
+        path = self._outbound_state_path(intent.idempotency_key)
+        fingerprint = _intent_fingerprint(intent)
+        if not path.is_file():
+            return {"schema_version": 1, "fingerprint": fingerprint, "status": "pending", "attempts": 0, "files": {}}
+        try:
+            state = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            raise SlackError("Slack outbound delivery state is unreadable.") from error
+        if not isinstance(state, dict) or state.get("fingerprint") != fingerprint:
+            raise SlackError("Slack outbound idempotency key was reused for another intent.")
+        return state
+
+    def _write_outbound_state(self, intent: NotificationIntent, state: dict[str, Any]) -> None:
+        state["schema_version"] = 1
+        state["fingerprint"] = _intent_fingerprint(intent)
+        _atomic_json(self._outbound_state_path(intent.idempotency_key), state)
+
+    def _outbound_state_path(self, key: str) -> Path:
+        digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
+        return self._outbound_state_dir / f"delivery-{digest}.json"
+
+    def _slack_file_shared(self, file_id: str, conversation: str) -> bool:
+        response = self._api_call("files.info", self._web.files_info, file=file_id)
+        info = _response_value(response, "file", {})
+        if not isinstance(info, dict):
+            return False
+        shares = info.get("shares")
+        if not isinstance(shares, dict):
+            return False
+        for visibility in shares.values():
+            if isinstance(visibility, dict) and conversation in visibility:
+                return True
+        return False
 
     def edit_message(
         self,
@@ -363,6 +745,9 @@ class SlackClient:
             ) from error
         if not bool(_response_value(response, "ok", True)):
             detail = _response_value(response, "error") or "unknown Slack error"
+            needed = _response_value(response, "needed")
+            if needed:
+                detail = f"{detail} (needed: {needed})"
             raise SlackError(f"Slack API call {operation} failed: {detail}")
         return response
 
@@ -414,6 +799,7 @@ def slack_event(
         return None
     text = _translate_secondary_command(text)
     message_id = _optional_id(native.get("ts"))
+    thread_id = _optional_id(native.get("thread_ts"))
     return ChatEvent(
         cursor=cursor,
         conversation_id=conversation,
@@ -421,6 +807,7 @@ def slack_event(
         text=text,
         raw=deepcopy(payload),
         attachments=attachments,
+        thread_id=thread_id,
     )
 
 
@@ -443,7 +830,7 @@ def _file_attachments(files: object) -> tuple[Attachment, ...]:
             continue
         mime = str(info.get("mimetype") or "").lower()
         result.append(Attachment(
-            kind="image" if mime in {"image/jpeg", "image/png", "image/webp"} else "document",
+            kind="image" if mime in {"image/jpeg", "image/png", "image/webp", "image/gif"} else "document",
             file_id=file_id, mime_type=mime,
             filename=str(info.get("name") or info.get("title") or file_id),
             size=_file_size(info.get("size")),
@@ -460,6 +847,41 @@ def _check_download_url(url: str) -> None:
         valid = False
     if not valid:
         raise SlackError("Slack returned an unsupported file download location.")
+
+
+def _check_upload_url(url: str) -> None:
+    try:
+        parsed = urlsplit(url)
+        valid = (
+            parsed.scheme == "https"
+            and parsed.hostname == "files.slack.com"
+            and not parsed.username
+            and not parsed.password
+            and parsed.port in (None, 443)
+        )
+    except ValueError:
+        valid = False
+    if not valid:
+        raise SlackError("Slack returned an unsupported external upload location.")
+
+
+def _upload_binary(url: str, data: bytes, mime_type: str) -> None:
+    _check_upload_url(url)
+    request = Request(
+        url,
+        data=data,
+        headers={"Content-Type": mime_type, "Content-Length": str(len(data))},
+        method="POST",
+    )
+    try:
+        with build_opener(_SlackRedirectHandler()).open(request, timeout=30) as response:
+            _check_upload_url(response.geturl())
+            if int(getattr(response, "status", 200)) not in {200, 201, 204}:
+                raise SlackError("Slack external binary upload returned an unsuccessful status.")
+    except SlackError:
+        raise
+    except Exception as error:
+        raise SlackError("Slack external binary upload failed.") from error
 
 
 class _SlackRedirectHandler(HTTPRedirectHandler):
@@ -615,7 +1037,166 @@ def _response_value(response: Any, key: str, default: Any = "") -> Any:
 def _error_detail(error: BaseException) -> str:
     response = getattr(error, "response", None)
     detail = _response_value(response, "error") if response is not None else ""
+    needed = _response_value(response, "needed") if response is not None else ""
+    if detail and needed:
+        detail = f"{detail} (needed: {needed})"
     return str(detail or error or type(error).__name__)
+
+
+def _artifact_relative(uri: str) -> Path:
+    if not uri.startswith("artifact://"):
+        raise ValueError("Slack attachments must use artifact URIs.")
+    value = uri.removeprefix("artifact://")
+    parts = tuple(part for part in value.split("/") if part)
+    if not parts or value.startswith("/") or any(part in {".", ".."} or part.startswith(".") for part in parts):
+        raise ValueError("Slack attachment artifact URI is invalid.")
+    return Path(*parts)
+
+
+def _read_verified_file(path: Path, max_bytes: int) -> bytes:
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        info = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_nlink != 1
+            or info.st_size < 1
+            or info.st_size > max_bytes
+        ):
+            raise ValueError("Slack attachment size or file type is invalid.")
+        with os.fdopen(descriptor, "rb", closefd=False) as stream:
+            data = stream.read(max_bytes + 1)
+        if len(data) != info.st_size or len(data) > max_bytes:
+            raise ValueError("Slack attachment changed while it was being validated.")
+        return data
+    finally:
+        os.close(descriptor)
+
+
+def _looks_sensitive_content(data: bytes) -> bool:
+    sample = data[:262_144]
+    return any(
+        marker in sample
+        for marker in (
+            b"-----BEGIN PRIVATE KEY-----",
+            b"-----BEGIN RSA PRIVATE KEY-----",
+            b"-----BEGIN EC PRIVATE KEY-----",
+            b"-----BEGIN OPENSSH PRIVATE KEY-----",
+            b"xoxb-",
+            b"xapp-",
+            b"ghp_",
+        )
+    )
+
+
+def _detected_mime(suffix: str, data: bytes) -> str:
+    if (
+        suffix == ".png"
+        and data.startswith(b"\x89PNG\r\n\x1a\n")
+        and data.endswith(b"IEND\xaeB`\x82")
+    ):
+        return "image/png"
+    if suffix in {".jpg", ".jpeg"} and data.startswith(b"\xff\xd8\xff") and data.endswith(b"\xff\xd9"):
+        return "image/jpeg"
+    if suffix == ".webp" and len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    if suffix == ".gif" and data.startswith((b"GIF87a", b"GIF89a")) and data.endswith(b";"):
+        return "image/gif"
+    if suffix == ".pdf" and data.startswith(b"%PDF-") and b"%%EOF" in data[-1024:]:
+        return "application/pdf"
+    office = {
+        ".docx": ("word/", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+        ".xlsx": ("xl/", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+        ".pptx": ("ppt/", "application/vnd.openxmlformats-officedocument.presentationml.presentation"),
+    }
+    if suffix in office:
+        marker, mime = office[suffix]
+        try:
+            with zipfile.ZipFile(BytesIO(data)) as archive:
+                names = archive.namelist()
+                if "[Content_Types].xml" in names and any(name.startswith(marker) for name in names):
+                    return mime
+        except (OSError, zipfile.BadZipFile):
+            pass
+        return ""
+    text_types = {
+        ".txt": "text/plain",
+        ".md": "text/markdown",
+        ".csv": "text/csv",
+        ".json": "application/json",
+        ".yaml": "application/yaml",
+        ".yml": "application/yaml",
+    }
+    if suffix in text_types and b"\x00" not in data:
+        try:
+            data.decode("utf-8")
+        except UnicodeDecodeError:
+            return ""
+        if suffix == ".json":
+            try:
+                json.loads(data)
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                return ""
+        return text_types[suffix]
+    return ""
+
+
+def _intent_fingerprint(intent: NotificationIntent) -> str:
+    payload = {
+        "operation": intent.operation,
+        "conversation_id": intent.conversation_id,
+        "thread_id": intent.thread_id,
+        "text": intent.text,
+        "attachments": [
+            {
+                "id": value.id,
+                "uri": value.uri,
+                "filename": value.filename,
+                "mime_type": value.mime_type,
+                "size": value.size,
+                "sha256": value.sha256,
+            }
+            for value in intent.attachments
+        ],
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _state_file_ids(state: dict[str, Any]) -> tuple[str, ...]:
+    files = state.get("files")
+    if not isinstance(files, dict):
+        return ()
+    return tuple(
+        str(value.get("file_id"))
+        for value in files.values()
+        if isinstance(value, dict) and re.fullmatch(r"F[A-Z0-9]+", str(value.get("file_id") or ""))
+    )
+
+
+def _state_receipt(intent: NotificationIntent, state: dict[str, Any]) -> NotificationReceipt:
+    references = tuple(str(value) for value in state.get("attachment_references", ()) if str(value))
+    return NotificationReceipt(
+        idempotency_key=intent.idempotency_key,
+        status="delivered",
+        provider_reference=str(state.get("provider_reference") or "slack-files:" + ",".join(references)),
+        attachment_references=references,
+    )
+
+
+def _permanent_upload_error(message: str) -> bool:
+    lowered = message.lower()
+    return any(
+        marker in lowered
+        for marker in (
+            "invalid_arguments",
+            "invalid_auth",
+            "account_inactive",
+            "file_uploads_disabled",
+            "unsupported external upload location",
+            "invalid external upload file reference",
+        )
+    )
 
 
 def _create_web_client(config: SlackConfig) -> Any:

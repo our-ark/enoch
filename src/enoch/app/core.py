@@ -231,6 +231,7 @@ from enoch.prompt_append import (
     startup_context_note,
 )
 from enoch.private_state import assert_private_state_supported
+from enoch.outbound import capture_runtime_attachments
 from enoch.providers.contracts import (
     AgentRuntime,
     AgentRuntimeAccessUnavailable,
@@ -248,6 +249,7 @@ from enoch.providers.contracts import (
     ForgeProvider,
     ForgeProviderError,
     MessageId,
+    OutboundAttachment,
     RepositoryProvider,
     RepositoryProviderError,
     ReviewIdentity,
@@ -447,6 +449,15 @@ TASK_CONTEXT_SOURCE_CHAT = "chat-snapshot"
 NEEDS_CLARIFICATION_PREFIX = "NEEDS_CLARIFICATION:"
 NO_EXTRA_TASK_CONTEXT = "No extra context needed."
 _CURRENT_EVENT_KEY: ContextVar[str] = ContextVar("enoch_event_key", default="")
+_CURRENT_OUTPUT_ATTACHMENTS: ContextVar[tuple[OutboundAttachment, ...]] = ContextVar(
+    "enoch_output_attachments", default=()
+)
+_CURRENT_OUTPUT_REJECTIONS: ContextVar[int] = ContextVar(
+    "enoch_output_rejections", default=0
+)
+_CURRENT_THREAD_ID: ContextVar[MessageId | None] = ContextVar(
+    "enoch_thread_id", default=None
+)
 
 
 def _load_provider_cursor(name: str, root: Path | None = None) -> Cursor | None:
@@ -810,6 +821,9 @@ class EnochApplication:
             return
 
         event_token = _CURRENT_EVENT_KEY.set(receipt.key)
+        thread_token = _CURRENT_THREAD_ID.set(event.thread_id)
+        attachment_token = _CURRENT_OUTPUT_ATTACHMENTS.set(())
+        rejection_token = _CURRENT_OUTPUT_REJECTIONS.set(0)
         try:
             if peer_alias is None:
                 reply, logged_input = self._dispatch_chat_event(event)
@@ -821,6 +835,7 @@ class EnochApplication:
                 self.root,
                 reply=reply,
                 logged_input=logged_input,
+                attachments=_CURRENT_OUTPUT_ATTACHMENTS.get(),
             )
         except StaleDaemonEpoch:
             raise
@@ -851,7 +866,10 @@ class EnochApplication:
                 ),
             )
         finally:
+            _CURRENT_OUTPUT_REJECTIONS.reset(rejection_token)
+            _CURRENT_OUTPUT_ATTACHMENTS.reset(attachment_token)
             _CURRENT_EVENT_KEY.reset(event_token)
+            _CURRENT_THREAD_ID.reset(thread_token)
         self._finish_chat_event(event, receipt)
 
     def _dispatch_chat_event(self, event: ChatEvent) -> tuple[str, str]:
@@ -955,8 +973,10 @@ class EnochApplication:
                     event.conversation_id,
                     receipt.reply,
                     notification_key=f"inbox:{receipt.key}:reply",
+                    thread_id=event.thread_id,
+                    attachments=receipt.attachments,
                 )
-                if receipt.reply
+                if receipt.reply or receipt.attachments
                 else NotificationResult(delivered=True)
             )
             if not delivery.delivered:
@@ -1205,6 +1225,7 @@ class EnochApplication:
             return self.workflow.enqueue(
                 event.conversation_id,
                 request,
+                thread_id=event.thread_id,
                 context=context,
                 context_source=f"profile:{self.profile.name}" if context else "",
                 source="task",
@@ -1626,7 +1647,19 @@ class EnochApplication:
         )
         if needs_context:
             self._contextualized_sessions.add(session_key)
+        self._capture_runtime_output(result)
         return result
+
+    def _capture_runtime_output(self, result) -> None:
+        capture = capture_runtime_attachments(result, self.root)
+        if capture.attachments:
+            existing = _CURRENT_OUTPUT_ATTACHMENTS.get()
+            merged = {value.id: value for value in (*existing, *capture.attachments)}
+            _CURRENT_OUTPUT_ATTACHMENTS.set(tuple(merged.values()))
+        if capture.rejected:
+            _CURRENT_OUTPUT_REJECTIONS.set(
+                _CURRENT_OUTPUT_REJECTIONS.get() + capture.rejected
+            )
 
     def _respond_read_only_turn(
         self,
@@ -1806,7 +1839,14 @@ class EnochApplication:
         if edit_request is not None:
             reply = edit_request.visible_reply
         memory_note = self._save_memory_requests(memory_result.requests)
-        return "\n\n".join(part for part in [reply, memory_note] if part)
+        attachment_note = ""
+        rejected = _CURRENT_OUTPUT_REJECTIONS.get()
+        if rejected:
+            attachment_note = (
+                f"[Attachment not sent: {rejected} runtime file reference"
+                f"{'s' if rejected != 1 else ''} failed the outbound safety checks.]"
+            )
+        return "\n\n".join(part for part in [reply, memory_note, attachment_note] if part)
 
     def _execute_conversation_action(
         self, event: ChatEvent, action: ConversationAction, index: int,
@@ -1929,6 +1969,7 @@ class EnochApplication:
                 chat_id,
                 request,
                 mode="direct",
+                thread_id=_CURRENT_THREAD_ID.get(),
                 context=context,
                 context_source=context_source,
                 idempotency_key=_event_idempotency_key("direct"),
@@ -1963,6 +2004,7 @@ class EnochApplication:
             chat_id,
             self._format_work_status(status_message),
             notification_key=f"task:{direct_task.id}:status",
+            thread_id=direct_task.thread_id,
         )
         if message_id is not None:
             self._work_status_messages[direct_task.id] = message_id
@@ -2164,6 +2206,7 @@ class EnochApplication:
                 chat_id,
                 request,
                 mode="front",
+                thread_id=_CURRENT_THREAD_ID.get(),
                 context=context,
                 context_source=context_source,
                 idempotency_key=_event_idempotency_key("direct-next"),
@@ -2187,6 +2230,7 @@ class EnochApplication:
             chat_id,
             message,
             notification_key=f"task:{job.id}:status",
+            thread_id=job.thread_id,
         )
         if message_id is not None:
             self._work_status_messages[job.id] = message_id
@@ -2479,19 +2523,25 @@ class EnochApplication:
         message: str,
         *,
         notification_key: str = "",
+        thread_id: MessageId | None = None,
+        attachments: tuple[OutboundAttachment, ...] = (),
     ) -> NotificationResult:
         key = notification_key or self._notification_key(
             "send",
             chat_id,
             message,
+            thread_id=thread_id,
+            attachments=attachments,
         )
         try:
             return self.notifications.send(
                 chat_id,
                 message,
                 idempotency_key=key,
+                thread_id=thread_id,
+                attachments=attachments,
             )
-        except (OSError, ChatProviderError, CapabilityAuthorizationError) as error:
+        except (OSError, ValueError, ChatProviderError, CapabilityAuthorizationError) as error:
             return NotificationResult(
                 delivered=False,
                 error=str(error),
@@ -2503,11 +2553,15 @@ class EnochApplication:
         message: str,
         *,
         notification_key: str = "",
+        thread_id: MessageId | None = None,
+        attachments: tuple[OutboundAttachment, ...] = (),
     ) -> str:
         result = self._deliver_message(
             chat_id,
             message,
             notification_key=notification_key,
+            thread_id=thread_id,
+            attachments=attachments,
         )
         return "" if result.delivered else result.error
 
@@ -2517,11 +2571,13 @@ class EnochApplication:
         message: str,
         *,
         notification_key: str = "",
+        thread_id: MessageId | None = None,
     ) -> MessageId | None:
         result = self._deliver_message(
             chat_id,
             message,
             notification_key=notification_key,
+            thread_id=thread_id,
         )
         return result.message_id if result.delivered else None
 
@@ -2556,6 +2612,8 @@ class EnochApplication:
         message: str,
         *,
         message_id: MessageId | None = None,
+        thread_id: MessageId | None = None,
+        attachments: tuple[OutboundAttachment, ...] = (),
     ) -> str:
         event_key = _CURRENT_EVENT_KEY.get()
         task_id = _CURRENT_TASK_ID.get()
@@ -2570,7 +2628,9 @@ class EnochApplication:
                 "operation": operation,
                 "chat_id": chat_id,
                 "message_id": message_id,
+                "thread_id": thread_id,
                 "message": message,
+                "attachments": [value.id for value in attachments],
             },
             sort_keys=True,
             default=str,
@@ -2825,6 +2885,7 @@ class EnochApplication:
             job = self.workflow.enqueue(
                 chat_id,
                 argument,
+                thread_id=_CURRENT_THREAD_ID.get(),
                 context=snapshot.context,
                 context_source=snapshot.source,
                 idempotency_key=_event_idempotency_key("task"),
@@ -2850,6 +2911,7 @@ class EnochApplication:
             chat_id,
             message,
             notification_key=f"task:{job.id}:status",
+            thread_id=job.thread_id,
         )
         if message_id is not None:
             self._work_status_messages[job.id] = message_id
@@ -2896,6 +2958,7 @@ class EnochApplication:
             job.chat_id,
             message,
             notification_key=f"task:{job.id}:status",
+            thread_id=job.thread_id,
         )
         if message_id is not None:
             self._work_status_messages[job.id] = message_id
@@ -2917,6 +2980,7 @@ class EnochApplication:
                 chat_id,
                 request,
                 mode="front" if source == "chat-task" else "queued",
+                thread_id=_CURRENT_THREAD_ID.get(),
                 source=source,
                 initiated_by="human",
                 event_actor="human",
@@ -2956,6 +3020,7 @@ class EnochApplication:
                 )
             ),
             notification_key=f"task:{job.id}:status",
+            thread_id=job.thread_id,
         )
         if message_id is not None:
             self._work_status_messages[job.id] = message_id
@@ -3951,6 +4016,7 @@ class EnochApplication:
             item.chat_id,
             message,
             notification_key=f"task:{job.id}:status",
+            thread_id=job.thread_id,
         )
         if message_id is not None:
             self._work_status_messages[job.id] = message_id
@@ -4015,6 +4081,7 @@ class EnochApplication:
                 cron.chat_id,
                 message,
                 notification_key=f"task:{job.id}:status",
+                thread_id=job.thread_id,
             )
             if message_id is not None:
                 self._work_status_messages[job.id] = message_id
@@ -4270,6 +4337,8 @@ class EnochApplication:
         start_update: str,
         failure_prefix: str,
     ) -> None:
+        _CURRENT_OUTPUT_ATTACHMENTS.set(())
+        _CURRENT_OUTPUT_REJECTIONS.set(0)
         worker_id = f"{os.getpid()}-{uuid4().hex}"
         claimed = self.workflow.claim(job.id, worker_id, os.getpid())
         if claimed is None:
@@ -4293,6 +4362,7 @@ class EnochApplication:
                 job.chat_id,
                 self._format_work_status(status_message),
                 notification_key=f"task:{job.id}:status",
+                thread_id=job.thread_id,
             )
             if message_id is not None:
                 created_status_message = True
@@ -4522,11 +4592,23 @@ class EnochApplication:
                 _CURRENT_WORK_STATUS.reset(final_token)
             if completed_status != "paused":
                 self._work_status_messages.pop(job.id, None)
+        final_message = self._format_task_final(summary_job, completed_status, reply)
+        rejected_attachments = _CURRENT_OUTPUT_REJECTIONS.get()
+        if rejected_attachments:
+            final_message += (
+                "\n\n[Attachment not sent: "
+                f"{rejected_attachments} runtime file reference"
+                f"{'s' if rejected_attachments != 1 else ''} failed the outbound safety checks.]"
+            )
         self._safe_send_message(
             job.chat_id,
-            self._format_task_final(summary_job, completed_status, reply),
+            final_message,
             notification_key=f"task:{job.id}:final",
+            thread_id=job.thread_id,
+            attachments=_CURRENT_OUTPUT_ATTACHMENTS.get(),
         )
+        _CURRENT_OUTPUT_ATTACHMENTS.set(())
+        _CURRENT_OUTPUT_REJECTIONS.set(0)
         self._record_turn(job.chat_id, f"{command} {job.text}", reply)
         if command == "/do":
             self._maybe_start_task_worker()
