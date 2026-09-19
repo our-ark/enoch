@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import threading
 import time
 from typing import Any, Callable, Protocol, Sequence, runtime_checkable
@@ -14,7 +14,7 @@ ProgressCallback = Callable[[int, str], None]
 CAPABILITY_CONTRACT_VERSION = 1
 RUNTIME_CONTRACT_VERSION = 1
 RUNTIME_EXECUTION_CONTRACT_VERSION = 1
-NOTIFICATION_CONTRACT_VERSION = 1
+NOTIFICATION_CONTRACT_VERSION = 2
 REPOSITORY_CONTRACT_VERSION = 1
 REVIEW_CONTRACT_VERSION = 1
 
@@ -233,6 +233,64 @@ class Attachment:
 
 
 @dataclass(frozen=True)
+class OutboundAttachment:
+    """A verified local artifact offered to a chat provider for delivery."""
+
+    id: str
+    uri: str
+    filename: str
+    mime_type: str
+    size: int
+    sha256: str
+    kind: str = "file"
+
+    def __post_init__(self) -> None:
+        attachment_id = str(self.id).strip()
+        uri = str(self.uri).strip()
+        raw_filename = str(self.filename).strip()
+        filename = Path(raw_filename).name
+        mime_type = str(self.mime_type).strip().lower()
+        digest = str(self.sha256).strip().lower()
+        kind = str(self.kind).strip().lower() or "file"
+        size = int(self.size)
+        if not attachment_id or len(attachment_id) > 160:
+            raise ValueError("Outbound attachment id is required and must be bounded.")
+        artifact_value = uri.removeprefix("artifact://")
+        artifact_path = PurePosixPath(artifact_value)
+        if (
+            not uri.startswith("artifact://")
+            or not artifact_path.parts
+            or artifact_path.is_absolute()
+            or artifact_value != artifact_path.as_posix()
+            or any(part in {".", ".."} or part.startswith(".") for part in artifact_path.parts)
+        ):
+            raise ValueError("Outbound attachments must use an artifact URI.")
+        if (
+            not filename
+            or filename in {".", ".."}
+            or filename != raw_filename
+            or "/" in raw_filename
+            or "\\" in raw_filename
+        ):
+            raise ValueError("Outbound attachment filename is required.")
+        if not mime_type or "/" not in mime_type:
+            raise ValueError("Outbound attachment MIME type is required.")
+        if size < 1:
+            raise ValueError("Outbound attachment size must be positive.")
+        if len(digest) != 64 or any(character not in "0123456789abcdef" for character in digest):
+            raise ValueError("Outbound attachment SHA-256 is invalid.")
+        if kind not in {"image", "file"}:
+            raise ValueError("Outbound attachment kind must be image or file.")
+        object.__setattr__(self, "id", attachment_id)
+        object.__setattr__(self, "uri", uri)
+        object.__setattr__(self, "filename", filename)
+        object.__setattr__(self, "mime_type", mime_type)
+        object.__setattr__(self, "size", size)
+        object.__setattr__(self, "sha256", digest)
+        object.__setattr__(self, "kind", kind)
+
+
+@dataclass(frozen=True)
 class ChatEvent:
     cursor: Cursor
     conversation_id: ConversationId
@@ -241,12 +299,14 @@ class ChatEvent:
     replied_text: str = ""
     raw: dict[str, Any] = field(default_factory=dict)
     attachments: tuple[Attachment, ...] = ()
+    thread_id: MessageId | None = None
 
 
 @dataclass(frozen=True)
 class NotificationCapabilities:
     idempotent_delivery: bool = False
     reconciliation: bool = False
+    attachments: bool = False
     contract_version: int = NOTIFICATION_CONTRACT_VERSION
 
     def __post_init__(self) -> None:
@@ -264,6 +324,8 @@ class NotificationIntent:
     conversation_id: ConversationId
     text: str
     message_id: MessageId | None = None
+    thread_id: MessageId | None = None
+    attachments: tuple[OutboundAttachment, ...] = ()
     daemon_epoch: str = ""
     contract_version: int = NOTIFICATION_CONTRACT_VERSION
 
@@ -281,9 +343,18 @@ class NotificationIntent:
             raise ValueError("Notification operation must be send or edit.")
         if operation == "edit" and normalize_message_id(self.message_id) is None:
             raise ValueError("Edit notifications require a message id.")
+        if operation == "edit" and self.attachments:
+            raise ValueError("Edit notifications cannot add attachments.")
+        attachments = tuple(self.attachments)
+        if len(attachments) > 16 or not all(
+            isinstance(value, OutboundAttachment) for value in attachments
+        ):
+            raise ValueError("Notification attachments must be verified and bounded.")
         object.__setattr__(self, "idempotency_key", key)
         object.__setattr__(self, "operation", operation)
         object.__setattr__(self, "text", str(self.text))
+        object.__setattr__(self, "thread_id", normalize_message_id(self.thread_id))
+        object.__setattr__(self, "attachments", attachments)
         object.__setattr__(self, "daemon_epoch", self.daemon_epoch.strip())
 
 
@@ -293,6 +364,7 @@ class NotificationReceipt:
     status: str
     message_id: MessageId | None = None
     provider_reference: str = ""
+    attachment_references: tuple[str, ...] = ()
     detail: str = ""
     contract_version: int = NOTIFICATION_CONTRACT_VERSION
 
@@ -313,6 +385,11 @@ class NotificationReceipt:
         object.__setattr__(self, "idempotency_key", key)
         object.__setattr__(self, "status", status)
         object.__setattr__(self, "provider_reference", self.provider_reference.strip())
+        object.__setattr__(
+            self,
+            "attachment_references",
+            tuple(str(value).strip() for value in self.attachment_references if str(value).strip()),
+        )
         object.__setattr__(self, "detail", self.detail.strip())
 
 
