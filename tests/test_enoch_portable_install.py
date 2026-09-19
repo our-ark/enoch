@@ -78,7 +78,7 @@ class EnochPortableInstallTests(unittest.TestCase):
         project = _project_metadata(ROOT / "pyproject.toml")["project"]
         manifest = _project_metadata(ROOT / "genesis.toml")
         dependencies = {item["name"]: item for item in manifest["runtime_dependencies"]}
-        for name in ("launchd", "systemd"):
+        for name in ("claude", "github", "launchd", "slack", "systemd", "telegram"):
             with self.subTest(provider=name):
                 reference = _dependency(
                     project["optional-dependencies"]["reference"], f"our-ark-{name}"

@@ -30,7 +30,7 @@ local_source = "libraries/provider-kit/src"
 
 [[runtime_dependencies]]
 name = "telegram"
-requirement = "our-ark-telegram @ git+https://github.com/our-ark/enoch.git@13c7b266f70c8c5c3b1ba3907130000e6e23966f#subdirectory=libraries/telegram"
+requirement = "our-ark-telegram @ git+https://github.com/our-ark/enoch.git@566b985f02923f97f96a614dd64b856e6aaa5897#subdirectory=libraries/telegram"
 import_name = "our_ark_telegram"
 local_source = "libraries/telegram/src"
 optional = true
@@ -44,7 +44,7 @@ optional = true
 
 [[runtime_dependencies]]
 name = "claude"
-requirement = "our-ark-claude @ git+https://github.com/our-ark/enoch.git@ca0fb6ef1ea764d48e0efcb54ed8917ee3dd8989#subdirectory=libraries/claude"
+requirement = "our-ark-claude @ git+https://github.com/our-ark/enoch.git@566b985f02923f97f96a614dd64b856e6aaa5897#subdirectory=libraries/claude"
 import_name = "our_ark_claude"
 local_source = "libraries/claude/src"
 optional = true
@@ -63,21 +63,21 @@ when_provider = "chat.slack"
 
 [[runtime_dependencies]]
 name = "github"
-requirement = "our-ark-github @ git+https://github.com/our-ark/enoch.git@54e6f5525380cf0f3b1275992b9d73bd2f44774e#subdirectory=libraries/github"
+requirement = "our-ark-github @ git+https://github.com/our-ark/enoch.git@566b985f02923f97f96a614dd64b856e6aaa5897#subdirectory=libraries/github"
 import_name = "our_ark_github"
 local_source = "libraries/github/src"
 optional = true
 
 [[runtime_dependencies]]
 name = "launchd"
-requirement = "our-ark-launchd @ git+https://github.com/our-ark/enoch.git@163319eb1eb6151caa54d4c1311249efcce9af46#subdirectory=libraries/launchd"
+requirement = "our-ark-launchd @ git+https://github.com/our-ark/enoch.git@566b985f02923f97f96a614dd64b856e6aaa5897#subdirectory=libraries/launchd"
 import_name = "our_ark_launchd"
 local_source = "libraries/launchd/src"
 optional = true
 
 [[runtime_dependencies]]
 name = "systemd"
-requirement = "our-ark-systemd @ git+https://github.com/our-ark/enoch.git@163319eb1eb6151caa54d4c1311249efcce9af46#subdirectory=libraries/systemd"
+requirement = "our-ark-systemd @ git+https://github.com/our-ark/enoch.git@566b985f02923f97f96a614dd64b856e6aaa5897#subdirectory=libraries/systemd"
 import_name = "our_ark_systemd"
 local_source = "libraries/systemd/src"
 optional = true
