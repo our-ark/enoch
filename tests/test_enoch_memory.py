@@ -107,6 +107,44 @@ class EnochMemoryTests(unittest.TestCase):
             self.assertIn("Deleted long-term memory", forgot.message)
             self.assertIn("Raw logs were not redacted", forgot.message)
 
+    def test_remember_memory_defaults_subject_to_user(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            saved = remember_memory("Prefers compact replies.", root=root)
+            data = json.loads(long_term_memory_path(root).read_text(encoding="utf-8"))
+
+            self.assertEqual(saved["subject"], "user")
+            self.assertEqual(data["memories"][0]["subject"], "user")
+
+    def test_memory_candidates_default_missing_or_blank_subject_to_user(self) -> None:
+        for fields in ({}, {"subject": None}, {"subject": ""}, {"subject": " \t\n "}):
+            with self.subTest(fields=fields), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+
+                saved = apply_memory_candidates(
+                    [{"text": "Prefers compact replies.", **fields}], root=root
+                )
+                data = json.loads(long_term_memory_path(root).read_text(encoding="utf-8"))
+
+                self.assertEqual(len(saved), 1)
+                self.assertEqual(saved[0]["subject"], "user")
+                self.assertEqual(data["memories"][0]["subject"], "user")
+
+    def test_explicit_and_existing_memory_subjects_are_preserved(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            original = remember_memory("Prefers compact replies.", root=root, subject="Roy")
+            remember_memory("Prefers detailed explanations.", root=root, subject=" Avery ")
+            duplicate = remember_memory("Prefers compact replies.", root=root)
+            remember_memory("Run targeted tests first.", root=root)
+            data = json.loads(long_term_memory_path(root).read_text(encoding="utf-8"))
+
+            self.assertEqual(duplicate["id"], original["id"])
+            self.assertEqual(duplicate["subject"], "Roy")
+            self.assertEqual([item["subject"] for item in data["memories"]], ["Roy", "Avery", "user"])
+
     def test_memory_candidates_are_validated(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
