@@ -45,7 +45,7 @@ def remember_memory(
     *,
     memory_type: str = "decision",
     scope: str = "user",
-    subject: str = "Roy",
+    subject: str = "user",
     source: str = "explicit",
     source_refs: list[str] | None = None,
     confidence: str = "high",
@@ -277,10 +277,10 @@ def _validated_memory_candidate(
     return {
         "type": allowed_value(str(raw_candidate.get("type") or ""), LONG_TERM_TYPES, "decision"),
         "scope": allowed_value(str(raw_candidate.get("scope") or ""), LONG_TERM_SCOPES, "user"),
-        "subject": clean_text(str(raw_candidate.get("subject") or "Roy"))[
+        "subject": clean_text(str(raw_candidate.get("subject") or "user"))[
             : settings.long_term_memory_subject_max_chars
         ]
-        or "Roy",
+        or "user",
         "text": text,
         "source": allowed_value(str(raw_candidate.get("source") or ""), {"explicit", "inferred", "system", "migration"}, "inferred"),
         "source_refs": dedupe(source_refs),
