@@ -743,19 +743,35 @@ def require_daemon_stopped(root: Path | None = None) -> None:
     if not isinstance(current, dict):
         return
     pid = _positive_int(current.get("pid"))
-    if pid is not None and _pid_is_alive(pid):
+    if pid is not None and _pid_is_alive(pid, root):
         raise PrivateStateMigrationError(
             f"Stop the running Enoch daemon (pid {pid}) before applying private-state migration."
         )
 
 
-def _pid_is_alive(pid: int) -> bool:
+def _pid_is_alive(pid: int, root: Path | None = None) -> bool:
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
     except PermissionError:
         return True
+    if root is None:
+        return True
+    try:
+        cmdline = [
+            os.fsdecode(part)
+            for part in Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
+        ]
+    except OSError:
+        return True
+    expected_root = str(root)
+    if any(expected_root in part for part in cmdline):
+        return True
+    # Only an explicit different root proves that this PID belongs elsewhere.
+    for flag, value in zip(cmdline, cmdline[1:]):
+        if flag == "--root" and value and value != expected_root:
+            return False
     return True
 
 

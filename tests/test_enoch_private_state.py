@@ -18,10 +18,12 @@ from enoch.private_state import (
     PRIVATE_STATE_VERSION,
     PrivateStateMigrationError,
     UnsupportedPrivateStateError,
+    _pid_is_alive,
     assert_private_state_supported,
     migrate_private_state,
     plan_private_state,
     private_state_manifest_path,
+    require_daemon_stopped,
 )
 from enoch.extensions import ExtensionScheduleSpec
 from enoch.extensions.schedules import reconcile_extension_schedules
@@ -379,6 +381,107 @@ class EnochPrivateStateTests(unittest.TestCase):
 
         self.assertTrue(dry_run.dry_run)
         self.assertFalse(dry_run.applied)
+
+    def test_dead_pid_is_not_alive(self) -> None:
+        with (
+            patch("enoch.private_state.os.kill", side_effect=ProcessLookupError) as kill,
+            patch("enoch.private_state.Path.read_bytes") as read_cmdline,
+        ):
+            for root in (None, Path("/srv/agents/one")):
+                with self.subTest(root=root):
+                    self.assertFalse(_pid_is_alive(1748, root))
+
+        kill.assert_called_with(1748, 0)
+        read_cmdline.assert_not_called()
+
+    def test_live_pid_without_root_keeps_liveness_only_behavior(self) -> None:
+        with (
+            patch("enoch.private_state.os.kill") as kill,
+            patch("enoch.private_state.Path.read_bytes") as read_cmdline,
+        ):
+            self.assertTrue(_pid_is_alive(1748))
+
+        kill.assert_called_once_with(1748, 0)
+        read_cmdline.assert_not_called()
+
+    def test_pid_permission_error_remains_alive_without_reading_cmdline(self) -> None:
+        with (
+            patch("enoch.private_state.os.kill", side_effect=PermissionError),
+            patch("enoch.private_state.Path.read_bytes") as read_cmdline,
+        ):
+            for root in (None, Path("/srv/agents/one")):
+                with self.subTest(root=root):
+                    self.assertTrue(_pid_is_alive(1748, root))
+
+        read_cmdline.assert_not_called()
+
+    def test_live_pid_with_matching_root_is_alive(self) -> None:
+        for cmdline in (
+            b"python\0-m\0enoch.agent\0--root\0/srv/agents/one\0",
+            b"python\0--log=/srv/agents/one/daemon.log\0",
+            b"python\0--root\0/srv/agents/other\0--log=/srv/agents/one/daemon.log\0",
+        ):
+            with (
+                self.subTest(cmdline=cmdline),
+                patch("enoch.private_state.os.kill"),
+                patch("enoch.private_state.Path.read_bytes", autospec=True, return_value=cmdline) as read_cmdline,
+            ):
+                self.assertTrue(_pid_is_alive(1748, Path("/srv/agents/one")))
+                read_cmdline.assert_called_once_with(Path("/proc/1748/cmdline"))
+
+    def test_live_pid_owned_by_another_root_is_not_alive(self) -> None:
+        for cmdline in (
+            b"python\0-m\0enoch.agent\0--root\0/srv/agents/other\0",
+            b"python\0\xff\0--root\0/srv/agents/other\0",
+        ):
+            with (
+                self.subTest(cmdline=cmdline),
+                patch("enoch.private_state.os.kill"),
+                patch("enoch.private_state.Path.read_bytes", return_value=cmdline),
+            ):
+                self.assertFalse(_pid_is_alive(1748, Path("/srv/agents/one")))
+
+    def test_live_pid_without_attributable_root_remains_alive(self) -> None:
+        for cmdline in (
+            b"python\0-m\0unrelated.worker\0",
+            b"",
+            b"python\0--root\0",
+            b"python\0--root\0\0",
+        ):
+            with (
+                self.subTest(cmdline=cmdline),
+                patch("enoch.private_state.os.kill"),
+                patch("enoch.private_state.Path.read_bytes", return_value=cmdline),
+            ):
+                self.assertTrue(_pid_is_alive(1748, Path("/srv/agents/one")))
+
+    def test_live_pid_with_unreadable_proc_remains_alive(self) -> None:
+        for error in (FileNotFoundError, PermissionError, OSError):
+            with (
+                self.subTest(error=error),
+                patch("enoch.private_state.os.kill"),
+                patch("enoch.private_state.Path.read_bytes", side_effect=error),
+            ):
+                self.assertTrue(_pid_is_alive(1748, Path("/srv/agents/one")))
+
+    def test_stale_epoch_pid_owned_by_another_root_does_not_block(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory) / "one"
+            other_root = Path(directory) / "other"
+            epoch = root / ".enoch" / "daemon_epoch.json"
+            epoch.parent.mkdir(parents=True)
+            original = json.dumps({"schema_version": 1, "current": {"pid": 1748}})
+            epoch.write_text(original, encoding="utf-8")
+            cmdline = b"python\0-m\0enoch.agent\0--root\0" + os.fsencode(other_root) + b"\0"
+
+            with (
+                patch("enoch.private_state.os.kill") as kill,
+                patch("enoch.private_state.Path.read_bytes", return_value=cmdline),
+            ):
+                require_daemon_stopped(root)
+
+            kill.assert_called_once_with(1748, 0)
+            self.assertEqual(epoch.read_text(encoding="utf-8"), original)
 
     def test_artifact_files_are_outside_private_state_migration(self) -> None:
         with TemporaryDirectory() as directory:
