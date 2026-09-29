@@ -470,11 +470,11 @@ forward the versioned code body and Git lineage, assigns the descendant a new
 identity and mission, and validates it against inherited contracts.
 
 Genesis is open source at
-[`our-ark/genesis`](https://github.com/our-ark/genesis). The current stable
-public path pairs [Genesis
-v0.2.0](https://github.com/our-ark/genesis/releases/tag/v0.2.0) with [Enoch
-v0.6.1](https://github.com/our-ark/enoch/releases/tag/v0.6.1). The command below
-uses adjacent clean checkouts so the selected Enoch source is explicit.
+[`our-ark/genesis`](https://github.com/our-ark/genesis). The
+[Enoch v0.7.0](https://github.com/our-ark/enoch/releases/tag/v0.7.0) release gate
+uses [Genesis commit `61723cd`](https://github.com/our-ark/genesis/commit/61723cd936c6d5f9a9ed163cf00321fc3fb79722)
+to verify two generations of full-body descent. The command below uses
+adjacent clean checkouts so the selected Enoch source is explicit.
 
 Enoch is a public Genesis-compatible reference body. Its `genesis.toml`
 declares the Git-tracked body boundary, inherited validation, launchers, source,

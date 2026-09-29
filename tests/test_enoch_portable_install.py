@@ -224,7 +224,7 @@ class EnochPortableInstallTests(unittest.TestCase):
         self.assertEqual(result["vcs"], "portable-vcs")
         self.assertEqual(result["runtime"], "codex")
         self.assertEqual(result["forge"], "local")
-        self.assertEqual(result["enoch_version"], "0.6.1")
+        self.assertEqual(result["enoch_version"], "0.7.0")
         self.assertEqual(
             result["agent_identity_schema_id"],
             "https://our-ark.github.io/schemas/ai-agent-identity.schema.json",
