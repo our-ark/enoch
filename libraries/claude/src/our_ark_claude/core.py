@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
+from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
 from queue import Empty, Queue
+import re
 import shutil
 import subprocess
 import threading
@@ -68,7 +70,15 @@ class ClaudeRuntimeError(AgentRuntimeError):
 
 
 class ClaudeAccessUnavailable(ClaudeRuntimeError, AgentRuntimeAccessUnavailable):
-    """Raised when Claude authentication, quota, or rate limits block a run."""
+    """Raised when Claude authentication, quota, or rate limits block a run.
+
+    ``resets_at`` carries the reset time when Claude Code reported one in a
+    structured event, so hosts can resume work without parsing the message.
+    """
+
+    def __init__(self, message: str = "", *, resets_at: datetime | None = None) -> None:
+        super().__init__(message)
+        self.resets_at = resets_at
 
 
 class ClaudeSessionUnavailable(ClaudeRuntimeError):
@@ -538,8 +548,11 @@ class ClaudeRuntime:
             detail = detail or f"Claude Code exited with status {returncode}."
             if _session_unavailable(detail):
                 raise ClaudeSessionUnavailable(_clip(detail))
-            if _access_unavailable(detail, parsed.subtype):
-                raise ClaudeAccessUnavailable(_access_message(detail))
+            if parsed.access_error or _access_unavailable(detail, parsed.subtype):
+                raise ClaudeAccessUnavailable(
+                    _access_message(detail, parsed.access_error),
+                    resets_at=parsed.access_resets_at,
+                )
             raise ClaudeRuntimeError(f"Claude Code did not answer successfully: {_clip(detail)}")
         if not parsed.final_text.strip():
             raise ClaudeRuntimeError("Claude Code completed without a final response.")
@@ -670,6 +683,16 @@ class _ParsedClaudeResult:
     usage: RuntimeUsage
     side_effects: tuple[RuntimeSideEffect, ...]
     error: str = ""
+    # Structured access failure reported by Claude Code (for example the
+    # assistant message ``error`` field or a rejected ``rate_limit_event``).
+    access_error: str = ""
+    access_resets_at: datetime | None = None
+
+
+# Assistant message ``error`` values that mean access, not the task, failed.
+_STRUCTURED_ACCESS_ERRORS = frozenset(
+    {"rate_limit", "billing_error", "authentication_failed", "oauth_org_not_allowed"}
+)
 
 
 def _parse_result(payloads: Sequence[dict[str, Any]]) -> _ParsedClaudeResult:
@@ -678,12 +701,24 @@ def _parse_result(payloads: Sequence[dict[str, Any]]) -> _ParsedClaudeResult:
     assistant_text = ""
     effects: list[RuntimeSideEffect] = []
     seen_effects: set[tuple[str, str]] = set()
+    access_error = ""
+    access_resets_at: datetime | None = None
     for payload in payloads:
         native_session = str(payload.get("session_id") or "").strip()
         if native_session:
             session_id = native_session
         event_type = str(payload.get("type") or "").strip()
+        if event_type == "rate_limit_event":
+            info = payload.get("rate_limit_info")
+            if isinstance(info, dict):
+                resets_at = _epoch_datetime(info.get("resetsAt") or info.get("resets_at"))
+                if str(info.get("status") or "").strip().lower() == "rejected":
+                    access_error = access_error or "rate_limit"
+                    access_resets_at = resets_at or access_resets_at
         if event_type == "assistant":
+            structured = str(payload.get("error") or "").strip().lower()
+            if structured in _STRUCTURED_ACCESS_ERRORS:
+                access_error = structured
             message = payload.get("message")
             if isinstance(message, dict):
                 content = message.get("content")
@@ -718,7 +753,21 @@ def _parse_result(payloads: Sequence[dict[str, Any]]) -> _ParsedClaudeResult:
         usage=_runtime_usage(result_payload),
         side_effects=tuple(effects),
         error=error,
+        access_error=access_error,
+        access_resets_at=access_resets_at,
     )
+
+
+def _epoch_datetime(value: object) -> datetime | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+        return None
+    seconds = float(value)
+    if seconds > 10_000_000_000:  # Milliseconds.
+        seconds /= 1000
+    try:
+        return datetime.fromtimestamp(seconds, timezone.utc)
+    except (OverflowError, OSError, ValueError):
+        return None
 
 
 def _runtime_usage(payload: Mapping[str, Any]) -> RuntimeUsage:
@@ -1087,8 +1136,25 @@ def _session_unavailable(detail: str) -> bool:
     )
 
 
+# Claude Code rewords its plan-limit messages often ("You've hit your 5-hour
+# limit · resets 3:20pm (America/Los_Angeles)", "Claude AI usage limit
+# reached", "session limit", ...). Match the shape, not one exact phrase.
+_USAGE_LIMIT_PATTERNS = (
+    re.compile(r"\bhit your [^.\n]{0,40}?\blimits?\b"),
+    re.compile(
+        r"\b\d+(?:\.\d+)?(?:[- ]?(?:hours?|hrs?|h|days?|d|weeks?|w)) "
+        r"(?:usage |session |rate |plan )?limits?\b"
+    ),
+    re.compile(r"\blimits?\b[^\n]{0,80}?\bresets?\b"),
+    re.compile(r"\b(?:usage|session|weekly|daily|monthly|plan|opus|sonnet) limits?\b"),
+    re.compile(r"\bout of (?:extra )?usage\b"),
+)
+
+
 def _access_unavailable(detail: str, subtype: str = "") -> bool:
-    lowered = " ".join(f"{subtype} {detail}".lower().split())
+    lowered = " ".join(f"{subtype} {detail}".lower().replace("’", "'").split())
+    if any(pattern.search(lowered) for pattern in _USAGE_LIMIT_PATTERNS):
+        return True
     return any(
         pattern in lowered
         for pattern in (
@@ -1113,9 +1179,11 @@ def _access_unavailable(detail: str, subtype: str = "") -> bool:
     )
 
 
-def _access_message(detail: str) -> str:
+def _access_message(detail: str, structured_error: str = "") -> str:
     lowered = detail.lower()
-    if any(pattern in lowered for pattern in ("not logged in", "auth login", "oauth", "api key")):
+    if structured_error in {"authentication_failed", "oauth_org_not_allowed"} or any(
+        pattern in lowered for pattern in ("not logged in", "auth login", "oauth", "api key")
+    ):
         return (
             "Claude runtime access is unavailable. Authenticate with "
             "`claude auth login`, then resume the task."

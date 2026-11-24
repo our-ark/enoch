@@ -167,6 +167,49 @@ class ClaudeRuntimeTests(unittest.TestCase):
                     self.assertIn("temporarily unavailable", str(raised.exception))
                     self.assertIn(" ".join(message.split()), str(raised.exception))
 
+    def test_current_plan_limit_wording_uses_pauseable_access_error(self) -> None:
+        # Exact strings from the incidents that failed tasks #28 and #42-#47,
+        # plus plausible rewordings.
+        messages = (
+            "You've hit your 5-hour limit · resets 3:20pm (America/Los_Angeles)",
+            "You’ve hit your 5-hour limit · resets 3:20pm (America/Los_Angeles)",
+            "Claude Code did not answer successfully: You've hit your 5-hour limit "
+            "· resets 3:20pm (America/Los_Angeles)",
+            "You've hit your session limit · resets 12:20am (America/Los_Angeles)",
+            "You've hit your Opus limit · resets Nov 28, 9am",
+            "5-hour limit reached ∙ resets 3pm",
+            "Your 7-day limit resets Monday",
+            "Claude AI usage limit reached|1795994400",
+            "You're out of extra usage · resets 3:20pm",
+        )
+        for message in messages:
+            with self.subTest(message=message), TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                runtime = _runtime(root, _write_fake_claude(root))
+                environment = {"FAKE_CLAUDE_MODE": "error-json", "FAKE_CLAUDE_ERROR": message}
+                with patch.dict(os.environ, environment, clear=False):
+                    with self.assertRaises(AgentRuntimeAccessUnavailable) as raised:
+                        runtime.act_in_session(_Identity(), "work", cwd=root)
+
+                self.assertIn("temporarily unavailable", str(raised.exception))
+                self.assertIn(" ".join(message.split()), str(raised.exception))
+
+    def test_structured_rate_limit_event_pauses_with_reset_time(self) -> None:
+        from datetime import datetime, timezone
+
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            runtime = _runtime(root, _write_fake_claude(root))
+            with patch.dict(os.environ, {"FAKE_CLAUDE_MODE": "structured-limit"}, clear=False):
+                with self.assertRaises(AgentRuntimeAccessUnavailable) as raised:
+                    runtime.act_in_session(_Identity(), "work", cwd=root)
+
+        self.assertEqual(
+            raised.exception.resets_at,
+            datetime.fromtimestamp(1795994400, timezone.utc),
+        )
+        self.assertIn("temporarily unavailable", str(raised.exception))
+
     def test_quota_pause_keeps_native_session_for_later_resume(self) -> None:
         with TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -197,6 +240,8 @@ class ClaudeRuntimeTests(unittest.TestCase):
             "Maximum number of turns reached",
             "Session not found",
             "Worker execution failed",
+            "Prompt is too long: context limit exceeded",
+            "Output token limit exceeded for this response",
         ):
             with self.subTest(message=message), TemporaryDirectory() as temporary:
                 root = Path(temporary)
@@ -336,6 +381,29 @@ if mode in ("error-json", "error-stderr", "error-stdout"):
         }))
         raise SystemExit(0)
     print(detail, file=sys.stderr if mode == "error-stderr" else sys.stdout)
+    raise SystemExit(1)
+if mode == "structured-limit":
+    # Wording deliberately matches none of the known phrases: only the
+    # structured fields say this is a plan limit.
+    print(json.dumps({
+        "type": "rate_limit_event",
+        "rate_limit_info": {
+            "status": "rejected",
+            "resetsAt": 1795994400,
+            "rateLimitType": "five_hour",
+        },
+    }))
+    print(json.dumps({
+        "type": "assistant",
+        "error": "rate_limit",
+        "message": {"role": "assistant", "content": [{"type": "text", "text": "Request blocked."}]},
+    }))
+    print(json.dumps({
+        "type": "result",
+        "subtype": "success",
+        "is_error": True,
+        "result": "Request blocked.",
+    }))
     raise SystemExit(1)
 if mode == "missing-session-once" and "--resume" in args:
     marker = Path(os.environ["FAKE_CLAUDE_MARKER"])
