@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from pathlib import Path
 from typing import Any, Callable
 
@@ -15,6 +16,7 @@ from our_ark_provider_kit.contracts import (
     RepositoryWorkspace,
     ReviewCloseRequest,
     ReviewFeatures,
+    ReviewCheckReport,
     ReviewIdentity,
     ReviewLandRequest,
     ReviewLandResult,
@@ -355,7 +357,7 @@ class LegacyForgeReviewAdapter:
         request: ReviewLandRequest,
         root: Path | None = None,
     ) -> ReviewLandResult:
-        result = self.legacy.merge_pull_request(request.review.id, root)
+        result = self._merge(request, root)
         inspected = self.inspect_review(request.review, root)
         revision_id = str(getattr(result, "merge_commit", "") or "").strip()
         revision = inspected.landed_revision
@@ -369,6 +371,109 @@ class LegacyForgeReviewAdapter:
             landed_at=inspected.landed_at if landed else "",
             message=str(getattr(result, "message", "") or ""),
         )
+
+    def _merge(self, request: ReviewLandRequest, root: Path | None) -> Any:
+        merge = self.legacy.merge_pull_request
+        expected = request.expected_revision
+        if not expected:
+            return merge(request.review.id, root)
+        if _accepts_keyword(merge, "expected_head_sha"):
+            # The forge pins the merge to this head itself.
+            return merge(request.review.id, root, expected_head_sha=expected)
+        current = self.inspect_review(request.review, root).versions[-1].revision.id
+        if current != expected:
+            raise ReviewProviderError(
+                f"Review {request.review.id} head changed to {current} "
+                f"(expected {expected}); it was not landed."
+            )
+        return merge(request.review.id, root)
+
+    def update_review_branch(
+        self,
+        review: ReviewIdentity,
+        *,
+        expected_revision: str,
+        root: Path | None = None,
+    ) -> Any:
+        """Bring one review up to date with its base (``forge.update-branch``).
+
+        The forge must refuse when the head is no longer ``expected_revision``.
+        """
+
+        update = self._required_forge_operation(
+            "update_review_branch",
+            "forge.update-branch",
+            "update review branches",
+        )
+        return update(review.id, expected_head_sha=expected_revision, root=root)
+
+    def verify_review_branch_update(
+        self,
+        review: ReviewIdentity,
+        *,
+        previous_revision: str,
+        revision: str,
+        root: Path | None = None,
+    ) -> bool:
+        """True only when ``revision`` is a base update of ``previous_revision``."""
+
+        verify = self._optional_forge_operation(
+            "verify_review_branch_update",
+            "forge.update-branch",
+        )
+        if verify is None:
+            return False
+        return bool(
+            verify(
+                review.id,
+                previous_head_sha=previous_revision,
+                head_sha=revision,
+                root=root,
+            )
+        )
+
+    def inspect_review_checks(
+        self,
+        review: ReviewIdentity,
+        root: Path | None = None,
+    ) -> ReviewCheckReport:
+        """Report CI checks for the review head (``forge.check-status``)."""
+
+        inspect_checks = self._required_forge_operation(
+            "inspect_review_checks",
+            "forge.check-status",
+            "inspect review checks",
+        )
+        report = inspect_checks(review.id, root)
+        if not isinstance(report, ReviewCheckReport):
+            raise ReviewProviderError("Forge returned invalid review check data.")
+        return report
+
+    def _required_forge_operation(
+        self,
+        method: str,
+        capability: str,
+        description: str,
+    ) -> Callable[..., Any]:
+        operation = self._optional_forge_operation(method, capability)
+        if operation is None:
+            raise ReviewProviderError(f"This forge cannot {description}.")
+        return operation
+
+    def _optional_forge_operation(
+        self,
+        method: str,
+        capability: str,
+    ) -> Callable[..., Any] | None:
+        operation = getattr(self.legacy, method, None)
+        if not callable(operation):
+            return None
+        declared = getattr(self.legacy, "capabilities", None)
+        if callable(declared):
+            declared = declared()
+        if not isinstance(declared, ProviderCapabilities) or not declared.supports(capability):
+            return None
+        return operation
 
     def _record(
         self,
@@ -395,6 +500,12 @@ class LegacyForgeReviewAdapter:
                 "number": number,
                 "legacy_reference": review_id,
                 "revision_id": revision_id,
+                "repository": str(
+                    getattr(result, "repository", "")
+                    or getattr(target, "repository", "")
+                    or ""
+                ).strip(),
+                "base_branch": str(getattr(result, "base_branch", "") or "").strip(),
             },
         )
         signals = tuple(
@@ -470,6 +581,17 @@ def as_review_provider(
     return LegacyForgeReviewAdapter(
         provider,
         publish_revision=publish_revision,
+    )
+
+
+def _accepts_keyword(function: Callable[..., Any], name: str) -> bool:
+    try:
+        parameters = inspect.signature(function).parameters
+    except (TypeError, ValueError):
+        return False
+    return name in parameters or any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters.values()
     )
 
 

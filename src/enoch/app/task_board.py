@@ -87,11 +87,14 @@ def render_task_board(
     title: str = "Task board",
     queue_command: str = "/queue",
     max_chars: int = TASK_BOARD_MAX_CHARS,
+    merging: tuple[str, ...] = (),
 ) -> RenderedTaskBoard:
     """Render the board text and a digest of everything except the footer.
 
     The digest ignores the ``Updated HH:MM`` footer so the caller edits the
-    message only when task content changes, not every minute.
+    message only when task content changes, not every minute. ``merging``
+    lists reviews waiting to be merged automatically; its section appears only
+    when it is non-empty.
     """
 
     footer = f"Updated {_local_clock(updated_at)}"
@@ -100,6 +103,7 @@ def render_task_board(
         title=title,
         queue_command=queue_command,
         max_chars=max_chars - len(footer) - 2,
+        merging=merging,
     )
     digest = hashlib.sha256(body.encode("utf-8")).hexdigest()
     return RenderedTaskBoard(text=f"{body}\n\n{footer}", digest=digest)
@@ -111,6 +115,7 @@ def _render_body(
     title: str,
     queue_command: str,
     max_chars: int,
+    merging: tuple[str, ...] = (),
 ) -> str:
     sections = [
         _Section(
@@ -120,6 +125,10 @@ def _render_body(
         _Section("Queued", [_task_item(job) for job in status.pending]),
         _Section("Paused", [_task_item(job) for job in status.paused]),
     ]
+    if merging:
+        sections.append(
+            _Section("Merging", [f"- {_short(item, REQUEST_LIMIT)}" for item in merging])
+        )
     text = _join(title, sections, queue_command)
     # Drop items from the longest section until the board fits, noting how
     # many were hidden so the reader knows to use /queue for the full list.

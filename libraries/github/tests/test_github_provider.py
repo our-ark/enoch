@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 import sys
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -16,14 +16,17 @@ for source in (
 ):
     sys.path.insert(0, str(source))
 
-from our_ark_github import OUR_ARK_PROVIDERS, GithubForgeProvider
+from our_ark_github import OUR_ARK_PROVIDERS, GithubForgeProvider, workflow
 from our_ark_provider_kit import (
     ForgeProvider,
     ProviderContractConformanceMixin,
+    PullRequestBranchUpdateResult,
     PullRequestMergeResult,
     PullRequestMergeStatus,
     PullRequestResult,
     RepositoryRevision,
+    ReviewCheck,
+    ReviewCheckReport,
     ReviewIdentity,
     ReviewLandRequest,
     ReviewProvider,
@@ -140,6 +143,140 @@ class GithubProviderTests(ProviderContractConformanceMixin, unittest.TestCase):
         self.assertEqual(record.state, "landed")
         self.assertEqual(record.landed_revision, result.revision)
         self.assertEqual(record.landed_at, merged_at)
+
+    def test_github_declares_optional_branch_update_and_check_status(self) -> None:
+        provider = GithubForgeProvider(gh="/usr/local/bin/gh")
+
+        self.assertTrue(provider.capabilities.supports("forge.update-branch"))
+        self.assertTrue(provider.capabilities.supports("forge.check-status"))
+        self.assertFalse(provider.capabilities.supports("forge.auto-merge"))
+        review_provider = as_review_provider(provider)
+        self.assertTrue(review_provider.capabilities.supports("forge.update-branch"))
+        self.assertTrue(review_provider.capabilities.supports("forge.check-status"))
+
+    def test_land_review_never_updates_or_waits_on_its_own(self) -> None:
+        provider, review_provider, identity = _behind_fixture()
+        update = MagicMock()
+
+        with patch.object(provider, "update_review_branch", update), patch(
+            "our_ark_github.workflow.inspect_pull_request_merge",
+            return_value=_status(),
+        ):
+            with self.assertRaisesRegex(
+                workflow.PublishError,
+                "PR #42 is behind main and must be updated before it can merge",
+            ):
+                review_provider.land_review(ReviewLandRequest(identity))
+
+        update.assert_not_called()
+
+    def test_land_review_pins_the_expected_head(self) -> None:
+        provider, review_provider, identity = _behind_fixture()
+        merged = PullRequestMergeResult(
+            number=42, url=identity.url, method="merge", merge_commit="revision-42", message="Merged."
+        )
+        landed = _status(state="MERGED", merge_commit="revision-42", merged_at="2026-07-18T18:30:00Z")
+
+        with patch.object(provider, "inspect_pull_request_merge", return_value=landed), \
+                patch.object(provider, "merge_pull_request", return_value=merged) as merge:
+            result = review_provider.land_review(
+                ReviewLandRequest(identity, expected_revision="head-42")
+            )
+
+        self.assertEqual(result.status, "landed")
+        merge.assert_called_once_with(identity.id, None, expected_head_sha="head-42")
+
+    def test_conflicted_blocked_and_draft_reviews_are_still_refused_without_updating(self) -> None:
+        cases = (
+            (_status(mergeable="CONFLICTING", merge_state_status="DIRTY"), "merge conflicts"),
+            (_status(mergeable="CONFLICTING", merge_state_status="BEHIND"), "merge conflicts"),
+            (_status(merge_state_status="BLOCKED"), "merge state: blocked"),
+            (_status(is_draft=True), "is a draft"),
+        )
+        for status, expected in cases:
+            with self.subTest(expected=expected):
+                provider, review_provider, identity = _behind_fixture()
+                update = MagicMock()
+                with patch.object(provider, "update_review_branch", update), patch(
+                    "our_ark_github.workflow.inspect_pull_request_merge",
+                    return_value=status,
+                ):
+                    with self.assertRaisesRegex(workflow.PublishError, expected):
+                        review_provider.land_review(ReviewLandRequest(identity))
+                update.assert_not_called()
+
+    def test_clean_and_unstable_reviews_merge_as_before(self) -> None:
+        for merge_state in ("CLEAN", "UNSTABLE"):
+            with self.subTest(merge_state=merge_state):
+                provider, review_provider, identity = _behind_fixture()
+                merged = PullRequestMergeResult(
+                    number=42,
+                    url=identity.url,
+                    method="merge",
+                    merge_commit="revision-42",
+                    message="Merged.",
+                )
+                landed = _status(
+                    state="MERGED",
+                    merge_commit="revision-42",
+                    merged_at="2026-07-18T18:30:00Z",
+                )
+                update = MagicMock()
+                with patch.object(
+                    provider,
+                    "inspect_pull_request_merge",
+                    side_effect=[landed],
+                ), patch.object(provider, "update_review_branch", update), \
+                        patch.object(provider, "merge_pull_request", return_value=merged) as merge:
+                    result = review_provider.land_review(ReviewLandRequest(identity))
+
+                self.assertEqual(result.status, "landed")
+                merge.assert_called_once_with(identity.id, None)
+                update.assert_not_called()
+
+    def test_adapter_updates_branch_with_head_guard(self) -> None:
+        provider, review_provider, identity = _behind_fixture()
+        update = MagicMock(return_value=_branch_update("merge-43"))
+
+        with patch.object(provider, "update_review_branch", update):
+            result = review_provider.update_review_branch(identity, expected_revision="head-42")
+
+        self.assertEqual(result.head_sha, "merge-43")
+        update.assert_called_once_with(identity.id, expected_head_sha="head-42", root=None)
+
+    def test_adapter_reports_checks_and_verifies_updates(self) -> None:
+        provider, review_provider, identity = _behind_fixture()
+        report = ReviewCheckReport(
+            revision="head-42",
+            checks=(ReviewCheck("test", "failure", "timed_out"),),
+        )
+        verify = MagicMock(return_value=True)
+
+        with patch.object(provider, "inspect_review_checks", return_value=report) as checks, \
+                patch.object(provider, "verify_review_branch_update", verify):
+            self.assertEqual(review_provider.inspect_review_checks(identity), report)
+            self.assertTrue(
+                review_provider.verify_review_branch_update(
+                    identity, previous_revision="head-42", revision="merge-43"
+                )
+            )
+
+        checks.assert_called_once_with(identity.id, None)
+        verify.assert_called_once_with(
+            identity.id, previous_head_sha="head-42", head_sha="merge-43", root=None
+        )
+        self.assertFalse(report.green)
+        self.assertEqual([check.name for check in report.failed], ["test"])
+
+    def test_review_record_carries_repository_and_base(self) -> None:
+        provider, review_provider, identity = _behind_fixture()
+
+        with patch.object(provider, "inspect_pull_request_merge", return_value=_status()):
+            record = review_provider.inspect_review(identity)
+
+        self.assertEqual(record.identity.metadata["repository"], "our-ark/enoch")
+        self.assertEqual(record.identity.metadata["base_branch"], "main")
+        self.assertEqual(record.versions[-1].revision.id, "head-42")
 
     def test_lineage_commit_listing_honors_limits_across_pages(self) -> None:
         provider = GithubForgeProvider(gh="/usr/local/bin/gh")
@@ -273,6 +410,44 @@ class GithubProviderTests(ProviderContractConformanceMixin, unittest.TestCase):
         health = GithubForgeProvider().health(ROOT)
 
         self.assertEqual(health.summary, "gh not found")
+
+
+def _behind_fixture():
+    provider = GithubForgeProvider(gh="/usr/local/bin/gh")
+    identity = ReviewIdentity(
+        id="https://github.com/our-ark/enoch/pull/42",
+        url="https://github.com/our-ark/enoch/pull/42",
+    )
+    return provider, as_review_provider(provider), identity
+
+
+def _status(**overrides) -> PullRequestMergeStatus:
+    values = {
+        "reference": "https://github.com/our-ark/enoch/pull/42",
+        "url": "https://github.com/our-ark/enoch/pull/42",
+        "state": "OPEN",
+        "base_branch": "main",
+        "merge_commit": "",
+        "merged_at": "",
+        "number": 42,
+        "repository": "our-ark/enoch",
+        "is_draft": False,
+        "mergeable": "MERGEABLE",
+        "merge_state_status": "BEHIND",
+        "head_sha": "head-42",
+    }
+    values.update(overrides)
+    return PullRequestMergeStatus(**values)
+
+
+def _branch_update(head_sha: str) -> PullRequestBranchUpdateResult:
+    return PullRequestBranchUpdateResult(
+        number=42,
+        url="https://github.com/our-ark/enoch/pull/42",
+        base_branch="main",
+        previous_head_sha="head-42",
+        head_sha=head_sha,
+    )
 
 
 if __name__ == "__main__":

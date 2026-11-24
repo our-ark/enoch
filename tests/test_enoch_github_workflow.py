@@ -17,6 +17,7 @@ from our_ark_github.workflow import (
     close_pull_request,
     create_pull_request,
     inspect_pull_request,
+    inspect_pull_request_checks,
     inspect_pull_request_merge,
     list_open_pull_requests,
     merge_pull_request,
@@ -24,6 +25,8 @@ from our_ark_github.workflow import (
     prepare_local_publish,
     publish_revision_for_review,
     push_current_branch,
+    update_pull_request_branch,
+    verify_pull_request_branch_update,
 )
 from enoch.immune import DoctorDiagnosis
 
@@ -694,6 +697,10 @@ class EnochGithubWorkflowTests(unittest.TestCase):
                 "merge conflicts",
             ),
             (_merge_status(merge_state_status="BLOCKED"), "merge state: blocked"),
+            (
+                _merge_status(merge_state_status="BEHIND"),
+                "PR #12 is behind main and must be updated before it can merge",
+            ),
             (_merge_status(state="CLOSED"), "is closed"),
             (_merge_status(state="MERGED", merged_at="2026-07-18T18:30:00Z"), "already merged"),
         )
@@ -769,6 +776,282 @@ class EnochGithubWorkflowTests(unittest.TestCase):
 
         with self.assertRaisesRegex(PublishError, "HTTP 405"):
             merge_pull_request("12", ROOT)
+
+    @patch("our_ark_github.workflow.time.sleep")
+    @patch("our_ark_github.workflow.subprocess.run")
+    @patch("our_ark_github.workflow.shutil.which", return_value="/usr/local/bin/gh")
+    @patch("our_ark_github.workflow.inspect_pull_request_merge")
+    def test_updates_behind_branch_guarded_by_inspected_head(
+        self,
+        inspect: MagicMock,
+        _which: MagicMock,
+        run: MagicMock,
+        sleep: MagicMock,
+    ) -> None:
+        inspect.return_value = _merge_status(merge_state_status="BEHIND")
+        run.side_effect = [
+            _process_result(stdout='{"message":"Updating pull request branch."}'),
+            _process_result(stdout='{"head":{"sha":"abc123"}}'),
+            _process_result(stdout='{"head":{"sha":"merge789"}}'),
+            _process_result(
+                stdout='{"sha":"merge789","parents":[{"sha":"abc123"},{"sha":"main456"}]}'
+            ),
+        ]
+
+        result = update_pull_request_branch("12", expected_head_sha="abc123", root=ROOT)
+
+        self.assertEqual(result.number, 12)
+        self.assertEqual(result.base_branch, "main")
+        self.assertEqual(result.previous_head_sha, "abc123")
+        self.assertEqual(result.head_sha, "merge789")
+        self.assertEqual(
+            run.call_args_list[0].args[0],
+            [
+                "/usr/local/bin/gh",
+                "api",
+                "--method",
+                "PUT",
+                "repos/our-ark/enoch/pulls/12/update-branch",
+                "--input",
+                "-",
+            ],
+        )
+        self.assertEqual(
+            json.loads(run.call_args_list[0].kwargs["input"]),
+            {"expected_head_sha": "abc123"},
+        )
+        self.assertEqual(
+            run.call_args_list[3].args[0],
+            ["/usr/local/bin/gh", "api", "repos/our-ark/enoch/commits/merge789"],
+        )
+        sleep.assert_called_once()
+        for call in run.call_args_list:
+            self.assertNotIn("repos/our-ark/enoch/pulls/12/merge", call.args[0])
+
+    @patch("our_ark_github.workflow.subprocess.run")
+    @patch("our_ark_github.workflow.shutil.which", return_value="/usr/local/bin/gh")
+    @patch("our_ark_github.workflow.inspect_pull_request_merge")
+    def test_branch_update_refuses_unexpected_head_and_unsafe_states(
+        self,
+        inspect: MagicMock,
+        _which: MagicMock,
+        run: MagicMock,
+    ) -> None:
+        cases = (
+            (_merge_status(merge_state_status="BEHIND", head_sha="new999"), "head changed"),
+            (
+                _merge_status(mergeable="CONFLICTING", merge_state_status="DIRTY"),
+                "merge conflicts",
+            ),
+            (
+                _merge_status(mergeable="CONFLICTING", merge_state_status="BEHIND"),
+                "merge conflicts",
+            ),
+            (_merge_status(merge_state_status="BLOCKED"), "merge state: blocked"),
+            (_merge_status(merge_state_status="CLEAN"), "merge state: clean"),
+            (_merge_status(merge_state_status="BEHIND", is_draft=True), "is a draft"),
+            (_merge_status(merge_state_status="BEHIND", state="CLOSED"), "not open"),
+        )
+        for status, expected in cases:
+            with self.subTest(expected=expected):
+                inspect.return_value = status
+                with self.assertRaisesRegex(PublishError, expected):
+                    update_pull_request_branch("12", expected_head_sha="abc123", root=ROOT)
+        run.assert_not_called()
+
+    @patch("our_ark_github.workflow.subprocess.run")
+    @patch("our_ark_github.workflow.shutil.which", return_value="/usr/local/bin/gh")
+    @patch("our_ark_github.workflow.inspect_pull_request_merge")
+    def test_branch_update_reports_github_head_guard_rejection(
+        self,
+        inspect: MagicMock,
+        _which: MagicMock,
+        run: MagicMock,
+    ) -> None:
+        inspect.return_value = _merge_status(merge_state_status="BEHIND")
+        run.return_value = _process_result(
+            returncode=1,
+            stderr="HTTP 422: expected head sha didn't match current head ref.",
+        )
+
+        with self.assertRaisesRegex(PublishError, "expected head sha didn't match"):
+            update_pull_request_branch("12", expected_head_sha="abc123", root=ROOT)
+        run.assert_called_once()
+
+    @patch("our_ark_github.workflow.time.sleep")
+    @patch("our_ark_github.workflow.subprocess.run")
+    @patch("our_ark_github.workflow.shutil.which", return_value="/usr/local/bin/gh")
+    @patch("our_ark_github.workflow.inspect_pull_request_merge")
+    def test_branch_update_does_not_trust_an_unrelated_new_head(
+        self,
+        inspect: MagicMock,
+        _which: MagicMock,
+        run: MagicMock,
+        _sleep: MagicMock,
+    ) -> None:
+        inspect.return_value = _merge_status(merge_state_status="BEHIND")
+        run.side_effect = [
+            _process_result(stdout='{"message":"Updating pull request branch."}'),
+            _process_result(stdout='{"head":{"sha":"other000"}}'),
+            _process_result(stdout='{"sha":"other000","parents":[{"sha":"elsewhere"}]}'),
+        ]
+
+        result = update_pull_request_branch("12", expected_head_sha="abc123", root=ROOT)
+
+        self.assertEqual(result.head_sha, "")
+
+    @patch("our_ark_github.workflow.subprocess.run")
+    @patch("our_ark_github.workflow.shutil.which", return_value="/usr/local/bin/gh")
+    @patch("our_ark_github.workflow.inspect_pull_request_merge")
+    def test_merge_pinned_to_expected_head(
+        self,
+        inspect: MagicMock,
+        _which: MagicMock,
+        run: MagicMock,
+    ) -> None:
+        inspect.return_value = _merge_status(head_sha="pushed555")
+
+        with self.assertRaisesRegex(PublishError, "head changed to pushed555"):
+            merge_pull_request("12", ROOT, expected_head_sha="abc123")
+        run.assert_not_called()
+
+        inspect.return_value = _merge_status()
+        run.side_effect = [
+            _process_result(stdout='{"mergeCommitAllowed":true}'),
+            _process_result(stdout='{"merged":true,"sha":"def456"}'),
+        ]
+        result = merge_pull_request("12", ROOT, expected_head_sha="abc123")
+
+        self.assertEqual(result.merge_commit, "def456")
+        self.assertEqual(json.loads(run.call_args_list[1].kwargs["input"])["sha"], "abc123")
+
+    @patch("our_ark_github.workflow.subprocess.run")
+    @patch("our_ark_github.workflow.shutil.which", return_value="/usr/local/bin/gh")
+    def test_inspects_checks_for_the_current_head(
+        self,
+        _which: MagicMock,
+        run: MagicMock,
+    ) -> None:
+        run.return_value = _process_result(
+            stdout=json.dumps(
+                {
+                    "number": 12,
+                    "url": "https://github.com/our-ark/enoch/pull/12",
+                    "headRefOid": "abc123",
+                    "statusCheckRollup": [
+                        {
+                            "__typename": "CheckRun",
+                            "name": "test (3.12)",
+                            "workflowName": "CI",
+                            "status": "COMPLETED",
+                            "conclusion": "SUCCESS",
+                        },
+                        {
+                            "__typename": "CheckRun",
+                            "name": "lint",
+                            "status": "COMPLETED",
+                            "conclusion": "SKIPPED",
+                        },
+                        {
+                            "__typename": "CheckRun",
+                            "name": "build",
+                            "status": "IN_PROGRESS",
+                            "conclusion": "",
+                        },
+                        {
+                            "__typename": "CheckRun",
+                            "name": "slow",
+                            "status": "COMPLETED",
+                            "conclusion": "TIMED_OUT",
+                        },
+                        {
+                            "__typename": "CheckRun",
+                            "name": "flaky",
+                            "status": "COMPLETED",
+                            "conclusion": "CANCELLED",
+                        },
+                        {"__typename": "StatusContext", "context": "deploy", "state": "PENDING"},
+                        {"__typename": "StatusContext", "context": "legacy", "state": "ERROR"},
+                    ],
+                }
+            )
+        )
+
+        report = inspect_pull_request_checks("12", ROOT)
+
+        self.assertEqual(report.revision, "abc123")
+        self.assertEqual(
+            [(check.name, check.state) for check in report.checks],
+            [
+                ("CI / test (3.12)", "success"),
+                ("lint", "success"),
+                ("build", "pending"),
+                ("slow", "failure"),
+                ("flaky", "failure"),
+                ("deploy", "pending"),
+                ("legacy", "failure"),
+            ],
+        )
+        self.assertFalse(report.green)
+        self.assertEqual(
+            run.call_args.args[0],
+            [
+                "/usr/local/bin/gh",
+                "pr",
+                "view",
+                "12",
+                "--json",
+                "number,url,headRefOid,statusCheckRollup",
+            ],
+        )
+
+    @patch("our_ark_github.workflow.subprocess.run")
+    @patch("our_ark_github.workflow.shutil.which", return_value="/usr/local/bin/gh")
+    def test_checks_for_a_different_pull_request_are_rejected(
+        self,
+        _which: MagicMock,
+        run: MagicMock,
+    ) -> None:
+        run.return_value = _process_result(
+            stdout='{"number":13,"url":"https://github.com/our-ark/enoch/pull/13","headRefOid":"x"}'
+        )
+
+        with self.assertRaisesRegex(PublishError, "different pull request"):
+            inspect_pull_request_checks("12", ROOT)
+
+    @patch("our_ark_github.workflow.subprocess.run")
+    @patch("our_ark_github.workflow.shutil.which", return_value="/usr/local/bin/gh")
+    @patch("our_ark_github.workflow.inspect_pull_request_merge")
+    def test_verifies_a_late_branch_update_by_its_parents(
+        self,
+        inspect: MagicMock,
+        _which: MagicMock,
+        run: MagicMock,
+    ) -> None:
+        inspect.return_value = _merge_status(head_sha="merge789")
+        run.return_value = _process_result(
+            stdout='{"sha":"merge789","parents":[{"sha":"abc123"},{"sha":"main456"}]}'
+        )
+
+        self.assertTrue(
+            verify_pull_request_branch_update(
+                "12", previous_head_sha="abc123", head_sha="merge789", root=ROOT
+            )
+        )
+        run.return_value = _process_result(
+            stdout='{"sha":"merge789","parents":[{"sha":"someone-else"}]}'
+        )
+        self.assertFalse(
+            verify_pull_request_branch_update(
+                "12", previous_head_sha="abc123", head_sha="merge789", root=ROOT
+            )
+        )
+        inspect.return_value = _merge_status(head_sha="pushed555")
+        self.assertFalse(
+            verify_pull_request_branch_update(
+                "12", previous_head_sha="abc123", head_sha="merge789", root=ROOT
+            )
+        )
 
 
 def _doctor_result(passed: bool, summary: str) -> MagicMock:

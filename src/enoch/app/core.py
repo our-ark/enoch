@@ -418,6 +418,7 @@ from enoch.app.presentation import (
     format_work_status_message as _format_work_status_message,
 )
 from enoch.state import StateCorruptionError
+from enoch.app.pending_merges import PendingMergeController
 from enoch.app.task_board import (
     RenderedTaskBoard,
     TaskBoardState,
@@ -641,6 +642,22 @@ class EnochApplication:
         self._task_cancellations: dict[int, threading.Event] = {}
         self._stopping = False
         self._task_board_error = ""
+        self.pending_merges = PendingMergeController(
+            root,
+            review=lambda: self.review,
+            authorize=lambda action, requirements: self.effect_fence.authorize(
+                action,
+                requirements,
+            ),
+            run_authorized=self.effect_fence.run_authorized,
+            notify=self._notify_pending_merge,
+            record_event=lambda event, **kwargs: _record_system_event(
+                event,
+                self.root,
+                **kwargs,
+            ),
+            after_land=self._reconcile_lineage_adoptions,
+        )
         reconcile_extension_schedules(
             {
                 extension.name: extension.schedules
@@ -786,6 +803,7 @@ class EnochApplication:
             self._run_due_evolve_schedule()
             self._maybe_start_task_worker()
             self._maybe_start_lineage_worker()
+            self.pending_merges.tick()
             self._refresh_task_board()
         finally:
             self._drain_extension_task_events()
@@ -2723,7 +2741,23 @@ class EnochApplication:
             updated_at=datetime.now().astimezone(),
             title=f"{self.display_name} task board",
             queue_command=f"{self.command_prefix}queue",
+            merging=self.pending_merges.board_items(),
         )
+
+    def _notify_pending_merge(
+        self,
+        chat_id: ConversationId,
+        message: str,
+        notification_key: str,
+    ) -> None:
+        error = self._safe_send_message(chat_id, message, notification_key=notification_key)
+        if error:
+            _record_system_event(
+                "pending_merge_notification_failed",
+                self.root,
+                status="failed",
+                details={"chat_id": chat_id, "error": error, "message": message},
+            )
 
     def _task_board_command(self, argument: str) -> str:
         choice = argument.strip().lower()
@@ -5251,12 +5285,15 @@ class EnochApplication:
         self.effect_fence.require_current()
         parts = argument.split()
         if not parts or (len(parts) == 1 and parts[0].lower() == "list"):
+            pending = self.pending_merges.list_lines()
             try:
                 self.authorization.require("forge.list", ("forge.inspect",))
                 reviews = self.review.list_open_reviews(self.root)
             except (ReviewProviderError, ForgeProviderError, CapabilityAuthorizationError) as error:
-                return f"{self.display_name} could not list open reviews: {error}"
-            return _format_open_reviews(reviews)
+                listing = f"{self.display_name} could not list open reviews: {error}"
+            else:
+                listing = _format_open_reviews(reviews)
+            return "\n\n".join([listing, *(["\n".join(pending)] if pending else [])])
         if len(parts) == 2 and parts[0].lower() == "show":
             try:
                 self.authorization.require("forge.inspect", ("forge.inspect",))
@@ -5267,33 +5304,50 @@ class EnochApplication:
             except (ReviewProviderError, ForgeProviderError, CapabilityAuthorizationError) as error:
                 return f"{self.display_name} could not inspect that review: {error}"
             return _format_review(review)
-        if len(parts) != 2 or parts[0].lower() != "merge":
-            return pr_usage()
+        if len(parts) != 2 or parts[0].lower() not in {"merge", "cancel"}:
+            return pr_usage(self.command_prefix)
         allowed_chat_id = _allowed_conversation_id(self.client)
         if allowed_chat_id is None or allowed_chat_id != chat_id:
+            action = "land" if parts[0].lower() == "merge" else "cancel a merge for"
             return (
-                f"{self.display_name} will only land a review from her locked "
+                f"{self.display_name} will only {action} a review from her locked "
                 f"{provider_label(self.channel_name)} conversation."
             )
+        if parts[0].lower() == "cancel":
+            try:
+                return self.pending_merges.cancel(parts[1])
+            except (OSError, StateCorruptionError) as error:
+                return f"{self.display_name} could not cancel that pending merge: {error}"
         try:
             self.authorization.require("forge.inspect", ("forge.inspect",))
             current = self.review.inspect_review(_review_identity(parts[1]), self.root)
             if current.state == "landed":
+                self.pending_merges.discard(current)
                 self._reconcile_lineage_adoptions()
                 return _format_review_land_result(ReviewLandResult(
                     review=current.identity, status="landed", revision=current.landed_revision,
                     landed_at=current.landed_at,
                     message="Already merged. The local checkout and running version may still need updating.",
                 ))
+            # A review that is not ready yet is recorded and landed later by the
+            # pending-merge watcher; this request is its only authorization.
+            plan = self.pending_merges.plan(chat_id, current)
+            if plan.action != "land":
+                return plan.message
             result = self.effect_fence.run_authorized(
                 "forge.land",
                 ("forge.land",),
                 self.review.land_review,
-                ReviewLandRequest(_review_identity(parts[1])),
+                ReviewLandRequest(
+                    _review_identity(parts[1]),
+                    expected_revision=plan.expected_revision,
+                ),
                 root=self.root,
             )
         except (ReviewProviderError, ForgeProviderError, CapabilityAuthorizationError) as error:
             return f"{self.display_name} could not land that review: {error}"
+        except (OSError, StateCorruptionError) as error:
+            return f"{self.display_name} could not record that merge request: {error}"
         self._reconcile_lineage_adoptions()
         return _format_review_land_result(result)
 

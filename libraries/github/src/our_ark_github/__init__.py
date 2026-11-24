@@ -28,6 +28,8 @@ class GithubForgeProvider:
                 "forge.publish",
                 "forge.maintain",
                 "forge.merge",
+                "forge.update-branch",
+                "forge.check-status",
             }
         ),
     )
@@ -63,8 +65,37 @@ class GithubForgeProvider:
     def list_open_pull_requests(self, root=None, *, limit: int = 20):
         return workflow.list_open_pull_requests(root, limit=limit)
 
-    def merge_pull_request(self, reference: str, root=None):
-        return workflow.merge_pull_request(reference, root)
+    def merge_pull_request(self, reference: str, root=None, *, expected_head_sha: str = ""):
+        return workflow.merge_pull_request(
+            reference,
+            root,
+            expected_head_sha=expected_head_sha,
+        )
+
+    def update_review_branch(self, reference: str, *, expected_head_sha: str, root=None):
+        return workflow.update_pull_request_branch(
+            reference,
+            expected_head_sha=expected_head_sha,
+            root=root,
+        )
+
+    def verify_review_branch_update(
+        self,
+        reference: str,
+        *,
+        previous_head_sha: str,
+        head_sha: str,
+        root=None,
+    ) -> bool:
+        return workflow.verify_pull_request_branch_update(
+            reference,
+            previous_head_sha=previous_head_sha,
+            head_sha=head_sha,
+            root=root,
+        )
+
+    def inspect_review_checks(self, reference: str, root=None):
+        return workflow.inspect_pull_request_checks(reference, root)
 
     def health(self, root: Path | None = None) -> ProviderHealth:
         if self.gh is None:

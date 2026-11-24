@@ -885,10 +885,18 @@ def pr_usage(prefix: str = "/") -> str:
     return "\n".join(
         [
             "Review commands:",
-            f"{prefix}pr - list open reviews in the current repository",
+            f"{prefix}pr - list open reviews and pending merges in the current repository",
             f"{prefix}pr show <review id or URL> - inspect one review",
-            f"{prefix}pr merge <review id or URL> - land exactly that review",
+            f"{prefix}pr merge <review id or URL> - land exactly that review, now or when it is ready",
+            f"{prefix}pr cancel <review id or URL> - stop waiting to merge that review",
             "A specific review target is required. Natural-language requests resolve it from the conversation and inspect its current state before acting.",
+            (
+                "If the review is not ready yet (behind its base branch, CI running, or blocked), "
+                "merge waits and lands it automatically when it is ready, updating the branch "
+                "from its base when needed. It stops without merging if new commits are pushed "
+                "after the request, CI fails, conflicts appear, or it is still not ready after "
+                "2 hours. Conflicted, draft and closed reviews are refused right away."
+            ),
         ]
     )
 

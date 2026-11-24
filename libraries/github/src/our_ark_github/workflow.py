@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import time
 from urllib.parse import urlparse
 
 from our_ark_provider_kit import (
@@ -14,12 +15,15 @@ from our_ark_provider_kit import (
     EvolutionProvenance,
     ForgeProviderError,
     LocalPublishResult,
+    PullRequestBranchUpdateResult,
     PullRequestCloseResult,
     PullRequestMergeCandidate,
     PullRequestMergeResult,
     PullRequestMergeStatus,
     PullRequestResult,
     PullRequestTarget,
+    ReviewCheck,
+    ReviewCheckReport,
     RemotePublishResult,
 )
 
@@ -523,9 +527,24 @@ def inspect_pull_request(
 def merge_pull_request(
     reference: str,
     root: Path | None = None,
+    *,
+    expected_head_sha: str = "",
 ) -> PullRequestMergeResult:
+    """Merge one PR at its inspected head.
+
+    With ``expected_head_sha`` the merge is refused unless the head is still
+    that commit, and GitHub enforces the same pin on its side.
+    """
+
     status = inspect_pull_request_merge(reference, root)
     _require_mergeable_pull_request(status)
+    expected = expected_head_sha.strip()
+    if expected and status.head_sha != expected:
+        label = f"PR #{status.number}" if status.number else "Pull request"
+        raise PublishError(
+            f"{label} head changed to {status.head_sha or 'unknown'} "
+            f"(expected {expected}); it was not merged."
+        )
     gh = shutil.which("gh")
     if gh is None:
         raise PublishError("GitHub CLI is not available.")
@@ -586,6 +605,8 @@ def _require_mergeable_pull_request(status: PullRequestMergeStatus) -> None:
         raise PublishError(f"{label} has merge conflicts.")
     if status.mergeable != "MERGEABLE":
         raise PublishError(f"{label} is not currently mergeable (status: {status.mergeable or 'unknown'}).")
+    if status.merge_state_status == "BEHIND":
+        raise PublishError(_behind_message(status))
     if status.merge_state_status not in {"CLEAN", "UNSTABLE"}:
         raise PublishError(
             f"{label} is not currently mergeable "
@@ -593,6 +614,261 @@ def _require_mergeable_pull_request(status: PullRequestMergeStatus) -> None:
         )
     if not status.head_sha:
         raise PublishError(f"{label} has no inspectable head commit.")
+
+
+def _behind_message(status: PullRequestMergeStatus) -> str:
+    label = f"PR #{status.number}" if status.number else "Pull request"
+    base = status.base_branch or "its base branch"
+    return f"{label} is behind {base} and must be updated before it can merge."
+
+
+def update_pull_request_branch(
+    reference: str,
+    *,
+    expected_head_sha: str,
+    root: Path | None = None,
+) -> PullRequestBranchUpdateResult:
+    """Merge the base branch into a BEHIND pull request on GitHub's side.
+
+    GitHub rejects the update when the head no longer matches
+    ``expected_head_sha``, so unexpected new commits are never overwritten.
+    Conflicts are never resolved here: only a mergeable BEHIND PR is updated.
+    """
+
+    expected = expected_head_sha.strip()
+    if not expected:
+        raise PublishError("An expected head commit is required to update a PR branch.")
+    status = inspect_pull_request_merge(reference, root)
+    _require_updatable_pull_request(status, expected)
+    gh = shutil.which("gh")
+    if gh is None:
+        raise PublishError("GitHub CLI is not available.")
+    result = subprocess.run(
+        [
+            gh,
+            "api",
+            "--method",
+            "PUT",
+            f"repos/{status.repository}/pulls/{status.number}/update-branch",
+            "--input",
+            "-",
+        ],
+        cwd=root,
+        text=True,
+        input=json.dumps({"expected_head_sha": expected}),
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        note = (
+            result.stderr.strip()
+            or result.stdout.strip()
+            or "GitHub could not update the pull request branch."
+        )
+        raise PublishError(f"Could not update PR #{status.number} from {status.base_branch}: {note}")
+    head = _updated_head_sha(gh, status, expected, root)
+    return PullRequestBranchUpdateResult(
+        number=status.number,
+        url=status.url,
+        base_branch=status.base_branch,
+        previous_head_sha=expected,
+        head_sha=head,
+        message=f"Updated PR #{status.number} from {status.base_branch}.",
+    )
+
+
+# GitHub usually creates the update commit before update-branch returns; these
+# bounded retries only cover a short replication delay, not CI.
+_BRANCH_UPDATE_HEAD_CHECKS = 5
+_BRANCH_UPDATE_HEAD_DELAY_SECONDS = 1.0
+
+
+def _require_updatable_pull_request(status: PullRequestMergeStatus, expected: str) -> None:
+    label = f"PR #{status.number}" if status.number else "Pull request"
+    if status.state != "OPEN" or status.merged_at:
+        raise PublishError(f"{label} is not open; its branch was not updated.")
+    if status.is_draft:
+        raise PublishError(f"{label} is a draft; its branch was not updated.")
+    if status.mergeable == "CONFLICTING" or status.merge_state_status == "DIRTY":
+        raise PublishError(f"{label} has merge conflicts.")
+    if status.mergeable != "MERGEABLE" or status.merge_state_status != "BEHIND":
+        raise PublishError(
+            f"{label} is not a mergeable PR that is behind its base "
+            f"(merge state: {status.merge_state_status.lower() or 'unknown'}); "
+            "its branch was not updated."
+        )
+    if status.head_sha != expected:
+        raise PublishError(
+            f"{label} head changed to {status.head_sha or 'unknown'} "
+            f"(expected {expected}); its branch was not updated."
+        )
+    if not status.repository or not status.number:
+        raise PublishError(f"{label} has no resolvable GitHub repository.")
+
+
+def _updated_head_sha(
+    gh: str,
+    status: PullRequestMergeStatus,
+    previous: str,
+    root: Path | None,
+) -> str:
+    """Return the new head only when it is the update of ``previous``."""
+
+    path = f"repos/{status.repository}/pulls/{status.number}"
+    for attempt in range(_BRANCH_UPDATE_HEAD_CHECKS):
+        if attempt:
+            time.sleep(_BRANCH_UPDATE_HEAD_DELAY_SECONDS)
+        pull = _github_api_object(gh, path, root, "pull request")
+        head = pull.get("head")
+        head_sha = str(head.get("sha") or "").strip() if isinstance(head, dict) else ""
+        if not head_sha or head_sha == previous:
+            continue
+        # Anything other than a direct update of the inspected head is unexpected.
+        return head_sha if _is_direct_update(gh, status.repository, previous, head_sha, root) else ""
+    return ""
+
+
+def _is_direct_update(
+    gh: str,
+    repository: str,
+    previous: str,
+    head_sha: str,
+    root: Path | None,
+) -> bool:
+    commit = _github_api_object(
+        gh,
+        f"repos/{repository}/commits/{head_sha}",
+        root,
+        "commit",
+    )
+    parents = commit.get("parents")
+    parent_shas = {
+        str(parent.get("sha") or "").strip()
+        for parent in (parents if isinstance(parents, list) else [])
+        if isinstance(parent, dict)
+    }
+    return previous in parent_shas
+
+
+def verify_pull_request_branch_update(
+    reference: str,
+    *,
+    previous_head_sha: str,
+    head_sha: str,
+    root: Path | None = None,
+) -> bool:
+    """True when ``head_sha`` is the PR's head and a direct update of ``previous_head_sha``.
+
+    Used when an earlier branch update was accepted but its new head could not
+    be verified in time.
+    """
+
+    previous = previous_head_sha.strip()
+    head = head_sha.strip()
+    if not previous or not head or previous == head:
+        return False
+    status = inspect_pull_request_merge(reference, root)
+    if status.head_sha != head or not status.repository:
+        return False
+    gh = shutil.which("gh")
+    if gh is None:
+        raise PublishError("GitHub CLI is not available.")
+    return _is_direct_update(gh, status.repository, previous, head, root)
+
+
+# CheckRun conclusions that count as passing; every other finished conclusion
+# (failure, cancelled, timed_out, action_required, stale, ...) is a failure.
+_PASSING_CHECK_CONCLUSIONS = frozenset({"SUCCESS", "NEUTRAL", "SKIPPED"})
+_PENDING_STATUS_CONTEXT_STATES = frozenset({"PENDING", "EXPECTED"})
+
+
+def inspect_pull_request_checks(
+    reference: str,
+    root: Path | None = None,
+) -> ReviewCheckReport:
+    """Report every check run and commit status on the PR's current head."""
+
+    target = parse_pull_request_target(reference)
+    gh = shutil.which("gh")
+    if gh is None:
+        raise PublishError("GitHub CLI is not available.")
+    result = subprocess.run(
+        [
+            gh,
+            "pr",
+            "view",
+            target.reference,
+            "--json",
+            "number,url,headRefOid,statusCheckRollup",
+        ],
+        cwd=root,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        note = result.stderr.strip() or result.stdout.strip() or "GitHub CLI could not read PR checks."
+        raise PublishError(note)
+    data = _github_json_object(result.stdout, "pull request checks")
+    canonical = parse_pull_request_target(str(data.get("url") or "").strip())
+    if canonical.number != target.number or (
+        target.repository and canonical.repository.casefold() != target.repository.casefold()
+    ):
+        raise PublishError("GitHub returned a different pull request than the requested target.")
+    rollup = data.get("statusCheckRollup")
+    checks = tuple(
+        _review_check(item)
+        for item in (rollup if isinstance(rollup, list) else [])
+        if isinstance(item, dict)
+    )
+    return ReviewCheckReport(
+        revision=str(data.get("headRefOid") or "").strip(),
+        checks=checks,
+    )
+
+
+def _review_check(item: dict[str, object]) -> ReviewCheck:
+    if str(item.get("__typename") or "") == "StatusContext" or "context" in item:
+        name = str(item.get("context") or "").strip()
+        raw = str(item.get("state") or "").strip().upper()
+        if raw in _PENDING_STATUS_CONTEXT_STATES or not raw:
+            state = "pending"
+        else:
+            state = "success" if raw == "SUCCESS" else "failure"
+        return ReviewCheck(name=name, state=state, detail=raw.lower())
+    name = str(item.get("name") or "").strip()
+    workflow_name = str(item.get("workflowName") or "").strip()
+    if workflow_name and name and workflow_name != name:
+        name = f"{workflow_name} / {name}"
+    status = str(item.get("status") or "").strip().upper()
+    conclusion = str(item.get("conclusion") or "").strip().upper()
+    if status != "COMPLETED":
+        return ReviewCheck(name=name, state="pending", detail=(status or "pending").lower())
+    state = "success" if conclusion in _PASSING_CHECK_CONCLUSIONS else "failure"
+    return ReviewCheck(name=name, state=state, detail=(conclusion or "unknown").lower())
+
+
+def _github_api_object(
+    gh: str,
+    path: str,
+    root: Path | None,
+    label: str,
+) -> dict[str, object]:
+    result = subprocess.run(
+        [gh, "api", path],
+        cwd=root,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        note = (
+            result.stderr.strip()
+            or result.stdout.strip()
+            or f"GitHub could not read the {label}."
+        )
+        raise PublishError(note)
+    return _github_json_object(result.stdout, label)
 
 
 def _repository_merge_method(gh: str, repository: str, root: Path | None) -> str:
