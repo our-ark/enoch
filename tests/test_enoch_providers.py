@@ -715,6 +715,9 @@ class EnochProviderTests(unittest.TestCase):
             def respond(self, identity, message, **kwargs):
                 return {"text": "not a runtime result"}
 
+            def act_in_session(self, identity, message, **kwargs):
+                return {"text": "not a runtime result"}
+
         with TemporaryDirectory() as temp:
             chat = _Chat()
             app = EnochApplication(
@@ -1188,10 +1191,15 @@ exit 2
         self.assertEqual(check.command, "test-runtime doctor")
 
     def test_normalized_chat_event_uses_runtime_without_telegram_payloads(self) -> None:
+        class ActingRuntime(_Runtime):
+            def act_in_session(self, identity, message, **kwargs):
+                self.messages.append((identity, message, kwargs))
+                return "Hello from a plugin runtime."
+
         with TemporaryDirectory() as temp:
             root = Path(temp)
             chat = _Chat()
-            runtime = _Runtime()
+            runtime = ActingRuntime()
             bot = EnochApplication(load_identity(), root, chat, runtime=runtime)
             event = ChatEvent(
                 cursor=2,
@@ -1212,6 +1220,7 @@ exit 2
         self.assertEqual(chat.sent, [("room-1", "Hello from a plugin runtime.")])
         self.assertEqual(runtime.reset_count, 1)
         self.assertEqual(runtime.messages[0][2]["session_key"], "test-chat:room-1")
+        self.assertEqual(runtime.messages[0][2]["sandbox"], "danger-full-access")
 
     def test_application_passes_typed_execution_to_new_runtime(self) -> None:
         class TypedRuntime(_Runtime):
@@ -1219,7 +1228,7 @@ exit 2
                 super().__init__()
                 self.execution = None
 
-            def respond(self, identity, message, *, execution, **kwargs):
+            def act_in_session(self, identity, message, *, execution, **kwargs):
                 self.execution = execution
                 return "Hello from a typed runtime."
 

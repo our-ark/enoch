@@ -370,7 +370,7 @@ class EnochTelegramTests(unittest.TestCase):
 
     @patch("enoch.app.core.ensure_long_term_memory")
     @patch("enoch.app.core.log_conversation_turn")
-    @patch("enoch.app.core.respond", return_value="Hello from Enoch")
+    @patch("enoch.app.core.act_in_session", return_value="Hello from Enoch")
     def test_replies_to_allowed_chat(
         self,
         respond: MagicMock,
@@ -385,8 +385,10 @@ class EnochTelegramTests(unittest.TestCase):
         respond.assert_called_once()
         self.assertEqual(respond.call_args.kwargs["session_key"], "telegram:42")
         self.assertIn("Enoch wrapper instructions:", respond.call_args.args[1])
-        self.assertIn("/do", respond.call_args.args[1])
+        self.assertIn("You may act in this turn.", respond.call_args.args[1])
+        self.assertNotIn("read-only mode", respond.call_args.args[1])
         self.assertIn("/task", respond.call_args.args[1])
+        self.assertEqual(respond.call_args.kwargs["sandbox"], "danger-full-access")
         self.assertEqual(client.acks, [(42, 1001, READ_ACK_EMOJI)])
         self.assertEqual(client.sent, [(42, "Hello from Enoch")])
         log_conversation_turn.assert_called_once()
@@ -409,14 +411,14 @@ class EnochTelegramTests(unittest.TestCase):
         client = FakeTelegramClient(allowed_chat_id=42)
         bot = EnochApplication(load_identity(), ROOT, client)
 
-        with patch("enoch.app.core.respond", side_effect=answer):
+        with patch("enoch.app.core.act_in_session", side_effect=answer):
             _handle_update(bot, _message_update(chat_id=42, text="hello"))
 
         self.assertEqual(client.sent, [(42, "Hello from Enoch")])
 
     @patch("enoch.app.core.ensure_long_term_memory")
     @patch("enoch.app.core.log_conversation_turn")
-    @patch("enoch.app.core.respond", return_value="[PLAIN_TEXT_MARKER]\nIntent:\nAdd reminders")
+    @patch("enoch.app.core.act_in_session", return_value="[PLAIN_TEXT_MARKER]\nIntent:\nAdd reminders")
     def test_plain_marker_text_is_not_special_for_normal_chat(
         self,
         respond: MagicMock,
@@ -438,7 +440,7 @@ class EnochTelegramTests(unittest.TestCase):
     @patch("enoch.app.core.log_conversation_turn")
     @patch("enoch.app.core.remember_memory", return_value={"id": "mem_1", "text": "User likes apples."})
     @patch(
-        "enoch.app.core.respond",
+        "enoch.app.core.act_in_session",
         return_value=(
             "I will remember that."
             f"\n\n{MEMORY_REQUEST_START}\nUser likes apples.\n{MEMORY_REQUEST_END}"
@@ -470,7 +472,7 @@ class EnochTelegramTests(unittest.TestCase):
     @patch("enoch.app.core.log_conversation_turn")
     @patch("enoch.app.core.remember_memory", side_effect=OSError("read-only"))
     @patch(
-        "enoch.app.core.respond",
+        "enoch.app.core.act_in_session",
         return_value=(
             "I should remember that."
             f"\n\n{MEMORY_REQUEST_START}\nUser likes apples.\n{MEMORY_REQUEST_END}"
@@ -508,7 +510,7 @@ class EnochTelegramTests(unittest.TestCase):
 
     @patch("enoch.app.core.ensure_long_term_memory")
     @patch("enoch.app.core.log_conversation_turn")
-    @patch("enoch.app.core.respond", return_value="natural reply")
+    @patch("enoch.app.core.act_in_session", return_value="natural reply")
     def test_unknown_slash_command_routes_to_natural_conversation(
         self,
         respond: MagicMock,
@@ -1787,7 +1789,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIsNone(evolve_events[-1].retry_of_task_id)
 
     @patch(
-        "enoch.app.core.respond",
+        "enoch.app.core.act_in_session",
         return_value=(
             "I found the regression and rolled it back.\n"
             f"{TASK_REGRESSION_START}\n"
@@ -1978,7 +1980,7 @@ class EnochTelegramTests(unittest.TestCase):
 
     @patch("enoch.app.core.ensure_long_term_memory")
     @patch("enoch.app.core.log_conversation_turn")
-    @patch("enoch.app.core.respond", return_value="That is not a registered command.")
+    @patch("enoch.app.core.act_in_session", return_value="That is not a registered command.")
     def test_removed_plural_aliases_report_unknown_command(
         self,
         respond: MagicMock,
@@ -3212,7 +3214,7 @@ class EnochTelegramTests(unittest.TestCase):
                 '"resolution": "reverted"}\n'
                 f"{TASK_REGRESSION_END}"
             )
-            with patch("enoch.app.core.respond", return_value=regression_reply):
+            with patch("enoch.app.core.act_in_session", return_value=regression_reply):
                 _handle_update(bot,
                     _message_update(
                         update_id=2,
@@ -4293,7 +4295,7 @@ class EnochTelegramTests(unittest.TestCase):
             self.assertIn("Mission: Build calm agent networks", client.sent[2][1])
             self.assertIn("Build calm agent networks", identity_text)
 
-    @patch("enoch.app.core.respond", return_value="Memory is managed internally now.")
+    @patch("enoch.app.core.act_in_session", return_value="Memory is managed internally now.")
     def test_memory_command_is_not_user_facing(self, respond: MagicMock) -> None:
         client = FakeTelegramClient(allowed_chat_id=42)
         bot = EnochApplication(load_identity(), ROOT, client)
@@ -4303,7 +4305,7 @@ class EnochTelegramTests(unittest.TestCase):
         respond.assert_called_once()
         self.assertIn("Memory is managed internally now.", client.sent[0][1])
 
-    @patch("enoch.app.core.respond", return_value="Teaching is automatic now.")
+    @patch("enoch.app.core.act_in_session", return_value="Teaching is automatic now.")
     def test_teach_command_is_not_user_facing(self, respond: MagicMock) -> None:
         client = FakeTelegramClient(allowed_chat_id=42)
         bot = EnochApplication(load_identity(), ROOT, client)
@@ -4460,7 +4462,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("Configure the Telegram provider", client.sent[0][1])
         self.assertIn("restart Enoch", client.sent[0][1])
 
-    @patch("enoch.app.core.respond", return_value="Thinking config is managed locally.")
+    @patch("enoch.app.core.act_in_session", return_value="Thinking config is managed locally.")
     def test_thinking_is_no_longer_a_telegram_command(self, respond: MagicMock) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
@@ -4871,8 +4873,8 @@ class EnochTelegramTests(unittest.TestCase):
         schedule_restart.assert_not_called()
         self.assertIn("locked to one conversation", client.sent[0][1])
 
-    @patch("enoch.app.core.respond", return_value="Let's think through reminders first.")
-    def test_natural_feature_request_uses_read_only_wrapper(self, respond: MagicMock) -> None:
+    @patch("enoch.app.core.act_in_session", return_value="Let's think through reminders first.")
+    def test_natural_feature_request_uses_conversation_action_wrapper(self, respond: MagicMock) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
             client = FakeTelegramClient(allowed_chat_id=42)
@@ -4883,13 +4885,15 @@ class EnochTelegramTests(unittest.TestCase):
         respond.assert_called_once()
         self.assertEqual(respond.call_args.kwargs["session_key"], "telegram:42")
         self.assertIn("Enoch wrapper instructions:", respond.call_args.args[1])
-        self.assertIn("/do", respond.call_args.args[1])
+        self.assertIn("You may act in this turn.", respond.call_args.args[1])
+        self.assertNotIn("read-only mode", respond.call_args.args[1])
         self.assertIn("/task", respond.call_args.args[1])
+        self.assertEqual(respond.call_args.kwargs["sandbox"], "danger-full-access")
         self.sync_session_activity.assert_not_called()
         self.assertIn("Let's think through reminders first.", client.sent[0][1])
 
-    @patch("enoch.app.core.respond", return_value="Use !do disable auto evolve.")
-    def test_read_only_wrapper_uses_chat_provider_command_prefix(
+    @patch("enoch.app.core.act_in_session", return_value="Disabled auto evolve.")
+    def test_conversation_wrapper_uses_chat_provider_command_prefix(
         self,
         respond: MagicMock,
     ) -> None:
@@ -4902,24 +4906,24 @@ class EnochTelegramTests(unittest.TestCase):
             _handle_update(bot, _message_update(chat_id=42, text="disable auto evolve"))
 
         prompt = respond.call_args.args[1]
-        self.assertIn("!do", prompt)
         self.assertIn("!task", prompt)
         self.assertIn("!backlog", prompt)
-        self.assertNotIn("use /do", prompt)
+        self.assertIn("!help", prompt)
+        self.assertNotIn("/task", prompt)
 
     @patch("enoch.app.core.ensure_long_term_memory")
     @patch("enoch.app.core.log_conversation_turn")
     @patch("enoch.app.core.respond")
     @patch("enoch.app.core.act_in_session")
-    def test_natural_edit_request_does_not_auto_run_work(
+    def test_natural_edit_request_runs_in_conversation_turn_without_task(
         self,
         act_in_session: MagicMock,
         respond: MagicMock,
         _log_conversation_turn: MagicMock,
         _update_memory: MagicMock,
     ) -> None:
-        respond.return_value = (
-            f"I can make that change.\n\n{EDIT_REQUEST_START}\nUpdate README for the new workflow.\n{EDIT_REQUEST_END}"
+        act_in_session.return_value = (
+            f"I made that change.\n\n{EDIT_REQUEST_START}\nUpdate README for the new workflow.\n{EDIT_REQUEST_END}"
         )
         with TemporaryDirectory() as temp:
             root = Path(temp)
@@ -4927,18 +4931,42 @@ class EnochTelegramTests(unittest.TestCase):
             bot = EnochApplication(load_identity(), root, client)
             _handle_update(bot, _message_update(chat_id=42, text="make the README clearer"))
 
-            self.assertEqual(respond.call_args.kwargs["session_key"], "telegram:42")
-            self.assertIn("/do", respond.call_args.args[1])
-            self.assertIn("/task", respond.call_args.args[1])
+            act_in_session.assert_called_once()
+            self.assertEqual(act_in_session.call_args.kwargs["session_key"], "telegram:42")
+            self.assertEqual(act_in_session.call_args.kwargs["sandbox"], "danger-full-access")
+            self.assertIn("You may act in this turn.", act_in_session.call_args.args[1])
+            respond.assert_not_called()
             self.assertEqual(client.edited, [])
-            self.assertIn("I can make that change.", client.sent[0][1])
+            self.assertIn("I made that change.", client.sent[0][1])
             self.assertNotIn(EDIT_REQUEST_START, client.sent[0][1])
-            act_in_session.assert_not_called()
+            self.assertFalse(task_queue_status(root).pending)
             self.sync_session_activity.assert_not_called()
 
     @patch("enoch.app.core.ensure_long_term_memory")
     @patch("enoch.app.core.log_conversation_turn")
-    @patch("enoch.app.core.respond", return_value="I can talk that through first.")
+    @patch("enoch.app.core.respond", return_value="Read-only reply.")
+    @patch("enoch.app.core.act_in_session")
+    def test_unlocked_chat_falls_back_to_read_only_turn(
+        self,
+        act_in_session: MagicMock,
+        respond: MagicMock,
+        _log_conversation_turn: MagicMock,
+        _update_memory: MagicMock,
+    ) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            client = FakeTelegramClient(allowed_chat_id=42)
+            bot = EnochApplication(load_identity(), root, client)
+            with patch.object(bot, "_action_allowed", return_value=False):
+                reply = bot._respond_conversation_turn(42, "make the README clearer")
+
+        self.assertEqual(reply, "Read-only reply.")
+        act_in_session.assert_not_called()
+        self.assertIn("read-only mode", respond.call_args.args[1])
+
+    @patch("enoch.app.core.ensure_long_term_memory")
+    @patch("enoch.app.core.log_conversation_turn")
+    @patch("enoch.app.core.act_in_session", return_value="I can talk that through first.")
     @patch("enoch.app.core.prepare_local_publish")
     def test_natural_message_without_marker_does_not_publish_pr(
         self,

@@ -222,6 +222,7 @@ from enoch.prompt_append import (
     extract_edit_request,
     extract_memory_requests,
     extract_task_regression_signals,
+    conversation_turn_prompt,
     read_only_turn_prompt,
     startup_context_note,
 )
@@ -261,6 +262,7 @@ from enoch.providers import as_repository_provider, as_review_provider
 from enoch.providers.registry import ProviderError, load_provider
 from enoch.providers.runtime import (
     FunctionAgentRuntime,
+    invoke_runtime_action,
     invoke_runtime_respond,
 )
 from enoch.skills import SkillsError, load_agent_skills
@@ -1566,6 +1568,7 @@ class EnochApplication:
         *,
         execution: RuntimeExecutionControl,
         image_paths: tuple[Path, ...] = (),
+        sandbox: str = "",
     ):
         session_key = execution.session_key
         needs_context = bool(session_key) and session_key not in self._contextualized_sessions
@@ -1585,23 +1588,75 @@ class EnochApplication:
                     prompt,
                 ]
             )
-        result = self.effect_fence.run_runtime_authorized(
-            "runtime.respond",
-            ("runtime.respond",),
-            lambda fenced_execution: invoke_runtime_respond(
-                self.runtime,
-                self.identity,
-                prompt,
-                cwd=self.root,
-                image_paths=image_paths,
-                execution=fenced_execution,
-            ),
-            execution,
-            task_id=_CURRENT_TASK_ID.get(),
-        )
+        if sandbox:
+            # Writable conversation turn: same runtime path and capability as /do.
+            result = self.effect_fence.run_runtime_authorized(
+                "runtime.execute",
+                ("runtime.execute",),
+                lambda fenced_execution: invoke_runtime_action(
+                    self.runtime,
+                    self.identity,
+                    prompt,
+                    cwd=self.root,
+                    sandbox=sandbox,
+                    execution=fenced_execution,
+                    state_root=self.root,
+                ),
+                execution,
+                task_id=_CURRENT_TASK_ID.get(),
+            )
+        else:
+            result = self.effect_fence.run_runtime_authorized(
+                "runtime.respond",
+                ("runtime.respond",),
+                lambda fenced_execution: invoke_runtime_respond(
+                    self.runtime,
+                    self.identity,
+                    prompt,
+                    cwd=self.root,
+                    image_paths=image_paths,
+                    execution=fenced_execution,
+                ),
+                execution,
+                task_id=_CURRENT_TASK_ID.get(),
+            )
         if needs_context:
             self._contextualized_sessions.add(session_key)
         return result
+
+    def _respond_conversation_turn(
+        self,
+        chat_id: ConversationId,
+        text: str,
+        *,
+        session_key: str | None = None,
+    ) -> str:
+        """Answer a plain chat message; the agent may act unless chat is unlocked."""
+        if not self._action_allowed():
+            return self._respond_read_only_turn(chat_id, text, session_key=session_key)
+        resolved_session_key = session_key or self._session_key(chat_id)
+        try:
+            return self._invoke_runtime_response(
+                self._profile_prompt(
+                    conversation_turn_prompt(
+                        text,
+                        command_prefix=self.command_prefix,
+                    ),
+                    purpose="conversation",
+                    chat_id=chat_id,
+                ),
+                execution=RuntimeExecutionControl(
+                    request_id=f"conversation:{chat_id}",
+                    session_key=resolved_session_key,
+                ),
+                sandbox=_action_sandbox(self.root),
+            ).final_text
+        except (
+            AgentRuntimeError,
+            CapabilityAuthorizationError,
+            TypeError,
+        ) as error:
+            return str(error)
 
     def _respond_read_only_turn(
         self,
@@ -1725,7 +1780,7 @@ class EnochApplication:
         *,
         session_key: str,
     ) -> str:
-        reply = self._respond_read_only_turn(chat_id, text, session_key=session_key)
+        reply = self._respond_conversation_turn(chat_id, text, session_key=session_key)
         regression_result = extract_task_regression_signals(reply)
         self._apply_task_regression_signals(regression_result.signals)
         reply = regression_result.visible_reply

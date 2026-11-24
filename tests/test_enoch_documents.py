@@ -82,9 +82,14 @@ class DocumentTests(unittest.TestCase):
             self.assertIn('missing_scope', context)
 
     def test_file_only_two_pdfs_reach_runtime_and_survive_for_later_tasks(self):
+        class ActingRuntime(_Runtime):
+            def act_in_session(self, identity, message, **kwargs):
+                self.messages.append((identity, message, kwargs))
+                return 'Read both papers.'
+
         with TemporaryDirectory() as temp:
             root = Path(temp)
-            chat, runtime = _Chat(), _Runtime()
+            chat, runtime = _Chat(), ActingRuntime()
             chat.download_attachment = Mock(side_effect=lambda a, p, **kw: write_pdf(p))
             app = EnochApplication(load_identity(), root, chat, runtime=runtime)
             event = ChatEvent('file-event', 'room-1', '', 'message-1', attachments=(

@@ -51,6 +51,18 @@ def read_only_turn_prompt(message: str, *, command_prefix: str = "/") -> str:
     )
 
 
+def conversation_turn_prompt(message: str, *, command_prefix: str = "/") -> str:
+    return _with_blocks(
+        message,
+        [
+            _conversation_action_wrapper_block(command_prefix=command_prefix),
+            _state_freshness_block(),
+            _memory_request_block(),
+            _task_regression_block(),
+        ],
+    )
+
+
 def work_request_prompt(request: str, *, remote_review: bool = True) -> str:
     return _with_blocks(
         f"Proceed with this work request:\n{request.strip()}",
@@ -184,6 +196,33 @@ def _read_only_wrapper_block(*, command_prefix: str = "/") -> str:
                 f"{command_prefix}do for foreground work, {command_prefix}task for "
                 f"queued background work, or {command_prefix}backlog for deferred "
                 "idle-time work."
+            ),
+        ]
+    )
+
+
+def _conversation_action_wrapper_block(*, command_prefix: str = "/") -> str:
+    return "\n".join(
+        [
+            "Conversation turn:",
+            "You may act in this turn.",
+            (
+                "When the human's message asks for something to be done, do it directly: "
+                "edit files, run commands, inspect the repository, and use available tools as needed."
+            ),
+            (
+                "When the message is a question or conversation, answer it; "
+                "do not start work the human did not ask for."
+            ),
+            "Report what you changed and what you verified.",
+            (
+                "For long-running or background work, you may suggest "
+                f"{command_prefix}task for queued work or {command_prefix}backlog for deferred "
+                "idle-time work instead of doing it inline."
+            ),
+            (
+                "If the exact syntax of a chat command is uncertain, tell the human to use "
+                f"{command_prefix}help <command>; do not invent a command."
             ),
         ]
     )
