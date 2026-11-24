@@ -205,6 +205,20 @@ class TelegramClient:
             plain_text=text,
         )
 
+    def pin_message(
+        self,
+        conversation_id: ConversationId,
+        message_id: MessageId,
+    ) -> None:
+        self._call(
+            "pinChatMessage",
+            {
+                "chat_id": conversation_id,
+                "message_id": message_id,
+                "disable_notification": "true",
+            },
+        )
+
     def send_read_ack(
         self,
         conversation_id: ConversationId,

@@ -1119,6 +1119,21 @@ class AttachmentProvider(Protocol):
 
 
 @runtime_checkable
+class MessagePinProvider(Protocol):
+    """Optional chat capability: pin one sent message in a conversation.
+
+    Pinning should be silent where the platform allows it. Providers without
+    native pinning simply do not implement this protocol.
+    """
+
+    def pin_message(
+        self,
+        conversation_id: ConversationId,
+        message_id: MessageId,
+    ) -> None: ...
+
+
+@runtime_checkable
 class AgentRuntime(Protocol):
     name: str
     provider_kind: str
