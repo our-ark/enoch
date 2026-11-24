@@ -957,6 +957,10 @@ def _task_usage(prefix: str) -> str:
             f"{command} cancel <id> - cancel a queued background task",
             f"{command} resume <id|all> - continue paused tasks with the same ids",
             f"{command} retry <id> - retry a failed task as a new linked task",
+            (
+                f"{command} show <id> - show a task's status, full request, reviews, "
+                "failure, and the context snapshot given to the worker"
+            ),
         ]
     )
 
@@ -973,7 +977,8 @@ def _board_usage(prefix: str) -> str:
             f"{command} off - stop updating the current task board",
             (
                 f"Running {command} again posts a fresh board and stops updating the old one. "
-                "The board is edited silently; task alerts are still sent as usual."
+                "The board is edited silently. While it is active, each task posts only a "
+                f"start line and a final result; use {prefix}task show <id> for full details."
             ),
         ]
     )

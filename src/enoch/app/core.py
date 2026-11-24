@@ -397,6 +397,7 @@ from enoch.app.parsing import (
     task_cancel_id as _task_cancel_id,
     task_resume_target as _task_resume_target,
     task_retry_id as _task_retry_id,
+    task_show_id as _task_show_id,
     unquote_schedule_text as _unquote_schedule_text,
 )
 from enoch.app.presentation import (
@@ -405,10 +406,14 @@ from enoch.app.presentation import (
     cron_usage as _cron_usage,
     evolve_usage as _evolve_usage,
     final_task_status_update as _final_task_status_update,
+    format_compact_task_final_message as _format_compact_task_final_message,
+    format_compact_task_queued as _format_compact_task_queued,
+    format_compact_task_start as _format_compact_task_start,
     format_elapsed as _format_elapsed,
     format_open_reviews as _format_open_reviews,
     format_review as _format_review,
     format_review_land_result as _format_review_land_result,
+    format_task_details as _format_task_details,
     format_task_final_message as _format_task_final_message,
     format_work_status_message as _format_work_status_message,
 )
@@ -1466,13 +1471,35 @@ class EnochApplication:
         job: TaskJob,
         final_status: str,
         result: str,
+        *,
+        compact: bool = False,
     ) -> str:
+        if compact:
+            return _format_compact_task_final_message(
+                job,
+                final_status,
+                result,
+                task_label=self.profile.presentation.task_label,
+                command_prefix=self.command_prefix,
+            )
         return _format_task_final_message(
             job,
             final_status,
             result,
             task_label=self.profile.presentation.task_label,
         )
+
+    def _compact_task_messages(self) -> bool:
+        """True while the task board is active.
+
+        The pinned board already shows running, queued, and paused state, so
+        per-task messages then only mark the start and report the outcome.
+        """
+
+        try:
+            return load_task_board_state(self.root).active
+        except (OSError, StateCorruptionError):
+            return False
 
     def _profile_prompt(
         self,
@@ -2003,19 +2030,24 @@ class EnochApplication:
         context = direct_task.context
         if not session_key:
             session_key = f"{self._session_key(chat_id)}:do:{direct_task.id}"
-        status_message = WorkStatusMessage(
-            chat_id=chat_id,
-            message_id=0,
-            request=request,
-            started_at=time.monotonic(),
-            task_id=direct_task.id,
-            status="running",
-            latest_update="Starting work.",
-            context=context,
-        )
+        if self._compact_task_messages():
+            status_text = _format_compact_task_start(direct_task.id, request)
+        else:
+            status_text = self._format_work_status(
+                WorkStatusMessage(
+                    chat_id=chat_id,
+                    message_id=0,
+                    request=request,
+                    started_at=time.monotonic(),
+                    task_id=direct_task.id,
+                    status="running",
+                    latest_update="Starting work.",
+                    context=context,
+                )
+            )
         message_id = self._safe_send_message_id(
             chat_id,
-            self._format_work_status(status_message),
+            status_text,
             notification_key=f"task:{direct_task.id}:status",
             thread_id=direct_task.thread_id,
         )
@@ -2227,6 +2259,9 @@ class EnochApplication:
             )
         except (OSError, ValueError):
             return f"{self.display_name} could not queue that {self.command_prefix}do request."
+        if self._compact_task_messages():
+            # The board shows the queue; the start line is sent when it runs.
+            return _format_compact_task_queued(job.id)
         message = self._format_work_status(
             WorkStatusMessage(
                 chat_id=chat_id,
@@ -2671,6 +2706,9 @@ class EnochApplication:
                 task_status.reviews.append(review_url)
             if normalize_message_id(task_status.message_id) is None:
                 return True
+            if task_status.task_id is not None and self._compact_task_messages():
+                # The task's start line is never edited while the board is active.
+                return True
             self._safe_edit_message(
                 task_status.chat_id,
                 task_status.message_id,
@@ -2748,7 +2786,8 @@ class EnochApplication:
         pin_note = self._pin_task_board(chat_id, message_id)
         lines = [
             f"Task board posted{pin_note}. {self.display_name} edits it as tasks change; "
-            "edits do not send notifications, and task alerts are unchanged.",
+            "edits do not send notifications. While it is active, each task posts only a "
+            "start line and a final result.",
         ]
         if previous.message_id is not None and previous.message_id != message_id:
             lines.append("The previous board is no longer updated.")
@@ -3003,6 +3042,8 @@ class EnochApplication:
         if command != "/task" or not argument:
             return f"Use {self.command_prefix}task <request> to queue background work."
         subcommand = argument.split(maxsplit=1)[0].lower()
+        if subcommand == "show" and len(argument.split()) <= 2:
+            return self._show_task(_task_show_id(argument))
         cancel_id = _task_cancel_id(argument)
         retry_id = _task_retry_id(argument)
         resume_target = _task_resume_target(argument)
@@ -3017,7 +3058,7 @@ class EnochApplication:
             if cancelled is None:
                 return f"{self.display_name} could not cancel task #{cancel_id}. It may be running, completed, or missing."
             message_id = self._work_status_messages.pop(cancelled.id, cancelled.status_message_id)
-            if message_id is not None:
+            if message_id is not None and not self._compact_task_messages():
                 cancelled_status = WorkStatusMessage(
                     chat_id=cancelled.chat_id,
                     message_id=message_id,
@@ -3066,6 +3107,9 @@ class EnochApplication:
             )
         except (OSError, ValueError):
             return f"{self.display_name} could not queue that task."
+        if self._compact_task_messages():
+            # The board shows the queue; the start line is sent when it runs.
+            return _format_compact_task_queued(job.id)
         status = self.workflow.inspect()
         position = status.pending_count
         message = self._format_work_status(
@@ -3092,6 +3136,16 @@ class EnochApplication:
             return ""
         return f"Queued task #{job.id}. {self.display_name} will work on it in the background when idle."
 
+    def _show_task(self, task_id: int | None) -> str:
+        """Read-only task details, including the brief given to the worker."""
+
+        if task_id is None:
+            return f"Use {self.command_prefix}task show <id> to show a task's request and context snapshot."
+        job = self.workflow.find(task_id)
+        if job is None:
+            return f"{self.display_name} has no task #{task_id}."
+        return _format_task_details(job, task_label=self.profile.presentation.task_label)
+
     def _retry_task(self, task_id: int) -> str:
         original = self.workflow.find(task_id)
         try:
@@ -3106,6 +3160,8 @@ class EnochApplication:
             )
         except (OSError, ReviewProviderError, TaskRetryError) as error:
             return f"{self.display_name} could not retry task #{task_id}: {error}"
+        if self._compact_task_messages():
+            return _format_compact_task_queued(job.id, retry_of=task_id)
         position = self.workflow.inspect().pending_count
         retry_kind = "unpublished task" if original is not None and original.status == "completed" else "failed task"
         message = self._format_work_status(
@@ -3224,10 +3280,12 @@ class EnochApplication:
                     )
                 return f"Task #{task_id} is not paused."
             return "No tasks are paused for agent runtime access."
+        compact = self._compact_task_messages()
         for job in resumed:
             message_id = self._work_status_messages.get(job.id) or job.status_message_id
             if message_id is not None:
                 self._work_status_messages[job.id] = message_id
+            if message_id is not None and not compact:
                 self._safe_edit_message(
                     job.chat_id,
                     message_id,
@@ -3311,7 +3369,7 @@ class EnochApplication:
         if cancelled is None:
             return "No running task to stop."
         message_id = self._work_status_messages.pop(cancelled.id, cancelled.status_message_id)
-        if message_id is not None:
+        if message_id is not None and not self._compact_task_messages():
             stopped_status = WorkStatusMessage(
                 chat_id=cancelled.chat_id,
                 message_id=message_id,
@@ -4520,20 +4578,25 @@ class EnochApplication:
         message_id = self._work_status_messages.get(job.id) or job.status_message_id
         created_status_message = False
         if message_id is None:
-            status_message = WorkStatusMessage(
-                chat_id=job.chat_id,
-                message_id=0,
-                request=job.text,
-                started_at=time.monotonic(),
-                task_id=job.id,
-                status="running",
-                latest_update=start_update,
-                reviews=list(job.review_urls),
-                context=job.context,
-            )
+            if self._compact_task_messages():
+                status_text = _format_compact_task_start(job.id, job.text)
+            else:
+                status_text = self._format_work_status(
+                    WorkStatusMessage(
+                        chat_id=job.chat_id,
+                        message_id=0,
+                        request=job.text,
+                        started_at=time.monotonic(),
+                        task_id=job.id,
+                        status="running",
+                        latest_update=start_update,
+                        reviews=list(job.review_urls),
+                        context=job.context,
+                    )
+                )
             message_id = self._safe_send_message_id(
                 job.chat_id,
-                self._format_work_status(status_message),
+                status_text,
                 notification_key=f"task:{job.id}:status",
                 thread_id=job.thread_id,
             )
@@ -4730,8 +4793,11 @@ class EnochApplication:
             allow_resolution=completed_status == "completed",
         )
         summary_job = authoritative_job
+        compact = self._compact_task_messages()
         if completed_status == "retrying":
-            if task_status is not None:
+            # While the board is active it shows the task queued again, so a
+            # transient retry sends nothing.
+            if task_status is not None and not compact:
                 retry_token = _CURRENT_WORK_STATUS.set(task_status)
                 try:
                     self._update_work_status(
@@ -4755,17 +4821,23 @@ class EnochApplication:
             self._record_automatic_learning(summary_job, command=command, result=reply)
         if task_status is not None:
             task_status.reviews = list(summary_job.review_urls)
-            final_token = _CURRENT_WORK_STATUS.set(task_status)
-            try:
-                self._update_work_status(
-                    _final_task_status_update(completed_status, command_prefix=self.command_prefix),
-                    status=completed_status,
-                )
-            finally:
-                _CURRENT_WORK_STATUS.reset(final_token)
+            if not compact:
+                final_token = _CURRENT_WORK_STATUS.set(task_status)
+                try:
+                    self._update_work_status(
+                        _final_task_status_update(completed_status, command_prefix=self.command_prefix),
+                        status=completed_status,
+                    )
+                finally:
+                    _CURRENT_WORK_STATUS.reset(final_token)
             if completed_status != "paused":
                 self._work_status_messages.pop(job.id, None)
-        final_message = self._format_task_final(summary_job, completed_status, reply)
+        final_message = self._format_task_final(
+            summary_job,
+            completed_status,
+            reply,
+            compact=compact,
+        )
         rejected_attachments = _CURRENT_OUTPUT_REJECTIONS.get()
         if rejected_attachments:
             final_message += (
@@ -5257,6 +5329,9 @@ class EnochApplication:
         if task_id is not None and worker_id:
             if self.workflow.heartbeat(task_id, worker_id) is None:
                 raise RuntimeError(f"Task #{task_id} lost its workflow claim.")
+        if self._compact_task_messages():
+            # The board shows the task running; never edit or send progress.
+            return
         mode = _sandbox_description(sandbox)
         if self._update_work_status(f"Still working after {_format_elapsed(elapsed_seconds)}: {mode}."):
             return

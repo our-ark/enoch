@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 
 from enoch.app.models import WorkStatusMessage
+from enoch.app.task_board import REQUEST_LIMIT, _short as _short_board_text
 from enoch.providers.contracts import (
     ReviewLandResult,
     ReviewRecord,
@@ -190,6 +191,105 @@ def format_work_status_message(
                 clip_activity_text(status.context, limit=1200),
             ]
         )
+    return "\n".join(lines)
+
+
+# Compact task messages are used while the pinned task board is active. The
+# board already shows running, queued, and paused state, so per-task chat
+# messages only mark the start and report the outcome.
+COMPACT_SUMMARY_MAX_LINES = 5
+COMPACT_SUMMARY_MAX_CHARS = 500
+COMPACT_REASON_LIMIT = 80
+
+
+def short_request(text: str, limit: int = REQUEST_LIMIT) -> str:
+    """Return the first non-empty line of ``text``, clipped like the board."""
+
+    first_line = next((line for line in text.splitlines() if line.strip()), "")
+    return _short_board_text(first_line, limit)
+
+
+def format_compact_task_start(task_id: int, request: str) -> str:
+    return f"▶️ #{task_id} started: {short_request(request)}"
+
+
+def format_compact_task_queued(task_id: int, *, retry_of: int | None = None) -> str:
+    if retry_of is not None:
+        return f"Queued #{task_id} (retry of #{retry_of})."
+    return f"Queued #{task_id}."
+
+
+def clip_compact_summary(text: str) -> str:
+    """Clip a result summary to a few lines and a few hundred characters."""
+
+    lines = clip_activity_block(text, limit=len(text) + 1).splitlines()
+    clipped = "\n".join(lines[:COMPACT_SUMMARY_MAX_LINES])
+    truncated = len(lines) > COMPACT_SUMMARY_MAX_LINES
+    if len(clipped) > COMPACT_SUMMARY_MAX_CHARS:
+        clipped = clipped[: COMPACT_SUMMARY_MAX_CHARS - 1].rstrip()
+        truncated = True
+    return f"{clipped.rstrip()}…" if truncated else clipped
+
+
+def format_compact_task_final_message(
+    job: TaskJob,
+    final_status: str,
+    result: str,
+    *,
+    task_label: str = "Task",
+    command_prefix: str = "/",
+) -> str:
+    """Final per-task notification while the task board is active.
+
+    Paused keeps the detailed message because it tells the human what to do.
+    """
+
+    if final_status == "paused":
+        return format_task_final_message(job, final_status, result, task_label=task_label)
+    if final_status == "cancelled":
+        return f"⏹ #{job.id} cancelled"
+    if final_status == "failed":
+        reason = job.failure_code or _short_reason(job.result or result) or "unknown failure"
+        return (
+            f"❌ #{job.id} failed: {reason} · "
+            f"retry with {command_prefix}task retry {job.id}"
+        )
+    headline = " · ".join([f"✅ #{job.id} completed", *job.review_urls])
+    summary = clip_compact_summary(job.result or result)
+    return f"{headline}\n{summary}" if summary else headline
+
+
+def _short_reason(text: str) -> str:
+    return short_request(text, COMPACT_REASON_LIMIT)
+
+
+def format_task_details(job: TaskJob, *, task_label: str = "Task") -> str:
+    """Read-only detail view for ``/task show <id>``.
+
+    Includes the conversation context snapshot given to the worker so the
+    human can check the brief matches what they asked for.
+    """
+
+    lines = [
+        f"{task_label} #{job.id}",
+        f"Status: {job.status}",
+    ]
+    if job.parent_task_id is not None:
+        lines.append(f"Retry of: #{job.parent_task_id}")
+    lines.extend(["", "Request:", job.text.strip() or "(empty)", "", "Review URLs:"])
+    lines.extend([f"- {url}" for url in job.review_urls] or ["- none"])
+    if job.status == "failed":
+        failure = job.failure_code or "unknown"
+        if job.failure_class:
+            failure += f" ({job.failure_class})"
+        lines.extend(["", f"Failure: {failure}"])
+        if job.attempt:
+            lines.append(f"Attempts: {job.attempt}/{job.max_attempts}")
+        if job.result.strip():
+            lines.append(clip_activity_block(job.result, limit=1200))
+    source = job.context_source or "none"
+    lines.extend(["", f"Context snapshot (source: {source}):"])
+    lines.append(job.context.strip() or "(none)")
     return "\n".join(lines)
 
 
