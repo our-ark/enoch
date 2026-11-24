@@ -57,8 +57,15 @@ class ClaudeRuntimeTests(unittest.TestCase):
         self.assertEqual([event.type for event in result.events], ["system", "assistant", "result"])
         self.assertEqual([item.stage for item in progress], ["started", "working", "completed"])
         self.assertIn("--no-session-persistence", args)
-        self.assertEqual(_argument(args, "--permission-mode"), "plan")
+        self.assertEqual(_argument(args, "--permission-mode"), "dontAsk")
         self.assertNotIn("--dangerously-skip-permissions", args)
+        tools = _argument(args, "--tools").split(",")
+        allowed = _argument(args, "--allowedTools").split(",")
+        self.assertEqual(tools, ["Read", "Glob", "Grep", "WebSearch", "WebFetch"])
+        self.assertEqual(allowed, tools)
+        for write_tool in ("Edit", "Write", "NotebookEdit", "Bash"):
+            self.assertNotIn(write_tool, tools)
+            self.assertNotIn(write_tool, allowed)
 
     def test_workspace_execution_uses_restricted_preapproved_tools(self) -> None:
         with TemporaryDirectory() as temporary:

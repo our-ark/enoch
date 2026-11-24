@@ -574,13 +574,16 @@ class ClaudeRuntime:
             "--strict-mcp-config",
             "--no-chrome",
             "--disable-slash-commands",
+            # dontAsk denies any tool that is not pre-approved instead of prompting.
+            # Read-only turns must not use plan mode: Claude Code injects plan-mode
+            # instructions that override host conversation contracts.
             "--permission-mode",
-            "dontAsk" if workspace_write else "plan",
+            "dontAsk",
             "--tools",
             ",".join(tools),
+            "--allowedTools",
+            ",".join(tools),
         ]
-        if workspace_write:
-            args.extend(["--allowedTools", ",".join(tools)])
         if session_id:
             args.extend(["--resume", session_id])
         elif not persistent:
