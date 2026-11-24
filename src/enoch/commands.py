@@ -961,6 +961,24 @@ def _task_usage(prefix: str) -> str:
     )
 
 
+def _board_usage(prefix: str) -> str:
+    command = f"{prefix}board"
+    return "\n".join(
+        [
+            "Task board commands:",
+            (
+                f"{command} - post a task board, pin it when the chat supports pinning, "
+                "and keep it updated as tasks change"
+            ),
+            f"{command} off - stop updating the current task board",
+            (
+                f"Running {command} again posts a fresh board and stops updating the old one. "
+                "The board is edited silently; task alerts are still sent as usual."
+            ),
+        ]
+    )
+
+
 def _backlog_help_usage(prefix: str) -> str:
     command = f"{prefix}backlog"
     return "\n".join(
@@ -1069,6 +1087,14 @@ CORE_COMMANDS = (
         "Work",
         "",
         "show running, queued, and recent task history",
+    ),
+    CoreCommand(
+        "board",
+        "board",
+        "Work",
+        "[off]",
+        "pin a task board that stays up to date",
+        _board_usage,
     ),
     CoreCommand("stop", "stop", "Work", "", "stop the currently running task"),
     CoreCommand(

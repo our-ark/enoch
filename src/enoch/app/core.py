@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextvars import ContextVar
 from dataclasses import replace
+from datetime import datetime
 import hashlib
 import json
 import os
@@ -249,6 +250,7 @@ from enoch.providers.contracts import (
     ForgeProvider,
     ForgeProviderError,
     MessageId,
+    MessagePinProvider,
     OutboundAttachment,
     RepositoryProvider,
     RepositoryProviderError,
@@ -409,6 +411,14 @@ from enoch.app.presentation import (
     format_review_land_result as _format_review_land_result,
     format_task_final_message as _format_task_final_message,
     format_work_status_message as _format_work_status_message,
+)
+from enoch.state import StateCorruptionError
+from enoch.app.task_board import (
+    RenderedTaskBoard,
+    TaskBoardState,
+    load_task_board_state,
+    render_task_board,
+    save_task_board_state,
 )
 from enoch.app.reporting import (
     _evolve_check_reason,
@@ -625,6 +635,7 @@ class EnochApplication:
         self._lineage_worker_lock = threading.Lock()
         self._task_cancellations: dict[int, threading.Event] = {}
         self._stopping = False
+        self._task_board_error = ""
         reconcile_extension_schedules(
             {
                 extension.name: extension.schedules
@@ -770,6 +781,7 @@ class EnochApplication:
             self._run_due_evolve_schedule()
             self._maybe_start_task_worker()
             self._maybe_start_lineage_worker()
+            self._refresh_task_board()
         finally:
             self._drain_extension_task_events()
             self._run_extension_hooks("after_run", reverse=True)
@@ -1173,6 +1185,7 @@ class EnochApplication:
                 self.root,
                 task_status=self.workflow.inspect(),
             ),
+            "board": lambda: self._task_board_command(argument),
             "stop": self._stop_running_job,
             "backlog": lambda: self._backlog(chat_id, work_text),
             "cron": lambda: self._cron(chat_id, work_text),
@@ -2588,7 +2601,7 @@ class EnochApplication:
         message: str,
         *,
         notification_key: str = "",
-    ) -> None:
+    ) -> NotificationResult:
         key = notification_key or self._notification_key(
             "edit",
             chat_id,
@@ -2596,14 +2609,14 @@ class EnochApplication:
             message_id=message_id,
         )
         try:
-            self.notifications.edit(
+            return self.notifications.edit(
                 chat_id,
                 message_id,
                 message,
                 idempotency_key=key,
             )
-        except (OSError, ChatProviderError, CapabilityAuthorizationError):
-            return
+        except (OSError, ChatProviderError, CapabilityAuthorizationError) as error:
+            return NotificationResult(delivered=False, error=str(error))
 
     def _notification_key(
         self,
@@ -2665,6 +2678,166 @@ class EnochApplication:
                 notification_key=_task_status_notification_key(task_status),
             )
             return True
+
+    def _render_task_board(self) -> RenderedTaskBoard:
+        return render_task_board(
+            self.workflow.inspect(),
+            updated_at=datetime.now().astimezone(),
+            title=f"{self.display_name} task board",
+            queue_command=f"{self.command_prefix}queue",
+        )
+
+    def _task_board_command(self, argument: str) -> str:
+        choice = argument.strip().lower()
+        command = f"{self.command_prefix}board"
+        if choice in {"off", "stop", "disable"}:
+            try:
+                state = load_task_board_state(self.root)
+            except (OSError, StateCorruptionError):
+                state = TaskBoardState()
+            if not state.enabled:
+                return f"The task board is already off. Use {command} to post one."
+            save_task_board_state(replace(state, enabled=False), self.root)
+            return (
+                "Task board updates stopped. The last board stays in the chat as it is. "
+                f"Use {command} to post a fresh one."
+            )
+        if choice:
+            return _help_message("board", command_prefix=self.command_prefix)
+
+        # The board lives in the locked conversation; this is the only place
+        # that chooses where it goes.
+        chat_id = _allowed_conversation_id(self.client)
+        if chat_id is None:
+            return (
+                f"{self.display_name} needs {provider_label(self.channel_name)} to be "
+                "locked to one conversation before posting a task board."
+            )
+        try:
+            previous = load_task_board_state(self.root)
+        except (OSError, StateCorruptionError):
+            previous = TaskBoardState()
+        rendered = self._render_task_board()
+        event_key = _CURRENT_EVENT_KEY.get()
+        # Keyed to the inbound event so a retried /board never posts twice.
+        key = (
+            f"inbox:{event_key}:task-board"
+            if event_key
+            else f"daemon:{self.daemon_epoch.generation}:task-board:{uuid4().hex}"
+        )
+        delivery = self._deliver_message(chat_id, rendered.text, notification_key=key)
+        if not delivery.delivered:
+            return f"{self.display_name} could not post the task board: {delivery.error}"
+        message_id = normalize_message_id(delivery.message_id)
+        if message_id is None:
+            save_task_board_state(replace(previous, enabled=False), self.root)
+            return (
+                "Task board posted, but this chat provider did not return a message id, "
+                "so it cannot be kept up to date."
+            )
+        save_task_board_state(
+            TaskBoardState(
+                enabled=True,
+                chat_id=chat_id,
+                message_id=message_id,
+                last_digest=rendered.digest,
+            ),
+            self.root,
+        )
+        self._task_board_error = ""
+        pin_note = self._pin_task_board(chat_id, message_id)
+        lines = [
+            f"Task board posted{pin_note}. {self.display_name} edits it as tasks change; "
+            "edits do not send notifications, and task alerts are unchanged.",
+        ]
+        if previous.message_id is not None and previous.message_id != message_id:
+            lines.append("The previous board is no longer updated.")
+        lines.append(f"Use {command} off to stop updates.")
+        return "\n".join(lines)
+
+    def _pin_task_board(self, chat_id: ConversationId, message_id: MessageId) -> str:
+        """Pin the board when the provider supports it; return a reply fragment."""
+
+        if not isinstance(self.client, MessagePinProvider):
+            return " (this chat provider cannot pin messages, so it is not pinned)"
+        try:
+            self.effect_fence.run_authorized(
+                "chat.pin",
+                ("chat.pin",),
+                self.client.pin_message,
+                chat_id,
+                message_id,
+            )
+        except (OSError, ChatProviderError, CapabilityAuthorizationError) as error:
+            _record_system_event(
+                "task_board_pin_failed",
+                self.root,
+                status="failed",
+                details={
+                    "provider": self.channel_name,
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                    "error": str(error),
+                },
+            )
+            return f" but could not be pinned ({_clip_activity_text(str(error), limit=160)})"
+        return " and pinned"
+
+    def _refresh_task_board(self) -> None:
+        """Edit the board when its content changed; never raise into run_once."""
+
+        try:
+            self._refresh_task_board_once()
+        except StaleDaemonEpoch:
+            raise
+        except Exception as error:
+            message = f"{type(error).__name__}: {error}"
+            if message != self._task_board_error:
+                # Log each distinct failure once instead of every poll cycle.
+                self._task_board_error = message
+                _record_system_event(
+                    "task_board_refresh_failed",
+                    self.root,
+                    status="failed",
+                    details={"error": message},
+                )
+
+    def _refresh_task_board_once(self) -> None:
+        state = load_task_board_state(self.root)
+        if not state.active:
+            return
+        assert state.chat_id is not None and state.message_id is not None
+        rendered = self._render_task_board()
+        if rendered.digest == state.last_digest:
+            return
+        result = self._safe_edit_message(
+            state.chat_id,
+            state.message_id,
+            rendered.text,
+            # Unique per attempt: the footer time and a repeated body must
+            # never collide with an earlier journal entry for this message.
+            notification_key=(
+                f"task-board:{state.message_id}:{rendered.digest[:16]}:{uuid4().hex}"
+            ),
+        )
+        if result.delivered:
+            save_task_board_state(replace(state, last_digest=rendered.digest), self.root)
+            self._task_board_error = ""
+            return
+        # The message may have been deleted or become uneditable. Stop here so
+        # the board never retries every cycle or posts a replacement on its own.
+        save_task_board_state(replace(state, enabled=False), self.root)
+        _record_system_event(
+            "task_board_stale",
+            self.root,
+            status="failed",
+            details={
+                "provider": self.channel_name,
+                "chat_id": state.chat_id,
+                "message_id": state.message_id,
+                "error": result.error,
+            },
+        )
 
     def _safe_send_read_ack(self, chat_id: ConversationId, message_id: object) -> None:
         if not isinstance(message_id, (int, str)):

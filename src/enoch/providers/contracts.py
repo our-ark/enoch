@@ -119,6 +119,11 @@ except ImportError:  # provider-kit compatibility during notification rollout
         NotificationReceipt,
     )
 
+try:
+    from our_ark_provider_kit import MessagePinProvider
+except ImportError:  # provider-kit compatibility during message-pin rollout
+    from enoch.providers._message_pin_compat import MessagePinProvider
+
 from our_ark_provider_kit import (  # noqa: E402
     REPOSITORY_CONTRACT_VERSION,
     REVIEW_CONTRACT_VERSION,
@@ -176,6 +181,7 @@ __all__ = [
     "EvolutionProvenance",
     "LocalPublishResult",
     "MessageId",
+    "MessagePinProvider",
     "OutboundAttachment",
     "NOTIFICATION_CONTRACT_VERSION",
     "NotificationCapabilities",

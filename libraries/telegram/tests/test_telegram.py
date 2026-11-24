@@ -14,6 +14,7 @@ from our_ark_provider_kit import (
     Attachment,
     AttachmentProvider,
     ChatProvider,
+    MessagePinProvider,
     ProviderContractConformanceMixin,
 )
 from our_ark_telegram import (
@@ -39,6 +40,7 @@ class TelegramLibraryTests(ProviderContractConformanceMixin, unittest.TestCase):
 
         self.assertIsInstance(client, ChatProvider)
         self.assertIsInstance(client, AttachmentProvider)
+        self.assertIsInstance(client, MessagePinProvider)
         self.assertEqual(client.allowed_conversation_id, 42)
 
     def test_event_exposes_largest_photo_as_attachment(self) -> None:
@@ -175,6 +177,42 @@ class TelegramLibraryTests(ProviderContractConformanceMixin, unittest.TestCase):
                 )
             ],
         )
+
+    def test_pin_message_pins_silently(self) -> None:
+        client = TelegramClient(TelegramConfig(token="test"))
+        calls = []
+
+        def fake_call(method, payload):
+            calls.append((method, payload))
+            return {"ok": True, "result": True}
+
+        client._call = fake_call
+        client.pin_message(42, 9)
+
+        self.assertEqual(
+            calls,
+            [
+                (
+                    "pinChatMessage",
+                    {
+                        "chat_id": 42,
+                        "message_id": 9,
+                        "disable_notification": "true",
+                    },
+                )
+            ],
+        )
+
+    def test_pin_message_failure_raises_provider_error(self) -> None:
+        client = TelegramClient(TelegramConfig(token="test"))
+
+        def fake_call(method, payload):
+            raise TelegramError("Bad Request: not enough rights to pin a message")
+
+        client._call = fake_call
+
+        with self.assertRaisesRegex(TelegramError, "not enough rights"):
+            client.pin_message(42, 9)
 
     def test_format_rejection_falls_back_to_original_plain_text(self) -> None:
         client = TelegramClient(TelegramConfig(token="test"))

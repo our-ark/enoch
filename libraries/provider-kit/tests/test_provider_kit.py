@@ -21,6 +21,7 @@ from our_ark_provider_kit import (
     ChatEvent,
     ChatProvider,
     DurableNotificationProvider,
+    MessagePinProvider,
     NotificationCapabilities,
     NotificationIntent,
     NotificationReceipt,
@@ -153,6 +154,15 @@ class ProviderKitTests(unittest.TestCase):
         self.assertIsInstance(FakeChatProvider(), ChatProvider)
         self.assertIsInstance(FakeChatProvider(), AttachmentProvider)
         self.assertIsInstance(FakeDurableChatProvider(), DurableNotificationProvider)
+
+    def test_message_pin_contract_is_optional_and_runtime_checkable(self) -> None:
+        class PinningChatProvider(FakeChatProvider):
+            def pin_message(self, conversation_id, message_id):
+                return None
+
+        self.assertNotIsInstance(FakeChatProvider(), MessagePinProvider)
+        self.assertIsInstance(PinningChatProvider(), MessagePinProvider)
+        self.assertIsInstance(PinningChatProvider(), ChatProvider)
 
     def test_notification_contract_validates_operations_and_versions(self) -> None:
         attachment = OutboundAttachment(

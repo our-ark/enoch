@@ -344,6 +344,16 @@ def download_attachment(self, attachment, destination, *, max_bytes):
     ...
 ```
 
+Providers that can pin a message implement the optional `MessagePinProvider`
+contract. Pinning should be silent where the platform allows it. Enoch uses it
+for the opt-in `/board` task board and authorizes each pin with the `chat.pin`
+capability; providers without it still get an unpinned board:
+
+```python
+def pin_message(self, conversation_id, message_id):
+    ...
+```
+
 ### Capabilities and authorization
 
 Providers may explicitly declare their supported operations with the versioned
@@ -365,7 +375,7 @@ class SlackProvider:
 ```
 
 Core capability names are `chat.receive`, `chat.send`, `chat.edit`,
-`chat.ack`, `chat.attachment`, `runtime.respond`, `runtime.execute`,
+`chat.ack`, `chat.attachment`, `chat.pin`, `runtime.respond`, `runtime.execute`,
 `vcs.read`, `vcs.write`, `forge.read`, `forge.publish`, `forge.maintain`,
 `forge.merge`, `service.read`, and `service.manage`.
 
