@@ -24,6 +24,10 @@ def task_retry_id(argument: str) -> int | None:
     return _task_action_id(argument, "retry")
 
 
+def task_show_id(argument: str) -> int | None:
+    return _task_action_id(argument, "show")
+
+
 def task_resume_target(argument: str) -> int | str | None:
     parts = argument.split()
     if len(parts) != 2 or parts[0].lower() != "resume":
