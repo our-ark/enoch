@@ -16,8 +16,8 @@ from our_ark_github.workflow import (
     PullRequestMergeStatus,
     close_pull_request,
     create_pull_request,
-    enable_pull_request_auto_merge,
     inspect_pull_request,
+    inspect_pull_request_checks,
     inspect_pull_request_merge,
     list_open_pull_requests,
     merge_pull_request,
@@ -26,6 +26,7 @@ from our_ark_github.workflow import (
     publish_revision_for_review,
     push_current_branch,
     update_pull_request_branch,
+    verify_pull_request_branch_update,
 )
 from enoch.immune import DoctorDiagnosis
 
@@ -901,92 +902,156 @@ class EnochGithubWorkflowTests(unittest.TestCase):
 
     @patch("our_ark_github.workflow.subprocess.run")
     @patch("our_ark_github.workflow.shutil.which", return_value="/usr/local/bin/gh")
-    def test_enables_auto_merge_for_exact_head_with_repository_method(
+    @patch("our_ark_github.workflow.inspect_pull_request_merge")
+    def test_merge_pinned_to_expected_head(
         self,
+        inspect: MagicMock,
         _which: MagicMock,
         run: MagicMock,
     ) -> None:
+        inspect.return_value = _merge_status(head_sha="pushed555")
+
+        with self.assertRaisesRegex(PublishError, "head changed to pushed555"):
+            merge_pull_request("12", ROOT, expected_head_sha="abc123")
+        run.assert_not_called()
+
+        inspect.return_value = _merge_status()
         run.side_effect = [
-            _process_result(stdout=json.dumps(_pull_api_payload("merge789"))),
-            _process_result(
-                stdout=json.dumps(
-                    {
-                        "allow_auto_merge": True,
-                        "allow_merge_commit": False,
-                        "allow_squash_merge": True,
-                        "allow_rebase_merge": True,
-                    }
-                )
-            ),
-            _process_result(stdout='{"data":{"enablePullRequestAutoMerge":{}}}'),
+            _process_result(stdout='{"mergeCommitAllowed":true}'),
+            _process_result(stdout='{"merged":true,"sha":"def456"}'),
         ]
+        result = merge_pull_request("12", ROOT, expected_head_sha="abc123")
 
-        result = enable_pull_request_auto_merge(
-            "https://github.com/our-ark/enoch/pull/12",
-            expected_head_sha="merge789",
-            root=ROOT,
-        )
-
-        self.assertTrue(result.enabled)
-        self.assertEqual(result.method, "squash")
-        self.assertEqual(
-            run.call_args_list[0].args[0],
-            ["/usr/local/bin/gh", "api", "repos/our-ark/enoch/pulls/12"],
-        )
-        command = run.call_args_list[2].args[0]
-        self.assertEqual(command[1:3], ["api", "graphql"])
-        self.assertIn("enablePullRequestAutoMerge", command[4])
-        self.assertIn("pullRequestId=PR_node12", command)
-        self.assertIn("mergeMethod=SQUASH", command)
-        self.assertIn("expectedHeadOid=merge789", command)
+        self.assertEqual(result.merge_commit, "def456")
+        self.assertEqual(json.loads(run.call_args_list[1].kwargs["input"])["sha"], "abc123")
 
     @patch("our_ark_github.workflow.subprocess.run")
     @patch("our_ark_github.workflow.shutil.which", return_value="/usr/local/bin/gh")
-    def test_auto_merge_is_not_enabled_when_repository_disallows_it(
+    def test_inspects_checks_for_the_current_head(
         self,
         _which: MagicMock,
         run: MagicMock,
     ) -> None:
-        run.side_effect = [
-            _process_result(stdout=json.dumps(_pull_api_payload("merge789"))),
-            _process_result(
-                stdout='{"allow_auto_merge":false,"allow_merge_commit":true}'
-            ),
-        ]
+        run.return_value = _process_result(
+            stdout=json.dumps(
+                {
+                    "number": 12,
+                    "url": "https://github.com/our-ark/enoch/pull/12",
+                    "headRefOid": "abc123",
+                    "statusCheckRollup": [
+                        {
+                            "__typename": "CheckRun",
+                            "name": "test (3.12)",
+                            "workflowName": "CI",
+                            "status": "COMPLETED",
+                            "conclusion": "SUCCESS",
+                        },
+                        {
+                            "__typename": "CheckRun",
+                            "name": "lint",
+                            "status": "COMPLETED",
+                            "conclusion": "SKIPPED",
+                        },
+                        {
+                            "__typename": "CheckRun",
+                            "name": "build",
+                            "status": "IN_PROGRESS",
+                            "conclusion": "",
+                        },
+                        {
+                            "__typename": "CheckRun",
+                            "name": "slow",
+                            "status": "COMPLETED",
+                            "conclusion": "TIMED_OUT",
+                        },
+                        {
+                            "__typename": "CheckRun",
+                            "name": "flaky",
+                            "status": "COMPLETED",
+                            "conclusion": "CANCELLED",
+                        },
+                        {"__typename": "StatusContext", "context": "deploy", "state": "PENDING"},
+                        {"__typename": "StatusContext", "context": "legacy", "state": "ERROR"},
+                    ],
+                }
+            )
+        )
 
-        result = enable_pull_request_auto_merge("12", expected_head_sha="merge789", root=ROOT)
+        report = inspect_pull_request_checks("12", ROOT)
 
-        self.assertFalse(result.enabled)
-        self.assertIn("does not allow auto-merge", result.message)
-        self.assertEqual(run.call_count, 2)
+        self.assertEqual(report.revision, "abc123")
         self.assertEqual(
-            run.call_args_list[0].args[0],
-            ["/usr/local/bin/gh", "api", "repos/{owner}/{repo}/pulls/12"],
+            [(check.name, check.state) for check in report.checks],
+            [
+                ("CI / test (3.12)", "success"),
+                ("lint", "success"),
+                ("build", "pending"),
+                ("slow", "failure"),
+                ("flaky", "failure"),
+                ("deploy", "pending"),
+                ("legacy", "failure"),
+            ],
+        )
+        self.assertFalse(report.green)
+        self.assertEqual(
+            run.call_args.args[0],
+            [
+                "/usr/local/bin/gh",
+                "pr",
+                "view",
+                "12",
+                "--json",
+                "number,url,headRefOid,statusCheckRollup",
+            ],
         )
 
     @patch("our_ark_github.workflow.subprocess.run")
     @patch("our_ark_github.workflow.shutil.which", return_value="/usr/local/bin/gh")
-    def test_auto_merge_refuses_a_head_that_changed_after_the_update(
+    def test_checks_for_a_different_pull_request_are_rejected(
         self,
         _which: MagicMock,
         run: MagicMock,
     ) -> None:
-        run.side_effect = [
-            _process_result(stdout=json.dumps(_pull_api_payload("pushed555"))),
-        ]
+        run.return_value = _process_result(
+            stdout='{"number":13,"url":"https://github.com/our-ark/enoch/pull/13","headRefOid":"x"}'
+        )
 
-        with self.assertRaisesRegex(PublishError, "head changed"):
-            enable_pull_request_auto_merge("12", expected_head_sha="merge789", root=ROOT)
-        run.assert_called_once()
+        with self.assertRaisesRegex(PublishError, "different pull request"):
+            inspect_pull_request_checks("12", ROOT)
 
+    @patch("our_ark_github.workflow.subprocess.run")
+    @patch("our_ark_github.workflow.shutil.which", return_value="/usr/local/bin/gh")
+    @patch("our_ark_github.workflow.inspect_pull_request_merge")
+    def test_verifies_a_late_branch_update_by_its_parents(
+        self,
+        inspect: MagicMock,
+        _which: MagicMock,
+        run: MagicMock,
+    ) -> None:
+        inspect.return_value = _merge_status(head_sha="merge789")
+        run.return_value = _process_result(
+            stdout='{"sha":"merge789","parents":[{"sha":"abc123"},{"sha":"main456"}]}'
+        )
 
-def _pull_api_payload(head_sha: str) -> dict[str, object]:
-    return {
-        "number": 12,
-        "html_url": "https://github.com/our-ark/enoch/pull/12",
-        "node_id": "PR_node12",
-        "head": {"sha": head_sha},
-    }
+        self.assertTrue(
+            verify_pull_request_branch_update(
+                "12", previous_head_sha="abc123", head_sha="merge789", root=ROOT
+            )
+        )
+        run.return_value = _process_result(
+            stdout='{"sha":"merge789","parents":[{"sha":"someone-else"}]}'
+        )
+        self.assertFalse(
+            verify_pull_request_branch_update(
+                "12", previous_head_sha="abc123", head_sha="merge789", root=ROOT
+            )
+        )
+        inspect.return_value = _merge_status(head_sha="pushed555")
+        self.assertFalse(
+            verify_pull_request_branch_update(
+                "12", previous_head_sha="abc123", head_sha="merge789", root=ROOT
+            )
+        )
 
 
 def _doctor_result(passed: bool, summary: str) -> MagicMock:

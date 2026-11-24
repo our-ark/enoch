@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from pathlib import Path
 from typing import Any, Callable
 
@@ -7,7 +8,6 @@ from our_ark_provider_kit.contracts import (
     AuthoritativeBase,
     ChangeCaptureRequest,
     ChangeCaptureResult,
-    ForgeProviderError,
     ProviderCapabilities,
     RepositoryFeatures,
     RepositoryProvider,
@@ -16,6 +16,7 @@ from our_ark_provider_kit.contracts import (
     RepositoryWorkspace,
     ReviewCloseRequest,
     ReviewFeatures,
+    ReviewCheckReport,
     ReviewIdentity,
     ReviewLandRequest,
     ReviewLandResult,
@@ -356,10 +357,7 @@ class LegacyForgeReviewAdapter:
         request: ReviewLandRequest,
         root: Path | None = None,
     ) -> ReviewLandResult:
-        behind = self._land_behind_review(request, root)
-        if behind is not None:
-            return behind
-        result = self.legacy.merge_pull_request(request.review.id, root)
+        result = self._merge(request, root)
         inspected = self.inspect_review(request.review, root)
         revision_id = str(getattr(result, "merge_commit", "") or "").strip()
         revision = inspected.landed_revision
@@ -374,86 +372,93 @@ class LegacyForgeReviewAdapter:
             message=str(getattr(result, "message", "") or ""),
         )
 
-    def _land_behind_review(
-        self,
-        request: ReviewLandRequest,
-        root: Path | None,
-    ) -> ReviewLandResult | None:
-        """Update a mergeable review that is only behind its base.
+    def _merge(self, request: ReviewLandRequest, root: Path | None) -> Any:
+        merge = self.legacy.merge_pull_request
+        expected = request.expected_revision
+        if not expected:
+            return merge(request.review.id, root)
+        if _accepts_keyword(merge, "expected_head_sha"):
+            # The forge pins the merge to this head itself.
+            return merge(request.review.id, root, expected_head_sha=expected)
+        current = self.inspect_review(request.review, root).versions[-1].revision.id
+        if current != expected:
+            raise ReviewProviderError(
+                f"Review {request.review.id} head changed to {current} "
+                f"(expected {expected}); it was not landed."
+            )
+        return merge(request.review.id, root)
 
-        Called only for the exact review a human asked to land. Returns
-        ``None`` for every other state so the forge's normal merge checks and
-        refusals (conflicts, blocked, draft, closed) still apply. The forge
-        never merges here: at most it enables its own auto-merge, which lands
-        only after the required checks pass.
+    def update_review_branch(
+        self,
+        review: ReviewIdentity,
+        *,
+        expected_revision: str,
+        root: Path | None = None,
+    ) -> Any:
+        """Bring one review up to date with its base (``forge.update-branch``).
+
+        The forge must refuse when the head is no longer ``expected_revision``.
         """
 
-        inspect_landing = getattr(self.legacy, "inspect_pull_request_merge", None)
-        if not callable(inspect_landing):
-            return None
-        status = inspect_landing(request.review.id, root)
-        if not _is_cleanly_behind(status):
-            return None
-        number = int(getattr(status, "number", 0) or 0)
-        label = f"PR #{number}" if number else f"Review {request.review.id}"
-        base = str(getattr(status, "base_branch", "") or "").strip() or "its base branch"
-        head = str(getattr(status, "head_sha", "") or "").strip()
-        update = self._optional_forge_operation(
+        update = self._required_forge_operation(
             "update_review_branch",
             "forge.update-branch",
+            "update review branches",
         )
-        if update is None:
-            raise ReviewProviderError(
-                f"{label} is behind {base} and must be updated before it can merge. "
-                "This forge cannot update review branches automatically."
-            )
-        updated = update(request.review.id, expected_head_sha=head, root=root)
-        new_head = str(getattr(updated, "head_sha", "") or "").strip()
-        identity = ReviewIdentity(
-            id=request.review.id,
-            url=str(getattr(status, "url", "") or request.review.url),
-            metadata=request.review.metadata,
+        return update(review.id, expected_head_sha=expected_revision, root=root)
+
+    def verify_review_branch_update(
+        self,
+        review: ReviewIdentity,
+        *,
+        previous_revision: str,
+        revision: str,
+        root: Path | None = None,
+    ) -> bool:
+        """True only when ``revision`` is a base update of ``previous_revision``."""
+
+        verify = self._optional_forge_operation(
+            "verify_review_branch_update",
+            "forge.update-branch",
         )
-        revision = RepositoryRevision(new_head) if new_head else None
-        enable = self._optional_forge_operation("enable_auto_merge", "forge.auto-merge")
-        auto_merge = None
-        auto_merge_error = ""
-        if enable is not None and new_head:
-            try:
-                auto_merge = enable(request.review.id, expected_head_sha=new_head, root=root)
-            except ForgeProviderError as error:
-                # The branch is already updated; report that instead of hiding it.
-                auto_merge_error = str(error).strip() or "the forge reported an error"
-        if auto_merge is not None and bool(getattr(auto_merge, "enabled", False)):
-            return ReviewLandResult(
-                review=identity,
-                status="auto-merge-enabled",
-                revision=revision,
-                message=(
-                    f"{label} was behind {base}. I updated its branch and enabled "
-                    "auto-merge; it will land when CI passes. If CI fails it will not merge."
-                ),
+        if verify is None:
+            return False
+        return bool(
+            verify(
+                review.id,
+                previous_head_sha=previous_revision,
+                head_sha=revision,
+                root=root,
             )
-        if enable is None:
-            reason = "This forge cannot enable auto-merge."
-        elif not new_head:
-            reason = "The updated head could not be verified yet, so auto-merge was not enabled."
-        elif auto_merge_error:
-            reason = f"Auto-merge could not be enabled: {auto_merge_error.rstrip('.')}."
-        else:
-            reason = (
-                str(getattr(auto_merge, "message", "") or "").strip()
-                or "Auto-merge was not enabled."
-            )
-        return ReviewLandResult(
-            review=identity,
-            status="branch-updated",
-            revision=revision,
-            message=(
-                f"{label} was behind {base}. I updated its branch and CI is running. "
-                f"{reason} It has not been merged; ask me to merge it again once CI is green."
-            ),
         )
+
+    def inspect_review_checks(
+        self,
+        review: ReviewIdentity,
+        root: Path | None = None,
+    ) -> ReviewCheckReport:
+        """Report CI checks for the review head (``forge.check-status``)."""
+
+        inspect_checks = self._required_forge_operation(
+            "inspect_review_checks",
+            "forge.check-status",
+            "inspect review checks",
+        )
+        report = inspect_checks(review.id, root)
+        if not isinstance(report, ReviewCheckReport):
+            raise ReviewProviderError("Forge returned invalid review check data.")
+        return report
+
+    def _required_forge_operation(
+        self,
+        method: str,
+        capability: str,
+        description: str,
+    ) -> Callable[..., Any]:
+        operation = self._optional_forge_operation(method, capability)
+        if operation is None:
+            raise ReviewProviderError(f"This forge cannot {description}.")
+        return operation
 
     def _optional_forge_operation(
         self,
@@ -495,6 +500,12 @@ class LegacyForgeReviewAdapter:
                 "number": number,
                 "legacy_reference": review_id,
                 "revision_id": revision_id,
+                "repository": str(
+                    getattr(result, "repository", "")
+                    or getattr(target, "repository", "")
+                    or ""
+                ).strip(),
+                "base_branch": str(getattr(result, "base_branch", "") or "").strip(),
             },
         )
         signals = tuple(
@@ -573,19 +584,14 @@ def as_review_provider(
     )
 
 
-def _is_cleanly_behind(status: Any) -> bool:
-    """True only for an open, ready, conflict-free review that is merely behind."""
-
-    def text(name: str) -> str:
-        return str(getattr(status, name, "") or "").strip().upper()
-
-    return (
-        text("merge_state_status") == "BEHIND"
-        and text("state") == "OPEN"
-        and not str(getattr(status, "merged_at", "") or "").strip()
-        and not bool(getattr(status, "is_draft", False))
-        and text("mergeable") == "MERGEABLE"
-        and bool(text("head_sha"))
+def _accepts_keyword(function: Callable[..., Any], name: str) -> bool:
+    try:
+        parameters = inspect.signature(function).parameters
+    except (TypeError, ValueError):
+        return False
+    return name in parameters or any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters.values()
     )
 
 

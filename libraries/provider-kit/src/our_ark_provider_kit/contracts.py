@@ -915,6 +915,9 @@ class ReviewLandRequest:
     review: ReviewIdentity
     strategy: str = "merge"
     contract_version: int = REVIEW_CONTRACT_VERSION
+    # Optional head pin: when set, the forge must refuse to land any other
+    # revision, so commits pushed after an authorization are never merged.
+    expected_revision: str = ""
 
     def __post_init__(self) -> None:
         strategy = str(self.strategy).strip().lower().replace("_", "-")
@@ -926,6 +929,7 @@ class ReviewLandRequest:
         if not strategy:
             raise ValueError("Review landing strategy is required.")
         object.__setattr__(self, "strategy", strategy)
+        object.__setattr__(self, "expected_revision", str(self.expected_revision).strip())
 
 
 @dataclass(frozen=True)
@@ -1071,15 +1075,55 @@ class PullRequestBranchUpdateResult:
     message: str = ""
 
 
-@dataclass(frozen=True)
-class PullRequestAutoMergeResult:
-    """Result of the optional ``enable_auto_merge`` forge operation."""
+REVIEW_CHECK_STATES = frozenset({"pending", "success", "failure"})
 
-    number: int
-    url: str
-    enabled: bool
-    method: str = ""
-    message: str = ""
+
+@dataclass(frozen=True)
+class ReviewCheck:
+    """One CI check or commit status reported for a review revision.
+
+    ``state`` is normalized: ``pending`` (not finished), ``success`` (passed,
+    neutral, or skipped), or ``failure`` (anything else that finished, such as
+    failed, cancelled, or timed out). ``detail`` keeps the forge's raw value.
+    """
+
+    name: str
+    state: str
+    detail: str = ""
+
+    def __post_init__(self) -> None:
+        state = str(self.state).strip().lower()
+        if state not in REVIEW_CHECK_STATES:
+            raise ValueError(f"Unknown review check state {self.state!r}.")
+        object.__setattr__(self, "name", str(self.name).strip() or "unnamed check")
+        object.__setattr__(self, "state", state)
+        object.__setattr__(self, "detail", str(self.detail).strip())
+
+
+@dataclass(frozen=True)
+class ReviewCheckReport:
+    """Result of the optional ``inspect_review_checks`` forge operation.
+
+    ``revision`` is the head the checks belong to, so callers can ignore a
+    report that raced with a new push.
+    """
+
+    revision: str
+    checks: tuple[ReviewCheck, ...] = ()
+
+    @property
+    def pending(self) -> tuple[ReviewCheck, ...]:
+        return tuple(check for check in self.checks if check.state == "pending")
+
+    @property
+    def failed(self) -> tuple[ReviewCheck, ...]:
+        return tuple(check for check in self.checks if check.state == "failure")
+
+    @property
+    def green(self) -> bool:
+        """True when every check finished and none failed (vacuously for none)."""
+
+        return not self.pending and not self.failed
 
 
 @runtime_checkable

@@ -11,23 +11,7 @@ from enoch.providers.contracts import (
 from enoch.tasks.queue import TaskJob
 
 
-REVIEW_BRANCH_UPDATE_STATUSES = frozenset({"auto-merge-enabled", "branch-updated"})
-
-
 def format_review_land_result(result: ReviewLandResult) -> str:
-    if result.status in REVIEW_BRANCH_UPDATE_STATUSES:
-        # The review was behind its base: it was updated, not landed.
-        return "\n".join(
-            [
-                result.message or f"Review {result.review.id}: {result.status}.",
-                *(
-                    [f"Updated revision: {result.revision.display}"]
-                    if result.revision is not None
-                    else []
-                ),
-                *([f"URL: {result.review.url}"] if result.review.url else []),
-            ]
-        )
     revision = (
         result.revision.display
         if result.revision is not None

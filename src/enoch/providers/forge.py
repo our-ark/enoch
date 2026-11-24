@@ -26,10 +26,12 @@ class FunctionForgeProvider:
     list_fn: Callable[..., tuple[Any, ...]]
     merge_fn: Callable[..., Any]
     # Optional: a forge that can bring a review branch up to date with its base
-    # and/or enable forge-side auto-merge. Without them, landing a review that
-    # is behind its base is refused.
+    # (``forge.update-branch``) and report CI checks for a review head
+    # (``forge.check-status``). Enoch waits for and lands a requested review
+    # only on forges with these; others keep refusing reviews that are not ready.
     update_branch_fn: Callable[..., Any] | None = None
-    enable_auto_merge_fn: Callable[..., Any] | None = None
+    verify_update_fn: Callable[..., bool] | None = None
+    checks_fn: Callable[..., Any] | None = None
     name: str = "function-forge"
     provider_kind: str = "forge"
     capabilities: ProviderCapabilities = ProviderCapabilities(
@@ -49,7 +51,7 @@ class FunctionForgeProvider:
             capability
             for capability, fn in (
                 ("forge.update-branch", self.update_branch_fn),
-                ("forge.auto-merge", self.enable_auto_merge_fn),
+                ("forge.check-status", self.checks_fn),
             )
             if fn is not None
         }
@@ -109,20 +111,29 @@ class FunctionForgeProvider:
             root=root,
         )
 
-    def enable_auto_merge(
+    def verify_review_branch_update(
         self,
         reference: str,
         *,
-        expected_head_sha: str,
+        previous_head_sha: str,
+        head_sha: str,
         root: Path | None = None,
-    ) -> Any:
-        if self.enable_auto_merge_fn is None:
-            raise ForgeProviderError("This forge cannot enable auto-merge.")
-        return self.enable_auto_merge_fn(
-            reference,
-            expected_head_sha=expected_head_sha,
-            root=root,
+    ) -> bool:
+        if self.verify_update_fn is None:
+            return False
+        return bool(
+            self.verify_update_fn(
+                reference,
+                previous_head_sha=previous_head_sha,
+                head_sha=head_sha,
+                root=root,
+            )
         )
+
+    def inspect_review_checks(self, reference: str, root: Path | None = None) -> Any:
+        if self.checks_fn is None:
+            raise ForgeProviderError("This forge cannot inspect review checks.")
+        return self.checks_fn(reference, root)
 
 
 class LocalForgeProvider:

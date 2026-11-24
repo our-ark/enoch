@@ -388,18 +388,24 @@ branchless fixtures are documented in
 [`repository-review-providers.md`](repository-review-providers.md).
 
 Forge providers may also declare two optional landing capabilities.
-`forge.update-branch` pairs with
-`update_review_branch(reference, *, expected_head_sha, root=None)`, and
-`forge.auto-merge` pairs with
-`enable_auto_merge(reference, *, expected_head_sha, root=None)`. When a human
-asks to land one exact review that is open, ready, conflict-free, and only
-behind its base, the review adapter updates that branch, guarded by the
-inspected head. When the forge supports and allows auto-merge, the adapter then
-enables it for the updated head, so the review lands only after required checks
-pass. Otherwise it reports that the branch was updated and the merge should be
-requested again once CI is green. Forges without `forge.update-branch` keep
-refusing reviews that are behind and say they must be updated first. Conflicted
-or blocked reviews are always refused.
+`forge.check-status` pairs with `inspect_review_checks(reference, root=None)`,
+which returns a `ReviewCheckReport` (the head revision plus each check
+normalized to `pending`, `success`, or `failure`). `forge.update-branch` pairs
+with `update_review_branch(reference, *, expected_head_sha, root=None)`, which
+must refuse when the head is no longer `expected_head_sha`, and optionally
+`verify_review_branch_update(reference, *, previous_head_sha, head_sha,
+root=None)`. A forge's `merge_pull_request` may also accept
+`expected_head_sha` so landing is pinned to the authorized head.
+
+With `forge.check-status`, a human request to land one exact review that is
+not ready yet is recorded as a pending merge in private state. The daemon
+checks it about once a minute. It updates the branch from its base when the
+review is behind (when `forge.update-branch` is declared). It lands the review
+only when every check finished green on a head the human authorized, or on a
+head Enoch created by updating from the base. It stops on new pushes, failed
+checks, conflicts, or after 2 hours. Forges without `forge.check-status` keep
+the immediate behavior, where reviews that are not ready are refused with the
+forge's reason.
 
 Ordinary queued tasks require `runtime.execute`, `vcs.inspect`,
 `vcs.authoritative`, `vcs.workspace`, `vcs.capture`, and `forge.review`.
