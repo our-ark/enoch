@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import time
 from urllib.parse import urlparse
 
 from our_ark_provider_kit import (
@@ -14,6 +15,8 @@ from our_ark_provider_kit import (
     EvolutionProvenance,
     ForgeProviderError,
     LocalPublishResult,
+    PullRequestAutoMergeResult,
+    PullRequestBranchUpdateResult,
     PullRequestCloseResult,
     PullRequestMergeCandidate,
     PullRequestMergeResult,
@@ -586,6 +589,8 @@ def _require_mergeable_pull_request(status: PullRequestMergeStatus) -> None:
         raise PublishError(f"{label} has merge conflicts.")
     if status.mergeable != "MERGEABLE":
         raise PublishError(f"{label} is not currently mergeable (status: {status.mergeable or 'unknown'}).")
+    if status.merge_state_status == "BEHIND":
+        raise PublishError(_behind_message(status))
     if status.merge_state_status not in {"CLEAN", "UNSTABLE"}:
         raise PublishError(
             f"{label} is not currently mergeable "
@@ -593,6 +598,262 @@ def _require_mergeable_pull_request(status: PullRequestMergeStatus) -> None:
         )
     if not status.head_sha:
         raise PublishError(f"{label} has no inspectable head commit.")
+
+
+def _behind_message(status: PullRequestMergeStatus) -> str:
+    label = f"PR #{status.number}" if status.number else "Pull request"
+    base = status.base_branch or "its base branch"
+    return f"{label} is behind {base} and must be updated before it can merge."
+
+
+def update_pull_request_branch(
+    reference: str,
+    *,
+    expected_head_sha: str,
+    root: Path | None = None,
+) -> PullRequestBranchUpdateResult:
+    """Merge the base branch into a BEHIND pull request on GitHub's side.
+
+    GitHub rejects the update when the head no longer matches
+    ``expected_head_sha``, so unexpected new commits are never overwritten.
+    Conflicts are never resolved here: only a mergeable BEHIND PR is updated.
+    """
+
+    expected = expected_head_sha.strip()
+    if not expected:
+        raise PublishError("An expected head commit is required to update a PR branch.")
+    status = inspect_pull_request_merge(reference, root)
+    _require_updatable_pull_request(status, expected)
+    gh = shutil.which("gh")
+    if gh is None:
+        raise PublishError("GitHub CLI is not available.")
+    result = subprocess.run(
+        [
+            gh,
+            "api",
+            "--method",
+            "PUT",
+            f"repos/{status.repository}/pulls/{status.number}/update-branch",
+            "--input",
+            "-",
+        ],
+        cwd=root,
+        text=True,
+        input=json.dumps({"expected_head_sha": expected}),
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        note = (
+            result.stderr.strip()
+            or result.stdout.strip()
+            or "GitHub could not update the pull request branch."
+        )
+        raise PublishError(f"Could not update PR #{status.number} from {status.base_branch}: {note}")
+    head = _updated_head_sha(gh, status, expected, root)
+    return PullRequestBranchUpdateResult(
+        number=status.number,
+        url=status.url,
+        base_branch=status.base_branch,
+        previous_head_sha=expected,
+        head_sha=head,
+        message=f"Updated PR #{status.number} from {status.base_branch}.",
+    )
+
+
+def enable_pull_request_auto_merge(
+    reference: str,
+    *,
+    expected_head_sha: str,
+    root: Path | None = None,
+) -> PullRequestAutoMergeResult:
+    """Enable GitHub auto-merge for one PR when the repository allows it.
+
+    Returns ``enabled=False`` without changing anything when the repository
+    does not allow auto-merge. GitHub then merges only after required checks
+    pass, and only while the head is still ``expected_head_sha``.
+    """
+
+    expected = expected_head_sha.strip()
+    if not expected:
+        raise PublishError("An expected head commit is required to enable auto-merge.")
+    target = parse_pull_request_target(reference)
+    gh = shutil.which("gh")
+    if gh is None:
+        raise PublishError("GitHub CLI is not available.")
+    pull = _github_api_object(gh, _pull_request_api_path(target), root, "pull request")
+    url = str(pull.get("html_url") or "").strip()
+    canonical = parse_pull_request_target(url)
+    if canonical.number != target.number or (
+        target.repository and canonical.repository.lower() != target.repository.lower()
+    ):
+        raise PublishError("GitHub returned a different pull request than the requested target.")
+    head = pull.get("head")
+    head_sha = str(head.get("sha") or "").strip() if isinstance(head, dict) else ""
+    if head_sha != expected:
+        raise PublishError(
+            f"PR #{canonical.number} head changed to {head_sha or 'unknown'} "
+            f"(expected {expected}); auto-merge was not enabled."
+        )
+    settings = _github_api_object(gh, f"repos/{canonical.repository}", root, "repository")
+    if settings.get("allow_auto_merge") is not True:
+        return PullRequestAutoMergeResult(
+            number=canonical.number,
+            url=canonical.reference,
+            enabled=False,
+            message="This repository does not allow auto-merge.",
+        )
+    method = _merge_method_from_settings(settings)
+    node_id = str(pull.get("node_id") or "").strip()
+    if not node_id:
+        raise PublishError("GitHub returned no pull request node id.")
+    result = subprocess.run(
+        [
+            gh,
+            "api",
+            "graphql",
+            "-f",
+            f"query={_ENABLE_AUTO_MERGE_MUTATION}",
+            "-f",
+            f"pullRequestId={node_id}",
+            "-f",
+            f"mergeMethod={method.upper()}",
+            "-f",
+            f"expectedHeadOid={expected}",
+        ],
+        cwd=root,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        note = (
+            result.stderr.strip()
+            or result.stdout.strip()
+            or "GitHub could not enable auto-merge."
+        )
+        raise PublishError(f"Could not enable auto-merge for PR #{canonical.number}: {note}")
+    data = _github_json_object(result.stdout, "auto-merge")
+    if data.get("errors"):
+        raise PublishError(
+            f"Could not enable auto-merge for PR #{canonical.number}: {data['errors']}"
+        )
+    return PullRequestAutoMergeResult(
+        number=canonical.number,
+        url=canonical.reference,
+        enabled=True,
+        method=method,
+        message=f"Auto-merge ({method}) enabled for PR #{canonical.number}.",
+    )
+
+
+_ENABLE_AUTO_MERGE_MUTATION = (
+    "mutation($pullRequestId: ID!, $mergeMethod: PullRequestMergeMethod!, "
+    "$expectedHeadOid: GitObjectID!) { enablePullRequestAutoMerge(input: "
+    "{pullRequestId: $pullRequestId, mergeMethod: $mergeMethod, "
+    "expectedHeadOid: $expectedHeadOid}) { pullRequest { number } } }"
+)
+# GitHub usually creates the update commit before update-branch returns; these
+# bounded retries only cover a short replication delay, not CI.
+_BRANCH_UPDATE_HEAD_CHECKS = 5
+_BRANCH_UPDATE_HEAD_DELAY_SECONDS = 1.0
+
+
+def _require_updatable_pull_request(status: PullRequestMergeStatus, expected: str) -> None:
+    label = f"PR #{status.number}" if status.number else "Pull request"
+    if status.state != "OPEN" or status.merged_at:
+        raise PublishError(f"{label} is not open; its branch was not updated.")
+    if status.is_draft:
+        raise PublishError(f"{label} is a draft; its branch was not updated.")
+    if status.mergeable == "CONFLICTING" or status.merge_state_status == "DIRTY":
+        raise PublishError(f"{label} has merge conflicts.")
+    if status.mergeable != "MERGEABLE" or status.merge_state_status != "BEHIND":
+        raise PublishError(
+            f"{label} is not a mergeable PR that is behind its base "
+            f"(merge state: {status.merge_state_status.lower() or 'unknown'}); "
+            "its branch was not updated."
+        )
+    if status.head_sha != expected:
+        raise PublishError(
+            f"{label} head changed to {status.head_sha or 'unknown'} "
+            f"(expected {expected}); its branch was not updated."
+        )
+    if not status.repository or not status.number:
+        raise PublishError(f"{label} has no resolvable GitHub repository.")
+
+
+def _updated_head_sha(
+    gh: str,
+    status: PullRequestMergeStatus,
+    previous: str,
+    root: Path | None,
+) -> str:
+    """Return the new head only when it is the update of ``previous``."""
+
+    path = f"repos/{status.repository}/pulls/{status.number}"
+    for attempt in range(_BRANCH_UPDATE_HEAD_CHECKS):
+        if attempt:
+            time.sleep(_BRANCH_UPDATE_HEAD_DELAY_SECONDS)
+        pull = _github_api_object(gh, path, root, "pull request")
+        head = pull.get("head")
+        head_sha = str(head.get("sha") or "").strip() if isinstance(head, dict) else ""
+        if not head_sha or head_sha == previous:
+            continue
+        commit = _github_api_object(
+            gh,
+            f"repos/{status.repository}/commits/{head_sha}",
+            root,
+            "commit",
+        )
+        parents = commit.get("parents")
+        parent_shas = {
+            str(parent.get("sha") or "").strip()
+            for parent in (parents if isinstance(parents, list) else [])
+            if isinstance(parent, dict)
+        }
+        # Anything other than a direct update of the inspected head is unexpected.
+        return head_sha if previous in parent_shas else ""
+    return ""
+
+
+def _pull_request_api_path(target: PullRequestTarget) -> str:
+    if target.repository:
+        return f"repos/{target.repository}/pulls/{target.number}"
+    return f"repos/{{owner}}/{{repo}}/pulls/{target.number}"
+
+
+def _github_api_object(
+    gh: str,
+    path: str,
+    root: Path | None,
+    label: str,
+) -> dict[str, object]:
+    result = subprocess.run(
+        [gh, "api", path],
+        cwd=root,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        note = (
+            result.stderr.strip()
+            or result.stdout.strip()
+            or f"GitHub could not read the {label}."
+        )
+        raise PublishError(note)
+    return _github_json_object(result.stdout, label)
+
+
+def _merge_method_from_settings(settings: dict[str, object]) -> str:
+    for method, setting in (
+        ("merge", "allow_merge_commit"),
+        ("squash", "allow_squash_merge"),
+        ("rebase", "allow_rebase_merge"),
+    ):
+        if settings.get(setting) is True:
+            return method
+    raise PublishError("The repository has no supported pull request merge method enabled.")
 
 
 def _repository_merge_method(gh: str, repository: str, root: Path | None) -> str:

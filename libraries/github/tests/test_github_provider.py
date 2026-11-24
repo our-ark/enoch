@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 import sys
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -16,10 +16,12 @@ for source in (
 ):
     sys.path.insert(0, str(source))
 
-from our_ark_github import OUR_ARK_PROVIDERS, GithubForgeProvider
+from our_ark_github import OUR_ARK_PROVIDERS, GithubForgeProvider, workflow
 from our_ark_provider_kit import (
     ForgeProvider,
     ProviderContractConformanceMixin,
+    PullRequestAutoMergeResult,
+    PullRequestBranchUpdateResult,
     PullRequestMergeResult,
     PullRequestMergeStatus,
     PullRequestResult,
@@ -140,6 +142,177 @@ class GithubProviderTests(ProviderContractConformanceMixin, unittest.TestCase):
         self.assertEqual(record.state, "landed")
         self.assertEqual(record.landed_revision, result.revision)
         self.assertEqual(record.landed_at, merged_at)
+
+    def test_github_declares_optional_branch_update_and_auto_merge(self) -> None:
+        provider = GithubForgeProvider(gh="/usr/local/bin/gh")
+
+        self.assertTrue(provider.capabilities.supports("forge.update-branch"))
+        self.assertTrue(provider.capabilities.supports("forge.auto-merge"))
+
+    def test_behind_review_is_updated_and_auto_merge_enabled_when_allowed(self) -> None:
+        provider, review_provider, identity = _behind_fixture()
+        update = MagicMock(return_value=_branch_update("merge-43"))
+        enable = MagicMock(
+            return_value=PullRequestAutoMergeResult(
+                number=42, url=identity.url, enabled=True, method="merge"
+            )
+        )
+        merge = MagicMock()
+
+        with patch.object(provider, "inspect_pull_request_merge", return_value=_status()), \
+                patch.object(provider, "update_review_branch", update), \
+                patch.object(provider, "enable_auto_merge", enable), \
+                patch.object(provider, "merge_pull_request", merge):
+            result = review_provider.land_review(ReviewLandRequest(identity))
+
+        self.assertEqual(result.status, "auto-merge-enabled")
+        self.assertEqual(
+            result.message,
+            "PR #42 was behind main. I updated its branch and enabled auto-merge; "
+            "it will land when CI passes. If CI fails it will not merge.",
+        )
+        self.assertEqual(result.revision, RepositoryRevision("merge-43"))
+        update.assert_called_once_with(identity.id, expected_head_sha="head-42", root=None)
+        enable.assert_called_once_with(identity.id, expected_head_sha="merge-43", root=None)
+        merge.assert_not_called()
+
+    def test_behind_review_is_updated_without_auto_merge_when_repository_disallows_it(
+        self,
+    ) -> None:
+        provider, review_provider, identity = _behind_fixture()
+        update = MagicMock(return_value=_branch_update("merge-43"))
+        enable = MagicMock(
+            return_value=PullRequestAutoMergeResult(
+                number=42,
+                url=identity.url,
+                enabled=False,
+                message="This repository does not allow auto-merge.",
+            )
+        )
+        merge = MagicMock()
+
+        with patch.object(provider, "inspect_pull_request_merge", return_value=_status()), \
+                patch.object(provider, "update_review_branch", update), \
+                patch.object(provider, "enable_auto_merge", enable), \
+                patch.object(provider, "merge_pull_request", merge):
+            result = review_provider.land_review(ReviewLandRequest(identity))
+
+        self.assertEqual(result.status, "branch-updated")
+        self.assertIn("PR #42 was behind main. I updated its branch and CI is running.", result.message)
+        self.assertIn("does not allow auto-merge", result.message)
+        self.assertIn("ask me to merge it again once CI is green", result.message)
+        merge.assert_not_called()
+
+    def test_auto_merge_is_skipped_when_the_updated_head_is_not_verified(self) -> None:
+        provider, review_provider, identity = _behind_fixture()
+        update = MagicMock(return_value=_branch_update(""))
+        enable = MagicMock()
+        merge = MagicMock()
+
+        with patch.object(provider, "inspect_pull_request_merge", return_value=_status()), \
+                patch.object(provider, "update_review_branch", update), \
+                patch.object(provider, "enable_auto_merge", enable), \
+                patch.object(provider, "merge_pull_request", merge):
+            result = review_provider.land_review(ReviewLandRequest(identity))
+
+        self.assertEqual(result.status, "branch-updated")
+        self.assertIn("could not be verified", result.message)
+        enable.assert_not_called()
+        merge.assert_not_called()
+
+    def test_auto_merge_failure_still_reports_the_updated_branch(self) -> None:
+        provider, review_provider, identity = _behind_fixture()
+        update = MagicMock(return_value=_branch_update("merge-43"))
+        enable = MagicMock(
+            side_effect=workflow.PublishError("GraphQL: Pull request is in clean status")
+        )
+        merge = MagicMock()
+
+        with patch.object(provider, "inspect_pull_request_merge", return_value=_status()), \
+                patch.object(provider, "update_review_branch", update), \
+                patch.object(provider, "enable_auto_merge", enable), \
+                patch.object(provider, "merge_pull_request", merge):
+            result = review_provider.land_review(ReviewLandRequest(identity))
+
+        self.assertEqual(result.status, "branch-updated")
+        self.assertIn("I updated its branch", result.message)
+        self.assertIn("Auto-merge could not be enabled: GraphQL", result.message)
+        merge.assert_not_called()
+
+    def test_head_guard_failure_is_reported_and_nothing_merges(self) -> None:
+        provider, review_provider, identity = _behind_fixture()
+        update = MagicMock(
+            side_effect=workflow.PublishError(
+                "PR #42 head changed to pushed-99 (expected head-42); its branch was not updated."
+            )
+        )
+        enable = MagicMock()
+        merge = MagicMock()
+
+        with patch.object(provider, "inspect_pull_request_merge", return_value=_status()), \
+                patch.object(provider, "update_review_branch", update), \
+                patch.object(provider, "enable_auto_merge", enable), \
+                patch.object(provider, "merge_pull_request", merge):
+            with self.assertRaisesRegex(workflow.PublishError, "head changed"):
+                review_provider.land_review(ReviewLandRequest(identity))
+
+        enable.assert_not_called()
+        merge.assert_not_called()
+
+    def test_conflicted_and_blocked_reviews_are_still_refused_without_updating(self) -> None:
+        cases = (
+            (_status(mergeable="CONFLICTING", merge_state_status="DIRTY"), "merge conflicts"),
+            (_status(mergeable="CONFLICTING", merge_state_status="BEHIND"), "merge conflicts"),
+            (_status(merge_state_status="BLOCKED"), "merge state: blocked"),
+            (_status(is_draft=True), "is a draft"),
+        )
+        for status, expected in cases:
+            with self.subTest(expected=expected):
+                provider, review_provider, identity = _behind_fixture()
+                update = MagicMock()
+                enable = MagicMock()
+                with patch.object(provider, "update_review_branch", update), \
+                        patch.object(provider, "enable_auto_merge", enable), \
+                        patch(
+                            "our_ark_github.workflow.inspect_pull_request_merge",
+                            return_value=status,
+                        ):
+                    with self.assertRaisesRegex(workflow.PublishError, expected):
+                        review_provider.land_review(ReviewLandRequest(identity))
+                update.assert_not_called()
+                enable.assert_not_called()
+
+    def test_clean_and_unstable_reviews_merge_as_before(self) -> None:
+        for merge_state in ("CLEAN", "UNSTABLE"):
+            with self.subTest(merge_state=merge_state):
+                provider, review_provider, identity = _behind_fixture()
+                merged = PullRequestMergeResult(
+                    number=42,
+                    url=identity.url,
+                    method="merge",
+                    merge_commit="revision-42",
+                    message="Merged.",
+                )
+                landed = _status(
+                    state="MERGED",
+                    merge_commit="revision-42",
+                    merged_at="2026-07-18T18:30:00Z",
+                )
+                update = MagicMock()
+                enable = MagicMock()
+                with patch.object(
+                    provider,
+                    "inspect_pull_request_merge",
+                    side_effect=[_status(merge_state_status=merge_state), landed],
+                ), patch.object(provider, "update_review_branch", update), \
+                        patch.object(provider, "enable_auto_merge", enable), \
+                        patch.object(provider, "merge_pull_request", return_value=merged) as merge:
+                    result = review_provider.land_review(ReviewLandRequest(identity))
+
+                self.assertEqual(result.status, "landed")
+                merge.assert_called_once_with(identity.id, None)
+                update.assert_not_called()
+                enable.assert_not_called()
 
     def test_lineage_commit_listing_honors_limits_across_pages(self) -> None:
         provider = GithubForgeProvider(gh="/usr/local/bin/gh")
@@ -273,6 +446,44 @@ class GithubProviderTests(ProviderContractConformanceMixin, unittest.TestCase):
         health = GithubForgeProvider().health(ROOT)
 
         self.assertEqual(health.summary, "gh not found")
+
+
+def _behind_fixture():
+    provider = GithubForgeProvider(gh="/usr/local/bin/gh")
+    identity = ReviewIdentity(
+        id="https://github.com/our-ark/enoch/pull/42",
+        url="https://github.com/our-ark/enoch/pull/42",
+    )
+    return provider, as_review_provider(provider), identity
+
+
+def _status(**overrides) -> PullRequestMergeStatus:
+    values = {
+        "reference": "https://github.com/our-ark/enoch/pull/42",
+        "url": "https://github.com/our-ark/enoch/pull/42",
+        "state": "OPEN",
+        "base_branch": "main",
+        "merge_commit": "",
+        "merged_at": "",
+        "number": 42,
+        "repository": "our-ark/enoch",
+        "is_draft": False,
+        "mergeable": "MERGEABLE",
+        "merge_state_status": "BEHIND",
+        "head_sha": "head-42",
+    }
+    values.update(overrides)
+    return PullRequestMergeStatus(**values)
+
+
+def _branch_update(head_sha: str) -> PullRequestBranchUpdateResult:
+    return PullRequestBranchUpdateResult(
+        number=42,
+        url="https://github.com/our-ark/enoch/pull/42",
+        base_branch="main",
+        previous_head_sha="head-42",
+        head_sha=head_sha,
+    )
 
 
 if __name__ == "__main__":

@@ -889,6 +889,12 @@ def pr_usage(prefix: str = "/") -> str:
             f"{prefix}pr show <review id or URL> - inspect one review",
             f"{prefix}pr merge <review id or URL> - land exactly that review",
             "A specific review target is required. Natural-language requests resolve it from the conversation and inspect its current state before acting.",
+            (
+                "If that review is only behind its base branch (no conflicts), merge updates its "
+                "branch from the base instead. When the repository allows auto-merge, it is "
+                "enabled so the review lands only after required checks pass; otherwise ask to "
+                "merge again once CI is green. Conflicted or blocked reviews are still refused."
+            ),
         ]
     )
 

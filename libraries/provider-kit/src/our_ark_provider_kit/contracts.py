@@ -1055,6 +1055,33 @@ class PullRequestMergeResult:
     message: str
 
 
+@dataclass(frozen=True)
+class PullRequestBranchUpdateResult:
+    """Result of the optional ``update_review_branch`` forge operation.
+
+    ``head_sha`` is the updated head once the forge has created it. It is empty
+    when the update was accepted but the new head could not be verified yet.
+    """
+
+    number: int
+    url: str
+    base_branch: str
+    previous_head_sha: str
+    head_sha: str = ""
+    message: str = ""
+
+
+@dataclass(frozen=True)
+class PullRequestAutoMergeResult:
+    """Result of the optional ``enable_auto_merge`` forge operation."""
+
+    number: int
+    url: str
+    enabled: bool
+    method: str = ""
+    message: str = ""
+
+
 @runtime_checkable
 class AgentIdentity(Protocol):
     name: str

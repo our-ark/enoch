@@ -28,6 +28,8 @@ class GithubForgeProvider:
                 "forge.publish",
                 "forge.maintain",
                 "forge.merge",
+                "forge.update-branch",
+                "forge.auto-merge",
             }
         ),
     )
@@ -65,6 +67,20 @@ class GithubForgeProvider:
 
     def merge_pull_request(self, reference: str, root=None):
         return workflow.merge_pull_request(reference, root)
+
+    def update_review_branch(self, reference: str, *, expected_head_sha: str, root=None):
+        return workflow.update_pull_request_branch(
+            reference,
+            expected_head_sha=expected_head_sha,
+            root=root,
+        )
+
+    def enable_auto_merge(self, reference: str, *, expected_head_sha: str, root=None):
+        return workflow.enable_pull_request_auto_merge(
+            reference,
+            expected_head_sha=expected_head_sha,
+            root=root,
+        )
 
     def health(self, root: Path | None = None) -> ProviderHealth:
         if self.gh is None:

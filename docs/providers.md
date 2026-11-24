@@ -387,6 +387,20 @@ Their typed requests, optional feature discovery, compatibility adapters, and
 branchless fixtures are documented in
 [`repository-review-providers.md`](repository-review-providers.md).
 
+Forge providers may also declare two optional landing capabilities.
+`forge.update-branch` pairs with
+`update_review_branch(reference, *, expected_head_sha, root=None)`, and
+`forge.auto-merge` pairs with
+`enable_auto_merge(reference, *, expected_head_sha, root=None)`. When a human
+asks to land one exact review that is open, ready, conflict-free, and only
+behind its base, the review adapter updates that branch, guarded by the
+inspected head. When the forge supports and allows auto-merge, the adapter then
+enables it for the updated head, so the review lands only after required checks
+pass. Otherwise it reports that the branch was updated and the merge should be
+requested again once CI is green. Forges without `forge.update-branch` keep
+refusing reviews that are behind and say they must be updated first. Conflicted
+or blocked reviews are always refused.
+
 Ordinary queued tasks require `runtime.execute`, `vcs.inspect`,
 `vcs.authoritative`, `vcs.workspace`, `vcs.capture`, and `forge.review`.
 Enoch verifies those grants and the required repository features before
