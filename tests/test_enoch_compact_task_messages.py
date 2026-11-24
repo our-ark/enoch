@@ -218,6 +218,11 @@ class _AppTestCase(unittest.TestCase):
         )
         snapshot.start()
         self.addCleanup(snapshot.stop)
+        # Tests drive jobs by hand. A real background worker would keep writing
+        # into the temporary state directory while it is being removed.
+        worker = patch.object(EnochApplication, "_maybe_start_task_worker")
+        self.start_worker = worker.start()
+        self.addCleanup(worker.stop)
         directory = TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         self.root = Path(directory.name)
@@ -531,6 +536,7 @@ class CompactRetryAndResumeTests(_AppTestCase):
 
         self.assertEqual(self.texts()[-1], "Resumed 1 task: #1.")
         self.assertEqual(self.chat.edits, [])
+        self.start_worker.assert_called_once_with()
 
 
 class TaskShowTests(_AppTestCase):
