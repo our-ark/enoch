@@ -40,6 +40,7 @@ from our_ark_provider_kit import (
     normalize_message_id,
     require_repository_features,
 )
+from our_ark_provider_kit.agent_context import _discover_imported_agent
 from our_ark_provider_kit.conformance import (
     RepositoryProviderConformanceMixin,
     ReviewProviderConformanceMixin,
@@ -48,6 +49,22 @@ from our_ark_provider_kit.conformance_fixtures import (
     BranchlessRepositoryFixture,
     IndependentReviewFixture,
 )
+
+
+def _hide_imported_agent_packages() -> None:
+    """Drop agent packages that other tests imported from ``sys.modules``.
+
+    Without a manifest or OUR_ARK_AGENT_PACKAGE, agent_context() falls back to
+    the single agent package imported in this process. When the whole suite
+    runs in one process, an earlier test may already have imported one (for
+    example ``enoch``). Call this inside ``patch.dict(sys.modules)`` so the
+    modules are restored afterwards.
+    """
+    while True:
+        package, _body_root = _discover_imported_agent()
+        if not package:
+            return
+        del sys.modules[package]
 
 
 class ProviderKitTests(unittest.TestCase):
@@ -92,7 +109,11 @@ class ProviderKitTests(unittest.TestCase):
 
     def test_rejects_roots_without_an_agent_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            with unittest.mock.patch.dict(os.environ, {"OUR_ARK_AGENT_PACKAGE": ""}):
+            with (
+                unittest.mock.patch.dict(os.environ, {"OUR_ARK_AGENT_PACKAGE": ""}),
+                unittest.mock.patch.dict(sys.modules),
+            ):
+                _hide_imported_agent_packages()
                 with self.assertRaisesRegex(AgentContextError, "Could not find genesis.toml"):
                     agent_context(Path(directory))
 
