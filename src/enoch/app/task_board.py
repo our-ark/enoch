@@ -29,9 +29,7 @@ SCHEMA_VERSION = 1
 TASK_BOARD_STATE_FILE = "task_board.json"
 # Conservative across chat providers; Telegram's hard limit is 4096 characters.
 TASK_BOARD_MAX_CHARS = 3000
-RECENT_LIMIT = 5
 REQUEST_LIMIT = 80
-REASON_LIMIT = 100
 
 
 @dataclass(frozen=True)
@@ -121,20 +119,6 @@ def _render_body(
         ),
         _Section("Queued", [_task_item(job) for job in status.pending]),
         _Section("Paused", [_task_item(job) for job in status.paused]),
-        _Section(
-            "Recent reviews",
-            [
-                _review_item(job)
-                for job in _recent(status.history, lambda job: bool(job.review_urls))
-            ],
-        ),
-        _Section(
-            "Recent failures",
-            [
-                _failure_item(job)
-                for job in _recent(status.history, lambda job: job.status == "failed")
-            ],
-        ),
     ]
     text = _join(title, sections, queue_command)
     # Drop items from the longest section until the board fits, noting how
@@ -171,11 +155,6 @@ def _join(title: str, sections: list[_Section], queue_command: str) -> str:
     return "\n".join(lines)
 
 
-def _recent(history, predicate) -> list[TaskJob]:
-    matches = [job for job in history if predicate(job)]
-    return list(reversed(matches[-RECENT_LIMIT:]))
-
-
 def _running_item(job: TaskJob) -> str:
     item = _task_item(job)
     started = _parse_timestamp(job.started_at)
@@ -189,19 +168,6 @@ def _task_item(job: TaskJob) -> str:
     if job.parent_task_id is not None:
         item += f" (retry of #{job.parent_task_id})"
     return item
-
-
-def _review_item(job: TaskJob) -> str:
-    return "\n".join([_task_item(job), *(f"  {url}" for url in job.review_urls)])
-
-
-def _failure_item(job: TaskJob) -> str:
-    reason = _first_line(job.result) or job.failure_code or "no reason recorded"
-    return f"{_task_item(job)}\n  Reason: {_short(reason, REASON_LIMIT)}"
-
-
-def _first_line(text: str) -> str:
-    return next((line.strip() for line in text.splitlines() if line.strip()), "")
 
 
 def _short(text: str, limit: int) -> str:

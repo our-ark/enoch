@@ -74,12 +74,6 @@ class TaskBoardRenderTests(unittest.TestCase):
                     "Paused:",
                     "- none",
                     "",
-                    "Recent reviews:",
-                    "- none",
-                    "",
-                    "Recent failures:",
-                    "- none",
-                    "",
                     "Updated 14:05",
                 ]
             ),
@@ -107,60 +101,32 @@ class TaskBoardRenderTests(unittest.TestCase):
         self.assertNotIn(" min", text)
         self.assertTrue(text.endswith("\n\nUpdated 14:05"))
 
-    def test_recent_reviews_show_last_five_with_links_newest_first(self) -> None:
-        history = tuple(
+    def test_board_omits_recent_reviews_and_failures_from_history(self) -> None:
+        history = (
             _job(
-                index,
-                f"Change {index}",
+                1,
+                "Reviewed change",
                 status="completed",
-                review_urls=(f"https://example.test/pull/{index}",),
-            )
-            for index in range(1, 8)
-        ) + (_job(20, "No review", status="completed"),)
+                review_urls=("https://example.test/pull/1",),
+            ),
+            _job(2, "Broken attempt", status="failed", result="Reason here"),
+            _job(3, "Timed out", status="failed", failure_code="timeout"),
+        )
+        status = _status(pending=(_job(4, "Next up"),), history=history)
 
-        text = render_task_board(_status(history=history), updated_at=UPDATED_AT).text
+        text = render_task_board(status, updated_at=UPDATED_AT).text
 
-        section = text.split("Recent reviews:\n", 1)[1].split("\n\n", 1)[0]
+        self.assertNotIn("Recent reviews", text)
+        self.assertNotIn("Recent failures", text)
+        self.assertNotIn("https://example.test/pull/1", text)
+        self.assertNotIn("Reviewed change", text)
+        self.assertNotIn("Broken attempt", text)
+        self.assertNotIn("Reason", text)
+        self.assertIn("Queued:\n- #4 Next up", text)
         self.assertEqual(
-            section.splitlines(),
-            [
-                "- #7 Change 7",
-                "  https://example.test/pull/7",
-                "- #6 Change 6",
-                "  https://example.test/pull/6",
-                "- #5 Change 5",
-                "  https://example.test/pull/5",
-                "- #4 Change 4",
-                "  https://example.test/pull/4",
-                "- #3 Change 3",
-                "  https://example.test/pull/3",
-            ],
+            [line for line in text.splitlines() if line.endswith(":")],
+            ["Running:", "Queued:", "Paused:"],
         )
-        self.assertNotIn("No review", text)
-
-    def test_recent_failures_show_last_five_with_short_reason(self) -> None:
-        history = tuple(
-            _job(index, f"Attempt {index}", status="failed", result=f"Reason {index}\nTrace")
-            for index in range(1, 7)
-        ) + (
-            _job(10, "Coded failure", status="failed", failure_code="timeout"),
-            _job(11, "Long failure", status="failed", result="x" * 400),
-            _job(12, "Cancelled", status="cancelled", result="Stopped by /stop."),
-        )
-
-        text = render_task_board(_status(history=history), updated_at=UPDATED_AT).text
-
-        section = text.split("Recent failures:\n", 1)[1].split("\n\n", 1)[0]
-        lines = section.splitlines()
-        self.assertEqual(lines[0], "- #11 Long failure")
-        self.assertTrue(lines[1].startswith("  Reason: xxx"))
-        self.assertTrue(lines[1].endswith("…"))
-        self.assertLessEqual(len(lines[1]), len("  Reason: ") + 100)
-        self.assertEqual(lines[2:4], ["- #10 Coded failure", "  Reason: timeout"])
-        self.assertEqual(lines[4:6], ["- #6 Attempt 6", "  Reason: Reason 6"])
-        self.assertEqual(len(lines), 10)
-        self.assertNotIn("Trace", text)
-        self.assertNotIn("Cancelled", text)
 
     def test_long_board_is_truncated_within_the_limit(self) -> None:
         pending = tuple(_job(index, "queued request " * 10) for index in range(1, 80))
@@ -183,8 +149,9 @@ class TaskBoardRenderTests(unittest.TestCase):
 
         self.assertLessEqual(len(rendered.text), 1200)
         self.assertIn("more (see !queue)", rendered.text)
-        self.assertIn("Recent reviews:", rendered.text)
-        self.assertIn("Recent failures:", rendered.text)
+        self.assertIn("Running:", rendered.text)
+        self.assertIn("Paused:", rendered.text)
+        self.assertNotIn("Recent reviews", rendered.text)
         self.assertTrue(rendered.text.endswith("Updated 14:05"))
 
     def test_digest_ignores_the_updated_footer(self) -> None:
