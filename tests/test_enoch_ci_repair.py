@@ -4,7 +4,8 @@ Covers infrastructure re-runs, fix tasks queued at the front of the queue, the
 authorization of fix-task pushes (option A: covered by the original merge
 request and listed in the final message), the attempt limit, the paused
 timeout and its overall cap, failures that also happen on the base branch,
-conflicts, restarts, and the watch-only path for reviews nobody asked to merge.
+conflicts, restarts, and the watch-only path for reviews nobody asked to merge,
+including the cached status it keeps for the task board's open-review line.
 The forge is an in-memory fake; GitHub specifics are tested with mocked gh in
 the github workflow tests.
 """
@@ -29,7 +30,7 @@ from enoch.app.ci_repair import (
 )
 from enoch.app.core import EnochApplication
 from enoch.app.execution_context import CURRENT_TASK_ID
-from enoch.app.pending_merges import load_ci_watches, load_pending_merges
+from enoch.app.pending_merges import BoardReview, load_ci_watches, load_pending_merges
 from enoch.identity import load_identity
 from our_ark_provider_kit import ReviewCheck, ReviewCheckFailure
 from tests.test_enoch_application import _Chat, _Runtime
@@ -679,6 +680,88 @@ class WatchOnlyTests(_Harness):
         forge.set(checks=GREEN)
         app.run_once()
         self.assertEqual(chat.sent, [("room-1", "✅ PR #91 CI passed. Ready to merge.")])
+
+
+class BoardStatusTests(_Harness):
+    """The watcher's cached per-review status that the task board reads."""
+
+    def _tracked(self, chat: _Chat | None = None) -> tuple[_Forge, EnochApplication]:
+        forge = _Forge(merge_state="BLOCKED", checks=PENDING, ci_repair=True)
+        # The review is open on Enoch's own (authoritative) repository.
+        forge.provider.list_fn.side_effect = lambda root=None, limit=20: (forge.status,)
+        app = self._app(forge, chat)
+        app.pending_merges.tracked_interval_seconds = 0
+        app._watch_published_reviews(
+            SimpleNamespace(id=7, chat_id="room-1", text="Add a feature.", context="", review_urls=(URL,))
+        )
+        return forge, app
+
+    def _board(self, app: EnochApplication) -> tuple[BoardReview, ...]:
+        return app.pending_merges.board_reviews()
+
+    def test_green_review_stays_on_the_board_until_it_is_closed(self) -> None:
+        chat = _Chat()
+        forge, app = self._tracked(chat)
+        self.assertEqual(self._board(app), ())  # not yet known to be authoritative
+
+        app.pending_merges.tick()
+        self.assertEqual(self._board(app), (BoardReview(91, "ci"),))
+
+        forge.set(merge_state_status="CLEAN", checks=GREEN)
+        app.pending_merges.tick()
+        app.pending_merges.tick()
+        self.assertEqual(self._board(app), (BoardReview(91, "ready"),))
+        self.assertEqual(chat.sent, [("room-1", "✅ PR #91 CI passed. Ready to merge.")])
+        self.assertNotIn("Watching CI", app._pr("room-1", ""))
+
+        forge.set(merge_state_status="BEHIND")
+        app.pending_merges.tick()
+        self.assertEqual(self._board(app), (BoardReview(91, "ci"),))
+
+        forge.set(state="MERGED")
+        app.pending_merges.tick()
+        self.assertEqual(self._board(app), ())
+        self.assertEqual(load_ci_watches(self.root), ())
+        self.assertEqual(len(chat.sent), 1)
+
+    def test_red_ci_on_a_stale_base_is_ci_not_failed(self) -> None:
+        forge, app = self._tracked()
+        forge.contains_base = False
+        forge.set(merge_state_status="UNSTABLE", checks=RED)
+
+        app.pending_merges.tick()
+        self.assertEqual(self._board(app), (BoardReview(91, "ci"),))
+
+        forge.contains_base = True
+        app.pending_merges.tick()
+        self.assertEqual(self._board(app), (BoardReview(91, "failed"),))
+
+    def test_conflicts_are_blocked(self) -> None:
+        forge, app = self._tracked()
+        forge.set(merge_state_status="DIRTY", mergeable="CONFLICTING", checks=GREEN)
+
+        app.pending_merges.tick()
+        app.pending_merges.tick()
+
+        self.assertEqual(self._board(app), (BoardReview(91, "blocked"),))
+
+    def test_review_with_a_pending_merge_is_left_to_the_merging_line(self) -> None:
+        forge, app = self._tracked()
+        app.pending_merges.tick()
+        app._pr("room-1", "merge 91")
+
+        self.assertEqual(len(load_pending_merges(self.root)), 1)
+        self.assertEqual(self._board(app), ())
+
+    def test_reviews_on_other_repositories_are_not_tracked_after_ci(self) -> None:
+        forge, app = self._tracked()
+        forge.provider.list_fn.side_effect = lambda root=None, limit=20: ()
+        forge.set(merge_state_status="CLEAN", checks=GREEN)
+
+        app.pending_merges.tick()
+
+        self.assertEqual(self._board(app), ())
+        self.assertEqual(load_ci_watches(self.root), ())
 
 
 if __name__ == "__main__":

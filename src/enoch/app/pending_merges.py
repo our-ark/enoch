@@ -18,7 +18,10 @@ timeout is paused while a fix task is queued or running, up to an overall cap.
 
 The same controller watches CI on reviews that Enoch's tasks publish but nobody
 asked to merge: it reports green CI once, and repairs red CI the same way, but
-never merges them.
+never merges them. Once that CI watch settles, a review on Enoch's own
+(authoritative) repository stays tracked until it is merged or closed: the
+watcher keeps a cached board status for it (ready, CI, failed, or blocked) that
+the task board reads without calling the forge.
 
 This module is provider-agnostic: it uses the review provider's optional
 ``forge.check-status``, ``forge.update-branch`` and ``forge.ci-repair``
@@ -75,6 +78,18 @@ PENDING_MERGE_TIMEOUT = timedelta(hours=2)
 # Overall cap for one pending merge, including time paused for fix tasks.
 PENDING_MERGE_MAX_WAIT = timedelta(hours=6)
 CI_WATCH_TIMEOUT = timedelta(hours=6)
+# After its CI watch settles, a review is tracked for the board until it is
+# merged or closed, re-checked at most this often, and dropped after a cap.
+TRACKED_REVIEW_CHECK_INTERVAL_SECONDS = 180.0
+TRACKED_REVIEW_TIMEOUT = timedelta(days=14)
+# Open reviews listed once to learn which watched reviews are on Enoch's own
+# (authoritative) repository; only those appear on the board.
+OPEN_REVIEW_LIST_LIMIT = 50
+# Cached board status of a watched review; the task board maps it to a marker.
+BOARD_READY = "ready"  # all checks green and the head contains the base tip
+BOARD_CI = "ci"  # CI running, or behind / updating from its base
+BOARD_FAILED = "failed"  # CI failed on a head that contains the base tip
+BOARD_BLOCKED = "blocked"  # conflicts, draft, or blocked for a non-CI reason
 # Automatic fix tasks per pending merge, counted across head changes.
 MAX_MERGE_FIX_ATTEMPTS = 2
 # A review nobody asked to merge gets one re-run or one fix task.
@@ -143,6 +158,14 @@ class WatchedReview:
     started_at: str
     waiting_for: str = ""
     repair: CiRepair = CiRepair()
+    # True once the CI watch has reported (or timed out); the review is then
+    # only tracked for the board, with no more notices or repairs.
+    settled: bool = False
+    # Cached BOARD_* status from the last watcher check; "" before the first.
+    board_status: str = ""
+    # Whether the review is on Enoch's authoritative repository; None until
+    # the watcher has checked.
+    authoritative: bool | None = None
 
     @property
     def key(self) -> str:
@@ -154,6 +177,14 @@ class WatchedReview:
 
     def identity(self) -> ReviewIdentity:
         return ReviewIdentity(id=self.review_id, url=self.url)
+
+
+@dataclass(frozen=True)
+class BoardReview:
+    """One open review for the task board's ``Open PRs`` line."""
+
+    number: int
+    status: str
 
 
 @dataclass(frozen=True)
@@ -260,6 +291,8 @@ class PendingMergeController:
         timeout: timedelta = PENDING_MERGE_TIMEOUT,
         max_wait: timedelta = PENDING_MERGE_MAX_WAIT,
         watch_timeout: timedelta = CI_WATCH_TIMEOUT,
+        tracked_interval_seconds: float = TRACKED_REVIEW_CHECK_INTERVAL_SECONDS,
+        tracked_timeout: timedelta = TRACKED_REVIEW_TIMEOUT,
     ) -> None:
         self.root = root
         self._review = review
@@ -278,6 +311,10 @@ class PendingMergeController:
         self.timeout = timeout
         self.max_wait = max_wait
         self.watch_timeout = watch_timeout
+        self.tracked_interval_seconds = tracked_interval_seconds
+        self.tracked_timeout = tracked_timeout
+        # Monotonic time of the last check of each tracked (settled) review.
+        self._tracked_checks: dict[str, float] = {}
         self._lock = threading.RLock()
         self._last_check: float | None = None
         self._last_error = ""
@@ -466,7 +503,11 @@ class PendingMergeController:
             )
         try:
             merging = {entry.key for entry in entries}
-            watches = tuple(watch for watch in self.watches() if watch.key not in merging)
+            watches = tuple(
+                watch
+                for watch in self.watches()
+                if watch.key not in merging and not watch.settled
+            )
         except Exception:  # noqa: BLE001 - listing must not break /pr
             watches = ()
         if watches:
@@ -488,6 +529,26 @@ class PendingMergeController:
             f"{entry.label} ({entry.waiting_for or 'waiting'})" for entry in entries
         )
 
+    def board_reviews(self) -> tuple[BoardReview, ...]:
+        """Open reviews Enoch watches on its own repository, from cached state.
+
+        Reads only the watcher's state file and never calls the forge. Reviews
+        with a pending merge are left out; the board shows them on its
+        ``Merging`` line.
+        """
+
+        try:
+            merging = {entry.key for entry in self.entries()}
+            watches = self.watches()
+        except Exception:  # noqa: BLE001 - the board must still render
+            return ()
+        reviews: dict[int, BoardReview] = {}
+        for watch in watches:
+            if watch.authoritative is not True or not watch.number or watch.key in merging:
+                continue
+            reviews[watch.number] = BoardReview(watch.number, watch.board_status or BOARD_CI)
+        return tuple(reviews[number] for number in sorted(reviews))
+
     def watch_review(self, chat_id: ConversationId, url: str, task_id: int) -> bool:
         """Watch CI on a review task ``task_id`` published; False when already watched."""
 
@@ -506,9 +567,22 @@ class PendingMergeController:
         )
         with self._lock:
             watches = load_ci_watches(self.root)
-            if any(item.key == entry.key for item in watches):
+            previous = next((item for item in watches if item.key == entry.key), None)
+            if previous is not None and not previous.settled:
                 return False
-            save_ci_watches((*watches, entry), self.root)
+            if previous is not None:
+                # A new task published to a review that was only tracked: watch
+                # its CI again, keeping what the board already knows about it.
+                entry = replace(
+                    entry,
+                    board_status=previous.board_status,
+                    authoritative=previous.authoritative,
+                )
+            save_ci_watches(
+                (*(item for item in watches if item.key != entry.key), entry),
+                self.root,
+            )
+            self._tracked_checks.pop(entry.key, None)
         self._record_event("ci_watch_started", details=_watch_details(entry))
         return True
 
@@ -525,6 +599,7 @@ class PendingMergeController:
             entries = self.entries()
             for entry in entries:
                 self._process_safely(entry)
+            self._classify_watches()
             for watch in self.watches():
                 self._process_watch_safely(watch)
             self._last_error = ""
@@ -944,6 +1019,8 @@ class PendingMergeController:
     # Watched reviews (published by tasks, not requested to merge) -----------
 
     def _process_watch_safely(self, watch: WatchedReview) -> None:
+        if watch.settled and not self._tracked_check_due(watch):
+            return
         try:
             outcome = self._process_watch(watch)
         except StaleDaemonEpoch:
@@ -968,14 +1045,48 @@ class PendingMergeController:
     def _process_watch(self, watch: WatchedReview) -> _Outcome:
         if any(entry.key == watch.key for entry in self.entries()):
             # A requested merge owns this review and reports its own result.
+            # Check it again right away once that merge is gone.
+            self._tracked_checks.pop(watch.key, None)
+            if watch.waiting_for == "merge pending":
+                return _Outcome(watch)
             return _Outcome(replace(watch, waiting_for="merge pending"))
         current = self._inspect(watch.identity())
-        number = watch.number or _number(current)
         if current.state != "open" or current.landed_revision is not None:
+            self._tracked_checks.pop(watch.key, None)
             return _stop_watch(watch, "landed" if current.state == "landed" else current.state)
         started = _parse_time(watch.started_at)
+        if watch.settled:
+            self._tracked_checks[watch.key] = self._monotonic()
+            if watch.authoritative is False:
+                return _stop_watch(watch, "other-repository")
+            if started is None or self._now() - started >= self.tracked_timeout:
+                return _stop_watch(watch, "tracking-timeout")
+            checks = self._checks(watch.identity())
+            return _Outcome(self._with_board_status(watch, current, checks))
         if started is None or self._now() - started >= self.watch_timeout:
-            return _stop_watch(watch, "timeout")
+            outcome = _stop_watch(watch, "timeout")
+            checks = self._checks(watch.identity())
+        else:
+            checks = self._checks(watch.identity())
+            outcome = self._advance_watch(watch, current, checks)
+        if outcome.entry is None:
+            if watch.authoritative is False:
+                return outcome  # not on the board, so nothing left to track
+            # The CI watch is done; keep tracking the open review for the board.
+            outcome.entry = replace(watch, settled=True, waiting_for="")
+            self._tracked_checks[watch.key] = self._monotonic()
+        outcome.entry = self._with_board_status(outcome.entry, current, checks)
+        return outcome
+
+    def _advance_watch(
+        self,
+        watch: WatchedReview,
+        current: ReviewRecord,
+        checks: ReviewCheckReport,
+    ) -> _Outcome:
+        """Report or repair CI on a watched review; ``None`` entry when settled."""
+
+        number = watch.number or _number(current)
         watch, stopped = self._settle_fix_attempt(watch, number)
         if stopped is not None:
             return stopped
@@ -983,7 +1094,6 @@ class PendingMergeController:
         if fixing is not None:
             return _Outcome(replace(watch, waiting_for=_fixing_label(fixing)))
         head = _head(current)
-        checks = self._checks(watch.identity())
         if checks.revision != head or checks.pending:
             return _Outcome(replace(watch, waiting_for="waiting for CI"))
         names = _failed_names(checks)
@@ -1047,6 +1157,98 @@ class PendingMergeController:
             f"fix-{step.task_id}",
             [("ci_watch_fix_queued", "ok", _watch_details(watch, head=head, task_id=step.task_id))],
         )
+
+    # Board status of watched reviews ---------------------------------------
+
+    def _tracked_check_due(self, watch: WatchedReview) -> bool:
+        last = self._tracked_checks.get(watch.key)
+        return last is None or self._monotonic() - last >= self.tracked_interval_seconds
+
+    def _with_board_status(
+        self,
+        watch: WatchedReview,
+        current: ReviewRecord,
+        checks: ReviewCheckReport,
+    ) -> WatchedReview:
+        status = self._board_status(watch, current, checks)
+        return watch if status == watch.board_status else replace(watch, board_status=status)
+
+    def _board_status(
+        self,
+        watch: WatchedReview,
+        current: ReviewRecord,
+        checks: ReviewCheckReport,
+    ) -> str:
+        """Classify a watched review the way the merge watcher judges readiness.
+
+        Ready needs green checks on the current head and a forge merge state
+        that would land (so the head contains the base tip). A review behind
+        its base counts as CI (updating), and so does red CI on a head that
+        does not contain the base tip yet: right after the base moves the
+        forge can briefly report the old head's failures.
+        """
+
+        merge_state = _signal(current, "merge-state")
+        mergeable = _signal(current, "mergeable")
+        if current.draft or mergeable == "conflicting" or merge_state == "dirty":
+            return BOARD_BLOCKED
+        if merge_state == "behind":
+            return BOARD_CI
+        head = _head(current)
+        if checks.revision != head or checks.pending:
+            return BOARD_CI
+        if checks.failed:
+            behind = self._head_missing_base_tip(watch, current, head)
+            if behind is None:
+                return watch.board_status or BOARD_CI
+            return BOARD_CI if behind else BOARD_FAILED
+        if merge_state in READY_MERGE_STATES and mergeable == "mergeable":
+            return BOARD_READY
+        if merge_state == "blocked":
+            return BOARD_BLOCKED
+        # The forge is still computing the merge state; keep the last status.
+        return watch.board_status or BOARD_CI
+
+    def _head_missing_base_tip(
+        self,
+        watch: WatchedReview,
+        current: ReviewRecord,
+        head: str,
+    ) -> bool | None:
+        """True when ``head`` lacks the base tip; None when that is unknown now."""
+
+        base = _base_branch(current)
+        if not base or not self._supports(CI_REPAIR_CAPABILITY, "compare_review_revisions"):
+            return False
+        try:
+            return not self._compare(watch.identity(), base, head).descends
+        except _FORGE_ERRORS:
+            return None
+
+    def _classify_watches(self) -> None:
+        """Learn once which watched reviews are on Enoch's authoritative repository."""
+
+        if all(watch.authoritative is not None for watch in self.watches()):
+            return
+        try:
+            self._authorize("forge.list", ("forge.inspect",))
+            records = self._review().list_open_reviews(self.root, limit=OPEN_REVIEW_LIST_LIMIT)
+            keys = {_record_key(record) for record in records}
+        except StaleDaemonEpoch:
+            raise
+        except Exception as error:  # noqa: BLE001 - retried on the next cycle
+            self._report_error("ci_watch_repository_check_failed", error)
+            return
+        with self._lock:
+            watches = load_ci_watches(self.root)
+            updated = tuple(
+                replace(watch, authoritative=watch.key in keys)
+                if watch.authoritative is None
+                else watch
+                for watch in watches
+            )
+            if updated != watches:
+                save_ci_watches(updated, self.root)
 
     # Forge operations ----------------------------------------------------
 
@@ -1494,6 +1696,9 @@ def _watch_to_json(entry: WatchedReview) -> dict[str, object]:
         "started_at": entry.started_at,
         "waiting_for": entry.waiting_for,
         "repair": ci_repair_to_json(entry.repair),
+        "settled": entry.settled,
+        "board_status": entry.board_status,
+        "authoritative": entry.authoritative,
     }
 
 
@@ -1520,4 +1725,14 @@ def _watch_from_json(item: object) -> WatchedReview | None:
         started_at=started_at,
         waiting_for=str(item.get("waiting_for") or "").strip(),
         repair=ci_repair_from_json(item.get("repair")),
+        settled=item.get("settled") is True,
+        board_status=_board_status_from_json(item.get("board_status")),
+        authoritative=(
+            item["authoritative"] if isinstance(item.get("authoritative"), bool) else None
+        ),
     )
+
+
+def _board_status_from_json(value: object) -> str:
+    status = str(value or "").strip()
+    return status if status in {BOARD_READY, BOARD_CI, BOARD_FAILED, BOARD_BLOCKED} else ""
