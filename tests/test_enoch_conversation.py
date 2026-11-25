@@ -210,6 +210,57 @@ class ConversationRecoveryTests(unittest.TestCase):
             with self.subTest(reply=reply), self.assertRaises(ValueError):
                 parse_action(reply)
 
+    def test_marker_mentioned_in_prose_is_a_normal_reply(self):
+        for reply in (f"I will answer with an {ACTION_START} block when I need to act.",
+                      f"Blocks close with {ACTION_END}; nothing to run here.",
+                      f"Wrap actions between {ACTION_START} and {ACTION_END} markers."):
+            with self.subTest(reply=reply):
+                self.assertIsNone(parse_action(reply))
+
+    def test_marker_in_inline_code_is_a_normal_reply(self):
+        reply = f"The parser looks for `{ACTION_START}` at the start of a reply."
+        self.assertIsNone(parse_action(reply))
+
+    def test_valid_standalone_block_is_an_action(self):
+        reply = f"\n  {ACTION_START}\n" + json.dumps({"command": "task", "argument": " retry 12 "}) + f"\n{ACTION_END}\n"
+        self.assertEqual(parse_action(reply), ConversationAction("task", "retry 12"))
+
+    def test_sentence_followed_by_full_block_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "action block alone"):
+            parse_action("Let me check the status.\n" + action("status"))
+
+    def test_malformed_json_block_is_rejected(self):
+        for reply in (ACTION_START + '{"command": "status", "argument": }' + ACTION_END,
+                      ACTION_START + "status please" + ACTION_END):
+            with self.subTest(reply=reply), self.assertRaisesRegex(ValueError, "valid JSON"):
+                parse_action(reply)
+
+    def test_prose_marker_reply_is_delivered_and_not_reprompted(self):
+        reply = f"Done. Actions use the `{ACTION_START}` marker, but none was needed."
+        with TemporaryDirectory() as temp:
+            respond = Mock(return_value=reply)
+            execute = Mock()
+            result = run_conversation(journal=ConversationJournal(Path(temp), "prose"),
+                                      respond=respond, execute=execute,
+                                      persist=lambda fn, *args, **kw: fn(*args, **kw))
+        self.assertEqual(result, reply)
+        respond.assert_called_once()
+        execute.assert_not_called()
+
+    def test_sentence_with_block_is_retried_without_executing(self):
+        with TemporaryDirectory() as temp:
+            respond = Mock(side_effect=["Checking now.\n" + action("status"), action("status"), "All good."])
+            execute = Mock(return_value=ActionResult("Status ok"))
+            result = run_conversation(journal=ConversationJournal(Path(temp), "retry"),
+                                      respond=respond, execute=execute,
+                                      persist=lambda fn, *args, **kw: fn(*args, **kw))
+        self.assertEqual(respond.call_count, 3)
+        self.assertIn("action block alone", respond.call_args_list[1].args[0])
+        execute.assert_called_once()
+        self.assertEqual(execute.call_args.args[0], ConversationAction("status", ""))
+        self.assertIn("Status ok", result)
+        self.assertIn("All good.", result)
+
     def test_operation_receipts_cannot_request_memory_changes(self):
         from enoch.prompt_append import MEMORY_REQUEST_START, MEMORY_REQUEST_END
         with TemporaryDirectory() as temp:

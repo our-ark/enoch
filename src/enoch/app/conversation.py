@@ -30,18 +30,40 @@ class ActionResult:
     stop: bool = False
 
 
+ACTION_REQUIRED_FIELDS = frozenset({"command", "argument"})
+# Extension point: optional fields must be explicitly allowlisted here and
+# validated before use. Any field not listed in either set is rejected.
+ACTION_OPTIONAL_FIELDS: frozenset[str] = frozenset()
+_COMPLETE_ACTION_BLOCK = re.compile(
+    re.escape(ACTION_START) + r"\s*\{.*\}\s*" + re.escape(ACTION_END),
+    re.DOTALL,
+)
+
+
+def is_action_candidate(reply: str) -> bool:
+    """Whether a reply attempts an action rather than merely mentioning markers.
+
+    A reply is a candidate when it starts with the start marker or contains a
+    complete block (start marker, a JSON object, end marker) anywhere. Prose
+    that only names a marker, for example in inline code, is a normal reply.
+    """
+    return reply.strip().startswith(ACTION_START) or _COMPLETE_ACTION_BLOCK.search(reply) is not None
+
+
 def parse_action(reply: str) -> ConversationAction | None:
     """Accept one complete structured action, never prose or a shell program."""
-    if ACTION_START not in reply and ACTION_END not in reply:
+    if not is_action_candidate(reply):
         return None
-    if not reply.strip().startswith(ACTION_START) or not reply.strip().endswith(ACTION_END):
+    stripped = reply.strip()
+    if not stripped.startswith(ACTION_START) or not stripped.endswith(ACTION_END):
         raise ValueError("Return the action block alone, without prose or code fences.")
-    payload = reply.strip()[len(ACTION_START):-len(ACTION_END)]
+    payload = stripped[len(ACTION_START):-len(ACTION_END)]
     try:
         data = json.loads(payload)
     except json.JSONDecodeError as error:
         raise ValueError("The action must contain valid JSON.") from error
-    if not isinstance(data, dict) or set(data) != {"command", "argument"}:
+    if (not isinstance(data, dict) or not ACTION_REQUIRED_FIELDS <= set(data)
+            or not set(data) <= ACTION_REQUIRED_FIELDS | ACTION_OPTIONAL_FIELDS):
         raise ValueError("An action requires only command and argument fields.")
     command, argument = data["command"], data["argument"]
     if not isinstance(command, str) or not re.fullmatch(r"[a-z][a-z0-9_-]*", command):
