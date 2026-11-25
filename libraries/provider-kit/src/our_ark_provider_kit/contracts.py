@@ -1179,6 +1179,39 @@ class ReviewRevisionComparison:
     commits: tuple[ReviewCommit, ...] = ()
 
 
+@dataclass(frozen=True)
+class ReviewBaseFreshness:
+    """Whether a review head contains the current tip of its base branch.
+
+    Result of the optional ``forge.base-freshness`` operation. The forge reads
+    it from its version control data, not from a lazily recomputed merge
+    status, so it is current right after the base moves. ``behind_by`` counts
+    the base commits that ``revision`` does not contain yet; ``base_revision``
+    is the base tip that was compared.
+    """
+
+    base_branch: str
+    base_revision: str
+    revision: str
+    behind_by: int
+
+    def __post_init__(self) -> None:
+        for attribute in ("base_branch", "base_revision", "revision"):
+            object.__setattr__(self, attribute, str(getattr(self, attribute)).strip())
+        if not self.base_revision or not self.revision:
+            raise ValueError("Base freshness needs both the base tip and the review head.")
+        behind_by = int(self.behind_by)
+        if behind_by < 0:
+            raise ValueError("Base freshness behind_by cannot be negative.")
+        object.__setattr__(self, "behind_by", behind_by)
+
+    @property
+    def contains_base(self) -> bool:
+        """True when ``revision`` already contains the base tip."""
+
+        return self.behind_by == 0
+
+
 @runtime_checkable
 class AgentIdentity(Protocol):
     name: str

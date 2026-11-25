@@ -22,6 +22,7 @@ from our_ark_provider_kit import (
     PullRequestMergeStatus,
     PullRequestResult,
     PullRequestTarget,
+    ReviewBaseFreshness,
     ReviewCheck,
     ReviewCheckFailure,
     ReviewCheckReport,
@@ -646,6 +647,18 @@ def update_pull_request_branch(
     gh = shutil.which("gh")
     if gh is None:
         raise PublishError("GitHub CLI is not available.")
+    if status.merge_state_status != "BEHIND":
+        # GitHub recomputes the merge state lazily after the base moves, so it
+        # can still say CLEAN, UNSTABLE or BLOCKED for a head that is behind.
+        # The compare API is current; update only when it confirms the head
+        # lacks the base tip.
+        freshness = _base_freshness(gh, status.repository, status.base_branch, expected, root)
+        if freshness.contains_base:
+            raise PublishError(
+                f"PR #{status.number} is not a mergeable PR that is behind its base "
+                f"(merge state: {status.merge_state_status.lower() or 'unknown'}); "
+                "its branch was not updated."
+            )
     result = subprocess.run(
         [
             gh,
@@ -684,6 +697,7 @@ def update_pull_request_branch(
 # bounded retries only cover a short replication delay, not CI.
 _BRANCH_UPDATE_HEAD_CHECKS = 5
 _BRANCH_UPDATE_HEAD_DELAY_SECONDS = 1.0
+_UPDATABLE_MERGE_STATES = frozenset({"BEHIND", "BLOCKED", "CLEAN", "HAS_HOOKS", "UNSTABLE"})
 
 
 def _require_updatable_pull_request(status: PullRequestMergeStatus, expected: str) -> None:
@@ -694,7 +708,9 @@ def _require_updatable_pull_request(status: PullRequestMergeStatus, expected: st
         raise PublishError(f"{label} is a draft; its branch was not updated.")
     if status.mergeable == "CONFLICTING" or status.merge_state_status == "DIRTY":
         raise PublishError(f"{label} has merge conflicts.")
-    if status.mergeable != "MERGEABLE" or status.merge_state_status != "BEHIND":
+    # BEHIND, or a merge state GitHub may not have recomputed since the base
+    # moved; for the latter the caller confirms the head is behind first.
+    if status.mergeable != "MERGEABLE" or status.merge_state_status not in _UPDATABLE_MERGE_STATES:
         raise PublishError(
             f"{label} is not a mergeable PR that is behind its base "
             f"(merge state: {status.merge_state_status.lower() or 'unknown'}); "
@@ -945,6 +961,69 @@ def compare_pull_request_revisions(
         revision=head,
         descends=relation in {"ahead", "identical"},
         commits=tuple(commits),
+    )
+
+
+def inspect_pull_request_base_freshness(
+    reference: str,
+    *,
+    head_sha: str = "",
+    root: Path | None = None,
+) -> ReviewBaseFreshness:
+    """Report whether ``head_sha`` (default: the PR head) contains its base tip.
+
+    Uses the git data behind the compare API, which is current right after the
+    base moves, unlike ``mergeStateStatus``, which GitHub recomputes lazily
+    and can briefly report UNSTABLE or UNKNOWN for a head that is behind.
+    """
+
+    status = inspect_pull_request_merge(reference, root)
+    if not status.repository:
+        raise PublishError("The pull request has no resolvable GitHub repository.")
+    gh = shutil.which("gh")
+    if gh is None:
+        raise PublishError("GitHub CLI is not available.")
+    head = head_sha.strip() or status.head_sha
+    return _base_freshness(gh, status.repository, status.base_branch, head, root)
+
+
+def _base_freshness(
+    gh: str,
+    repository: str,
+    base_branch: str,
+    head: str,
+    root: Path | None,
+) -> ReviewBaseFreshness:
+    base_branch = base_branch.strip()
+    head = head.strip()
+    if not base_branch or not head:
+        raise PublishError("A base branch and a head commit are required to compare them.")
+    ref = _github_api_object(
+        gh,
+        f"repos/{repository}/git/ref/heads/{quote(base_branch, safe='/')}",
+        root,
+        "base branch",
+    )
+    target = ref.get("object")
+    base_tip = str(target.get("sha") or "").strip() if isinstance(target, dict) else ""
+    if not base_tip:
+        raise PublishError(f"GitHub returned no commit for base branch {base_branch}.")
+    # per_page=1: only the counts are needed, not the commit list.
+    data = _github_api_object(
+        gh,
+        f"repos/{repository}/compare/{quote(base_tip, safe='')}...{quote(head, safe='')}"
+        "?per_page=1",
+        root,
+        "base comparison",
+    )
+    behind_by = data.get("behind_by")
+    if not isinstance(behind_by, int) or isinstance(behind_by, bool) or behind_by < 0:
+        raise PublishError("GitHub returned an invalid base comparison.")
+    return ReviewBaseFreshness(
+        base_branch=base_branch,
+        base_revision=base_tip,
+        revision=head,
+        behind_by=behind_by,
     )
 
 
