@@ -22,6 +22,7 @@ from enoch.backlog import (
     BacklogItem,
     add_backlog_item,
     backlog_item,
+    backlog_status,
     next_backlog_item,
     promote_backlog_item,
     remove_backlog_item,
@@ -2768,7 +2769,16 @@ class EnochApplication:
             title=f"{self.display_name} task board",
             queue_command=f"{self.command_prefix}queue",
             merging=self.pending_merges.board_items(),
+            backlog=self._task_board_backlog(),
         )
+
+    def _task_board_backlog(self) -> tuple[BacklogItem, ...]:
+        # An unreadable backlog only hides the board's backlog line; the task
+        # sections must keep updating. /backlog still reports the error.
+        try:
+            return backlog_status(self.root).pending
+        except (OSError, StateCorruptionError):
+            return ()
 
     def _notify_pending_merge(
         self,

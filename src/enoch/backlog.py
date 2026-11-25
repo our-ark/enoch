@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 import json
 from pathlib import Path
@@ -210,6 +211,17 @@ def normalize_priority(priority: str) -> str:
     if normalized not in PRIORITIES:
         raise ValueError("Backlog priority must be p0, p1, or p2.")
     return normalized
+
+
+def promotion_order(items: Iterable[BacklogItem]) -> tuple[BacklogItem, ...]:
+    """Return pending items in the order the backlog promotes them.
+
+    Priority p0 comes first, then p1, then p2; items keep their FIFO order
+    within a priority, matching ``promote_next_backlog_item``.
+    """
+
+    rank = {priority: index for index, priority in enumerate(PRIORITIES)}
+    return tuple(sorted(items, key=lambda item: rank.get(item.priority, len(PRIORITIES))))
 
 
 def _next_item_index(items: list[BacklogItem]) -> int | None:
