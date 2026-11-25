@@ -794,7 +794,7 @@ class EnochGithubWorkflowTests(unittest.TestCase):
     ) -> None:
         inspect.return_value = _merge_status(merge_state_status="BEHIND")
         run.side_effect = [
-            _process_result(stdout='{"message":"Updating pull request branch."}'),
+            _http_result(202, "Accepted", '{"message":"Updating pull request branch."}'),
             _process_result(stdout='{"head":{"sha":"abc123"}}'),
             _process_result(stdout='{"head":{"sha":"merge789"}}'),
             _process_result(
@@ -813,6 +813,7 @@ class EnochGithubWorkflowTests(unittest.TestCase):
             [
                 "/usr/local/bin/gh",
                 "api",
+                "--include",
                 "--method",
                 "PUT",
                 "repos/our-ark/enoch/pulls/12/update-branch",
@@ -898,7 +899,7 @@ class EnochGithubWorkflowTests(unittest.TestCase):
         inspect.return_value = _merge_status(merge_state_status="UNSTABLE")
         run.side_effect = [
             *_base_tip_responses(behind_by=1),
-            _process_result(stdout='{"message":"Updating pull request branch."}'),
+            _http_result(202, "Accepted", '{"message":"Updating pull request branch."}'),
             _process_result(stdout='{"head":{"sha":"merge789"}}'),
             _process_result(
                 stdout='{"sha":"merge789","parents":[{"sha":"abc123"},{"sha":"main456"}]}'
@@ -917,7 +918,14 @@ class EnochGithubWorkflowTests(unittest.TestCase):
         )
         self.assertEqual(
             run.call_args_list[2].args[0][2:],
-            ["--method", "PUT", "repos/our-ark/enoch/pulls/12/update-branch", "--input", "-"],
+            [
+                "--include",
+                "--method",
+                "PUT",
+                "repos/our-ark/enoch/pulls/12/update-branch",
+                "--input",
+                "-",
+            ],
         )
         self.assertEqual(
             json.loads(run.call_args_list[2].kwargs["input"]),
@@ -969,12 +977,28 @@ class EnochGithubWorkflowTests(unittest.TestCase):
         run: MagicMock,
     ) -> None:
         inspect.return_value = _merge_status(merge_state_status="BEHIND")
-        run.return_value = _process_result(
+        run.return_value = _http_result(
+            422,
+            "Unprocessable Entity",
+            '{"message":"expected head sha didn\'t match current head ref.","status":"422"}',
             returncode=1,
-            stderr="HTTP 422: expected head sha didn't match current head ref.",
+            stderr="gh: expected head sha didn't match current head ref. (HTTP 422)",
         )
 
-        with self.assertRaisesRegex(PublishError, "expected head sha didn't match"):
+        with self.assertRaisesRegex(
+            PublishError,
+            r"from main: expected head sha didn't match current head ref\. \(HTTP 422 Unprocessable Entity\)",
+        ):
+            update_pull_request_branch("12", expected_head_sha="abc123", root=ROOT)
+        run.assert_called_once()
+
+        # Without captured headers, gh's stderr still names a definite 4xx.
+        run.reset_mock()
+        run.return_value = _process_result(
+            returncode=1,
+            stderr="gh: expected head sha didn't match current head ref. (HTTP 422)",
+        )
+        with self.assertRaisesRegex(PublishError, r"didn't match current head ref\. \(HTTP 422\)"):
             update_pull_request_branch("12", expected_head_sha="abc123", root=ROOT)
         run.assert_called_once()
 
@@ -991,7 +1015,7 @@ class EnochGithubWorkflowTests(unittest.TestCase):
     ) -> None:
         inspect.return_value = _merge_status(merge_state_status="BEHIND")
         run.side_effect = [
-            _process_result(stdout='{"message":"Updating pull request branch."}'),
+            _http_result(202, "Accepted", '{"message":"Updating pull request branch."}'),
             _process_result(stdout='{"head":{"sha":"other000"}}'),
             _process_result(stdout='{"sha":"other000","parents":[{"sha":"elsewhere"}]}'),
         ]
@@ -1309,6 +1333,28 @@ def _base_tip_responses(*, behind_by: int) -> list[MagicMock]:
             stdout=json.dumps({"status": "behind" if behind_by else "ahead", "behind_by": behind_by})
         ),
     ]
+
+
+def _http_result(
+    status: int,
+    phrase: str,
+    body: str = "",
+    *,
+    returncode: int | None = None,
+    stderr: str = "",
+) -> MagicMock:
+    """What ``gh api --include`` prints: status line, headers, blank line, body."""
+
+    headers = (
+        f"HTTP/2.0 {status} {phrase}\r\n"
+        f"Content-Length: {len(body)}\r\n"
+        "Content-Type: application/json; charset=utf-8\r\n"
+        "Server: github.com\r\n"
+        "\r\n"
+    )
+    if returncode is None:
+        returncode = 0 if status < 400 else 1
+    return _process_result(returncode=returncode, stdout=headers + body, stderr=stderr)
 
 
 def _process_result(returncode: int = 0, stdout: str = "", stderr: str = "") -> MagicMock:

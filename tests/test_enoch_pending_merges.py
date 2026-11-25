@@ -32,7 +32,7 @@ from enoch.commands import pr_usage
 from enoch.identity import load_identity
 from enoch.providers.forge import FunctionForgeProvider
 from enoch.tasks.queue import TaskQueueStatus
-from our_ark_github.workflow import _require_mergeable_pull_request
+from our_ark_github.workflow import PublishError, _require_mergeable_pull_request
 from our_ark_provider_kit import (
     PullRequestBranchUpdateResult,
     PullRequestMergeResult,
@@ -69,6 +69,9 @@ class _Forge:
         self.status = _status(merge_state_status=merge_state)
         self.checks = checks
         self.updates: list[str] = []
+        # Every update call, and errors the next calls raise (in order).
+        self.update_attempts: list[str] = []
+        self.update_errors: list[Exception] = []
         self.merges: list[str] = []
         self.verified_update_heads = verified_update_heads
         # forge.ci-repair fakes: failure evidence, re-runs, and a commit graph.
@@ -170,6 +173,9 @@ class _Forge:
     def _update(self, reference, *, expected_head_sha, root=None) -> PullRequestBranchUpdateResult:
         if expected_head_sha != self.status.head_sha:
             raise AssertionError("update must be pinned to the inspected head")
+        self.update_attempts.append(expected_head_sha)
+        if self.update_errors:
+            raise self.update_errors.pop(0)
         previous = self.status.head_sha
         new_head = f"update-{len(self.updates) + 1}"
         self.updates.append(previous)
@@ -338,6 +344,95 @@ class PendingMergeTests(unittest.TestCase):
 
         self.assertEqual(forge.merges, ["update-2"])
         self.assertEqual(chat.sent, [("room-1", "✅ Merged #91.")])
+
+    def test_failed_update_is_retried_each_cycle_then_stops_with_the_reason(self) -> None:
+        forge = _Forge(merge_state="BEHIND", checks=(ReviewCheck("CI / test", "success"),))
+        reason = "GitHub returned HTTP 422 Unprocessable Entity with an empty response"
+        forge.update_errors = [
+            PublishError(f"Could not update PR #91 from main: {reason}") for _ in range(3)
+        ]
+        chat = _Chat()
+        app = self._app(forge, chat)
+
+        with patch("enoch.app.core._record_system_event") as record:
+            reply = app._pr("room-1", "merge 91")
+            self.assertIn("isn't ready yet (behind main", reply)
+            (entry,) = self._entries()
+            self.assertEqual(entry.update_failures, 1)
+            self.assertEqual(entry.waiting_for, "updating from main")
+
+            app.pending_merges.tick()
+            self.assertEqual(self._entries()[0].update_failures, 2)
+            self.assertEqual(chat.sent, [])
+
+            app.pending_merges.tick()
+
+        self.assertEqual(forge.update_attempts, ["head-91"] * 3)
+        self.assertEqual(forge.updates, [])
+        self.assertEqual(forge.merges, [])
+        self.assertEqual(self._entries(), ())
+        self.assertEqual(
+            chat.sent,
+            [("room-1", f"⏹ Not merging #91: could not update the branch from main ({reason}).")],
+        )
+        failed = [
+            call.kwargs["details"]
+            for call in record.call_args_list
+            if call.args[0] == "pending_merge_update_failed"
+        ]
+        self.assertEqual([details["failures"] for details in failed], [1, 2, 3])
+        (stopped,) = [
+            call.kwargs["details"]
+            for call in record.call_args_list
+            if call.args[0] == "pending_merge_stopped"
+        ]
+        self.assertEqual(stopped["reason"], "update-failed")
+        self.assertIn(reason, stopped["error"])
+
+    def test_a_successful_update_resets_the_failure_count(self) -> None:
+        forge = _Forge(merge_state="BEHIND")
+        forge.update_errors = [PublishError("Could not update PR #91 from main: HTTP 502")] * 2
+        chat = _Chat()
+        app = self._app(forge, chat)
+        app._pr("room-1", "merge 91")
+        app.pending_merges.tick()
+        self.assertEqual(self._entries()[0].update_failures, 2)
+
+        app.pending_merges.tick()  # third attempt succeeds
+        (entry,) = self._entries()
+        self.assertEqual((entry.update_failures, entry.update_error), (0, ""))
+        self.assertEqual(entry.allowed_head_shas, ("head-91", "update-1"))
+
+        # main moves again; two more failures do not stop the merge.
+        forge.update_errors = [PublishError("Could not update PR #91 from main: HTTP 502")] * 2
+        forge.set(merge_state_status="BEHIND", checks=(ReviewCheck("CI / test", "success"),))
+        app.pending_merges.tick()
+        app.pending_merges.tick()
+        self.assertEqual(self._entries()[0].update_failures, 2)
+        self.assertEqual(chat.sent, [])
+
+        app.pending_merges.tick()
+        forge.set(merge_state_status="CLEAN", checks=(ReviewCheck("CI / test", "success"),))
+        app.pending_merges.tick()
+        self.assertEqual(forge.merges, ["update-2"])
+        self.assertEqual(chat.sent, [("room-1", "✅ Merged #91.")])
+
+    def test_update_failures_survive_a_daemon_restart(self) -> None:
+        forge = _Forge(merge_state="BEHIND")
+        forge.update_errors = [PublishError("Could not update PR #91 from main: HTTP 502")] * 3
+        self._app(forge)._pr("room-1", "merge 91")
+        self._app(forge).pending_merges.tick()
+
+        stored = json.loads(pending_merges_path(self.root).read_text())["merges"][0]
+        self.assertEqual(stored["update_failures"], 2)
+        self.assertEqual(stored["update_error"], "Could not update PR #91 from main: HTTP 502")
+
+        chat = _Chat()
+        self._app(forge, chat).pending_merges.tick()
+        self.assertEqual(
+            chat.sent,
+            [("room-1", "⏹ Not merging #91: could not update the branch from main (HTTP 502).")],
+        )
 
     def test_unverified_update_head_is_accepted_only_when_the_forge_verifies_it(self) -> None:
         for verified, merged in ((True, ["update-1"]), (False, [])):

@@ -87,6 +87,9 @@ PENDING_MERGE_MAX_WAIT = timedelta(hours=6)
 CI_WATCH_TIMEOUT = timedelta(hours=6)
 # Automatic fix tasks per pending merge, counted across head changes.
 MAX_MERGE_FIX_ATTEMPTS = 2
+# Branch updates that may fail in a row (one per watcher cycle) before the
+# pending merge stops and says why.
+MAX_UPDATE_FAILURES = 3
 # A review nobody asked to merge gets one re-run or one fix task.
 MAX_WATCH_FIX_ATTEMPTS = 1
 CHECK_STATUS_CAPABILITY = "forge.check-status"
@@ -127,6 +130,9 @@ class PendingMerge:
     # Head of an update this daemon requested but could not verify yet.
     unverified_update_from: str = ""
     repair: CiRepair = CiRepair()
+    # Branch updates that failed in a row, and the last reason; reset on success.
+    update_failures: int = 0
+    update_error: str = ""
 
     @property
     def key(self) -> str:
@@ -685,6 +691,16 @@ class PendingMergeController:
                 "cannot-update",
             )
         updated = self._update_branch(entry, head)
+        if updated.update_failures >= MAX_UPDATE_FAILURES:
+            return _done(
+                entry,
+                f"⏹ Not merging #{number}: could not update the branch from {base} "
+                f"({_update_reason(updated.update_error)}).",
+                "update-failed",
+                head=head,
+                failures=updated.update_failures,
+                error=updated.update_error,
+            )
         return _Outcome(replace(updated, waiting_for=f"updating from {base}"))
 
     def _wait(self, entry: PendingMerge, number: int, label: str) -> _Outcome:
@@ -1128,18 +1144,27 @@ class PendingMergeController:
                 root=self.root,
             )
         except _FORGE_ERRORS as error:
-            # Retried on the next watcher cycle; the timeout bounds the retries.
+            # Retried on the next watcher cycle while the review is still
+            # behind; after MAX_UPDATE_FAILURES in a row the merge stops.
+            failures = entry.update_failures + 1
             self._record_event(
                 "pending_merge_update_failed",
                 status="failed",
-                details=_details(entry, head=head, error=str(error)),
+                details=_details(entry, head=head, error=str(error), failures=failures),
             )
-            return entry
+            return replace(entry, update_failures=failures, update_error=str(error))
         new_head = str(getattr(result, "head_sha", "") or "").strip()
+        message = str(getattr(result, "message", "") or "").strip()
         self._record_event(
             "pending_merge_branch_updated",
-            details=_details(entry, head=head, new_head=new_head),
+            details=_details(
+                entry,
+                head=head,
+                new_head=new_head,
+                **({"message": message} if message else {}),
+            ),
         )
+        entry = replace(entry, update_failures=0, update_error="")
         if new_head:
             return replace(entry.allow(new_head), unverified_update_from="")
         return replace(entry, unverified_update_from=head)
@@ -1498,6 +1523,17 @@ def _matches(entry: PendingMerge, reference: str) -> bool:
     }
 
 
+_UPDATE_ERROR_PREFIX = re.compile(r"^Could not update \S+(?: \S+)? from \S+: ")
+
+
+def _update_reason(error: str) -> str:
+    """The forge's reason for a failed branch update, without the restated context."""
+
+    reason = _UPDATE_ERROR_PREFIX.sub("", " ".join(error.split()))
+    reason = reason.rstrip(". ") or "no reason given"
+    return reason if len(reason) <= 240 else reason[:239].rstrip() + "…"
+
+
 def _details(entry: PendingMerge, **extra: object) -> dict[str, object]:
     details: dict[str, object] = {
         "number": entry.number,
@@ -1549,6 +1585,8 @@ def _entry_to_json(entry: PendingMerge) -> dict[str, object]:
         "blocked_notified": entry.blocked_notified,
         "unverified_update_from": entry.unverified_update_from,
         "repair": ci_repair_to_json(entry.repair),
+        "update_failures": entry.update_failures,
+        "update_error": entry.update_error,
     }
 
 
@@ -1573,6 +1611,10 @@ def _entry_from_json(item: object) -> PendingMerge | None:
         number = int(item.get("number") or 0)
     except (TypeError, ValueError):
         number = 0
+    try:
+        update_failures = max(0, int(item.get("update_failures") or 0))
+    except (TypeError, ValueError):
+        update_failures = 0
     return PendingMerge(
         number=number,
         url=str(item.get("url") or "").strip(),
@@ -1587,6 +1629,8 @@ def _entry_from_json(item: object) -> PendingMerge | None:
         blocked_notified=item.get("blocked_notified") is True,
         unverified_update_from=str(item.get("unverified_update_from") or "").strip(),
         repair=ci_repair_from_json(item.get("repair")),
+        update_failures=update_failures,
+        update_error=str(item.get("update_error") or "").strip(),
     )
 
 
