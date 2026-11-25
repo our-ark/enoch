@@ -172,7 +172,31 @@ provider uses Claude restricted mode, disables user customizations and MCP
 servers for unattended execution, and never enables bypass-permissions mode.
 Authentication, quota, rate-limit, and configured-budget failures raise the
 shared runtime-access signal, so queued work pauses and can later continue with
-`/task resume` without rewriting task history.
+`/task resume` without rewriting task history. Plan-limit detection follows the
+shape of the message (`hit your … limit`, `<N>-hour limit`, `limit … resets`)
+as well as Claude Code's structured `rate_limit_event` and assistant `error`
+fields. The structured reset time is carried on the exception as `resets_at`.
+
+## Automatic resume after runtime access returns
+
+While any task is paused for runtime access, no other queued or backlog task
+starts. Enoch resumes paused tasks on its own once access is back:
+
+- It waits for the reset time: a structured `resets_at`, a time parsed from the
+  message (for example `resets 3:20pm (America/Los_Angeles)`), or the reset
+  reported by an exhausted account quota window.
+- Before resuming, it verifies access with the active runtime's account quota.
+  When quota data is unavailable or inconclusive, it sends a minimal runtime
+  probe instead.
+- While access stays unavailable, checks back off from 5 minutes, doubling up
+  to one check per hour, and never run in a tight loop. A pause shortly after
+  an automatic resume continues the back-off.
+- Paused tasks resume in their original order with one chat line, for example
+  `▶️ Claude limit reset; resumed tasks #42, #43.`
+
+The schedule is stored in private `runtime_access_resume.json`, so a restart
+keeps the absolute reset time. `/task resume <id|all>` still resumes tasks
+manually at any time.
 
 ## Account quota
 
