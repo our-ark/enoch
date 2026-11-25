@@ -11,6 +11,15 @@ its base, and pushes by its own CI fix tasks for this merge (they are covered
 by the original request and listed in the final message). Conflicts are never
 resolved, and waiting stops after a fixed time.
 
+Red CI is final only for a head that already contains the base tip. Right
+after the base moves, a forge's merge state can still be stale (GitHub briefly
+reports UNSTABLE or UNKNOWN instead of BEHIND) next to the failed checks of the
+old head. So before refusing or repairing, the controller asks the forge
+whether the head contains the base tip (``enoch.app.review_freshness``). If it
+does not, the review is treated as behind: updated from its base, pinned to the
+inspected head, and CI is awaited on the new head. An unknown or missing merge
+state means keep waiting; it never refuses and never lands.
+
 When CI fails on a head that already contains the base tip, the watcher
 re-runs infrastructure failures once and otherwise queues a fix task at the
 front of the task queue (at most ``MAX_MERGE_FIX_ATTEMPTS`` per merge). The
@@ -50,6 +59,7 @@ from enoch.app.ci_repair import (
     load_ci_fix_result,
 )
 from enoch.app.epoch import StaleDaemonEpoch
+from enoch.app.review_freshness import base_tip_capability, head_contains_base_tip
 from enoch.paths import private_state_path
 from enoch.providers.contracts import (
     ConversationId,
@@ -83,6 +93,16 @@ CHECK_STATUS_CAPABILITY = "forge.check-status"
 UPDATE_BRANCH_CAPABILITY = "forge.update-branch"
 CI_REPAIR_CAPABILITY = "forge.ci-repair"
 READY_MERGE_STATES = frozenset({"clean", "unstable", "has-hooks"})
+# Merge states the forge has finished computing. Anything else (unknown,
+# missing, still computing) means keep waiting: never refuse, never land.
+SETTLED_MERGE_STATES = READY_MERGE_STATES | frozenset(
+    {"has_hooks", "blocked", "behind", "dirty"}
+)
+# Whether a review head contains its base tip (see ``_base_tip``).
+_CONTAINS = "contains"
+_BEHIND = "behind"
+_UNSUPPORTED = "unsupported"
+_UNAVAILABLE = "unavailable"
 _FORGE_ERRORS = (ReviewProviderError, ForgeProviderError, CapabilityAuthorizationError)
 _MERGE_FIX_GOAL = (
     "A merge of it is pending and lands automatically once CI is green, "
@@ -343,11 +363,23 @@ class PendingMergeController:
         ):
             self.discard(current)
             return MergePlan("land", expected_revision=head)
-        if checks_current and checks.failed and merge_state != "behind":
-            if not self._can_repair():
-                self.discard(current)
-                return MergePlan("reply", _ci_failed_message(number, checks, current))
-            return self._plan_repair(chat_id, current, checks, label)
+        if (
+            checks_current
+            and checks.failed
+            and merge_state != "behind"
+            and _merge_state_settled(merge_state)
+        ):
+            # Red CI counts only on a head that already contains the base tip;
+            # right after the base moves the forge's merge state can be stale.
+            tip = self._base_tip(current.identity, head, _base_branch(current))
+            if tip == _BEHIND:
+                merge_state = "behind"
+            elif tip != _UNAVAILABLE:
+                if not self._can_repair():
+                    self.discard(current)
+                    return MergePlan("reply", _ci_failed_message(number, checks, current))
+                return self._plan_repair(chat_id, current, checks, label)
+            # Otherwise the forge could not answer now: wait, never refuse.
         if merge_state == "behind" and not self._can_update():
             return MergePlan(
                 "reply",
@@ -597,24 +629,24 @@ class PendingMergeController:
         if fixing is not None:
             # Never update or land under a running fix task; it pushes on this head.
             return self._wait(entry, number, _fixing_label(fixing))
-        base = _base_branch(current) or entry.base_branch or "its base branch"
+        base_branch = _base_branch(current) or entry.base_branch
+        base = base_branch or "its base branch"
         if merge_state == "behind":
-            expired = self._expired(entry, number, f"behind {base}")
-            if expired is not None:
-                return expired
-            if not self._can_update():
-                return _done(
-                    entry,
-                    f"⏹ Not merging #{number}: it is behind {base} and this forge "
-                    "cannot update review branches.",
-                    "cannot-update",
-                )
-            updated = self._update_branch(entry, head)
-            return _Outcome(replace(updated, waiting_for=f"updating from {base}"))
+            return self._bring_up_to_date(entry, number, head, base)
         checks = self._checks(entry.identity())
         if checks.revision != head:
             return self._wait(entry, number, "waiting for CI")
         if checks.failed:
+            if not _merge_state_settled(merge_state):
+                # Still computing (or unknown): neither refuse nor land yet.
+                return self._wait(entry, number, "waiting for merge status")
+            # Red CI counts only on a head that already contains the base tip;
+            # a stale merge state can hide that the base moved under it.
+            tip = self._base_tip(entry.identity(), head, base_branch, entry)
+            if tip == _BEHIND:
+                return self._bring_up_to_date(entry, number, head, base)
+            if tip == _UNAVAILABLE:
+                return self._wait(entry, number, "waiting for merge status")
             return self._repair_merge(entry, number, head, checks, current)
         if checks.pending:
             return self._wait(entry, number, "waiting for CI")
@@ -632,6 +664,28 @@ class PendingMergeController:
                 waiting.notice_suffix = "blocked"
             return waiting
         return self._wait(entry, number, "waiting for merge status")
+
+    def _bring_up_to_date(
+        self,
+        entry: PendingMerge,
+        number: int,
+        head: str,
+        base: str,
+    ) -> _Outcome:
+        """Update a head that is behind its base, pinned to ``head``, then wait for CI."""
+
+        expired = self._expired(entry, number, f"behind {base}")
+        if expired is not None:
+            return expired
+        if not self._can_update():
+            return _done(
+                entry,
+                f"⏹ Not merging #{number}: it is behind {base} and this forge "
+                "cannot update review branches.",
+                "cannot-update",
+            )
+        updated = self._update_branch(entry, head)
+        return _Outcome(replace(updated, waiting_for=f"updating from {base}"))
 
     def _wait(self, entry: PendingMerge, number: int, label: str) -> _Outcome:
         expired = self._expired(entry, number, label)
@@ -718,15 +772,15 @@ class PendingMergeController:
         checks: ReviewCheckReport,
         current: ReviewRecord,
     ) -> _Outcome:
-        """Re-run, fix, or give up on red CI for a pending merge."""
+        """Re-run, fix, or give up on red CI for a pending merge.
+
+        Callers only get here for a head that contains the base tip (or on a
+        forge that cannot tell); a head behind its base is updated instead.
+        """
 
         if not self._can_repair():
             return _done(entry, _ci_failed_message(number, checks, current), "ci-failed")
         base = _base_branch(current) or entry.base_branch
-        if base and not self._compare(entry.identity(), base, head).descends:
-            # The forge's merge state has not caught up with a moved base yet;
-            # the head is updated from the base before anything is fixed.
-            return self._wait(entry, number, f"waiting for {base} to settle")
         names = _failed_names(checks)
         step = self._repair_step(
             identity=entry.identity(),
@@ -1123,6 +1177,55 @@ class PendingMergeController:
             raise ReviewProviderError("Forge returned invalid revision comparison data.")
         return result
 
+    def head_contains_base(
+        self,
+        identity: ReviewIdentity,
+        head: str,
+        base_branch: str = "",
+    ) -> bool | None:
+        """True when ``head`` contains its base tip, False when it is behind.
+
+        ``None`` when the forge cannot tell. Forge errors propagate. This is the
+        shared rule for deciding whether red CI on ``head`` is final; see
+        :mod:`enoch.app.review_freshness`.
+        """
+
+        review = self._review()
+        capability = base_tip_capability(review)
+        if capability is None:
+            return None
+        self._authorize("forge.inspect", ("forge.inspect", capability))
+        return head_contains_base_tip(
+            review,
+            identity,
+            head=head,
+            base_branch=base_branch,
+            root=self.root,
+        )
+
+    def _base_tip(
+        self,
+        identity: ReviewIdentity,
+        head: str,
+        base_branch: str,
+        entry: PendingMerge | None = None,
+    ) -> str:
+        """``contains``, ``behind``, ``unsupported``, or ``unavailable`` (forge error)."""
+
+        try:
+            contains = self.head_contains_base(identity, head, base_branch)
+        except _FORGE_ERRORS as error:
+            details = _details(entry) if entry is not None else {"review": identity.url or identity.id}
+            self._record_event(
+                "pending_merge_base_check_failed",
+                status="failed",
+                details={**details, "head": head, "error": str(error)},
+            )
+            return _UNAVAILABLE
+        if contains is None:
+            return _UNSUPPORTED
+        return _CONTAINS if contains else _BEHIND
+
     def _verify_update(self, entry: PendingMerge, head: str) -> bool:
         self._authorize("forge.inspect", ("forge.inspect", UPDATE_BRANCH_CAPABILITY))
         verify = getattr(self._review(), "verify_review_branch_update", None)
@@ -1254,6 +1357,10 @@ def _done(entry: PendingMerge, notice: str, reason: str, **extra: object) -> _Ou
         reason,
         [("pending_merge_stopped", "ok", _details(entry, reason=reason, **extra))],
     )
+
+
+def _merge_state_settled(merge_state: str) -> bool:
+    return merge_state in SETTLED_MERGE_STATES
 
 
 def _terminal_refusal(record: ReviewRecord) -> bool:

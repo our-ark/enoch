@@ -430,6 +430,18 @@ root=None)` (re-run only the failed jobs, refusing when the head moved), and
 `ReviewRevisionComparison` saying whether `head` contains `base`, plus the
 commits it adds).
 
+A fourth optional capability, `forge.base-freshness`, pairs with
+`inspect_review_base_freshness(reference, *, head_sha="", root=None)`. It
+returns a `ReviewBaseFreshness`: the base branch, its current tip, the compared
+head, and `behind_by`, the number of base commits the head does not contain
+(`contains_base` is `behind_by == 0`). Forges answer from version control
+data, not from a merge status they may still be recomputing after the base
+moved. The GitHub provider reads the base ref and calls the compare API.
+`enoch.app.review_freshness.head_contains_base_tip` is the shared rule built
+on it. It falls back to `compare_review_revisions` against the base branch
+when only `forge.ci-repair` is declared, and returns `None` when the forge
+cannot tell.
+
 With `forge.check-status`, a human request to land one exact review that is
 not ready yet is recorded as a pending merge in private state. The daemon
 checks it about once a minute. It updates the branch from its base when the
@@ -440,6 +452,16 @@ own CI fix tasks for this merge. It stops on other new pushes, conflicts, or
 after 2 hours of waiting. Forges without `forge.check-status` keep the
 immediate behavior, where reviews that are not ready are refused with the
 forge's reason.
+
+Red CI is final only on a head that already contains the base tip. Right
+after the base moves, GitHub can briefly report UNSTABLE or UNKNOWN instead of
+BEHIND, next to the failed checks of the old head. So before refusing or
+repairing red CI, Enoch asks the forge whether the head contains the base tip.
+If it does not, the review is treated as behind: the branch is updated, pinned
+to the inspected head, and Enoch waits for CI on the new head. An unknown or
+missing merge state means keep waiting: Enoch neither refuses nor lands on
+it. The GitHub provider accepts that update while its merge state is still
+stale, but only after the compare API confirms the head is behind.
 
 With `forge.ci-repair` as well, red CI on a head that already contains the
 base tip does not stop the merge. Infrastructure failures (cancelled or

@@ -37,6 +37,7 @@ from our_ark_provider_kit import (
     PullRequestBranchUpdateResult,
     PullRequestMergeResult,
     PullRequestMergeStatus,
+    ReviewBaseFreshness,
     ReviewCheck,
     ReviewCheckFailure,
     ReviewCheckReport,
@@ -63,6 +64,7 @@ class _Forge:
         verify_update: bool | None = None,
         verified_update_heads: bool = True,
         ci_repair: bool = False,
+        base_freshness: bool = False,
     ) -> None:
         self.status = _status(merge_state_status=merge_state)
         self.checks = checks
@@ -75,6 +77,9 @@ class _Forge:
         self.parents: dict[str, str] = {}
         self.subjects: dict[str, str] = {}
         self.contains_base = True
+        # forge.base-freshness fake: heads that lack the current base tip.
+        self.stale_heads: set[str] = set()
+        self.freshness_error: Exception | None = None
         self.inspect = MagicMock(side_effect=lambda reference, root=None: self.status)
         optional = {}
         if check_status:
@@ -87,6 +92,8 @@ class _Forge:
             optional["check_failures_fn"] = MagicMock(side_effect=self._failures)
             optional["rerun_checks_fn"] = MagicMock(side_effect=self._rerun)
             optional["compare_fn"] = MagicMock(side_effect=self._compare)
+        if base_freshness:
+            optional["base_freshness_fn"] = MagicMock(side_effect=self._freshness)
         self.provider = FunctionForgeProvider(
             close_fn=MagicMock(),
             create_fn=MagicMock(),
@@ -153,6 +160,12 @@ class _Forge:
         return ReviewRevisionComparison(
             base, head, descends, tuple(reversed(commits)) if descends else ()
         )
+
+    def _freshness(self, reference, *, head_sha="", root=None) -> ReviewBaseFreshness:
+        if self.freshness_error is not None:
+            raise self.freshness_error
+        head = head_sha or self.status.head_sha
+        return ReviewBaseFreshness("main", "main-tip", head, 1 if head in self.stale_heads else 0)
 
     def _update(self, reference, *, expected_head_sha, root=None) -> PullRequestBranchUpdateResult:
         if expected_head_sha != self.status.head_sha:

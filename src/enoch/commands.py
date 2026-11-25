@@ -896,6 +896,11 @@ def pr_usage(prefix: str = "/") -> str:
                 "from its base when needed. You hear back when it lands or when it needs you."
             ),
             (
+                "Red CI only counts on a head that already contains the base tip: a head left "
+                "behind by a base that just moved is updated first, and the merge waits for CI "
+                "on the new head."
+            ),
+            (
                 "If CI fails, infrastructure failures are re-run once; otherwise a fix task is "
                 "started at the front of the queue to fix it on the review's own branch, up to "
                 "2 attempts. Commits pushed by those fix tasks are covered by your merge "
