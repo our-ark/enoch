@@ -1,19 +1,22 @@
 """Opt-in task board: one chat message that is edited as task status changes.
 
 This module is provider-agnostic. It renders the board text from the same task
-queue snapshot that backs ``/queue`` and persists which chat message is the
-board. Sending, editing, and pinning stay in the application shell so they go
+queue snapshot that backs ``/queue``, plus a one-line preview of the pending
+backlog, and persists which chat message is the board. Sending, editing, and pinning stay in the application shell so they go
 through the durable notification journal and the daemon effect fence.
 """
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
 import json
 from pathlib import Path
+import re
 
+from enoch.backlog import BacklogItem, promotion_order
 from enoch.paths import private_state_path
 from enoch.providers.contracts import (
     ConversationId,
@@ -30,6 +33,11 @@ TASK_BOARD_STATE_FILE = "task_board.json"
 # Conservative across chat providers; Telegram's hard limit is 4096 characters.
 TASK_BOARD_MAX_CHARS = 3000
 REQUEST_LIMIT = 80
+# The backlog preview is a single line: a few items with short labels.
+BACKLOG_PREVIEW_ITEMS = 2
+BACKLOG_LABEL_LIMIT = 36
+BACKLOG_SHORT_LABEL_LIMIT = 18
+_SENTENCE_BREAK = re.compile(r"(?<=[.!?])\s+|(?<=[。！？])")
 
 
 @dataclass(frozen=True)
@@ -88,13 +96,15 @@ def render_task_board(
     queue_command: str = "/queue",
     max_chars: int = TASK_BOARD_MAX_CHARS,
     merging: tuple[str, ...] = (),
+    backlog: Iterable[BacklogItem] = (),
 ) -> RenderedTaskBoard:
     """Render the board text and a digest of everything except the footer.
 
     The digest ignores the ``Updated HH:MM`` footer so the caller edits the
     message only when task content changes, not every minute. ``merging``
     lists reviews waiting to be merged automatically; its section appears only
-    when it is non-empty.
+    when it is non-empty. ``backlog`` holds the pending backlog items; when
+    there are any, one ``Up next:`` line previews them in promotion order.
     """
 
     footer = f"Updated {_local_clock(updated_at)}"
@@ -104,6 +114,7 @@ def render_task_board(
         queue_command=queue_command,
         max_chars=max_chars - len(footer) - 2,
         merging=merging,
+        backlog=promotion_order(backlog),
     )
     digest = hashlib.sha256(body.encode("utf-8")).hexdigest()
     return RenderedTaskBoard(text=f"{body}\n\n{footer}", digest=digest)
@@ -116,6 +127,7 @@ def _render_body(
     queue_command: str,
     max_chars: int,
     merging: tuple[str, ...] = (),
+    backlog: tuple[BacklogItem, ...] = (),
 ) -> str:
     sections = [
         _Section(
@@ -129,7 +141,16 @@ def _render_body(
         sections.append(
             _Section("Merging", [f"- {_short(item, REQUEST_LIMIT)}" for item in merging])
         )
-    text = _join(title, sections, queue_command)
+    backlog_forms = _backlog_line_forms(backlog)
+    backlog_line = backlog_forms[0] if backlog_forms else ""
+    text = _join(title, sections, queue_command, backlog_line)
+    # The backlog preview is the least important content, so shorten it
+    # first, down to a bare count, before hiding any task items.
+    for shorter in backlog_forms[1:]:
+        if len(text) <= max_chars:
+            break
+        backlog_line = shorter
+        text = _join(title, sections, queue_command, backlog_line)
     # Drop items from the longest section until the board fits, noting how
     # many were hidden so the reader knows to use /queue for the full list.
     while len(text) > max_chars:
@@ -138,7 +159,7 @@ def _render_body(
             break
         candidate.shown.pop()
         candidate.hidden += 1
-        text = _join(title, sections, queue_command)
+        text = _join(title, sections, queue_command, backlog_line)
     if len(text) > max_chars:
         text = text[: max(0, max_chars - 1)].rstrip() + "…"
     return text
@@ -151,7 +172,12 @@ class _Section:
     hidden: int = 0
 
 
-def _join(title: str, sections: list[_Section], queue_command: str) -> str:
+def _join(
+    title: str,
+    sections: list[_Section],
+    queue_command: str,
+    backlog_line: str = "",
+) -> str:
     lines = [title]
     for section in sections:
         lines.extend(["", f"{section.heading}:"])
@@ -161,7 +187,42 @@ def _join(title: str, sections: list[_Section], queue_command: str) -> str:
         lines.extend(section.shown)
         if section.hidden:
             lines.append(f"- … {section.hidden} more (see {queue_command})")
+    if backlog_line:
+        lines.extend(["", backlog_line])
     return "\n".join(lines)
+
+
+def _backlog_line_forms(items: tuple[BacklogItem, ...]) -> list[str]:
+    """Return the ``Up next:`` line from fullest to shortest, or none if empty."""
+
+    if not items:
+        return []
+    return [
+        _backlog_line(items, label_limit=BACKLOG_LABEL_LIMIT),
+        _backlog_line(items, label_limit=BACKLOG_SHORT_LABEL_LIMIT),
+        _backlog_line(items, label_limit=0),
+    ]
+
+
+def _backlog_line(items: tuple[BacklogItem, ...], *, label_limit: int) -> str:
+    head = f"Up next: {len(items)} in backlog"
+    if label_limit <= 0:
+        return head
+    shown = items[:BACKLOG_PREVIEW_ITEMS]
+    parts = [
+        f"#{item.id} [{item.priority}] {_short(_first_sentence(item.text), label_limit)}"
+        for item in shown
+    ]
+    hidden = len(items) - len(shown)
+    if hidden:
+        parts.append(f"+{hidden} more")
+    return f"{head} ({', '.join(parts)})"
+
+
+def _first_sentence(text: str) -> str:
+    cleaned = " ".join(text.split())
+    sentence = _SENTENCE_BREAK.split(cleaned, maxsplit=1)[0].rstrip(".。")
+    return sentence or cleaned
 
 
 def _running_item(job: TaskJob) -> str:

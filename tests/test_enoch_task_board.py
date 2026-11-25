@@ -19,6 +19,13 @@ from enoch.app.task_board import (
     save_task_board_state,
     task_board_path,
 )
+from enoch.backlog import (
+    BacklogItem,
+    add_backlog_item,
+    backlog_path,
+    promote_next_backlog_item,
+    remove_backlog_item,
+)
 from enoch.commands import core_command, help_message
 from enoch.identity import load_identity
 from enoch.providers import ChatEvent, ChatProviderError, MessagePinProvider
@@ -35,6 +42,16 @@ def _job(task_id: int, text: str, **changes) -> TaskJob:
         text=text,
         created_at="2026-11-24T13:00:00+00:00",
         **changes,
+    )
+
+
+def _backlog_item(item_id: int, text: str, *, priority: str = "p1") -> BacklogItem:
+    return BacklogItem(
+        id=item_id,
+        chat_id=42,
+        text=text,
+        priority=priority,
+        created_at="2026-11-24T13:00:00+00:00",
     )
 
 
@@ -163,6 +180,141 @@ class TaskBoardRenderTests(unittest.TestCase):
         self.assertNotEqual(first.text, later.text)
         self.assertEqual(first.digest, later.digest)
 
+    def test_board_has_no_backlog_line_when_backlog_is_empty(self) -> None:
+        with_empty = render_task_board(_status(), updated_at=UPDATED_AT, backlog=())
+        without = render_task_board(_status(), updated_at=UPDATED_AT)
+
+        self.assertNotIn("Up next", with_empty.text)
+        self.assertNotIn("backlog", with_empty.text.lower())
+        self.assertEqual(with_empty.text, without.text)
+        self.assertEqual(with_empty.digest, without.digest)
+
+    def test_backlog_line_counts_items_in_promotion_order(self) -> None:
+        backlog = (
+            _backlog_item(8, "Later p1 work", priority="p1"),
+            _backlog_item(9, "Low priority", priority="p2"),
+            _backlog_item(10, "Urgent first", priority="p0"),
+            _backlog_item(11, "Urgent second", priority="p0"),
+        )
+
+        text = render_task_board(_status(), updated_at=UPDATED_AT, backlog=backlog).text
+
+        self.assertIn(
+            "\n\nUp next: 4 in backlog (#10 [p0] Urgent first, #11 [p0] Urgent second, +2 more)"
+            "\n\nUpdated 14:05",
+            text,
+        )
+
+    def test_backlog_line_follows_paused_and_merging(self) -> None:
+        backlog = (_backlog_item(3, "Only item"),)
+
+        plain = render_task_board(_status(), updated_at=UPDATED_AT, backlog=backlog).text
+        merging = render_task_board(
+            _status(),
+            updated_at=UPDATED_AT,
+            merging=("PR #5",),
+            backlog=backlog,
+        ).text
+
+        self.assertIn("Paused:\n- none\n\nUp next: 1 in backlog (#3 [p1] Only item)\n\n", plain)
+        self.assertIn("Merging:\n- PR #5\n\nUp next: 1 in backlog (#3 [p1] Only item)\n\n", merging)
+        self.assertEqual(len([line for line in plain.splitlines() if "Up next" in line]), 1)
+
+    def test_backlog_labels_use_the_first_sentence_and_are_clipped(self) -> None:
+        backlog = (
+            _backlog_item(1, "Fix two small bugs. Then explain the details at length."),
+            _backlog_item(
+                2,
+                "Give task workers a persistent test environment\nso they can run e2e checks",
+            ),
+            _backlog_item(3, "Third"),
+        )
+
+        text = render_task_board(_status(), updated_at=UPDATED_AT, backlog=backlog).text
+        line = next(line for line in text.splitlines() if line.startswith("Up next:"))
+
+        self.assertEqual(
+            line,
+            "Up next: 3 in backlog (#1 [p1] Fix two small bugs, "
+            "#2 [p1] Give task workers a persistent test…, +1 more)",
+        )
+        self.assertNotIn("Then explain", text)
+        self.assertNotIn("Third", text)
+
+    def test_backlog_line_has_no_more_suffix_when_everything_is_shown(self) -> None:
+        backlog = (_backlog_item(1, "One"), _backlog_item(2, "Two"))
+
+        text = render_task_board(_status(), updated_at=UPDATED_AT, backlog=backlog).text
+
+        self.assertIn("Up next: 2 in backlog (#1 [p1] One, #2 [p1] Two)\n", text)
+        self.assertNotIn("more", text)
+
+    def test_digest_changes_when_the_backlog_changes(self) -> None:
+        status = _status(pending=(_job(1, "Work"),))
+        one = (_backlog_item(1, "First"),)
+        two = (*one, _backlog_item(2, "Second"))
+        reprioritized = (_backlog_item(1, "First", priority="p0"),)
+
+        digests = {
+            render_task_board(status, updated_at=UPDATED_AT, backlog=backlog).digest
+            for backlog in ((), one, two, reprioritized)
+        }
+        repeat = render_task_board(
+            status,
+            updated_at=datetime(2026, 11, 24, 18, 30),
+            backlog=two,
+        ).digest
+
+        self.assertEqual(len(digests), 4)
+        self.assertIn(repeat, digests)
+
+    def test_truncation_shortens_backlog_before_hiding_tasks(self) -> None:
+        status = _status(
+            running=_job(1, "Running work"),
+            pending=(_job(2, "Queued work"), _job(3, "More queued work")),
+            paused=(_job(4, "Paused work", status="paused"),),
+        )
+        backlog = tuple(
+            _backlog_item(index, "A rather long backlog request description " * 3)
+            for index in range(10, 16)
+        )
+        full = render_task_board(status, updated_at=UPDATED_AT, backlog=backlog).text
+        bare = render_task_board(status, updated_at=UPDATED_AT).text
+
+        rendered = render_task_board(
+            status,
+            updated_at=UPDATED_AT,
+            backlog=backlog,
+            max_chars=len(bare) + len("\n\nUp next: 6 in backlog"),
+        )
+
+        self.assertGreater(len(full), len(rendered.text))
+        self.assertLessEqual(len(rendered.text), len(bare) + len("\n\nUp next: 6 in backlog"))
+        for item in ("#1 Running work", "#2 Queued work", "#3 More queued work", "#4 Paused work"):
+            self.assertIn(item, rendered.text)
+        self.assertNotIn("more (see", rendered.text)
+        self.assertIn("\n\nUp next: 6 in backlog\n\nUpdated 14:05", rendered.text)
+
+    def test_truncation_with_backlog_keeps_every_task_section(self) -> None:
+        pending = tuple(_job(index, "queued request " * 10) for index in range(1, 80))
+        paused = (_job(90, "Paused work", status="paused"),)
+        backlog = tuple(_backlog_item(index, "backlog request " * 5) for index in range(1, 9))
+
+        rendered = render_task_board(
+            _status(running=_job(100, "Running work"), pending=pending, paused=paused),
+            updated_at=UPDATED_AT,
+            max_chars=1200,
+            backlog=backlog,
+        )
+
+        self.assertLessEqual(len(rendered.text), 1200)
+        self.assertIn("Running:\n- #100 Running work", rendered.text)
+        self.assertIn("Queued:\n- #1 ", rendered.text)
+        self.assertIn("more (see /queue)", rendered.text)
+        self.assertIn("Paused:\n- #90 Paused work", rendered.text)
+        self.assertIn("Up next: 8 in backlog", rendered.text)
+        self.assertTrue(rendered.text.endswith("Updated 14:05"))
+
     def test_state_round_trips_in_private_state(self) -> None:
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -286,6 +438,55 @@ class TaskBoardRefreshTests(unittest.TestCase):
         inspect = patch.object(self.app.workflow, "inspect", side_effect=lambda: self.status)
         inspect.start()
         self.addCleanup(inspect.stop)
+        worker = patch.object(EnochApplication, "_maybe_start_task_worker")
+        worker.start()
+        self.addCleanup(worker.stop)
+
+    def test_backlog_changes_edit_the_board(self) -> None:
+        self.app._task_board_command("")
+        self.assertNotIn("Up next", self.chat.sent[0][1])
+
+        first = add_backlog_item(42, "Set up a test environment", self.root)
+        self.app._refresh_task_board()
+        add_backlog_item(42, "Fix the parser", self.root, priority="p0")
+        self.app._refresh_task_board()
+        promote_next_backlog_item(self.root, promoted_task_id=50)
+        self.app._refresh_task_board()
+        remove_backlog_item(first.id, self.root)
+        self.app._refresh_task_board()
+
+        texts = [edit[2] for edit in self.chat.edits]
+        self.assertEqual(len(texts), 4)
+        self.assertIn("Up next: 1 in backlog (#1 [p1] Set up a test environment)", texts[0])
+        self.assertIn(
+            "Up next: 2 in backlog (#2 [p0] Fix the parser, #1 [p1] Set up a test environment)",
+            texts[1],
+        )
+        self.assertIn("Up next: 1 in backlog (#1 [p1] Set up a test environment)", texts[2])
+        self.assertNotIn("Up next", texts[3])
+
+    def test_unchanged_backlog_is_not_edited(self) -> None:
+        add_backlog_item(42, "Waiting work", self.root)
+        self.app._task_board_command("")
+        self.assertIn("Up next: 1 in backlog", self.chat.sent[0][1])
+
+        for _ in range(3):
+            self.app._refresh_task_board()
+
+        self.assertEqual(self.chat.edits, [])
+
+    def test_unreadable_backlog_only_hides_the_backlog_line(self) -> None:
+        self.app._task_board_command("")
+        backlog_path(self.root).write_text("{not json", encoding="utf-8")
+        self.status = _status(pending=(_job(4, "New work"),))
+
+        with patch("enoch.app.core._record_system_event") as record:
+            self.app._refresh_task_board()
+
+        record.assert_not_called()
+        self.assertEqual(len(self.chat.edits), 1)
+        self.assertIn("Queued:\n- #4 New work", self.chat.edits[0][2])
+        self.assertNotIn("Up next", self.chat.edits[0][2])
 
     def test_unchanged_content_is_not_edited(self) -> None:
         self.app._task_board_command("")
