@@ -910,7 +910,8 @@ def pr_usage(prefix: str = "/") -> str:
             ),
             (
                 "Waiting stops after 2 hours (not counting time spent fixing CI, at most 6 "
-                "hours overall). Conflicts are never resolved automatically: conflicted, draft "
+                "hours overall), or after 3 failed branch updates in a row, with the reason. "
+                "Conflicts are never resolved automatically: conflicted, draft "
                 "and closed reviews are refused right away, or stop the pending merge."
             ),
             (

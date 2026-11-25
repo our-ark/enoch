@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import tempfile
 import time
 from urllib.parse import quote, urlparse
 
@@ -637,6 +638,13 @@ def update_pull_request_branch(
     GitHub rejects the update when the head no longer matches
     ``expected_head_sha``, so unexpected new commits are never overwritten.
     Conflicts are never resolved here: only a mergeable BEHIND PR is updated.
+
+    Any 2xx answer (GitHub normally sends ``202 Accepted``) counts as accepted;
+    the new head is then confirmed by polling the PR. When GitHub keeps failing
+    without saying why (an empty error body, a 5xx, or no HTTP answer) while
+    the PR is still open, mergeable and at ``expected_head_sha``, the base is
+    merged into the PR branch locally in a throwaway worktree and pushed
+    without force; any conflict stops that fallback.
     """
 
     expected = expected_head_sha.strip()
@@ -659,10 +667,80 @@ def update_pull_request_branch(
                 f"(merge state: {status.merge_state_status.lower() or 'unknown'}); "
                 "its branch was not updated."
             )
+    failure = _request_branch_update(gh, status, expected, root)
+    attempts = 1
+    while failure is not None and failure.opaque:
+        if _updated_despite_failure(gh, status, expected, root):
+            failure = None  # GitHub did the update but answered with an error.
+            break
+        if attempts >= _BRANCH_UPDATE_API_ATTEMPTS:
+            break
+        time.sleep(_BRANCH_UPDATE_API_RETRY_DELAY_SECONDS)
+        failure = _request_branch_update(gh, status, expected, root)
+        attempts += 1
+    message = f"Updated PR #{status.number} from {status.base_branch}."
+    if failure is not None:
+        prefix = f"Could not update PR #{status.number} from {status.base_branch}"
+        if not failure.opaque:
+            raise PublishError(f"{prefix}: {failure.reason}")
+        # GitHub keeps failing without a reason. Merge locally, but only while
+        # the PR is still exactly what was inspected and safe to update.
+        current = inspect_pull_request_merge(reference, root)
+        try:
+            _require_updatable_pull_request(current, expected)
+        except PublishError as error:
+            raise PublishError(f"{prefix}: {failure.reason}; {error}") from error
+        try:
+            _merge_base_into_pull_request_locally(gh, current, expected, root)
+        except PublishError as error:
+            raise PublishError(
+                f"{prefix}: {failure.reason}; the local merge fallback failed: {error}"
+            ) from error
+        message = (
+            f"Updated PR #{status.number} from {status.base_branch} with a local merge "
+            f"(GitHub's update-branch failed: {failure.reason})."
+        )
+    head = _updated_head_sha(gh, status, expected, root)
+    return PullRequestBranchUpdateResult(
+        number=status.number,
+        url=status.url,
+        base_branch=status.base_branch,
+        previous_head_sha=expected,
+        head_sha=head,
+        message=message,
+    )
+
+
+@dataclass(frozen=True)
+class _BranchUpdateFailure:
+    """Why GitHub's update-branch call failed.
+
+    ``opaque`` failures carry no usable reason (an empty or unparsable error
+    body, a server error, or no HTTP answer at all); they may be retried and
+    then fall back to a local merge. Anything else is GitHub's real refusal.
+    """
+
+    reason: str
+    opaque: bool
+
+
+_HTTP_STATUS_LINE = re.compile(r"^HTTP/\S+\s+(\d{3})(?:\s+(.*))?$")
+_STDERR_HTTP_STATUS = re.compile(r"\bHTTP (\d{3})\b")
+
+
+def _request_branch_update(
+    gh: str,
+    status: PullRequestMergeStatus,
+    expected: str,
+    root: Path | None,
+) -> _BranchUpdateFailure | None:
+    """PUT update-branch once; ``None`` when GitHub accepted it (any 2xx)."""
+
     result = subprocess.run(
         [
             gh,
             "api",
+            "--include",
             "--method",
             "PUT",
             f"repos/{status.repository}/pulls/{status.number}/update-branch",
@@ -675,28 +753,228 @@ def update_pull_request_branch(
         capture_output=True,
         check=False,
     )
-    if result.returncode != 0:
-        note = (
-            result.stderr.strip()
-            or result.stdout.strip()
-            or "GitHub could not update the pull request branch."
+    http_status, phrase, body = _split_http_response(result.stdout)
+    if http_status is not None and 200 <= http_status < 300:
+        # 202 Accepted is the documented answer; its body may be empty.
+        return None
+    if http_status is None and result.returncode == 0:
+        return None
+    message = _github_error_message(body)
+    stderr = result.stderr.strip()
+    if http_status is None:
+        note = stderr or result.stdout.strip() or "GitHub could not update the pull request branch."
+        stated = _STDERR_HTTP_STATUS.search(note)
+        # gh still names the status in stderr when headers were not captured.
+        opaque = stated is None or int(stated.group(1)) >= 500
+        return _BranchUpdateFailure(note.removeprefix("gh: "), opaque=opaque)
+    label = f"HTTP {http_status}" + (f" {phrase}" if phrase else "")
+    if message:
+        return _BranchUpdateFailure(f"{message} ({label})", opaque=http_status >= 500)
+    # gh reports an empty JSON error body as "unexpected end of JSON input".
+    detail = "an empty response" if not body.strip() else "an unreadable response"
+    return _BranchUpdateFailure(f"GitHub returned {label} with {detail}", opaque=True)
+
+
+def _updated_despite_failure(
+    gh: str,
+    status: PullRequestMergeStatus,
+    expected: str,
+    root: Path | None,
+) -> bool:
+    """True when the PR head already moved to a direct update of ``expected``."""
+
+    try:
+        pull = _github_api_object(
+            gh, f"repos/{status.repository}/pulls/{status.number}", root, "pull request"
         )
-        raise PublishError(f"Could not update PR #{status.number} from {status.base_branch}: {note}")
-    head = _updated_head_sha(gh, status, expected, root)
-    return PullRequestBranchUpdateResult(
-        number=status.number,
-        url=status.url,
-        base_branch=status.base_branch,
-        previous_head_sha=expected,
-        head_sha=head,
-        message=f"Updated PR #{status.number} from {status.base_branch}.",
+        head = pull.get("head")
+        head_sha = str(head.get("sha") or "").strip() if isinstance(head, dict) else ""
+        if not head_sha or head_sha == expected:
+            return False
+        return _is_direct_update(gh, status.repository, expected, head_sha, root)
+    except PublishError:
+        return False
+
+
+def _split_http_response(output: str) -> tuple[int | None, str, str]:
+    """Split ``gh api --include`` output into (status, reason phrase, body)."""
+
+    text = output.lstrip()
+    first, _, rest = text.partition("\n")
+    match = _HTTP_STATUS_LINE.match(first.strip())
+    if match is None:
+        return None, "", output
+    parts = re.split(r"\r?\n\r?\n", rest, maxsplit=1)
+    body = parts[1] if len(parts) == 2 else ""
+    return int(match.group(1)), (match.group(2) or "").strip(), body
+
+
+def _github_error_message(body: str) -> str:
+    try:
+        data = json.loads(body)
+    except (json.JSONDecodeError, TypeError):
+        return ""
+    if not isinstance(data, dict):
+        return ""
+    message = str(data.get("message") or "").strip()
+    errors = data.get("errors")
+    if isinstance(errors, list):
+        details = [
+            str(item.get("message") if isinstance(item, dict) else item).strip()
+            for item in errors
+        ]
+        details = [detail for detail in details if detail and detail != "None"]
+        if details:
+            message = f"{message}: {'; '.join(details)}" if message else "; ".join(details)
+    return message
+
+
+def _merge_base_into_pull_request_locally(
+    gh: str,
+    status: PullRequestMergeStatus,
+    expected: str,
+    root: Path | None,
+) -> str:
+    """Merge the base into the PR branch in a throwaway worktree and push it.
+
+    The push is a plain fast-forward (never forced), so a branch that moved
+    since ``expected`` is never overwritten. A conflict aborts the merge.
+    Returns the pushed merge commit.
+    """
+
+    pull = _github_api_object(
+        gh, f"repos/{status.repository}/pulls/{status.number}", root, "pull request"
     )
+    head = pull.get("head") if isinstance(pull.get("head"), dict) else {}
+    head_repo = head.get("repo") if isinstance(head.get("repo"), dict) else {}
+    head_ref = str(head.get("ref") or "").strip()
+    head_repository = str(head_repo.get("full_name") or "").strip()
+    base = status.base_branch
+    if not head_ref or not base:
+        raise PublishError("GitHub did not report the pull request's branches.")
+    if head_repository.casefold() != status.repository.casefold():
+        raise PublishError("the PR branch lives in another repository.")
+    if str(head.get("sha") or "").strip() != expected:
+        raise PublishError(f"the PR head is no longer {expected}.")
+    remote = _remote_for_repository(status.repository, root)
+    _git_checked(
+        [
+            "fetch",
+            "--no-tags",
+            "--quiet",
+            remote,
+            f"+refs/heads/{base}:refs/remotes/{remote}/{base}",
+            f"+refs/heads/{head_ref}:refs/remotes/{remote}/{head_ref}",
+        ],
+        root,
+        f"could not fetch {base} and {head_ref} from {remote}",
+    )
+    fetched_head = _git_checked(
+        ["rev-parse", "--verify", f"refs/remotes/{remote}/{head_ref}^{{commit}}"],
+        root,
+        f"could not read {head_ref}",
+    ).strip()
+    if fetched_head != expected:
+        raise PublishError(f"{head_ref} is at {fetched_head or 'unknown'}, not {expected}.")
+    base_sha = _git_checked(
+        ["rev-parse", "--verify", f"refs/remotes/{remote}/{base}^{{commit}}"],
+        root,
+        f"could not read {base}",
+    ).strip()
+    try:
+        author = _publish_author(root)
+    except Exception:  # noqa: BLE001 - fall back to the repository's git identity
+        author = _PublishAuthor(name="", email="")
+    identity = []
+    if author.name:
+        identity += ["-c", f"user.name={author.name}"]
+    if author.email:
+        identity += ["-c", f"user.email={author.email}"]
+    parent = Path(tempfile.mkdtemp(prefix="our-ark-update-branch-"))
+    worktree = parent / "worktree"
+    try:
+        _git_checked(
+            ["worktree", "add", "--detach", "--quiet", str(worktree), expected],
+            root,
+            "could not create a temporary worktree",
+        )
+        merged = _git(
+            [
+                *identity,
+                "merge",
+                "--no-ff",
+                "--no-edit",
+                "-m",
+                f"Merge branch '{base}' into {head_ref}",
+                base_sha,
+            ],
+            worktree,
+        )
+        if merged.returncode != 0:
+            unmerged = _git(["diff", "--name-only", "--diff-filter=U"], worktree)
+            _git(["merge", "--abort"], worktree)
+            if "CONFLICT" in merged.stdout or unmerged.stdout.strip():
+                raise PublishError(f"merging {base} conflicts; nothing was pushed.")
+            note = merged.stderr.strip() or merged.stdout.strip() or "git merge failed"
+            raise PublishError(f"{note}; nothing was pushed.")
+        merge_sha = _git_checked(
+            ["rev-parse", "HEAD"], worktree, "could not read the merge commit"
+        ).strip()
+        if merge_sha == expected:
+            raise PublishError(f"{head_ref} already contains {base}; nothing was pushed.")
+        _git_checked(
+            ["push", "--quiet", remote, f"{merge_sha}:refs/heads/{head_ref}"],
+            worktree,
+            f"could not push {head_ref} (it was not forced)",
+        )
+        return merge_sha
+    finally:
+        _git(["worktree", "remove", "--force", str(worktree)], root)
+        shutil.rmtree(parent, ignore_errors=True)
+        _git(["worktree", "prune"], root)
+
+
+def _remote_for_repository(repository: str, root: Path | None) -> str:
+    listed = _git_checked(["remote"], root, "could not list git remotes")
+    remotes = [name.strip() for name in listed.splitlines() if name.strip()]
+    if DEFAULT_REMOTE in remotes:
+        remotes.remove(DEFAULT_REMOTE)
+        remotes.insert(0, DEFAULT_REMOTE)
+    for remote in remotes:
+        url = _git(["remote", "get-url", remote], root)
+        found = _github_repo_from_remote(url.stdout) if url.returncode == 0 else None
+        if found and found.casefold() == repository.casefold():
+            return remote
+    raise PublishError(f"no git remote points at {repository}.")
+
+
+def _git(args: list[str], cwd: Path | None) -> subprocess.CompletedProcess[str]:
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+    return subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+
+def _git_checked(args: list[str], cwd: Path | None, fallback: str) -> str:
+    result = _git(args, cwd)
+    if result.returncode != 0:
+        raise PublishError(result.stderr.strip() or fallback)
+    return result.stdout
 
 
 # GitHub usually creates the update commit before update-branch returns; these
 # bounded retries only cover a short replication delay, not CI.
 _BRANCH_UPDATE_HEAD_CHECKS = 5
 _BRANCH_UPDATE_HEAD_DELAY_SECONDS = 1.0
+# update-branch calls per update before an unexplained failure falls back to
+# a local merge; a failure GitHub explains is final right away.
+_BRANCH_UPDATE_API_ATTEMPTS = 2
+_BRANCH_UPDATE_API_RETRY_DELAY_SECONDS = 2.0
 _UPDATABLE_MERGE_STATES = frozenset({"BEHIND", "BLOCKED", "CLEAN", "HAS_HOOKS", "UNSTABLE"})
 
 

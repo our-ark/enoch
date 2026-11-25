@@ -419,7 +419,16 @@ with `update_review_branch(reference, *, expected_head_sha, root=None)`, which
 must refuse when the head is no longer `expected_head_sha`, and optionally
 `verify_review_branch_update(reference, *, previous_head_sha, head_sha,
 root=None)`. A forge's `merge_pull_request` may also accept
-`expected_head_sha` so landing is pinned to the authorized head.
+`expected_head_sha` so landing is pinned to the authorized head. A failed
+update should raise with the forge's real reason; the pending-merge watcher
+retries it on each cycle and stops after three failures in a row, telling the
+requester why. The GitHub forge reports the HTTP status and message from
+`update-branch` (any 2xx, including an empty `202 Accepted`, counts as
+accepted and the new head is then confirmed). When GitHub keeps failing
+without a reason (an empty error body, a 5xx, or no answer) while the PR is
+still open, mergeable and at the expected head, it merges the base into the PR
+branch in a throwaway local worktree and pushes without force, stopping on any
+conflict.
 
 A third optional capability, `forge.ci-repair`, pairs with
 `inspect_review_check_failures(reference, *, head_sha, root=None)` (a
