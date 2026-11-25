@@ -25,6 +25,13 @@ class FunctionForgeProvider:
     inspect_merge_fn: Callable[..., Any]
     list_fn: Callable[..., tuple[Any, ...]]
     merge_fn: Callable[..., Any]
+    # Optional: a forge that can bring a review branch up to date with its base
+    # (``forge.update-branch``) and report CI checks for a review head
+    # (``forge.check-status``). Enoch waits for and lands a requested review
+    # only on forges with these; others keep refusing reviews that are not ready.
+    update_branch_fn: Callable[..., Any] | None = None
+    verify_update_fn: Callable[..., bool] | None = None
+    checks_fn: Callable[..., Any] | None = None
     name: str = "function-forge"
     provider_kind: str = "forge"
     capabilities: ProviderCapabilities = ProviderCapabilities(
@@ -38,6 +45,21 @@ class FunctionForgeProvider:
             }
         ),
     )
+
+    def __post_init__(self) -> None:
+        optional = {
+            capability
+            for capability, fn in (
+                ("forge.update-branch", self.update_branch_fn),
+                ("forge.check-status", self.checks_fn),
+            )
+            if fn is not None
+        }
+        if optional:
+            self.capabilities = ProviderCapabilities(
+                provider_kind="forge",
+                capabilities=self.capabilities.capabilities | optional,
+            )
 
     def close_pull_request(
         self,
@@ -73,6 +95,45 @@ class FunctionForgeProvider:
 
     def merge_pull_request(self, reference: str, root: Path | None = None) -> Any:
         return self.merge_fn(reference, root)
+
+    def update_review_branch(
+        self,
+        reference: str,
+        *,
+        expected_head_sha: str,
+        root: Path | None = None,
+    ) -> Any:
+        if self.update_branch_fn is None:
+            raise ForgeProviderError("This forge cannot update review branches.")
+        return self.update_branch_fn(
+            reference,
+            expected_head_sha=expected_head_sha,
+            root=root,
+        )
+
+    def verify_review_branch_update(
+        self,
+        reference: str,
+        *,
+        previous_head_sha: str,
+        head_sha: str,
+        root: Path | None = None,
+    ) -> bool:
+        if self.verify_update_fn is None:
+            return False
+        return bool(
+            self.verify_update_fn(
+                reference,
+                previous_head_sha=previous_head_sha,
+                head_sha=head_sha,
+                root=root,
+            )
+        )
+
+    def inspect_review_checks(self, reference: str, root: Path | None = None) -> Any:
+        if self.checks_fn is None:
+            raise ForgeProviderError("This forge cannot inspect review checks.")
+        return self.checks_fn(reference, root)
 
 
 class LocalForgeProvider:
