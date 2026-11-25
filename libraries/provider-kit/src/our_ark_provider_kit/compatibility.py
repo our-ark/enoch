@@ -16,6 +16,7 @@ from our_ark_provider_kit.contracts import (
     RepositoryWorkspace,
     ReviewCloseRequest,
     ReviewFeatures,
+    ReviewCheckFailure,
     ReviewCheckReport,
     ReviewIdentity,
     ReviewLandRequest,
@@ -23,6 +24,7 @@ from our_ark_provider_kit.contracts import (
     ReviewProvider,
     ReviewProviderError,
     ReviewRecord,
+    ReviewRevisionComparison,
     ReviewSignal,
     ReviewSubmission,
     ReviewVersion,
@@ -448,6 +450,71 @@ class LegacyForgeReviewAdapter:
         if not isinstance(report, ReviewCheckReport):
             raise ReviewProviderError("Forge returned invalid review check data.")
         return report
+
+    def inspect_review_check_failures(
+        self,
+        review: ReviewIdentity,
+        *,
+        revision: str,
+        root: Path | None = None,
+    ) -> tuple[ReviewCheckFailure, ...]:
+        """Return evidence (conclusion, CI ids, log excerpt) for failed checks on ``revision``.
+
+        Part of the optional ``forge.ci-repair`` operations.
+        """
+
+        inspect_failures = self._required_forge_operation(
+            "inspect_review_check_failures",
+            "forge.ci-repair",
+            "inspect failed review checks",
+        )
+        failures = tuple(inspect_failures(review.id, head_sha=revision, root=root))
+        if not all(isinstance(item, ReviewCheckFailure) for item in failures):
+            raise ReviewProviderError("Forge returned invalid check failure data.")
+        return failures
+
+    def rerun_failed_review_checks(
+        self,
+        review: ReviewIdentity,
+        *,
+        revision: str,
+        root: Path | None = None,
+    ) -> tuple[str, ...]:
+        """Re-run only the failed CI jobs on ``revision``; return the re-run CI run ids.
+
+        Part of the optional ``forge.ci-repair`` operations. The forge must
+        refuse when the review head is no longer ``revision``.
+        """
+
+        rerun = self._required_forge_operation(
+            "rerun_failed_review_checks",
+            "forge.ci-repair",
+            "re-run review checks",
+        )
+        return tuple(str(item) for item in rerun(review.id, head_sha=revision, root=root))
+
+    def compare_review_revisions(
+        self,
+        review: ReviewIdentity,
+        *,
+        base: str,
+        revision: str,
+        root: Path | None = None,
+    ) -> ReviewRevisionComparison:
+        """Compare ``revision`` with ``base`` in the review's repository.
+
+        Part of the optional ``forge.ci-repair`` operations.
+        """
+
+        compare = self._required_forge_operation(
+            "compare_review_revisions",
+            "forge.ci-repair",
+            "compare review revisions",
+        )
+        result = compare(review.id, base=base, head=revision, root=root)
+        if not isinstance(result, ReviewRevisionComparison):
+            raise ReviewProviderError("Forge returned invalid revision comparison data.")
+        return result
 
     def _required_forge_operation(
         self,

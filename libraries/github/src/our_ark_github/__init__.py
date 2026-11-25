@@ -30,6 +30,7 @@ class GithubForgeProvider:
                 "forge.merge",
                 "forge.update-branch",
                 "forge.check-status",
+                "forge.ci-repair",
             }
         ),
     )
@@ -96,6 +97,28 @@ class GithubForgeProvider:
 
     def inspect_review_checks(self, reference: str, root=None):
         return workflow.inspect_pull_request_checks(reference, root)
+
+    def inspect_review_check_failures(self, reference: str, *, head_sha: str, root=None):
+        return workflow.inspect_pull_request_check_failures(
+            reference,
+            head_sha=head_sha,
+            root=root,
+        )
+
+    def rerun_failed_review_checks(self, reference: str, *, head_sha: str, root=None):
+        return workflow.rerun_failed_pull_request_checks(
+            reference,
+            head_sha=head_sha,
+            root=root,
+        )
+
+    def compare_review_revisions(self, reference: str, *, base: str, head: str, root=None):
+        return workflow.compare_pull_request_revisions(
+            reference,
+            base=base,
+            head=head,
+            root=root,
+        )
 
     def health(self, root: Path | None = None) -> ProviderHealth:
         if self.gh is None:

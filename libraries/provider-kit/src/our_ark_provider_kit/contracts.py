@@ -1126,6 +1126,59 @@ class ReviewCheckReport:
         return not self.pending and not self.failed
 
 
+@dataclass(frozen=True)
+class ReviewCheckFailure:
+    """Evidence for one failed check, from the optional ``forge.ci-repair`` operations.
+
+    ``detail`` keeps the forge's raw conclusion (for example ``failure``,
+    ``cancelled`` or ``timed_out``). ``log`` is a bounded excerpt of the failed
+    job's log; it is empty when the forge could not read it. ``run_id`` and
+    ``job_id`` are the forge's opaque CI identifiers.
+    """
+
+    name: str
+    detail: str = ""
+    run_id: str = ""
+    job_id: str = ""
+    log: str = ""
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "name", str(self.name).strip() or "unnamed check")
+        for attribute in ("detail", "run_id", "job_id"):
+            object.__setattr__(self, attribute, str(getattr(self, attribute)).strip())
+        object.__setattr__(self, "log", str(self.log))
+
+
+@dataclass(frozen=True)
+class ReviewCommit:
+    """One commit on a review branch: its full revision id and subject line."""
+
+    revision: str
+    subject: str = ""
+
+    def __post_init__(self) -> None:
+        revision = str(self.revision).strip()
+        if not revision:
+            raise ValueError("Review commit revision is required.")
+        object.__setattr__(self, "revision", revision)
+        object.__setattr__(self, "subject", str(self.subject).strip())
+
+
+@dataclass(frozen=True)
+class ReviewRevisionComparison:
+    """How ``revision`` relates to ``base`` (a revision id or a branch name).
+
+    ``descends`` is true only when ``revision`` contains ``base`` (it is equal
+    to it or strictly ahead of it). ``commits`` lists the commits reachable
+    from ``revision`` but not from ``base``, oldest first.
+    """
+
+    base: str
+    revision: str
+    descends: bool
+    commits: tuple[ReviewCommit, ...] = ()
+
+
 @runtime_checkable
 class AgentIdentity(Protocol):
     name: str
