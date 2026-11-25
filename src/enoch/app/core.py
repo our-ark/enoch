@@ -14,8 +14,9 @@ import time
 from typing import Any, Callable
 from uuid import uuid4
 
-from enoch.quota import quota_command, quota_snapshots
+from enoch.quota import quota_command, quota_provider_label, quota_snapshots
 from enoch.quota_warnings import NOTIFICATION_PREFIX as QUOTA_NOTIFICATION_PREFIX, QuotaWarningMonitor
+from enoch.runtime_access import RuntimeAccessResumer, is_usage_limit_text
 
 from enoch.backlog import (
     BacklogItem,
@@ -620,6 +621,15 @@ class EnochApplication:
         self.workflow = validate_workflow_engine(
             workflow or LocalWorkflowEngine(root, epoch=self.daemon_epoch)
         )
+        self.runtime_access = RuntimeAccessResumer(
+            root,
+            paused_tasks=lambda: self.workflow.inspect().paused,
+            quota=lambda: self._runtime_quota_snapshot(),
+            probe=lambda: self._probe_runtime_access(),
+            resume=lambda: self._auto_resume_paused_tasks(),
+            notify=lambda resumed: self._notify_runtime_access_resumed(resumed),
+            require_current=lambda: self.effect_fence.require_current(),
+        )
         self._validate_profile_commands()
         self._validate_extension_commands()
         self.previous_shutdown_warning = previous_shutdown_warning
@@ -712,6 +722,7 @@ class EnochApplication:
         self._start_cron_scheduler()
         try:
             self.quota_warnings.start()
+            self.runtime_access.start()
             while True:
                 try:
                     self.run_once()
@@ -724,6 +735,7 @@ class EnochApplication:
                     time.sleep(5)
         finally:
             self.quota_warnings.stop()
+            self.runtime_access.stop()
             self._stop_cron_scheduler()
 
     @property
@@ -1952,7 +1964,8 @@ class EnochApplication:
         queue_status = self.workflow.inspect()
         if queue_status.paused_count:
             return (
-                f"{self.display_name} has paused tasks. Restore agent runtime access and use "
+                f"{self.display_name} has tasks paused for agent runtime access; they resume "
+                "automatically when access returns. To continue sooner, use "
                 f"{self.command_prefix}task resume <id|all> before starting {self.command_prefix}do."
             )
         running = queue_status.running
@@ -2089,7 +2102,8 @@ class EnochApplication:
     ) -> str:
         if self.workflow.inspect().paused_count:
             return (
-                f"{self.display_name} has paused tasks. Restore agent runtime access and use "
+                f"{self.display_name} has tasks paused for agent runtime access; they resume "
+                "automatically when access returns. To continue sooner, use "
                 f"{self.command_prefix}task resume <id|all> before starting more work."
             )
         try:
@@ -2144,6 +2158,8 @@ class EnochApplication:
         finished_job: TaskJob | None = None
         failure: TaskFailure | None = None
         regression_signals: tuple[TaskRegressionSignal, ...] = ()
+        pause_reason = ""
+        pause_resets_at: datetime | None = None
         try:
             self._authorize_task(job)
             outcome = _coerce_work_outcome(
@@ -2176,6 +2192,8 @@ class EnochApplication:
                 retryable=False,
             )
         except AgentRuntimeAccessUnavailable as error:
+            pause_reason = str(error)
+            pause_resets_at = _error_resets_at(error)
             reply = _codex_pause_warning(job.id, str(error), command_prefix=self.command_prefix)
             completed_status = "paused"
         except AgentRuntimeTimedOut:
@@ -2193,8 +2211,13 @@ class EnochApplication:
                 completed_status = "cancelled"
         except Exception as error:
             reply = f"{self.display_name} could not complete task #{job.id}: {error}"
-            completed_status = "failed"
-            failure = classify_task_failure(reply)
+            if isinstance(error, AgentRuntimeError) and is_usage_limit_text(str(error)):
+                pause_reason = str(error)
+                reply = _codex_pause_warning(job.id, pause_reason, command_prefix=self.command_prefix)
+                completed_status = "paused"
+            else:
+                completed_status = "failed"
+                failure = classify_task_failure(reply)
         finally:
             deadline.cancel()
             regression_signals = _CURRENT_REGRESSION_SIGNALS.get()
@@ -2232,6 +2255,8 @@ class EnochApplication:
                     trigger="runtime-unavailable",
                     worker_id=worker_id,
                 )
+                if finished_job is not None:
+                    self._record_runtime_access_pause(pause_reason, pause_resets_at)
             else:
                 finished_job = self._finalize_with_terminal_evidence(
                     job.id,
@@ -2388,6 +2413,7 @@ class EnochApplication:
         self._stopping = True
         deadline = time.monotonic() + max(0.0, timeout_seconds)
         self.quota_warnings.stop(timeout_seconds=max(0.0, deadline - time.monotonic()))
+        self.runtime_access.stop(timeout_seconds=max(0.0, deadline - time.monotonic()))
         self._stop_cron_scheduler(
             timeout_seconds=max(0.0, deadline - time.monotonic())
         )
@@ -3261,6 +3287,7 @@ class EnochApplication:
             return f"{self.display_name} could not preserve that task while agent runtime access is unavailable."
         if paused is None:
             return f"{self.display_name} could not pause that task safely."
+        self._record_runtime_access_pause(reason)
         return self._publish_paused_task(paused, reason)
 
     def _publish_paused_task(self, job: TaskJob, reason: str) -> str:
@@ -3276,8 +3303,8 @@ class EnochApplication:
                     task_id=job.id,
                     status="paused",
                     latest_update=(
-                        f"{reason} Use {self.command_prefix}task resume {job.id} when agent runtime access "
-                        "is available again."
+                        f"{reason} It resumes automatically when agent runtime access returns. "
+                        f"Use {self.command_prefix}task resume {job.id} to resume it sooner."
                     ),
                     context=job.context,
                 )
@@ -3314,6 +3341,12 @@ class EnochApplication:
                     )
                 return f"Task #{task_id} is not paused."
             return "No tasks are paused for agent runtime access."
+        self._continue_resumed_tasks(resumed)
+        task_ids = ", ".join(f"#{job.id}" for job in resumed)
+        noun = "task" if len(resumed) == 1 else "tasks"
+        return f"Resumed {len(resumed)} {noun}: {task_ids}."
+
+    def _continue_resumed_tasks(self, resumed: tuple[TaskJob, ...]) -> None:
         compact = self._compact_task_messages()
         for job in resumed:
             message_id = self._work_status_messages.get(job.id) or job.status_message_id
@@ -3337,9 +3370,74 @@ class EnochApplication:
                     ),
                 )
         self._maybe_start_task_worker()
-        task_ids = ", ".join(f"#{job.id}" for job in resumed)
-        noun = "task" if len(resumed) == 1 else "tasks"
-        return f"Resumed {len(resumed)} {noun}: {task_ids}."
+
+    # Automatic resume after runtime access returns ---------------------------
+
+    def _record_runtime_access_pause(
+        self,
+        reason: str,
+        resets_at: datetime | None = None,
+    ) -> None:
+        try:
+            self.runtime_access.record_pause(reason, resets_at=resets_at)
+        except StaleDaemonEpoch:
+            raise
+        except Exception as error:
+            # The pause itself is durable; the monitor re-derives its schedule.
+            print(f"Enoch could not schedule automatic resume: {type(error).__name__}")
+
+    def _auto_resume_paused_tasks(self) -> tuple[TaskJob, ...]:
+        resumed = self.workflow.resume(
+            event_actor="system",
+            trigger="runtime-access-restored",
+        )
+        if resumed:
+            self._continue_resumed_tasks(resumed)
+        return resumed
+
+    def _notify_runtime_access_resumed(self, resumed) -> None:
+        by_chat: dict[ConversationId, list[TaskJob]] = {}
+        for job in resumed:
+            by_chat.setdefault(job.chat_id, []).append(job)
+        label = quota_provider_label(getattr(self.runtime, "name", "") or "agent runtime")
+        for chat_id, jobs in by_chat.items():
+            ids = ", ".join(f"#{job.id}" for job in jobs)
+            noun = "task" if len(jobs) == 1 else "tasks"
+            self._safe_send_message(
+                chat_id,
+                f"▶️ {label} limit reset; resumed {noun} {ids}.",
+                notification_key=(
+                    "runtime-access-resumed:"
+                    + ",".join(str(job.id) for job in jobs)
+                    + f":{int(time.time())}"
+                ),
+                thread_id=jobs[0].thread_id,
+            )
+
+    def _runtime_quota_snapshot(self) -> object:
+        reader = getattr(self.runtime, "quota", None)
+        if not callable(reader):
+            return None
+        return reader(self.root)
+
+    def _probe_runtime_access(self) -> None:
+        """Smallest possible runtime turn; raises while access is still blocked."""
+
+        self.effect_fence.run_runtime_authorized(
+            "runtime.respond",
+            ("runtime.respond",),
+            lambda fenced_execution: invoke_runtime_respond(
+                self.runtime,
+                self.identity,
+                "Runtime access check. Reply with OK only.",
+                cwd=self.root,
+                execution=fenced_execution,
+            ),
+            RuntimeExecutionControl(
+                request_id=f"runtime-access-probe:{uuid4().hex}",
+                timeout_seconds=120,
+            ),
+        )
 
     def _capture_task_regression_signals(self, reply: str) -> str:
         result = extract_task_regression_signals(reply)
@@ -4678,6 +4776,8 @@ class EnochApplication:
         finished_job: TaskJob | None = None
         failure: TaskFailure | None = None
         regression_signals: tuple[TaskRegressionSignal, ...] = ()
+        pause_reason = ""
+        pause_resets_at: datetime | None = None
         try:
             self._authorize_task(job)
             if job.result and job.review_urls and job.review_published:
@@ -4733,6 +4833,8 @@ class EnochApplication:
                 retryable=False,
             )
         except AgentRuntimeAccessUnavailable as error:
+            pause_reason = str(error)
+            pause_resets_at = _error_resets_at(error)
             reply = _codex_pause_warning(job.id, str(error), command_prefix=self.command_prefix)
             completed_status = "paused"
         except AgentRuntimeTimedOut:
@@ -4750,8 +4852,13 @@ class EnochApplication:
                 completed_status = "cancelled"
         except Exception as error:
             reply = f"{failure_prefix}: {error}"
-            completed_status = "failed"
-            failure = classify_task_failure(reply)
+            if isinstance(error, AgentRuntimeError) and is_usage_limit_text(str(error)):
+                pause_reason = str(error)
+                reply = _codex_pause_warning(job.id, pause_reason, command_prefix=self.command_prefix)
+                completed_status = "paused"
+            else:
+                completed_status = "failed"
+                failure = classify_task_failure(reply)
         finally:
             deadline.cancel()
             regression_signals = _CURRENT_REGRESSION_SIGNALS.get()
@@ -4810,6 +4917,8 @@ class EnochApplication:
                     trigger="runtime-unavailable",
                     worker_id=worker_id,
                 )
+                if finished_job is not None:
+                    self._record_runtime_access_pause(pause_reason, pause_resets_at)
             else:
                 finished_job = self._finalize_with_terminal_evidence(
                     job.id,
@@ -6024,9 +6133,15 @@ def _codex_pause_warning(task_id: int, reason: str, *, command_prefix: str = "/"
         [
             f"Task #{task_id} was paused because agent runtime access is unavailable.",
             reason.strip() or "Agent runtime access is unavailable.",
-            f"When agent runtime access is available again, use {command_prefix}task resume {task_id}.",
+            "It resumes automatically when agent runtime access returns; "
+            f"to resume it sooner, use {command_prefix}task resume {task_id}.",
         ]
     )
+
+
+def _error_resets_at(error: BaseException) -> datetime | None:
+    value = getattr(error, "resets_at", None)
+    return value if isinstance(value, datetime) else None
 
 
 def _load_task_status_messages(workflow: WorkflowEngine) -> dict[int, MessageId]:
