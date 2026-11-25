@@ -8,7 +8,7 @@ daemon loop lands it once it is ready, with no further human action.
 The authorization is pinned to the review head the human saw. The only other
 heads Enoch accepts are the ones it created itself by updating the branch from
 its base. Red CI is never landed, conflicts are never resolved, and waiting
-stops after a fixed time.
+stops after a fixed time or after a few branch updates fail in a row.
 
 This module is provider-agnostic: it uses the review provider's optional
 ``forge.check-status`` and ``forge.update-branch`` operations. Forges without
@@ -21,6 +21,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
+import re
 import threading
 import time
 from typing import Any, Callable
@@ -48,6 +49,8 @@ PENDING_MERGE_TIMEOUT = timedelta(hours=2)
 CHECK_STATUS_CAPABILITY = "forge.check-status"
 UPDATE_BRANCH_CAPABILITY = "forge.update-branch"
 READY_MERGE_STATES = frozenset({"clean", "unstable", "has-hooks"})
+# Consecutive failed branch updates before the watcher stops and says why.
+MAX_UPDATE_FAILURES = 3
 _FORGE_ERRORS = (ReviewProviderError, ForgeProviderError, CapabilityAuthorizationError)
 
 
@@ -66,6 +69,7 @@ class PendingMerge:
     blocked_notified: bool = False
     # Head of an update this daemon requested but could not verify yet.
     unverified_update_from: str = ""
+    update_failures: int = 0
 
     @property
     def key(self) -> str:
@@ -227,7 +231,7 @@ class PendingMergeController:
             )
         entry = self._record_request(chat_id, current)
         if merge_state == "behind":
-            entry = self._update_branch(entry, head)
+            entry, _error = self._update_branch(entry, head)
         reasons = _waiting_reasons(merge_state, checks if checks_current else None, base)
         entry = replace(entry, waiting_for=_board_label(merge_state, reasons))
         self._store(entry, replace_requested_at=entry.requested_at)
@@ -386,7 +390,17 @@ class PendingMergeController:
                     "cannot update review branches.",
                     "cannot-update",
                 )
-            updated = self._update_branch(entry, head)
+            updated, error = self._update_branch(entry, head)
+            if error and updated.update_failures >= MAX_UPDATE_FAILURES:
+                return _done(
+                    updated,
+                    f"⏹ Not merging #{number}: could not update the branch from "
+                    f"{base} ({_update_failure_reason(error)})",
+                    "update-failed",
+                    head=head,
+                    error=error,
+                    attempts=updated.update_failures,
+                )
             return _Outcome(replace(updated, waiting_for=f"updating from {base}"))
         checks = self._checks(entry.identity())
         if checks.revision != head:
@@ -470,8 +484,11 @@ class PendingMergeController:
             raise ReviewProviderError("Forge returned invalid review check data.")
         return report
 
-    def _update_branch(self, entry: PendingMerge, head: str) -> PendingMerge:
-        """Update ``entry``'s review from its base, pinned to ``head``."""
+    def _update_branch(self, entry: PendingMerge, head: str) -> tuple[PendingMerge, str]:
+        """Update ``entry``'s review from its base, pinned to ``head``.
+
+        Returns the new entry and the error text when the update failed.
+        """
 
         try:
             result = self._run_authorized(
@@ -483,21 +500,24 @@ class PendingMergeController:
                 root=self.root,
             )
         except _FORGE_ERRORS as error:
-            # Retried on the next watcher cycle; the timeout bounds the retries.
+            # Retried on the next watcher cycle until MAX_UPDATE_FAILURES in a
+            # row. The forge may still have applied the update despite the
+            # error, so a direct update of ``head`` is verified, not refused.
+            failures = entry.update_failures + 1
             self._record_event(
                 "pending_merge_update_failed",
                 status="failed",
-                details=_details(entry, head=head, error=str(error)),
+                details=_details(entry, head=head, error=str(error), attempt=failures),
             )
-            return entry
+            return replace(entry, unverified_update_from=head, update_failures=failures), str(error)
         new_head = str(getattr(result, "head_sha", "") or "").strip()
         self._record_event(
             "pending_merge_branch_updated",
             details=_details(entry, head=head, new_head=new_head),
         )
         if new_head:
-            return replace(entry.allow(new_head), unverified_update_from="")
-        return replace(entry, unverified_update_from=head)
+            return replace(entry.allow(new_head), unverified_update_from="", update_failures=0), ""
+        return replace(entry, unverified_update_from=head, update_failures=0), ""
 
     def _verify_update(self, entry: PendingMerge, head: str) -> bool:
         self._authorize("forge.inspect", ("forge.inspect", UPDATE_BRANCH_CAPABILITY))
@@ -596,6 +616,13 @@ def _done(entry: PendingMerge, notice: str, reason: str, **extra: object) -> _Ou
         reason,
         [("pending_merge_stopped", "ok", _details(entry, reason=reason, **extra))],
     )
+
+
+def _update_failure_reason(error: str) -> str:
+    """Drop the forge's "Could not update PR #N from base:" lead-in."""
+
+    reason = re.sub(r"^Could not update .+? from \S+: ", "", error.strip(), count=1)
+    return reason.rstrip(".") or "unknown error"
 
 
 def _terminal_refusal(record: ReviewRecord) -> bool:
@@ -736,6 +763,7 @@ def _entry_to_json(entry: PendingMerge) -> dict[str, object]:
         "waiting_for": entry.waiting_for,
         "blocked_notified": entry.blocked_notified,
         "unverified_update_from": entry.unverified_update_from,
+        "update_failures": entry.update_failures,
     }
 
 
@@ -773,4 +801,12 @@ def _entry_from_json(item: object) -> PendingMerge | None:
         waiting_for=str(item.get("waiting_for") or "").strip(),
         blocked_notified=item.get("blocked_notified") is True,
         unverified_update_from=str(item.get("unverified_update_from") or "").strip(),
+        update_failures=_count(item.get("update_failures")),
     )
+
+
+def _count(value: object) -> int:
+    try:
+        return max(int(value or 0), 0)
+    except (TypeError, ValueError):
+        return 0

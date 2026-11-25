@@ -633,6 +633,13 @@ def update_pull_request_branch(
     GitHub rejects the update when the head no longer matches
     ``expected_head_sha``, so unexpected new commits are never overwritten.
     Conflicts are never resolved here: only a mergeable BEHIND PR is updated.
+
+    The response is read with ``gh api -i`` so failures carry GitHub's real
+    HTTP status and message; gh alone reports an empty error body as
+    "unexpected end of JSON input". Any 2xx (usually 202, possibly with an
+    empty body) is success. GitHub has been seen to apply the update while
+    answering 5xx, so after a server error the head is still checked and a
+    verified direct update of ``expected_head_sha`` counts as success.
     """
 
     expected = expected_head_sha.strip()
@@ -647,6 +654,7 @@ def update_pull_request_branch(
         [
             gh,
             "api",
+            "-i",
             "--method",
             "PUT",
             f"repos/{status.repository}/pulls/{status.number}/update-branch",
@@ -659,14 +667,19 @@ def update_pull_request_branch(
         capture_output=True,
         check=False,
     )
-    if result.returncode != 0:
-        note = (
-            result.stderr.strip()
-            or result.stdout.strip()
-            or "GitHub could not update the pull request branch."
-        )
+    http_status, note = _api_response(result)
+    accepted = (
+        200 <= http_status < 300 if http_status else result.returncode == 0
+    )
+    head = ""
+    if accepted or not http_status or http_status >= 500:
+        try:
+            head = _updated_head_sha(gh, status, expected, root)
+        except PublishError:
+            if accepted:
+                raise
+    if not accepted and not head:
         raise PublishError(f"Could not update PR #{status.number} from {status.base_branch}: {note}")
-    head = _updated_head_sha(gh, status, expected, root)
     return PullRequestBranchUpdateResult(
         number=status.number,
         url=status.url,
@@ -681,6 +694,43 @@ def update_pull_request_branch(
 # bounded retries only cover a short replication delay, not CI.
 _BRANCH_UPDATE_HEAD_CHECKS = 5
 _BRANCH_UPDATE_HEAD_DELAY_SECONDS = 1.0
+_HTTP_STATUS_LINE = re.compile(r"HTTP/\S+\s+(\d{3})(?:[ \t]+([^\r\n]*))?")
+_GH_HTTP_STATUS = re.compile(r"\bHTTP (\d{3})\b")
+_RESPONSE_NOTE_LIMIT = 300
+
+
+def _api_response(result: subprocess.CompletedProcess[str]) -> tuple[int, str]:
+    """Return the HTTP status (0 if unknown) and a readable note for a ``gh api -i`` call."""
+
+    stdout = (result.stdout or "").replace("\r\n", "\n")
+    stderr = (result.stderr or "").strip()
+    match = _HTTP_STATUS_LINE.match(stdout)
+    if match is None:
+        # No response was printed (for example a network error before any reply).
+        found = _GH_HTTP_STATUS.search(stderr)
+        note = stderr or stdout.strip() or "GitHub could not update the pull request branch."
+        return (int(found.group(1)) if found else 0), note[:_RESPONSE_NOTE_LIMIT]
+    code = int(match.group(1))
+    reason = (match.group(2) or "").strip()
+    _headers, _separator, body = stdout.partition("\n\n")
+    body = body.strip()
+    label = f"HTTP {code}" + (f" {reason}" if reason else "")
+    if not body:
+        return code, f"{label} with an empty response body"
+    message = body
+    try:
+        data = json.loads(body)
+    except json.JSONDecodeError:
+        data = None
+    if isinstance(data, dict):
+        parts = [str(data.get("message") or "").strip()]
+        errors = data.get("errors")
+        for item in errors if isinstance(errors, list) else []:
+            text = item.get("message") if isinstance(item, dict) else item
+            if str(text or "").strip():
+                parts.append(str(text).strip())
+        message = "; ".join(part for part in parts if part) or body
+    return code, f"{label}: {' '.join(message.split())}"[:_RESPONSE_NOTE_LIMIT]
 
 
 def _require_updatable_pull_request(status: PullRequestMergeStatus, expected: str) -> None:

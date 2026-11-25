@@ -790,7 +790,9 @@ class EnochGithubWorkflowTests(unittest.TestCase):
     ) -> None:
         inspect.return_value = _merge_status(merge_state_status="BEHIND")
         run.side_effect = [
-            _process_result(stdout='{"message":"Updating pull request branch."}'),
+            _process_result(
+                stdout=_http_response(202, '{"message":"Updating pull request branch."}')
+            ),
             _process_result(stdout='{"head":{"sha":"abc123"}}'),
             _process_result(stdout='{"head":{"sha":"merge789"}}'),
             _process_result(
@@ -809,6 +811,7 @@ class EnochGithubWorkflowTests(unittest.TestCase):
             [
                 "/usr/local/bin/gh",
                 "api",
+                "-i",
                 "--method",
                 "PUT",
                 "repos/our-ark/enoch/pulls/12/update-branch",
@@ -871,10 +874,138 @@ class EnochGithubWorkflowTests(unittest.TestCase):
         inspect.return_value = _merge_status(merge_state_status="BEHIND")
         run.return_value = _process_result(
             returncode=1,
-            stderr="HTTP 422: expected head sha didn't match current head ref.",
+            stdout=_http_response(
+                422,
+                '{"message":"expected head sha didn\'t match current head ref.",'
+                '"documentation_url":"https://docs.github.com/rest","status":"422"}',
+            ),
+            stderr="gh: expected head sha didn't match current head ref. (HTTP 422)",
         )
 
-        with self.assertRaisesRegex(PublishError, "expected head sha didn't match"):
+        with self.assertRaisesRegex(
+            PublishError,
+            r"^Could not update PR #12 from main: HTTP 422 Unprocessable Entity: "
+            r"expected head sha didn't match current head ref\.$",
+        ):
+            update_pull_request_branch("12", expected_head_sha="abc123", root=ROOT)
+        # A real client error is final: no head polling, no second request.
+        run.assert_called_once()
+
+    @patch("our_ark_github.workflow.time.sleep")
+    @patch("our_ark_github.workflow.subprocess.run")
+    @patch("our_ark_github.workflow.shutil.which", return_value="/usr/local/bin/gh")
+    @patch("our_ark_github.workflow.inspect_pull_request_merge")
+    def test_branch_update_reports_real_status_for_an_empty_error_body(
+        self,
+        inspect: MagicMock,
+        _which: MagicMock,
+        run: MagicMock,
+        _sleep: MagicMock,
+    ) -> None:
+        # gh alone only says "unexpected end of JSON input" for this response.
+        inspect.return_value = _merge_status(merge_state_status="BEHIND")
+        unchanged = _process_result(stdout='{"head":{"sha":"abc123"}}')
+        run.side_effect = [
+            _process_result(
+                returncode=1,
+                stdout=_http_response(500, ""),
+                stderr="unexpected end of JSON input",
+            ),
+            *[unchanged] * 5,
+        ]
+
+        with self.assertRaises(PublishError) as raised:
+            update_pull_request_branch("12", expected_head_sha="abc123", root=ROOT)
+
+        self.assertEqual(
+            str(raised.exception),
+            "Could not update PR #12 from main: "
+            "HTTP 500 Internal Server Error with an empty response body",
+        )
+        # A server error is checked against the head before it is reported.
+        self.assertEqual(run.call_count, 6)
+
+    @patch("our_ark_github.workflow.time.sleep")
+    @patch("our_ark_github.workflow.subprocess.run")
+    @patch("our_ark_github.workflow.shutil.which", return_value="/usr/local/bin/gh")
+    @patch("our_ark_github.workflow.inspect_pull_request_merge")
+    def test_branch_update_server_error_that_still_updated_is_success(
+        self,
+        inspect: MagicMock,
+        _which: MagicMock,
+        run: MagicMock,
+        _sleep: MagicMock,
+    ) -> None:
+        inspect.return_value = _merge_status(merge_state_status="BEHIND")
+        run.side_effect = [
+            _process_result(
+                returncode=1,
+                stdout=_http_response(502, '{"message":"Server Error"}', reason="Bad Gateway"),
+                stderr="gh: Server Error (HTTP 502)",
+            ),
+            _process_result(stdout='{"head":{"sha":"merge789"}}'),
+            _process_result(
+                stdout='{"sha":"merge789","parents":[{"sha":"abc123"},{"sha":"main456"}]}'
+            ),
+        ]
+
+        result = update_pull_request_branch("12", expected_head_sha="abc123", root=ROOT)
+
+        self.assertEqual(result.head_sha, "merge789")
+
+    @patch("our_ark_github.workflow.time.sleep")
+    @patch("our_ark_github.workflow.subprocess.run")
+    @patch("our_ark_github.workflow.shutil.which", return_value="/usr/local/bin/gh")
+    @patch("our_ark_github.workflow.inspect_pull_request_merge")
+    def test_branch_update_accepts_202_with_an_empty_body(
+        self,
+        inspect: MagicMock,
+        _which: MagicMock,
+        run: MagicMock,
+        _sleep: MagicMock,
+    ) -> None:
+        inspect.return_value = _merge_status(merge_state_status="BEHIND")
+        run.side_effect = [
+            # gh exits non-zero because it cannot parse the empty body as JSON.
+            _process_result(
+                returncode=1,
+                stdout=_http_response(202, ""),
+                stderr="unexpected end of JSON input",
+            ),
+            _process_result(stdout='{"head":{"sha":"merge789"}}'),
+            _process_result(
+                stdout='{"sha":"merge789","parents":[{"sha":"abc123"},{"sha":"main456"}]}'
+            ),
+        ]
+
+        result = update_pull_request_branch("12", expected_head_sha="abc123", root=ROOT)
+
+        self.assertEqual(result.head_sha, "merge789")
+        self.assertEqual(result.previous_head_sha, "abc123")
+
+    @patch("our_ark_github.workflow.subprocess.run")
+    @patch("our_ark_github.workflow.shutil.which", return_value="/usr/local/bin/gh")
+    @patch("our_ark_github.workflow.inspect_pull_request_merge")
+    def test_branch_update_reports_merge_conflict_message(
+        self,
+        inspect: MagicMock,
+        _which: MagicMock,
+        run: MagicMock,
+    ) -> None:
+        inspect.return_value = _merge_status(merge_state_status="BEHIND")
+        run.return_value = _process_result(
+            returncode=1,
+            stdout=_http_response(
+                422,
+                '{"message":"Validation Failed","errors":["merge conflict between base and head"]}',
+            ),
+            stderr="gh: Validation Failed (HTTP 422)",
+        )
+
+        with self.assertRaisesRegex(
+            PublishError,
+            "HTTP 422 Unprocessable Entity: Validation Failed; merge conflict between base and head",
+        ):
             update_pull_request_branch("12", expected_head_sha="abc123", root=ROOT)
         run.assert_called_once()
 
@@ -891,7 +1022,9 @@ class EnochGithubWorkflowTests(unittest.TestCase):
     ) -> None:
         inspect.return_value = _merge_status(merge_state_status="BEHIND")
         run.side_effect = [
-            _process_result(stdout='{"message":"Updating pull request branch."}'),
+            _process_result(
+                stdout=_http_response(202, '{"message":"Updating pull request branch."}')
+            ),
             _process_result(stdout='{"head":{"sha":"other000"}}'),
             _process_result(stdout='{"sha":"other000","parents":[{"sha":"elsewhere"}]}'),
         ]
@@ -1074,6 +1207,27 @@ def _git_result(returncode: int, stdout: str = "", stderr: str = "") -> MagicMoc
     result.stdout = stdout
     result.stderr = stderr
     return result
+
+
+_HTTP_REASONS = {
+    202: "Accepted",
+    422: "Unprocessable Entity",
+    500: "Internal Server Error",
+    502: "Bad Gateway",
+}
+
+
+def _http_response(status: int, body: str, *, reason: str = "") -> str:
+    """Format a response the way ``gh api -i`` prints it."""
+
+    reason = reason or _HTTP_REASONS.get(status, "")
+    return (
+        f"HTTP/2.0 {status} {reason}\n"
+        "Content-Type: application/json; charset=utf-8\r\n"
+        f"Content-Length: {len(body)}\r\n"
+        "\r\n"
+        f"{body}"
+    )
 
 
 def _process_result(returncode: int = 0, stdout: str = "", stderr: str = "") -> MagicMock:

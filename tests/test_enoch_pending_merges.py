@@ -30,6 +30,7 @@ from enoch.app.pending_merges import (
 from enoch.app.task_board import render_task_board
 from enoch.commands import pr_usage
 from enoch.identity import load_identity
+from enoch.providers.contracts import ReviewProviderError
 from enoch.providers.forge import FunctionForgeProvider
 from enoch.tasks.queue import TaskQueueStatus
 from our_ark_github.workflow import _require_mergeable_pull_request
@@ -287,6 +288,94 @@ class PendingMergeTests(unittest.TestCase):
                 self.assertEqual(forge.merges, merged)
                 if not verified:
                     self.assertIn("new commits were pushed", chat.sent[-1][1])
+
+    def test_repeated_update_failures_stop_with_one_notice(self) -> None:
+        forge = _Forge(merge_state="BEHIND", verify_update=False)
+        error = (
+            "Could not update PR #91 from main: "
+            "HTTP 500 Internal Server Error with an empty response body"
+        )
+        forge.provider.update_branch_fn.side_effect = ReviewProviderError(error)
+        chat = _Chat()
+        events: list[tuple[str, dict]] = []
+        app = self._app(forge, chat)
+        record = app.pending_merges._record_event
+        app.pending_merges._record_event = lambda name, **kw: (
+            events.append((name, kw.get("details") or {})),
+            record(name, **kw),
+        )
+
+        reply = app._pr("room-1", "merge 91")
+
+        self.assertIn("isn't ready yet (behind main", reply)
+        (entry,) = self._entries()
+        self.assertEqual(entry.update_failures, 1)
+        self.assertEqual(entry.unverified_update_from, "head-91")
+
+        app.pending_merges.tick()
+        self.assertEqual(self._entries()[0].update_failures, 2)
+        self.assertEqual(chat.sent, [])
+
+        app.pending_merges.tick()
+        app.pending_merges.tick()
+
+        self.assertEqual(forge.provider.update_branch_fn.call_count, 3)
+        self.assertEqual(forge.merges, [])
+        self.assertEqual(self._entries(), ())
+        self.assertEqual(
+            chat.sent,
+            [
+                (
+                    "room-1",
+                    "⏹ Not merging #91: could not update the branch from main "
+                    "(HTTP 500 Internal Server Error with an empty response body)",
+                )
+            ],
+        )
+        failed = [details for name, details in events if name == "pending_merge_update_failed"]
+        self.assertEqual([details["attempt"] for details in failed], [1, 2, 3])
+        stopped = [details for name, details in events if name == "pending_merge_stopped"]
+        self.assertEqual(stopped[-1]["reason"], "update-failed")
+        self.assertEqual(stopped[-1]["error"], error)
+
+    def test_update_success_resets_the_failure_count(self) -> None:
+        forge = _Forge(merge_state="BEHIND")
+        update = forge.provider.update_branch_fn
+        succeed = update.side_effect
+        update.side_effect = ReviewProviderError("Could not update PR #91 from main: HTTP 502")
+        chat = _Chat()
+        app = self._app(forge, chat)
+        app._pr("room-1", "merge 91")
+        app.pending_merges.tick()
+        self.assertEqual(self._entries()[0].update_failures, 2)
+
+        update.side_effect = succeed
+        app.pending_merges.tick()
+
+        (entry,) = self._entries()
+        self.assertEqual(entry.update_failures, 0)
+        self.assertEqual(entry.allowed_head_shas, ("head-91", "update-1"))
+        self.assertEqual(chat.sent, [])
+
+    def test_update_applied_despite_a_forge_error_is_verified_not_refused(self) -> None:
+        # GitHub has answered 502 to update-branch yet created the update commit.
+        forge = _Forge(merge_state="BEHIND", verify_update=True)
+        forge.provider.update_branch_fn.side_effect = ReviewProviderError(
+            "Could not update PR #91 from main: HTTP 502 Bad Gateway: Server Error"
+        )
+        chat = _Chat()
+        app = self._app(forge, chat)
+        app._pr("room-1", "merge 91")
+
+        forge.set(
+            head_sha="merged-main-into-91",
+            merge_state_status="CLEAN",
+            checks=(ReviewCheck("CI / test", "success"),),
+        )
+        app.pending_merges.tick()
+
+        self.assertEqual(forge.merges, ["merged-main-into-91"])
+        self.assertEqual(chat.sent, [("room-1", "✅ Merged #91.")])
 
     def test_foreign_push_cancels(self) -> None:
         forge = _Forge(merge_state="BLOCKED", checks=(ReviewCheck("CI / test", "pending"),))
