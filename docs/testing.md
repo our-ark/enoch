@@ -62,6 +62,10 @@ The suite verifies:
   journaled or branch-linked PRs before starting duplicate work;
 - reference-runtime authentication failure pauses a task and `/task resume`
   completes that same task after access returns;
+- plan-limit wording such as `You've hit your 5-hour limit · resets 3:20pm
+  (America/Los_Angeles)` pauses instead of failing. The queue does not drain,
+  and paused tasks resume automatically in order after a verified reset, with
+  bounded back-off between checks;
 - Claude session-limit failures pause the queue without losing partial work;
   explicit resume remains paused while quota is exhausted, and switching runtime
   after an application restart can complete the same task with its work intact;
