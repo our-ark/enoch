@@ -1,7 +1,11 @@
+from dataclasses import replace
 from pathlib import Path
+import json
 import os
+import re
 import subprocess
 import sys
+import tomllib
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
@@ -12,9 +16,11 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from enoch.validation_environment import (
     VALIDATION_ENVIRONMENT_HOME,
+    VALIDATION_TEST_REQUIREMENTS,
     ValidationEnvironmentError,
     ensure_validation_environment,
     existing_validation_environment,
+    validation_environment_status,
 )
 
 
@@ -245,7 +251,170 @@ class EnochValidationEnvironmentTests(unittest.TestCase):
         self.assertIn("setuptools>=77", install)
 
 
-def _write_project(root: Path, *, locked: bool = True) -> Path:
+class EnochPersistentTestEnvironmentTests(unittest.TestCase):
+    def test_installs_locked_test_tools_and_resident_libraries_in_editable_mode(self) -> None:
+        with TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            worktree = base / "worktree"
+            resident = base / "resident"
+            for checkout in (worktree, resident):
+                _write_project(checkout, test_tools=True, libraries=("beta", "alpha"))
+            commands: list[list[str]] = []
+
+            with patch.dict(os.environ, {VALIDATION_ENVIRONMENT_HOME: str(base / "managed")}), \
+                 patch("enoch.validation_environment.subprocess.run",
+                       side_effect=_recording_run(commands)):
+                managed = ensure_validation_environment(
+                    worktree, base_python=sys.executable, source_root=resident,
+                )
+                marker = json.loads((managed.root / ".complete.json").read_text())
+
+        installs = [command for command in commands if command[1:4] == ["-m", "pip", "install"]]
+        self.assertEqual(len(installs), 3)
+        build, tools, editable = installs
+        self.assertEqual(_requirements_argument(build), worktree.resolve() / ".github/requirements/test-build.txt")
+        self.assertIn("--require-hashes", tools)
+        self.assertEqual(_requirements_argument(tools), worktree.resolve() / VALIDATION_TEST_REQUIREMENTS)
+        for flag in ("--no-index", "--no-deps", "--no-build-isolation"):
+            self.assertIn(flag, editable)
+        editable_paths = [
+            editable[index + 1] for index, part in enumerate(editable) if part == "--editable"
+        ]
+        expected = [str(resident.resolve() / "libraries" / name) for name in ("alpha", "beta")]
+        self.assertEqual(editable_paths, expected)
+        self.assertEqual(marker["editable_sources"], expected)
+
+    def test_worktrees_of_the_same_revision_share_one_environment(self) -> None:
+        with TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            resident = base / "resident"
+            first, second = base / "task-1", base / "task-2"
+            for checkout in (resident, first, second):
+                _write_project(checkout, test_tools=True, libraries=("alpha",))
+            with patch.dict(os.environ, {VALIDATION_ENVIRONMENT_HOME: str(base / "managed")}), \
+                 patch("enoch.validation_environment.subprocess.run", side_effect=_recording_run([])):
+                built = ensure_validation_environment(
+                    first, base_python=sys.executable, source_root=resident,
+                )
+                shared = existing_validation_environment(
+                    second, base_python=sys.executable, source_root=resident,
+                )
+
+        self.assertEqual(shared, replace(built, created=False))
+
+    def test_status_reports_missing_ready_and_stale_without_subprocesses(self) -> None:
+        with TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            root = base / "project"
+            _write_project(root, test_tools=True, libraries=("alpha",))
+            home = {VALIDATION_ENVIRONMENT_HOME: str(base / "managed")}
+
+            def status():
+                with patch(
+                    "enoch.validation_environment.subprocess.run",
+                    side_effect=AssertionError("status must not run subprocesses"),
+                ):
+                    return validation_environment_status(root, base_python=sys.executable)
+
+            with patch.dict(os.environ, home):
+                missing = status()
+                with patch("enoch.validation_environment.subprocess.run",
+                           side_effect=_recording_run([])):
+                    built = ensure_validation_environment(root, base_python=sys.executable)
+                ready = status()
+                stale_inputs = {}
+                for name, path in {
+                    "test tools": root / VALIDATION_TEST_REQUIREMENTS,
+                    "build lock": root / ".github/requirements/test-build.txt",
+                    "root pyproject": root / "pyproject.toml",
+                    "library pyproject": root / "libraries/alpha/pyproject.toml",
+                }.items():
+                    original = path.read_text()
+                    path.write_text(original + "# changed\n")
+                    stale_inputs[name] = status()
+                    path.write_text(original)
+                ready_again = status()
+
+        self.assertEqual(missing.state, "missing")
+        self.assertIsNone(missing.environment)
+        self.assertFalse(missing.ready)
+        self.assertEqual(ready.state, "ready")
+        self.assertTrue(ready.ready)
+        self.assertEqual(ready.environment.python, built.python)
+        for name, result in stale_inputs.items():
+            with self.subTest(changed=name):
+                self.assertEqual(result.state, "stale")
+                self.assertNotEqual(result.fingerprint, ready.fingerprint)
+                self.assertIn("changed", result.detail)
+        self.assertEqual(ready_again.state, "ready")
+
+    def test_removed_editable_checkout_marks_environment_stale_and_is_repaired(self) -> None:
+        with TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            root = base / "project"
+            _write_project(root, libraries=("alpha",))
+            commands: list[list[str]] = []
+            with patch.dict(os.environ, {VALIDATION_ENVIRONMENT_HOME: str(base / "managed")}), \
+                 patch("enoch.validation_environment.subprocess.run",
+                       side_effect=_recording_run(commands)):
+                first = ensure_validation_environment(root, base_python=sys.executable)
+                marker = first.root / ".complete.json"
+                payload = json.loads(marker.read_text())
+                payload["editable_sources"] = [str(base / "deleted-worktree/libraries/alpha")]
+                marker.write_text(json.dumps(payload))
+                stale = validation_environment_status(root, base_python=sys.executable)
+                repaired = ensure_validation_environment(root, base_python=sys.executable)
+                ready = validation_environment_status(root, base_python=sys.executable)
+
+        self.assertEqual(stale.state, "stale")
+        self.assertTrue(repaired.created)
+        self.assertEqual(repaired.root, first.root)
+        self.assertEqual(ready.state, "ready")
+        venvs = [command for command in commands if command[1:3] == ["-m", "venv"]]
+        self.assertEqual(len(venvs), 2)
+
+    def test_repository_test_tools_lock_is_hashed_and_matches_runtime_pins(self) -> None:
+        lock = (ROOT / VALIDATION_TEST_REQUIREMENTS).read_text(encoding="utf-8")
+        pins = dict(re.findall(r"(?m)^([A-Za-z0-9_.-]+)==([^\s;\\]+)", lock))
+        self.assertIn("pytest", pins)
+        requirements = [line for line in lock.replace("\\\n", " ").splitlines()
+                        if line.strip() and not line.lstrip().startswith("#")]
+        for line in requirements:
+            with self.subTest(requirement=line.split()[0]):
+                self.assertIn("--hash=sha256:", line)
+        pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+        runtime_pins = dict(
+            requirement.split("==", 1)
+            for requirement in pyproject["project"]["dependencies"]
+            if "==" in requirement and "@" not in requirement
+        )
+        for name, version in runtime_pins.items():
+            with self.subTest(runtime_pin=name):
+                self.assertEqual(pins.get(name), version)
+
+
+def _recording_run(commands: list[list[str]]):
+    def run(command, **_kwargs):
+        commands.append(command)
+        if command[1:3] == ["-m", "venv"]:
+            _write_fake_venv_python(Path(command[3]))
+        stdout = "[]" if "json.dumps(sys.path)" in command[-1] else ""
+        return subprocess.CompletedProcess(command, 0, stdout, "")
+
+    return run
+
+
+def _requirements_argument(command: list[str]) -> Path:
+    return Path(command[command.index("-r") + 1])
+
+
+def _write_project(
+    root: Path,
+    *,
+    locked: bool = True,
+    test_tools: bool = False,
+    libraries: tuple[str, ...] = (),
+) -> Path:
     root.mkdir(parents=True, exist_ok=True)
     (root / "pyproject.toml").write_text(
         "\n".join(
@@ -263,6 +432,17 @@ def _write_project(root: Path, *, locked: bool = True) -> Path:
         path.parent.mkdir(parents=True)
         path.write_text(
             "setuptools==83.0.0 --hash=sha256:locked\n",
+            encoding="utf-8",
+        )
+    if test_tools:
+        tools = root / VALIDATION_TEST_REQUIREMENTS
+        tools.parent.mkdir(parents=True, exist_ok=True)
+        tools.write_text("pytest==9.2.0 --hash=sha256:locked\n", encoding="utf-8")
+    for name in libraries:
+        library = root / "libraries" / name
+        library.mkdir(parents=True)
+        (library / "pyproject.toml").write_text(
+            f'[project]\nname = "{name}"\nversion = "1.0"\n',
             encoding="utf-8",
         )
     return path

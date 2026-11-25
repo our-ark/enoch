@@ -5193,6 +5193,54 @@ class EnochTelegramTests(unittest.TestCase):
         remove_task_worktree.assert_not_called()
         self.assertIn("Opened pull request.", result)
 
+    @patch("enoch.app.core.discover_test_environment", return_value="/managed/bin/python")
+    @patch("enoch.app.core.run_immune_system")
+    @patch("enoch.app.core.act_in_session")
+    def test_task_work_prompt_names_managed_test_environment(
+        self,
+        act_in_session: MagicMock,
+        run_immune_system: MagicMock,
+        discover_test_environment: MagicMock,
+    ) -> None:
+        run_immune_system.return_value = _doctor_result()
+        repository = BranchlessRepositoryFixture()
+        prompts: list[str] = []
+
+        def act(*args, **kwargs):
+            prompts.extend(
+                value
+                for value in (*args, *kwargs.values())
+                if isinstance(value, str) and "Proceed with this work request" in value
+            )
+            repository.mark_changed("README.md")
+            return "Updated the README."
+
+        act_in_session.side_effect = act
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            bot = EnochApplication(
+                load_identity(),
+                root,
+                FakeTelegramClient(allowed_chat_id=42),
+                repository=repository,
+                review=IndependentReviewFixture(),
+            )
+            task_worktree = TaskWorktree(1, root, "enoch/main-task-1-readme", False)
+            with patch.object(bot, "_maybe_start_task_worker"), \
+                 patch.object(bot, "_prepare_task_worktree", return_value=task_worktree), \
+                 patch.object(bot, "_publish_feature_pr", return_value="Opened pull request."), \
+                 patch("enoch.app.core.remove_task_worktree"):
+                bot._run_direct_work(
+                    42,
+                    "add test to the README",
+                    session_key="telegram:42:task:2",
+                )
+
+        discover_test_environment.assert_called_once_with(root, state_root=root)
+        self.assertEqual(len(prompts), 1)
+        self.assertIn("Python test environment:", prompts[0])
+        self.assertIn("/managed/bin/python -m pytest -q", prompts[0])
+
     @patch("enoch.app.core.ensure_long_term_memory")
     @patch("enoch.app.core.log_conversation_turn")
     def test_do_starts_worker_and_keeps_telegram_responsive(

@@ -31,7 +31,7 @@ from enoch.app.validation_repair import (
 )
 from enoch.config import read_section
 from enoch.formatting import format_doctor_result
-from enoch.immune import ImmuneResult, run_immune_system
+from enoch.immune import ImmuneResult, discover_test_environment, run_immune_system
 from enoch.identity import Identity
 from enoch.prompt_append import (
     extract_memory_requests,
@@ -161,6 +161,7 @@ class TaskWorkflowDependencies:
     """Version-control and validation effects supplied by the application shell."""
 
     run_immune_system: ImmuneRunner = run_immune_system
+    discover_test_environment: Callable[..., str | None] = discover_test_environment
     prepare_repository_task_workspace: RepositoryWorkspacePreparer = (
         prepare_repository_task_workspace
     )
@@ -508,6 +509,10 @@ class TaskWorkflow:
         prompt = work_request_prompt(
             work_request_with_context(request, context),
             remote_review=bool(getattr(app.review, "supports_remote_review", True)),
+            test_python=self.dependencies.discover_test_environment(
+                work_root,
+                state_root=app.root,
+            ),
         )
         if repair_prompt:
             prompt += "\n\n" + repair_prompt
