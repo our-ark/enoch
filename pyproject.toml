@@ -14,12 +14,12 @@ dependencies = [
 
 [project.optional-dependencies]
 reference = [
-  "our-ark-telegram @ git+https://github.com/our-ark/enoch.git@c84828fa16c42f99cd3f4df8580378fc88a13c03#subdirectory=libraries/telegram",
-  "our-ark-slack @ git+https://github.com/our-ark/enoch.git@c84828fa16c42f99cd3f4df8580378fc88a13c03#subdirectory=libraries/slack",
-  "our-ark-claude @ git+https://github.com/our-ark/enoch.git@c84828fa16c42f99cd3f4df8580378fc88a13c03#subdirectory=libraries/claude",
-  "our-ark-github @ git+https://github.com/our-ark/enoch.git@c84828fa16c42f99cd3f4df8580378fc88a13c03#subdirectory=libraries/github",
-  "our-ark-launchd @ git+https://github.com/our-ark/enoch.git@c84828fa16c42f99cd3f4df8580378fc88a13c03#subdirectory=libraries/launchd",
-  "our-ark-systemd @ git+https://github.com/our-ark/enoch.git@c84828fa16c42f99cd3f4df8580378fc88a13c03#subdirectory=libraries/systemd",
+  "our-ark-telegram @ git+https://github.com/our-ark/enoch.git@0d62df17e4ecfa5bbd18e4bc40fd82bf64041e18#subdirectory=libraries/telegram",
+  "our-ark-slack @ git+https://github.com/our-ark/enoch.git@0d62df17e4ecfa5bbd18e4bc40fd82bf64041e18#subdirectory=libraries/slack",
+  "our-ark-claude @ git+https://github.com/our-ark/enoch.git@0d62df17e4ecfa5bbd18e4bc40fd82bf64041e18#subdirectory=libraries/claude",
+  "our-ark-github @ git+https://github.com/our-ark/enoch.git@0d62df17e4ecfa5bbd18e4bc40fd82bf64041e18#subdirectory=libraries/github",
+  "our-ark-launchd @ git+https://github.com/our-ark/enoch.git@0d62df17e4ecfa5bbd18e4bc40fd82bf64041e18#subdirectory=libraries/launchd",
+  "our-ark-systemd @ git+https://github.com/our-ark/enoch.git@0d62df17e4ecfa5bbd18e4bc40fd82bf64041e18#subdirectory=libraries/systemd",
   "our-ark-telegram-vision @ git+https://github.com/our-ark/enoch.git@6d894d9beb882af7e5f57900b2323361510262de#subdirectory=libraries/telegram-vision",
 ]
 
