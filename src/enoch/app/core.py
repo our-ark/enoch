@@ -426,6 +426,7 @@ from enoch.app.task_board import (
     RenderedTaskBoard,
     TaskBoardState,
     load_task_board_state,
+    render_quota_line,
     render_task_board,
     save_task_board_state,
 )
@@ -2793,7 +2794,18 @@ class EnochApplication:
             queue_command=f"{self.command_prefix}queue",
             merging=self.pending_merges.board_items(),
             backlog=self._task_board_backlog(),
+            quota_line=self._task_board_quota_line(),
         )
+
+    def _task_board_quota_line(self) -> str:
+        # Read the snapshot the quota warning poller already cached for the
+        # active runtime; the board never calls the provider itself. Any
+        # problem only hides the quota line.
+        try:
+            provider = self.runtime.name
+            return render_quota_line(provider, self.quota_warnings.latest_snapshot(provider))
+        except Exception:
+            return ""
 
     def _task_board_backlog(self) -> tuple[BacklogItem, ...]:
         # An unreadable backlog only hides the board's backlog line; the task
