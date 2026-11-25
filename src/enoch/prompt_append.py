@@ -55,7 +55,10 @@ def conversation_turn_prompt(message: str, *, command_prefix: str = "/") -> str:
     return _with_blocks(message, [
         "Action-capable conversation:\n"
         "Help the human get work done. Clear requests to act authorize that work; execute them now. "
-        "Questions and discussion may be answered normally. Ask a concise question only when necessary "
+        "Answer questions and discussion directly; do not answer a question by only queuing work. "
+        "When a message both asks something and needs work, you may queue the work first: after an "
+        "accepted do or task, you get one more turn, without actions, to answer the question and say "
+        "briefly what was queued. Ask a concise question only when necessary "
         "information or the intended target cannot be resolved from this conversation and current state. "
         "Do not ask the human to retype a request as a chat command or repeat authorization already given.\n"
         "To perform an operation, emit exactly one internal action block alone, without prose or code fences, and wait for its result:\n"
