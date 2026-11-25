@@ -67,6 +67,7 @@ from enoch.providers.contracts import (
 from enoch.providers.forge import feature_title
 from enoch.providers.authorization import CapabilityAuthorizationError
 from enoch.providers.runtime import invoke_runtime_action
+from enoch.runtime_access import is_usage_limit_text
 from enoch.runtime import (
     ACTION_SANDBOX_FULL_ACCESS,
     DEFAULT_BRANCH,
@@ -371,6 +372,7 @@ class TaskWorkflow:
             UnsupportedProviderFeature,
             OSError,
         ) as error:
+            _raise_if_runtime_usage_limit(error)
             message = f"{app.display_name} could not complete the requested work yet: {error}"
             failure = classify_task_failure(message)
             return WorkOutcome.failure(
@@ -446,6 +448,7 @@ class TaskWorkflow:
                     CapabilityAuthorizationError):
                 raise
             except (AgentRuntimeError, RepositoryProviderError, OSError, TypeError) as error:
+                _raise_if_runtime_usage_limit(error)
                 parts.append(doctor_report)
                 parts.append(f"Automatic validation repair could not continue: {error}")
                 break
@@ -1436,3 +1439,14 @@ def format_review_close_results(
             + "\n".join(lines)
         )
     return "\n".join(lines)
+
+
+def _raise_if_runtime_usage_limit(error: BaseException) -> None:
+    """Treat a runtime plan-limit error as lost access, never a task failure.
+
+    Runtimes should raise AgentRuntimeAccessUnavailable themselves; this is
+    the safety net for limit wording a runtime does not recognise yet.
+    """
+
+    if isinstance(error, AgentRuntimeError) and is_usage_limit_text(str(error)):
+        raise AgentRuntimeAccessUnavailable(str(error)) from error
