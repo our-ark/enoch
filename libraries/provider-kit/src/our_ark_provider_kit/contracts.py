@@ -1126,6 +1126,92 @@ class ReviewCheckReport:
         return not self.pending and not self.failed
 
 
+@dataclass(frozen=True)
+class ReviewCheckFailure:
+    """Evidence for one failed check, from the optional ``forge.ci-repair`` operations.
+
+    ``detail`` keeps the forge's raw conclusion (for example ``failure``,
+    ``cancelled`` or ``timed_out``). ``log`` is a bounded excerpt of the failed
+    job's log; it is empty when the forge could not read it. ``run_id`` and
+    ``job_id`` are the forge's opaque CI identifiers.
+    """
+
+    name: str
+    detail: str = ""
+    run_id: str = ""
+    job_id: str = ""
+    log: str = ""
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "name", str(self.name).strip() or "unnamed check")
+        for attribute in ("detail", "run_id", "job_id"):
+            object.__setattr__(self, attribute, str(getattr(self, attribute)).strip())
+        object.__setattr__(self, "log", str(self.log))
+
+
+@dataclass(frozen=True)
+class ReviewCommit:
+    """One commit on a review branch: its full revision id and subject line."""
+
+    revision: str
+    subject: str = ""
+
+    def __post_init__(self) -> None:
+        revision = str(self.revision).strip()
+        if not revision:
+            raise ValueError("Review commit revision is required.")
+        object.__setattr__(self, "revision", revision)
+        object.__setattr__(self, "subject", str(self.subject).strip())
+
+
+@dataclass(frozen=True)
+class ReviewRevisionComparison:
+    """How ``revision`` relates to ``base`` (a revision id or a branch name).
+
+    ``descends`` is true only when ``revision`` contains ``base`` (it is equal
+    to it or strictly ahead of it). ``commits`` lists the commits reachable
+    from ``revision`` but not from ``base``, oldest first.
+    """
+
+    base: str
+    revision: str
+    descends: bool
+    commits: tuple[ReviewCommit, ...] = ()
+
+
+@dataclass(frozen=True)
+class ReviewBaseFreshness:
+    """Whether a review head contains the current tip of its base branch.
+
+    Result of the optional ``forge.base-freshness`` operation. The forge reads
+    it from its version control data, not from a lazily recomputed merge
+    status, so it is current right after the base moves. ``behind_by`` counts
+    the base commits that ``revision`` does not contain yet; ``base_revision``
+    is the base tip that was compared.
+    """
+
+    base_branch: str
+    base_revision: str
+    revision: str
+    behind_by: int
+
+    def __post_init__(self) -> None:
+        for attribute in ("base_branch", "base_revision", "revision"):
+            object.__setattr__(self, attribute, str(getattr(self, attribute)).strip())
+        if not self.base_revision or not self.revision:
+            raise ValueError("Base freshness needs both the base tip and the review head.")
+        behind_by = int(self.behind_by)
+        if behind_by < 0:
+            raise ValueError("Base freshness behind_by cannot be negative.")
+        object.__setattr__(self, "behind_by", behind_by)
+
+    @property
+    def contains_base(self) -> bool:
+        """True when ``revision`` already contains the base tip."""
+
+        return self.behind_by == 0
+
+
 @runtime_checkable
 class AgentIdentity(Protocol):
     name: str

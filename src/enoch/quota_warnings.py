@@ -22,6 +22,7 @@ THRESHOLDS = (10, 5, 1)
 NOTIFICATION_PREFIX = "quota-warning:"
 DEFAULT_POLL_SECONDS = 60
 RESET_TOLERANCE_SECONDS = 60
+STALE_AFTER_POLLS = 3
 
 
 @dataclass(frozen=True)
@@ -184,6 +185,24 @@ class QuotaWarningMonitor:
         self._stop = threading.Event()
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
+        # The last snapshot each poll collected, so other views (the task
+        # board) can show quota without calling the provider themselves.
+        self._latest: dict[str, tuple[Mapping, datetime, int]] = {}
+
+    def latest_snapshot(self, provider: str, *, now: datetime | None = None) -> Mapping | None:
+        """Return the cached snapshot for ``provider`` if a recent poll saw it.
+
+        Never calls the provider. A snapshot older than a few poll intervals
+        is treated as missing, so a stalled poller cannot show stale quota.
+        """
+        cached = self._latest.get(provider)
+        if cached is None:
+            return None
+        snapshot, checked_at, interval = cached
+        age = ((now or datetime.now(timezone.utc)) - checked_at).total_seconds()
+        if age > STALE_AFTER_POLLS * interval:
+            return None
+        return snapshot
 
     def start(self) -> None:
         with self._lock:
@@ -211,6 +230,9 @@ class QuotaWarningMonitor:
                     or not warning_settings(self.root).enabled):
                 break
             current = now or datetime.now(timezone.utc)
+            self._latest[provider] = (
+                snapshot, current, warning_settings(self.root).poll_interval_seconds,
+            )
             intents = self.guard(prepare_warnings, self.root, provider, snapshot,
                                  channel=self.channel, conversation_id=conversation_id,
                                  display_name=self.display_name, now=current)

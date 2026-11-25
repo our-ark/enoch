@@ -8,7 +8,7 @@ import re
 import shutil
 import subprocess
 import time
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 from our_ark_provider_kit import (
     agent_context,
@@ -22,8 +22,12 @@ from our_ark_provider_kit import (
     PullRequestMergeStatus,
     PullRequestResult,
     PullRequestTarget,
+    ReviewBaseFreshness,
     ReviewCheck,
+    ReviewCheckFailure,
     ReviewCheckReport,
+    ReviewCommit,
+    ReviewRevisionComparison,
     RemotePublishResult,
 )
 
@@ -643,6 +647,18 @@ def update_pull_request_branch(
     gh = shutil.which("gh")
     if gh is None:
         raise PublishError("GitHub CLI is not available.")
+    if status.merge_state_status != "BEHIND":
+        # GitHub recomputes the merge state lazily after the base moves, so it
+        # can still say CLEAN, UNSTABLE or BLOCKED for a head that is behind.
+        # The compare API is current; update only when it confirms the head
+        # lacks the base tip.
+        freshness = _base_freshness(gh, status.repository, status.base_branch, expected, root)
+        if freshness.contains_base:
+            raise PublishError(
+                f"PR #{status.number} is not a mergeable PR that is behind its base "
+                f"(merge state: {status.merge_state_status.lower() or 'unknown'}); "
+                "its branch was not updated."
+            )
     result = subprocess.run(
         [
             gh,
@@ -681,6 +697,7 @@ def update_pull_request_branch(
 # bounded retries only cover a short replication delay, not CI.
 _BRANCH_UPDATE_HEAD_CHECKS = 5
 _BRANCH_UPDATE_HEAD_DELAY_SECONDS = 1.0
+_UPDATABLE_MERGE_STATES = frozenset({"BEHIND", "BLOCKED", "CLEAN", "HAS_HOOKS", "UNSTABLE"})
 
 
 def _require_updatable_pull_request(status: PullRequestMergeStatus, expected: str) -> None:
@@ -691,7 +708,9 @@ def _require_updatable_pull_request(status: PullRequestMergeStatus, expected: st
         raise PublishError(f"{label} is a draft; its branch was not updated.")
     if status.mergeable == "CONFLICTING" or status.merge_state_status == "DIRTY":
         raise PublishError(f"{label} has merge conflicts.")
-    if status.mergeable != "MERGEABLE" or status.merge_state_status != "BEHIND":
+    # BEHIND, or a merge state GitHub may not have recomputed since the base
+    # moved; for the latter the caller confirms the head is behind first.
+    if status.mergeable != "MERGEABLE" or status.merge_state_status not in _UPDATABLE_MERGE_STATES:
         raise PublishError(
             f"{label} is not a mergeable PR that is behind its base "
             f"(merge state: {status.merge_state_status.lower() or 'unknown'}); "
@@ -825,6 +844,260 @@ def inspect_pull_request_checks(
         revision=str(data.get("headRefOid") or "").strip(),
         checks=checks,
     )
+
+
+# Keep the tail of each failed job log: test runners print their summary last.
+_FAILED_LOG_EXCERPT_CHARS = 12000
+_ACTIONS_JOB_URL = re.compile(r"/actions/runs/(\d+)/job/(\d+)")
+_ACTIONS_RUN_URL = re.compile(r"/actions/runs/(\d+)")
+
+
+def inspect_pull_request_check_failures(
+    reference: str,
+    *,
+    head_sha: str,
+    root: Path | None = None,
+) -> tuple[ReviewCheckFailure, ...]:
+    """Return each failed check on ``head_sha`` with its run ids and failed-step log tail.
+
+    Job logs need an authenticated gh CLI. A log that cannot be read is left
+    empty instead of failing the whole inspection.
+    """
+
+    gh, repository, rollup = _head_check_rollup(reference, head_sha, root)
+    failures = []
+    for item in rollup:
+        check = _review_check(item)
+        if check.state != "failure":
+            continue
+        run_id, job_id = _actions_ids(item)
+        log = _failed_job_log(gh, repository, job_id, root) if job_id else ""
+        failures.append(
+            ReviewCheckFailure(
+                name=check.name,
+                detail=check.detail,
+                run_id=run_id,
+                job_id=job_id,
+                log=log,
+            )
+        )
+    return tuple(failures)
+
+
+def rerun_failed_pull_request_checks(
+    reference: str,
+    *,
+    head_sha: str,
+    root: Path | None = None,
+) -> tuple[str, ...]:
+    """Re-run only the failed jobs of each GitHub Actions run that failed on ``head_sha``."""
+
+    gh, repository, rollup = _head_check_rollup(reference, head_sha, root)
+    run_ids = tuple(
+        dict.fromkeys(
+            run_id
+            for item in rollup
+            if _review_check(item).state == "failure"
+            for run_id in (_actions_ids(item)[0],)
+            if run_id
+        )
+    )
+    if not run_ids:
+        raise PublishError("No failed GitHub Actions runs to re-run on this pull request head.")
+    for run_id in run_ids:
+        result = subprocess.run(
+            [gh, "run", "rerun", run_id, "--failed", "--repo", repository],
+            cwd=root,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            note = result.stderr.strip() or result.stdout.strip() or "GitHub could not re-run it."
+            raise PublishError(f"Could not re-run CI run {run_id}: {note}")
+    return run_ids
+
+
+def compare_pull_request_revisions(
+    reference: str,
+    *,
+    base: str,
+    head: str,
+    root: Path | None = None,
+) -> ReviewRevisionComparison:
+    """Compare ``head`` with ``base`` (a commit or branch) in the PR's repository."""
+
+    base = base.strip()
+    head = head.strip()
+    if not base or not head:
+        raise PublishError("Both revisions are required to compare pull request revisions.")
+    status = inspect_pull_request_merge(reference, root)
+    if not status.repository:
+        raise PublishError("The pull request has no resolvable GitHub repository.")
+    gh = shutil.which("gh")
+    if gh is None:
+        raise PublishError("GitHub CLI is not available.")
+    basehead = f"{quote(base, safe='/')}...{quote(head, safe='/')}"
+    data = _github_api_object(
+        gh,
+        f"repos/{status.repository}/compare/{basehead}",
+        root,
+        "revision comparison",
+    )
+    relation = str(data.get("status") or "").strip().lower()
+    raw_commits = data.get("commits")
+    commits = []
+    for item in raw_commits if isinstance(raw_commits, list) else []:
+        if not isinstance(item, dict):
+            continue
+        sha = str(item.get("sha") or "").strip()
+        commit = item.get("commit")
+        message = str(commit.get("message") or "").strip() if isinstance(commit, dict) else ""
+        if sha:
+            subject = message.splitlines()[0] if message else ""
+            commits.append(ReviewCommit(revision=sha, subject=subject))
+    return ReviewRevisionComparison(
+        base=base,
+        revision=head,
+        descends=relation in {"ahead", "identical"},
+        commits=tuple(commits),
+    )
+
+
+def inspect_pull_request_base_freshness(
+    reference: str,
+    *,
+    head_sha: str = "",
+    root: Path | None = None,
+) -> ReviewBaseFreshness:
+    """Report whether ``head_sha`` (default: the PR head) contains its base tip.
+
+    Uses the git data behind the compare API, which is current right after the
+    base moves, unlike ``mergeStateStatus``, which GitHub recomputes lazily
+    and can briefly report UNSTABLE or UNKNOWN for a head that is behind.
+    """
+
+    status = inspect_pull_request_merge(reference, root)
+    if not status.repository:
+        raise PublishError("The pull request has no resolvable GitHub repository.")
+    gh = shutil.which("gh")
+    if gh is None:
+        raise PublishError("GitHub CLI is not available.")
+    head = head_sha.strip() or status.head_sha
+    return _base_freshness(gh, status.repository, status.base_branch, head, root)
+
+
+def _base_freshness(
+    gh: str,
+    repository: str,
+    base_branch: str,
+    head: str,
+    root: Path | None,
+) -> ReviewBaseFreshness:
+    base_branch = base_branch.strip()
+    head = head.strip()
+    if not base_branch or not head:
+        raise PublishError("A base branch and a head commit are required to compare them.")
+    ref = _github_api_object(
+        gh,
+        f"repos/{repository}/git/ref/heads/{quote(base_branch, safe='/')}",
+        root,
+        "base branch",
+    )
+    target = ref.get("object")
+    base_tip = str(target.get("sha") or "").strip() if isinstance(target, dict) else ""
+    if not base_tip:
+        raise PublishError(f"GitHub returned no commit for base branch {base_branch}.")
+    # per_page=1: only the counts are needed, not the commit list.
+    data = _github_api_object(
+        gh,
+        f"repos/{repository}/compare/{quote(base_tip, safe='')}...{quote(head, safe='')}"
+        "?per_page=1",
+        root,
+        "base comparison",
+    )
+    behind_by = data.get("behind_by")
+    if not isinstance(behind_by, int) or isinstance(behind_by, bool) or behind_by < 0:
+        raise PublishError("GitHub returned an invalid base comparison.")
+    return ReviewBaseFreshness(
+        base_branch=base_branch,
+        base_revision=base_tip,
+        revision=head,
+        behind_by=behind_by,
+    )
+
+
+def _head_check_rollup(
+    reference: str,
+    head_sha: str,
+    root: Path | None,
+) -> tuple[str, str, list[dict[str, object]]]:
+    target = parse_pull_request_target(reference)
+    gh = shutil.which("gh")
+    if gh is None:
+        raise PublishError("GitHub CLI is not available.")
+    result = subprocess.run(
+        [
+            gh,
+            "pr",
+            "view",
+            target.reference,
+            "--json",
+            "number,url,headRefOid,statusCheckRollup",
+        ],
+        cwd=root,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        note = result.stderr.strip() or result.stdout.strip() or "GitHub CLI could not read PR checks."
+        raise PublishError(note)
+    data = _github_json_object(result.stdout, "pull request checks")
+    canonical = parse_pull_request_target(str(data.get("url") or "").strip())
+    if canonical.number != target.number or (
+        target.repository and canonical.repository.casefold() != target.repository.casefold()
+    ):
+        raise PublishError("GitHub returned a different pull request than the requested target.")
+    current = str(data.get("headRefOid") or "").strip()
+    expected = head_sha.strip()
+    if not expected or current != expected:
+        raise PublishError(
+            f"PR #{canonical.number} head changed to {current or 'unknown'} "
+            f"(expected {expected or 'a head'}); its checks were not touched."
+        )
+    rollup = data.get("statusCheckRollup")
+    return (
+        gh,
+        canonical.repository,
+        [item for item in (rollup if isinstance(rollup, list) else []) if isinstance(item, dict)],
+    )
+
+
+def _actions_ids(item: dict[str, object]) -> tuple[str, str]:
+    url = str(item.get("detailsUrl") or item.get("targetUrl") or "")
+    job = _ACTIONS_JOB_URL.search(url)
+    if job is not None:
+        return job.group(1), job.group(2)
+    run = _ACTIONS_RUN_URL.search(url)
+    return (run.group(1) if run is not None else ""), ""
+
+
+def _failed_job_log(gh: str, repository: str, job_id: str, root: Path | None) -> str:
+    try:
+        result = subprocess.run(
+            [gh, "run", "view", "--job", job_id, "--log-failed", "--repo", repository],
+            cwd=root,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=120,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    if result.returncode != 0:
+        return ""
+    return result.stdout[-_FAILED_LOG_EXCERPT_CHARS:]
 
 
 def _review_check(item: dict[str, object]) -> ReviewCheck:

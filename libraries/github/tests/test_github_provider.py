@@ -25,11 +25,16 @@ from our_ark_provider_kit import (
     PullRequestMergeStatus,
     PullRequestResult,
     RepositoryRevision,
+    ReviewBaseFreshness,
     ReviewCheck,
+    ReviewCheckFailure,
     ReviewCheckReport,
+    ReviewCommit,
+    ReviewRevisionComparison,
     ReviewIdentity,
     ReviewLandRequest,
     ReviewProvider,
+    ReviewProviderError,
     ReviewSubmission,
     UnsupportedProviderFeature,
     as_review_provider,
@@ -149,6 +154,8 @@ class GithubProviderTests(ProviderContractConformanceMixin, unittest.TestCase):
 
         self.assertTrue(provider.capabilities.supports("forge.update-branch"))
         self.assertTrue(provider.capabilities.supports("forge.check-status"))
+        self.assertTrue(provider.capabilities.supports("forge.ci-repair"))
+        self.assertTrue(provider.capabilities.supports("forge.base-freshness"))
         self.assertFalse(provider.capabilities.supports("forge.auto-merge"))
         review_provider = as_review_provider(provider)
         self.assertTrue(review_provider.capabilities.supports("forge.update-branch"))
@@ -267,6 +274,64 @@ class GithubProviderTests(ProviderContractConformanceMixin, unittest.TestCase):
         )
         self.assertFalse(report.green)
         self.assertEqual([check.name for check in report.failed], ["test"])
+
+    def test_adapter_exposes_ci_repair_operations(self) -> None:
+        provider, review_provider, identity = _behind_fixture()
+        self.assertTrue(review_provider.capabilities.supports("forge.ci-repair"))
+        failures = (ReviewCheckFailure("test", "failure", run_id="9", job_id="10", log="x"),)
+        comparison = ReviewRevisionComparison(
+            "head-42", "fix-43", True, (ReviewCommit("fix-43", "Fix it"),)
+        )
+
+        with patch.object(provider, "inspect_review_check_failures", return_value=failures) as inspect, \
+                patch.object(provider, "rerun_failed_review_checks", return_value=("9",)) as rerun, \
+                patch.object(provider, "compare_review_revisions", return_value=comparison) as compare:
+            self.assertEqual(
+                review_provider.inspect_review_check_failures(identity, revision="head-42"),
+                failures,
+            )
+            self.assertEqual(
+                review_provider.rerun_failed_review_checks(identity, revision="head-42"),
+                ("9",),
+            )
+            self.assertEqual(
+                review_provider.compare_review_revisions(
+                    identity, base="head-42", revision="fix-43"
+                ),
+                comparison,
+            )
+
+        inspect.assert_called_once_with(identity.id, head_sha="head-42", root=None)
+        rerun.assert_called_once_with(identity.id, head_sha="head-42", root=None)
+        compare.assert_called_once_with(identity.id, base="head-42", head="fix-43", root=None)
+
+        with patch.object(provider, "compare_review_revisions", return_value="bogus"):
+            with self.assertRaises(ReviewProviderError):
+                review_provider.compare_review_revisions(identity, base="a", revision="b")
+
+    def test_adapter_exposes_base_freshness(self) -> None:
+        provider, review_provider, identity = _behind_fixture()
+        self.assertTrue(review_provider.capabilities.supports("forge.base-freshness"))
+        behind = ReviewBaseFreshness("main", "main-7", "head-42", 2)
+
+        with patch.object(
+            provider, "inspect_review_base_freshness", return_value=behind
+        ) as inspect:
+            result = review_provider.inspect_review_base_freshness(identity, revision="head-42")
+
+        self.assertEqual(result, behind)
+        self.assertFalse(result.contains_base)
+        inspect.assert_called_once_with(identity.id, head_sha="head-42", root=None)
+        self.assertTrue(ReviewBaseFreshness("main", "main-7", "head-42", 0).contains_base)
+        for bogus in ("bogus", ReviewBaseFreshness("main", "main-7", "other-1", 0)):
+            with self.subTest(bogus=bogus):
+                with patch.object(provider, "inspect_review_base_freshness", return_value=bogus):
+                    with self.assertRaises(ReviewProviderError):
+                        review_provider.inspect_review_base_freshness(identity, revision="head-42")
+        for args in (("main", "", "head-42", 0), ("main", "main-7", "head-42", -1)):
+            with self.subTest(args=args):
+                with self.assertRaises(ValueError):
+                    ReviewBaseFreshness(*args)
 
     def test_review_record_carries_repository_and_base(self) -> None:
         provider, review_provider, identity = _behind_fixture()
