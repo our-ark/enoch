@@ -655,6 +655,7 @@ class TaskBoardRefreshTests(unittest.TestCase):
         self.chat = _LegacyChat()
         self.app = EnochApplication(load_identity(), self.root, self.chat)
         self.status = _status()
+        self._quota_shift = datetime.now(timezone.utc) - QUOTA_NOW
         inspect = patch.object(self.app.workflow, "inspect", side_effect=lambda: self.status)
         inspect.start()
         self.addCleanup(inspect.stop)
@@ -805,6 +806,24 @@ class TaskBoardRefreshTests(unittest.TestCase):
 
         refresh.assert_called_once_with()
 
+    def _live_quota(
+        self, five_hour_used: float | None = 13, seven_day_used: float | None = 36,
+    ) -> dict:
+        """Return ``_quota`` with its reset times moved next to the real clock.
+
+        The application renders the board with the wall clock, so the fixed
+        ``QUOTA_NOW`` resets would expire (hiding their windows) once real time
+        passes them. The shift is fixed in setUp, so every snapshot in a test
+        keeps the same reset times and the board digest stays comparable.
+        """
+
+        return _quota(
+            five_hour_used,
+            seven_day_used,
+            five_hour_reset=FIVE_HOUR_RESET + self._quota_shift,
+            seven_day_reset=SEVEN_DAY_RESET + self._quota_shift,
+        )
+
     def _use_quota_runtime(self, snapshot) -> Mock:
         reader = Mock(return_value=snapshot)
         self.app.runtime = SimpleNamespace(name="claude", quota=reader)
@@ -815,8 +834,8 @@ class TaskBoardRefreshTests(unittest.TestCase):
         self.app.quota_warnings.check_once()
 
     def test_board_shows_the_cached_quota_without_calling_the_provider(self) -> None:
-        reader = self._use_quota_runtime(_quota())
-        self._poll_quota(_quota())
+        reader = self._use_quota_runtime(self._live_quota())
+        self._poll_quota(self._live_quota())
 
         with patch("enoch.quota.quota_snapshots") as snapshots, \
                 patch("enoch.quota.load_provider") as load:
@@ -834,23 +853,23 @@ class TaskBoardRefreshTests(unittest.TestCase):
         self.assertEqual(self.chat.edits, [])
 
     def test_quota_changes_inside_a_bucket_do_not_edit_the_board(self) -> None:
-        self._use_quota_runtime(_quota())
-        self._poll_quota(_quota(13, 36))
+        self._use_quota_runtime(self._live_quota())
+        self._poll_quota(self._live_quota(13, 36))
         self.app._task_board_command("")
 
-        self._poll_quota(_quota(11, 39))
+        self._poll_quota(self._live_quota(11, 39))
         self.app._refresh_task_board()
         self.assertEqual(self.chat.edits, [])
 
-        self._poll_quota(_quota(17, 39))
+        self._poll_quota(self._live_quota(17, 39))
         self.app._refresh_task_board()
         self.app._refresh_task_board()
         self.assertEqual(len(self.chat.edits), 1)
         self.assertIn("5h 80% · 7d 60% left", self.chat.edits[0][2])
 
     def test_board_shows_only_the_active_runtime_quota(self) -> None:
-        self._use_quota_runtime(_quota())
-        self.app.quota_warnings.collect = lambda: iter([("codex", _quota())])
+        self._use_quota_runtime(self._live_quota())
+        self.app.quota_warnings.collect = lambda: iter([("codex", self._live_quota())])
         self.app.quota_warnings.check_once()
 
         self.app._task_board_command("")
@@ -875,8 +894,8 @@ class TaskBoardRefreshTests(unittest.TestCase):
         self.assertNotIn("Quota", self.chat.edits[0][2])
 
     def test_stale_quota_snapshot_is_not_shown(self) -> None:
-        self._use_quota_runtime(_quota())
-        self.app.quota_warnings.collect = lambda: iter([("claude", _quota())])
+        self._use_quota_runtime(self._live_quota())
+        self.app.quota_warnings.collect = lambda: iter([("claude", self._live_quota())])
         self.app.quota_warnings.check_once(now=datetime.now(timezone.utc) - timedelta(hours=1))
 
         self.app._task_board_command("")
