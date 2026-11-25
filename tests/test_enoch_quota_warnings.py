@@ -296,6 +296,27 @@ class QuotaWarningTests(unittest.TestCase):
         self.assertEqual(path.read_text(), '{broken')
         self.assertEqual(self.chat.sent, [])
 
+    def test_each_poll_caches_the_latest_snapshot_for_other_views(self):
+        monitor = self.app.quota_warnings
+        self.assertIsNone(monitor.latest_snapshot('codex', now=NOW))
+        self.poll(60)
+        self.poll(55)
+        self.assertEqual(self.collect.call_count, 2)
+        self.assertEqual(monitor.latest_snapshot('codex', now=NOW), snapshot(55))
+        self.assertIsNone(monitor.latest_snapshot('claude', now=NOW))
+        # Reading the cache never queries the provider.
+        self.assertEqual(self.collect.call_count, 2)
+        self.assertIsNotNone(monitor.latest_snapshot('codex', now=NOW + timedelta(minutes=3)))
+        self.assertIsNone(monitor.latest_snapshot('codex', now=NOW + timedelta(minutes=3, seconds=1)))
+
+    def test_discarded_poll_results_are_not_cached(self):
+        def disabled():
+            write_section_value('quota', 'warnings_enabled', 'false', self.root)
+            yield 'codex', snapshot(1)
+        self.app.quota_warnings.collect = disabled
+        self.poll()
+        self.assertIsNone(self.app.quota_warnings.latest_snapshot('codex', now=NOW))
+
     def test_worker_runs_independently_and_stops_waiting_promptly(self):
         observed = threading.Event()
         monitor = self.app.quota_warnings

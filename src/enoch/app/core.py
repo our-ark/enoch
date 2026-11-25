@@ -276,6 +276,7 @@ from enoch.app.conversation import (
     ActionResult,
     ConversationAction,
     ConversationJournal,
+    ConversationTurnError,
     run_conversation,
 )
 from enoch.providers.runtime import (
@@ -426,6 +427,7 @@ from enoch.app.task_board import (
     RenderedTaskBoard,
     TaskBoardState,
     load_task_board_state,
+    render_quota_line,
     render_task_board,
     save_task_board_state,
 )
@@ -1891,7 +1893,14 @@ class EnochApplication:
                     ),
                 ).final_text
             except (AgentRuntimeError, CapabilityAuthorizationError, TypeError) as error:
-                return f"{self.display_name} could not continue this conversation: {error}"
+                raise ConversationTurnError(
+                    f"{self.display_name} could not continue this conversation: {error}"
+                ) from error
+
+        def record_event(name: str, details: dict) -> None:
+            status = "failed" if name.endswith("_failed") else "ignored"
+            _record_system_event(name, self.root, status=status,
+                                 details={"request_id": request_id, **details})
 
         return run_conversation(
             journal=journal,
@@ -1899,6 +1908,7 @@ class EnochApplication:
             execute=lambda action, index: self._execute_conversation_action(event, action, index),
             persist=self.effect_fence.run,
             finalize=self._finish_conversation_reply,
+            record_event=record_event,
         )
 
     def _finish_conversation_reply(self, reply: str) -> str:
@@ -1949,10 +1959,24 @@ class EnochApplication:
             _CURRENT_EVENT_KEY.reset(token)
         if reply is None:
             return ActionResult(f"Unknown operation {action.command!r}. Inspect help and choose a registered operation.")
-        # Work reports progress through its own task status message; restarts must
-        # happen after the current reply rather than another inference turn.
-        stop = action.command == "do" or (action.command == "task" and bool(action.argument)) or self._restart_after_reply
-        return ActionResult(reply, stop=stop)
+        # Work reports progress through its own task status message, then the
+        # model gets one no-action turn to answer the human. Restarts must happen
+        # after the current reply rather than another inference turn.
+        queued = action.command == "do" or (action.command == "task" and bool(action.argument))
+        if self._restart_after_reply:
+            return ActionResult(reply, stop=True)
+        if queued:
+            # Queued work should not wait for the reply turn; the poll loop retries
+            # if this early start fails, so never turn accepted work into a failure.
+            try:
+                self._maybe_start_task_worker()
+            except StaleDaemonEpoch:
+                raise
+            except Exception as error:
+                _record_system_event("task_worker_start_failed", self.root, status="failed", details={
+                    "error": str(error), "error_type": type(error).__name__,
+                })
+        return ActionResult(reply, stop=queued, then_reply=queued)
 
     def _do(self, chat_id: ConversationId, text: str) -> str:
         command, argument = _parse_chat_command(text)
@@ -2774,7 +2798,18 @@ class EnochApplication:
             queue_command=f"{self.command_prefix}queue",
             merging=self.pending_merges.board_items(),
             backlog=self._task_board_backlog(),
+            quota_line=self._task_board_quota_line(),
         )
+
+    def _task_board_quota_line(self) -> str:
+        # Read the snapshot the quota warning poller already cached for the
+        # active runtime; the board never calls the provider itself. Any
+        # problem only hides the quota line.
+        try:
+            provider = self.runtime.name
+            return render_quota_line(provider, self.quota_warnings.latest_snapshot(provider))
+        except Exception:
+            return ""
 
     def _task_board_backlog(self) -> tuple[BacklogItem, ...]:
         # An unreadable backlog only hides the board's backlog line; the task
