@@ -32,6 +32,12 @@ class FunctionForgeProvider:
     update_branch_fn: Callable[..., Any] | None = None
     verify_update_fn: Callable[..., bool] | None = None
     checks_fn: Callable[..., Any] | None = None
+    # Optional ``forge.ci-repair``: failed-check evidence, re-running failed CI
+    # jobs, and comparing revisions. Enoch uses them to repair red CI on a
+    # review it is watching or landing; forges without them stop and notify.
+    check_failures_fn: Callable[..., Any] | None = None
+    rerun_checks_fn: Callable[..., Any] | None = None
+    compare_fn: Callable[..., Any] | None = None
     name: str = "function-forge"
     provider_kind: str = "forge"
     capabilities: ProviderCapabilities = ProviderCapabilities(
@@ -52,6 +58,12 @@ class FunctionForgeProvider:
             for capability, fn in (
                 ("forge.update-branch", self.update_branch_fn),
                 ("forge.check-status", self.checks_fn),
+                (
+                    "forge.ci-repair",
+                    self.check_failures_fn
+                    if self.rerun_checks_fn is not None and self.compare_fn is not None
+                    else None,
+                ),
             )
             if fn is not None
         }
@@ -134,6 +146,40 @@ class FunctionForgeProvider:
         if self.checks_fn is None:
             raise ForgeProviderError("This forge cannot inspect review checks.")
         return self.checks_fn(reference, root)
+
+    def inspect_review_check_failures(
+        self,
+        reference: str,
+        *,
+        head_sha: str,
+        root: Path | None = None,
+    ) -> Any:
+        if self.check_failures_fn is None:
+            raise ForgeProviderError("This forge cannot inspect failed review checks.")
+        return self.check_failures_fn(reference, head_sha=head_sha, root=root)
+
+    def rerun_failed_review_checks(
+        self,
+        reference: str,
+        *,
+        head_sha: str,
+        root: Path | None = None,
+    ) -> Any:
+        if self.rerun_checks_fn is None:
+            raise ForgeProviderError("This forge cannot re-run review checks.")
+        return self.rerun_checks_fn(reference, head_sha=head_sha, root=root)
+
+    def compare_review_revisions(
+        self,
+        reference: str,
+        *,
+        base: str,
+        head: str,
+        root: Path | None = None,
+    ) -> Any:
+        if self.compare_fn is None:
+            raise ForgeProviderError("This forge cannot compare review revisions.")
+        return self.compare_fn(reference, base=base, head=head, root=root)
 
 
 class LocalForgeProvider:

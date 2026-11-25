@@ -38,7 +38,10 @@ from our_ark_provider_kit import (
     PullRequestMergeResult,
     PullRequestMergeStatus,
     ReviewCheck,
+    ReviewCheckFailure,
     ReviewCheckReport,
+    ReviewCommit,
+    ReviewRevisionComparison,
 )
 from tests.test_enoch_application import _Chat, _Runtime
 
@@ -59,12 +62,19 @@ class _Forge:
         update_branch: bool = True,
         verify_update: bool | None = None,
         verified_update_heads: bool = True,
+        ci_repair: bool = False,
     ) -> None:
         self.status = _status(merge_state_status=merge_state)
         self.checks = checks
         self.updates: list[str] = []
         self.merges: list[str] = []
         self.verified_update_heads = verified_update_heads
+        # forge.ci-repair fakes: failure evidence, re-runs, and a commit graph.
+        self.failures: tuple[ReviewCheckFailure, ...] | None = None
+        self.reruns: list[str] = []
+        self.parents: dict[str, str] = {}
+        self.subjects: dict[str, str] = {}
+        self.contains_base = True
         self.inspect = MagicMock(side_effect=lambda reference, root=None: self.status)
         optional = {}
         if check_status:
@@ -73,6 +83,10 @@ class _Forge:
             optional["update_branch_fn"] = MagicMock(side_effect=self._update)
         if verify_update is not None:
             optional["verify_update_fn"] = MagicMock(return_value=verify_update)
+        if ci_repair:
+            optional["check_failures_fn"] = MagicMock(side_effect=self._failures)
+            optional["rerun_checks_fn"] = MagicMock(side_effect=self._rerun)
+            optional["compare_fn"] = MagicMock(side_effect=self._compare)
         self.provider = FunctionForgeProvider(
             close_fn=MagicMock(),
             create_fn=MagicMock(),
@@ -91,6 +105,54 @@ class _Forge:
 
     def _checks(self, reference, root=None) -> ReviewCheckReport:
         return ReviewCheckReport(revision=self.status.head_sha, checks=self.checks)
+
+    def push(self, head: str, *, subject: str = "", parent: str = "") -> None:
+        """Simulate a push on top of the current head; CI restarts on it."""
+
+        self.parents[head] = parent or self.status.head_sha
+        self.subjects[head] = subject
+        self.status = replace(self.status, head_sha=head)
+        self.checks = (ReviewCheck("CI / test", "pending"),)
+
+    def _failures(self, reference, *, head_sha, root=None) -> tuple[ReviewCheckFailure, ...]:
+        if head_sha != self.status.head_sha:
+            raise AssertionError("failure evidence must be read for the inspected head")
+        if self.failures is not None:
+            return self.failures
+        return tuple(
+            ReviewCheckFailure(
+                check.name,
+                check.detail or "failure",
+                run_id="4544",
+                job_id="1386",
+                log="FAILED tests/test_x.py::test_y - AssertionError",
+            )
+            for check in self.checks
+            if check.state == "failure"
+        )
+
+    def _rerun(self, reference, *, head_sha, root=None) -> tuple[str, ...]:
+        if head_sha != self.status.head_sha:
+            raise AssertionError("re-runs must be pinned to the inspected head")
+        self.reruns.append(head_sha)
+        self.checks = tuple(
+            ReviewCheck(check.name, "pending") if check.state == "failure" else check
+            for check in self.checks
+        )
+        return ("4544",)
+
+    def _compare(self, reference, *, base, head, root=None) -> ReviewRevisionComparison:
+        if base == "main":
+            return ReviewRevisionComparison(base, head, self.contains_base)
+        commits = []
+        cursor = head
+        while cursor != base and cursor in self.parents:
+            commits.append(ReviewCommit(cursor, self.subjects.get(cursor, "")))
+            cursor = self.parents[cursor]
+        descends = cursor == base
+        return ReviewRevisionComparison(
+            base, head, descends, tuple(reversed(commits)) if descends else ()
+        )
 
     def _update(self, reference, *, expected_head_sha, root=None) -> PullRequestBranchUpdateResult:
         if expected_head_sha != self.status.head_sha:
@@ -632,7 +694,14 @@ class PendingMergeTests(unittest.TestCase):
         self.assertIn("pending merges", usage)
         self.assertIn("lands it automatically when it is ready", usage)
         self.assertIn("2 hours", usage)
-        self.assertIn("Conflicted, draft and closed reviews are refused right away", usage)
+        self.assertIn("conflicted, draft and closed reviews are refused right away", usage)
+        self.assertIn("end to end", usage)
+        self.assertIn("covered by your merge request and listed in the final merged message", usage)
+        self.assertIn("commits from anyone else cancel the merge", usage)
+        self.assertIn("re-run once", usage)
+        self.assertIn("up to 2 attempts", usage)
+        self.assertIn("6 hours overall", usage)
+        self.assertIn("never merged without a request", usage)
 
     def test_corrupt_entries_are_skipped_on_load(self) -> None:
         path = pending_merges_path(self.root)

@@ -421,15 +421,40 @@ must refuse when the head is no longer `expected_head_sha`, and optionally
 root=None)`. A forge's `merge_pull_request` may also accept
 `expected_head_sha` so landing is pinned to the authorized head.
 
+A third optional capability, `forge.ci-repair`, pairs with
+`inspect_review_check_failures(reference, *, head_sha, root=None)` (a
+`ReviewCheckFailure` per failed check: raw conclusion, CI run and job ids, and a
+bounded log excerpt), `rerun_failed_review_checks(reference, *, head_sha,
+root=None)` (re-run only the failed jobs, refusing when the head moved), and
+`compare_review_revisions(reference, *, base, head, root=None)` (a
+`ReviewRevisionComparison` saying whether `head` contains `base`, plus the
+commits it adds).
+
 With `forge.check-status`, a human request to land one exact review that is
 not ready yet is recorded as a pending merge in private state. The daemon
 checks it about once a minute. It updates the branch from its base when the
 review is behind (when `forge.update-branch` is declared). It lands the review
-only when every check finished green on a head the human authorized, or on a
-head Enoch created by updating from the base. It stops on new pushes, failed
-checks, conflicts, or after 2 hours. Forges without `forge.check-status` keep
-the immediate behavior, where reviews that are not ready are refused with the
+only when every check finished green on a head the human authorized, on a head
+Enoch created by updating from the base, or on a head pushed by one of Enoch's
+own CI fix tasks for this merge. It stops on other new pushes, conflicts, or
+after 2 hours of waiting. Forges without `forge.check-status` keep the
+immediate behavior, where reviews that are not ready are refused with the
 forge's reason.
+
+With `forge.ci-repair` as well, red CI on a head that already contains the
+base tip does not stop the merge. Infrastructure failures (cancelled or
+timed-out jobs, runner, setup or network errors with no failing test in the
+log) are re-run once per head. Other failures queue a fix task at the front of
+the task queue, at most 2 per pending merge. The fix task works on the
+review's own branch and reports the head it pushed in an
+`[ENOCH_CI_FIX_RESULT]` block; Enoch accepts that head only when it descends
+from the head the task was asked to fix. Fix commits are listed in the final
+merged message. The 2-hour timeout is paused while a fix task is queued or
+running, with a 6-hour overall cap. If the failure also reproduces on the
+base branch, the fix task opens a separate review and the pending merge stops.
+Reviews that tasks publish are watched the same way for up to 6 hours: one
+line when CI passes, one re-run or one fix task when it fails, and never a
+merge without a request.
 
 Ordinary queued tasks require `runtime.execute`, `vcs.inspect`,
 `vcs.authoritative`, `vcs.workspace`, `vcs.capture`, and `forge.review`.

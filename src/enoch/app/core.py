@@ -420,6 +420,7 @@ from enoch.app.presentation import (
     format_work_status_message as _format_work_status_message,
 )
 from enoch.state import StateCorruptionError
+from enoch.app.ci_repair import extract_ci_fix_results, record_ci_fix_result
 from enoch.app.pending_merges import PendingMergeController
 from enoch.app.task_board import (
     RenderedTaskBoard,
@@ -668,6 +669,8 @@ class EnochApplication:
                 **kwargs,
             ),
             after_land=self._reconcile_lineage_adoptions,
+            queue_fix=self._queue_ci_fix_task,
+            task_status=self._task_status_for,
         )
         reconcile_extension_schedules(
             {
@@ -2279,6 +2282,7 @@ class EnochApplication:
         completed = authoritative_job
         if completed_status == "completed":
             self._record_automatic_learning(completed, command=trigger, result=reply)
+            self._watch_published_reviews(completed)
         return reply
 
     def _queue_direct_work_next(
@@ -3450,12 +3454,79 @@ class EnochApplication:
         )
 
     def _capture_task_regression_signals(self, reply: str) -> str:
+        # Every task reply passes through here, so CI fix results are captured
+        # (and hidden from the visible reply) at the same point.
+        reply = self._capture_ci_fix_signals(reply)
         result = extract_task_regression_signals(reply)
         if result.signals:
             _CURRENT_REGRESSION_SIGNALS.set(
                 (*_CURRENT_REGRESSION_SIGNALS.get(), *result.signals)
             )
         return result.visible_reply
+
+    def _capture_ci_fix_signals(self, reply: str) -> str:
+        """Record a CI fix task's reported result for the pending-merge watcher.
+
+        The watcher accepts a pushed head only when it is exactly the head this
+        task reported, so the result is stored against the running task id.
+        """
+
+        extraction = extract_ci_fix_results(reply)
+        task_id = _CURRENT_TASK_ID.get()
+        if extraction.results and task_id is not None:
+            try:
+                record_ci_fix_result(task_id, extraction.results[-1], self.root)
+            except (OSError, StateCorruptionError) as error:
+                _record_system_event(
+                    "ci_fix_result_record_failed",
+                    self.root,
+                    status="failed",
+                    details={"task_id": task_id, "error": str(error)},
+                )
+        return extraction.visible_reply if extraction.results else reply
+
+    def _queue_ci_fix_task(
+        self,
+        chat_id: ConversationId,
+        request: str,
+        idempotency_key: str,
+    ) -> int:
+        """Queue one automatic CI fix task at the front of the task queue."""
+
+        job = self.workflow.enqueue(
+            chat_id,
+            request,
+            mode="front",
+            source="task",
+            initiated_by="agent",
+            event_actor="system",
+            trigger="ci-repair",
+            idempotency_key=idempotency_key,
+            **self._profile_task_options(),
+        )
+        self._maybe_start_task_worker()
+        return job.id
+
+    def _task_status_for(self, task_id: int) -> str | None:
+        job = self.workflow.find(task_id)
+        return job.status if job is not None else None
+
+    def _watch_published_reviews(self, job: TaskJob) -> None:
+        """Watch CI on reviews a completed task published (never merged without a request)."""
+
+        requested = f"{job.text}\n{job.context}"
+        for url in job.review_urls:
+            if url in requested:
+                continue  # a review the task was asked about, not one it published
+            try:
+                self.pending_merges.watch_review(job.chat_id, url, job.id)
+            except Exception as error:  # noqa: BLE001 - watching must not fail the task
+                _record_system_event(
+                    "ci_watch_start_failed",
+                    self.root,
+                    status="failed",
+                    details={"task_id": job.id, "url": url, "error": str(error)},
+                )
 
     def _apply_task_regression_signals(
         self,
@@ -4972,6 +5043,7 @@ class EnochApplication:
                 self.root,
             )
             self._record_automatic_learning(summary_job, command=command, result=reply)
+            self._watch_published_reviews(summary_job)
         if task_status is not None:
             task_status.reviews = list(summary_job.review_urls)
             if not compact:

@@ -15,8 +15,10 @@ from our_ark_github.workflow import (
     PublishError,
     PullRequestMergeStatus,
     close_pull_request,
+    compare_pull_request_revisions,
     create_pull_request,
     inspect_pull_request,
+    inspect_pull_request_check_failures,
     inspect_pull_request_checks,
     inspect_pull_request_merge,
     list_open_pull_requests,
@@ -25,6 +27,7 @@ from our_ark_github.workflow import (
     prepare_local_publish,
     publish_revision_for_review,
     push_current_branch,
+    rerun_failed_pull_request_checks,
     update_pull_request_branch,
     verify_pull_request_branch_update,
 )
@@ -1052,6 +1055,132 @@ class EnochGithubWorkflowTests(unittest.TestCase):
                 "12", previous_head_sha="abc123", head_sha="merge789", root=ROOT
             )
         )
+
+
+    @patch("our_ark_github.workflow.subprocess.run")
+    @patch("our_ark_github.workflow.shutil.which", return_value="/usr/local/bin/gh")
+    def test_reads_failed_check_logs_for_the_current_head(
+        self,
+        _which: MagicMock,
+        run: MagicMock,
+    ) -> None:
+        run.side_effect = [
+            _process_result(stdout=json.dumps(_red_rollup())),
+            _process_result(stdout="x" * 20000 + "FAILED tests/test_a.py::test_b"),
+        ]
+
+        (failure,) = inspect_pull_request_check_failures("12", head_sha="abc123", root=ROOT)
+
+        self.assertEqual(failure.name, "Tests / test (3.12)")
+        self.assertEqual(failure.detail, "failure")
+        self.assertEqual((failure.run_id, failure.job_id), ("4544", "1386"))
+        self.assertTrue(failure.log.endswith("FAILED tests/test_a.py::test_b"))
+        self.assertLessEqual(len(failure.log), 12000)
+        self.assertEqual(
+            run.call_args_list[1].args[0],
+            [
+                "/usr/local/bin/gh", "run", "view", "--job", "1386", "--log-failed",
+                "--repo", "our-ark/enoch",
+            ],
+        )
+
+    @patch("our_ark_github.workflow.subprocess.run")
+    @patch("our_ark_github.workflow.shutil.which", return_value="/usr/local/bin/gh")
+    def test_unreadable_failed_log_is_left_empty(self, _which: MagicMock, run: MagicMock) -> None:
+        run.side_effect = [
+            _process_result(stdout=json.dumps(_red_rollup())),
+            _process_result(returncode=1, stderr="HTTP 403"),
+        ]
+
+        (failure,) = inspect_pull_request_check_failures("12", head_sha="abc123", root=ROOT)
+
+        self.assertEqual(failure.log, "")
+
+    @patch("our_ark_github.workflow.subprocess.run")
+    @patch("our_ark_github.workflow.shutil.which", return_value="/usr/local/bin/gh")
+    def test_reruns_only_failed_jobs_pinned_to_the_head(
+        self,
+        _which: MagicMock,
+        run: MagicMock,
+    ) -> None:
+        run.side_effect = [
+            _process_result(stdout=json.dumps(_red_rollup())),
+            _process_result(),
+        ]
+
+        self.assertEqual(
+            rerun_failed_pull_request_checks("12", head_sha="abc123", root=ROOT),
+            ("4544",),
+        )
+        self.assertEqual(
+            run.call_args_list[1].args[0],
+            ["/usr/local/bin/gh", "run", "rerun", "4544", "--failed", "--repo", "our-ark/enoch"],
+        )
+
+        run.side_effect = [_process_result(stdout=json.dumps(_red_rollup()))]
+        with self.assertRaisesRegex(PublishError, "head changed"):
+            rerun_failed_pull_request_checks("12", head_sha="other", root=ROOT)
+
+    @patch("our_ark_github.workflow.subprocess.run")
+    @patch("our_ark_github.workflow.shutil.which", return_value="/usr/local/bin/gh")
+    @patch("our_ark_github.workflow.inspect_pull_request_merge")
+    def test_compares_revisions_and_lists_new_commits(
+        self,
+        inspect: MagicMock,
+        _which: MagicMock,
+        run: MagicMock,
+    ) -> None:
+        inspect.return_value = _merge_status()
+        run.return_value = _process_result(
+            stdout=json.dumps(
+                {
+                    "status": "ahead",
+                    "commits": [
+                        {"sha": "fix1234567", "commit": {"message": "Fix the test\n\nBody"}},
+                    ],
+                }
+            )
+        )
+
+        result = compare_pull_request_revisions("12", base="abc123", head="fix1234567", root=ROOT)
+
+        self.assertTrue(result.descends)
+        self.assertEqual([(c.revision, c.subject) for c in result.commits], [("fix1234567", "Fix the test")])
+        self.assertEqual(
+            run.call_args.args[0],
+            ["/usr/local/bin/gh", "api", "repos/our-ark/enoch/compare/abc123...fix1234567"],
+        )
+        for status in ("diverged", "behind"):
+            run.return_value = _process_result(stdout=json.dumps({"status": status, "commits": []}))
+            self.assertFalse(
+                compare_pull_request_revisions("12", base="main", head="x", root=ROOT).descends
+            )
+
+
+def _red_rollup() -> dict[str, object]:
+    return {
+        "number": 12,
+        "url": "https://github.com/our-ark/enoch/pull/12",
+        "headRefOid": "abc123",
+        "statusCheckRollup": [
+            {
+                "__typename": "CheckRun",
+                "name": "test (3.12)",
+                "workflowName": "Tests",
+                "status": "COMPLETED",
+                "conclusion": "FAILURE",
+                "detailsUrl": "https://github.com/our-ark/enoch/actions/runs/4544/job/1386",
+            },
+            {
+                "__typename": "CheckRun",
+                "name": "test (3.13)",
+                "workflowName": "Tests",
+                "status": "COMPLETED",
+                "conclusion": "SUCCESS",
+                "detailsUrl": "https://github.com/our-ark/enoch/actions/runs/4544/job/1387",
+            },
+        ],
+    }
 
 
 def _doctor_result(passed: bool, summary: str) -> MagicMock:
