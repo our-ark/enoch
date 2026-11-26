@@ -48,6 +48,7 @@ from enoch.profiles import ProfileError, available_profiles, load_profile
 from enoch.quota import quota_usage
 from enoch.skills import skills_command
 from enoch.tasks.config import (
+    auto_update_enabled,
     format_pr_auto_merge,
     format_task_timeout,
     parse_task_timeout,
@@ -513,6 +514,7 @@ def config_status(
         "Enoch config:",
         f"- Task timeout: {format_task_timeout(settings.timeout_seconds)}{default}",
         f"- PR auto-merge: {pr_auto_merge_status(root)}",
+        f"- Auto-update after merge: {auto_update_status(root)}",
         f"- Profile: {active_profile_name or _selected_profile_name(root)}",
         f"- Providers: {_provider_summary(root)}",
         "",
@@ -536,6 +538,7 @@ def config_status(
             ),
             f"Set task timeout with {command} task-timeout <duration> or {command} task-timeout default.",
             f"Set PR auto-merge with {prefix}pr auto-merge on|off.",
+            f"Set auto-update after merge with {prefix}update auto on|off.",
         ]
     )
     if callable(getattr(runtime, "configure", None)):
@@ -554,6 +557,44 @@ def pr_auto_merge_status(root: Path | None) -> str:
         stored = ""
     value = format_pr_auto_merge(pr_auto_merge_enabled(root))
     return value if stored else f"{value} (default)"
+
+
+def auto_update_status(root: Path | None) -> str:
+    """``on`` or ``off``, marking the never-changed default."""
+
+    try:
+        stored = read_section("update", root).get("auto", "").strip()
+    except (OSError, ValueError):
+        stored = ""
+    value = format_pr_auto_merge(auto_update_enabled(root))
+    return value if stored else f"{value} (default)"
+
+
+def update_usage(prefix: str = "/") -> str:
+    return "\n".join(
+        [
+            "Update commands:",
+            (
+                f"{prefix}update - update from the authoritative repository, run doctor, "
+                "and restart once no task is running"
+            ),
+            f"{prefix}update auto - show whether merges trigger an automatic update",
+            (
+                f"{prefix}update auto on|off - update automatically after a merge you asked "
+                "for (default on)"
+            ),
+            (
+                "Auto-update: when Enoch lands a PR into this repository's authoritative "
+                "branch because you asked (pr merge, a natural-language merge, a pending "
+                "merge that lands later, or PR auto-merge), it runs the same update once "
+                "no task is running. New tasks wait for it. Several merges in a row "
+                "produce one update, after any other pending merge on this repository "
+                "settles. If doctor fails, Enoch keeps running the current code and sends "
+                "one alert naming the failing check. After a restart, the startup message "
+                "names the new revision. Merges into other repositories never trigger it."
+            ),
+        ]
+    )
 
 
 def model_config_status(
@@ -1244,6 +1285,7 @@ CORE_COMMANDS = (
         "System",
         "",
         "update from the authoritative repository, run doctor, and restart once no task is running",
+        update_usage,
     ),
     CoreCommand(
         "restart",

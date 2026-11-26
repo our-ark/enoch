@@ -263,6 +263,7 @@ from enoch.providers.contracts import (
     ReviewLandResult,
     ReviewProvider,
     ReviewProviderError,
+    ReviewRecord,
     RuntimeExecutionControl,
     normalize_message_id,
 )
@@ -331,6 +332,16 @@ from enoch.tasks.queue import (
     TaskAlreadyExists,
     TaskRetryError,
 )
+from enoch.app.auto_update import (
+    LandedReview,
+    auto_restart_note,
+    clear_update_pending,
+    doctor_failed_alert,
+    load_auto_update_state,
+    mark_update_pending,
+    take_restart_note,
+    update_failed_alert,
+)
 from enoch.app.restarts import (
     RESTART_MODES,
     RESTARTED_RESUME_TRIGGER,
@@ -350,6 +361,7 @@ from enoch.app.restarts import (
 from enoch.commands import (
     CoreCommand,
     action_lock_message as _format_action_lock_message,
+    auto_update_status,
     config_command,
     core_command,
     core_command_names,
@@ -364,11 +376,14 @@ from enoch.commands import (
     runtime_command_reference,
     skills_command,
     status_message,
+    update_usage,
     worktree_usage,
 )
 from enoch.tasks.config import (
+    auto_update_enabled,
     format_task_timeout,
     pr_auto_merge_enabled,
+    save_auto_update,
     save_pr_auto_merge,
     task_timeout_seconds,
 )
@@ -392,7 +407,7 @@ from enoch.operations.update_tools import (
     schedule_daemon_restart as _schedule_daemon_restart,
     task_branch_base as _task_branch_base,
 )
-from enoch.operations.updater import update_from_authoritative
+from enoch.operations.updater import UpdateResult, update_from_authoritative
 from enoch.app.models import (
     ForgeMaintenanceRequest,
     ShutdownRequested,
@@ -673,6 +688,8 @@ class EnochApplication:
         self.previous_shutdown_warning = previous_shutdown_warning
         self.offset: Cursor | None = _load_provider_cursor(self.channel_name, root)
         self._restart_after_reply = False
+        # True while an automatic update runs; new work waits for it.
+        self._auto_update_running = False
         self.restarts = RestartCoordinator(
             busy_tasks=self._restart_blocking_tasks,
             schedule=lambda: _schedule_daemon_restart(self.root),
@@ -713,7 +730,14 @@ class EnochApplication:
                 self.root,
                 **kwargs,
             ),
-            after_land=self._after_requested_merge,
+            after_land=lambda entry: self._after_requested_merge(
+                LandedReview(
+                    label=entry.label,
+                    url=entry.url,
+                    repository=entry.repository,
+                    base_branch=entry.base_branch,
+                )
+            ),
             queue_fix=self._queue_ci_fix_task,
             task_status=self._task_status_for,
         )
@@ -802,18 +826,21 @@ class EnochApplication:
             return
         result = self._deliver_message(
             chat_id,
-            _startup_message(
-                self.identity,
-                self.root,
-                self.previous_shutdown_warning,
-                provider=self.channel_name,
-                command_prefix=self.command_prefix,
-                display_name=self.display_name,
+            self._with_auto_update_note(
+                _startup_message(
+                    self.identity,
+                    self.root,
+                    self.previous_shutdown_warning,
+                    provider=self.channel_name,
+                    command_prefix=self.command_prefix,
+                    display_name=self.display_name,
+                )
             ),
             notification_key=f"daemon:{self.daemon_epoch.generation}:startup",
         )
         if not result.delivered:
             raise ChatProviderError(result.error or "Startup notification was not delivered.")
+        self._clear_auto_update_note()
         self._announce_restart_resumed_tasks()
 
     def start(self) -> None:
@@ -871,6 +898,8 @@ class EnochApplication:
             # Merges first: a landed or stopped merge releases the task queue
             # hold in the same cycle ("land before next").
             self.pending_merges.tick()
+            # A merge that just landed updates the daemon before new work starts.
+            self._maybe_run_auto_update()
             self._maybe_start_task_worker()
             self._maybe_start_lineage_worker()
             self._refresh_task_board()
@@ -1298,11 +1327,16 @@ class EnochApplication:
             "doctor": self._doctor,
             "worktree": lambda: self._worktree(chat_id, argument),
             "pr": lambda: self._pr(chat_id, argument),
-            "update": lambda: self._update_from_chat(chat_id),
+            "update": lambda: self._update_from_chat(chat_id, argument),
             "restart": lambda: self._restart_from_chat(argument),
         }
 
-    def _update_from_chat(self, chat_id: ConversationId) -> str:
+    def _update_from_chat(self, chat_id: ConversationId, argument: str = "") -> str:
+        parts = argument.split()
+        if parts:
+            if parts[0].lower() != "auto":
+                return update_usage(self.command_prefix)
+            return self._update_auto(chat_id, parts[1:])
         reply = self._update()
         self._queue_session_sync(
             chat_id,
@@ -4551,6 +4585,9 @@ class EnochApplication:
             # A pending restart holds new work; it starts once the queue is idle.
             if self.restarts.restart_if_idle():
                 return
+            # So does an automatic update after a merge; run_once runs it.
+            if self._auto_update_holds_work():
+                return
             if self._task_worker is not None and self._task_worker.is_alive():
                 return
             status = self.workflow.inspect()
@@ -4574,6 +4611,8 @@ class EnochApplication:
         try:
             while not self._stopping:
                 if self.restarts.restart_if_idle():
+                    return
+                if self._auto_update_holds_work():
                     return
                 if self._land_hold() is not None:
                     # Land before next: only CI fix tasks run until the review
@@ -5789,7 +5828,7 @@ class EnochApplication:
             return f"{self.display_name} could not land that review: {error}"
         except (OSError, StateCorruptionError) as error:
             return f"{self.display_name} could not record that merge request: {error}"
-        self._after_requested_merge()
+        self._after_requested_merge(_landed_review(current))
         return _format_review_land_result(result)
 
     def _pr_auto_merge(self, chat_id: ConversationId, values: list[str]) -> str:
@@ -5828,14 +5867,267 @@ class EnochApplication:
             "request starts with --merge=auto."
         )
 
-    def _after_requested_merge(self) -> None:
+    def _after_requested_merge(self, landed: LandedReview | None = None) -> None:
         """Hook point after a requested merge lands, including auto-merges.
 
         Runs for /pr merge, the pending-merge watcher, and merges registered by
         the PR auto-merge policy, which all count as requested merges.
+        ``landed`` is the review Enoch itself just landed; it is None when the
+        review was already merged by someone else.
         """
 
         self._reconcile_lineage_adoptions()
+        if landed is not None:
+            self._mark_update_pending(landed)
+
+    # Automatic update after a requested merge ------------------------------
+
+    def _mark_update_pending(self, landed: LandedReview) -> None:
+        """Mark an update pending for a review Enoch landed on its own repository.
+
+        Never raises: the merge already happened.
+        """
+
+        try:
+            if not auto_update_enabled(self.root):
+                return
+            if not self._lands_on_authoritative_branch(landed):
+                _record_system_event(
+                    "auto_update_skipped",
+                    self.root,
+                    details={"review": landed.url or landed.label, "reason": "not-authoritative-branch"},
+                )
+                return
+            state = mark_update_pending(
+                landed.label,
+                datetime.now().astimezone().isoformat(timespec="seconds"),
+                self.root,
+            )
+        except StaleDaemonEpoch:
+            raise
+        except Exception as error:  # noqa: BLE001 - the merge already happened
+            _record_system_event(
+                "auto_update_mark_failed",
+                self.root,
+                status="failed",
+                details={"review": landed.url or landed.label, "error": str(error)},
+            )
+            return
+        _record_system_event(
+            "auto_update_pending",
+            self.root,
+            details={"review": landed.url or landed.label, "pending": list(state.pending)},
+        )
+
+    def _lands_on_authoritative_branch(self, landed: LandedReview) -> bool:
+        """Whether ``landed`` went into the authoritative branch of this repository."""
+
+        repository, _number = parse_review_url(landed.url)
+        repository = repository or landed.repository
+        expected = self._authoritative_repository()
+        if not repository or not expected or repository.casefold() != expected.casefold():
+            return False
+        base = landed.base_branch.strip()
+        if not base:
+            return True
+        branch = self._authoritative_branch_name().strip()
+        return not branch or branch == base or branch.endswith(f"/{base}")
+
+    def _auto_update_pending(self) -> tuple[str, ...]:
+        """Reviews waiting for an automatic update; empty when none or when off."""
+
+        try:
+            if not auto_update_enabled(self.root):
+                return ()
+            return load_auto_update_state(self.root).pending
+        except Exception:  # noqa: BLE001 - unreadable state never blocks work
+            return ()
+
+    def _auto_update_waits_for_merges(self) -> bool:
+        """Whether another merge on this repository is still pending.
+
+        It lands soon (or stops), and one update then covers both merges.
+        """
+
+        try:
+            entries = self.pending_merges.entries()
+        except Exception:  # noqa: BLE001 - unknown means do not wait
+            return False
+        return any(
+            self._lands_on_authoritative_branch(
+                LandedReview(
+                    label=entry.label,
+                    url=entry.url,
+                    repository=entry.repository,
+                    base_branch=entry.base_branch,
+                )
+            )
+            for entry in entries
+        )
+
+    def _auto_update_holds_work(self) -> bool:
+        """New tasks wait while an automatic update is running or ready to run."""
+
+        if self._auto_update_running:
+            return True
+        return bool(self._auto_update_pending()) and not self._auto_update_waits_for_merges()
+
+    def _maybe_run_auto_update(self) -> None:
+        """Run a pending automatic update once no task is running. Never raises."""
+
+        try:
+            pending = self._auto_update_pending()
+            if not pending or self._auto_update_running:
+                return
+            # A restart is already coming; the next daemon picks the flag up.
+            if self.restarts.pending or self._auto_update_waits_for_merges():
+                return
+            with self._task_worker_lock:
+                if self._stopping:
+                    return
+                if self._task_worker is not None and self._task_worker.is_alive():
+                    return
+                if self.restarts.busy_tasks():
+                    return
+                self._auto_update_running = True
+            try:
+                self._run_auto_update(pending)
+            finally:
+                self._auto_update_running = False
+        except StaleDaemonEpoch:
+            raise
+        except Exception as error:  # noqa: BLE001 - polling must continue
+            try:
+                clear_update_pending(None, self.root)
+            except Exception:  # noqa: BLE001 - reported below
+                pass
+            _record_system_event(
+                "auto_update_failed",
+                self.root,
+                status="failed",
+                details={"error": str(error)},
+            )
+            self._send_auto_update_alert(update_failed_alert((), f"{error}."))
+
+    def _run_auto_update(self, pending: tuple[str, ...]) -> None:
+        """The /update flow for merged reviews: update, doctor, restart if it passed."""
+
+        _record_system_event(
+            "auto_update_started",
+            self.root,
+            details={"reviews": list(pending)},
+        )
+        result = self._perform_update()
+        if isinstance(result, str):
+            clear_update_pending(pending, self.root)
+            self._send_auto_update_alert(update_failed_alert(pending, result))
+            return
+        if result.doctor_failed_checks:
+            clear_update_pending(pending, self.root)
+            _record_system_event(
+                "auto_update_doctor_failed",
+                self.root,
+                status="failed",
+                details={"reviews": list(pending), "checks": list(result.doctor_failed_checks)},
+            )
+            self._send_auto_update_alert(
+                doctor_failed_alert(
+                    pending,
+                    result.doctor_failed_checks,
+                    result.previous_revision_id,
+                )
+            )
+            return
+        if not result.revision_id:
+            clear_update_pending(pending, self.root)
+            self._send_auto_update_alert(update_failed_alert(pending, result.message))
+            return
+        if not result.restart_required:
+            # Already at the authoritative revision: nothing to restart into.
+            clear_update_pending(pending, self.root)
+            _record_system_event(
+                "auto_update_current",
+                self.root,
+                details={"reviews": list(pending), "revision": result.revision_id},
+            )
+            return
+        clear_update_pending(pending, self.root, restarted_into=result.revision_id)
+        _record_system_event(
+            "auto_update_restarting",
+            self.root,
+            details={"reviews": list(pending), "revision": result.revision_id},
+        )
+        # The shared deferred-restart path: never while a task is running.
+        if not self.restarts.defer("auto update"):
+            self.restarts.restart_now("auto update")
+
+    def _send_auto_update_alert(self, message: str) -> None:
+        chat_id = _allowed_conversation_id(self.client)
+        if chat_id is None:
+            return
+        error = self._safe_send_message(chat_id, message)
+        if error:
+            _record_system_event(
+                "auto_update_notification_failed",
+                self.root,
+                status="failed",
+                details={"error": error, "message": message},
+            )
+
+    def _with_auto_update_note(self, message: str) -> str:
+        """Name the new revision in the startup message after an automatic restart."""
+
+        try:
+            state = load_auto_update_state(self.root)
+        except Exception:  # noqa: BLE001 - the startup message must still go out
+            return message
+        if not state.restarted_into:
+            return message
+        lines = message.split("\n")
+        note = auto_restart_note(state.restarted_into, state.restarted_for)
+        return "\n".join([lines[0], note, *lines[1:]])
+
+    def _clear_auto_update_note(self) -> None:
+        try:
+            take_restart_note(self.root)
+        except Exception:  # noqa: BLE001 - never block startup
+            pass
+
+    def _update_auto(self, chat_id: ConversationId, values: list[str]) -> str:
+        command = f"{self.command_prefix}update auto"
+        if not values:
+            return (
+                f"Auto-update after merge: {auto_update_status(self.root)}. "
+                f"Change it with {command} on|off."
+            )
+        if len(values) != 1 or values[0].lower() not in {"on", "off"}:
+            return f"Use {command} on|off, or {command} to show the setting."
+        allowed_chat_id = _allowed_conversation_id(self.client)
+        if allowed_chat_id is None or allowed_chat_id != chat_id:
+            return (
+                f"{self.display_name} will only change auto-update from her locked "
+                f"{provider_label(self.channel_name)} conversation."
+            )
+        try:
+            enabled = save_auto_update(values[0].lower() == "on", self.root)
+            if not enabled:
+                clear_update_pending(None, self.root)
+        except (OSError, StateCorruptionError, ValueError) as error:
+            return f"{self.display_name} could not save auto-update: {error}"
+        _record_system_event(
+            "auto_update_changed",
+            self.root,
+            details={"enabled": enabled},
+        )
+        if enabled:
+            return (
+                "Auto-update is on. After I land a PR into this repository because you "
+                f"asked, I run {self.command_prefix}update once no task is running and "
+                "restart only if doctor passes."
+            )
+        return (
+            f"Auto-update is off. Run {self.command_prefix}update yourself after a merge."
+        )
 
     # Land before next ------------------------------------------------------
 
@@ -6005,10 +6297,16 @@ class EnochApplication:
             return f"{self.display_name} could not merge {label} automatically: {error}"
         except (OSError, StateCorruptionError) as error:
             return f"{self.display_name} could not record the merge of {label}: {error}"
-        self._after_requested_merge()
+        self._after_requested_merge(_landed_review(current))
         return f"Auto-merge: {_format_review_land_result(result)}"
 
-    def _update(self) -> str:
+    def _perform_update(self) -> UpdateResult | str:
+        """Update from the authoritative repository and run doctor; no restart.
+
+        Shared by /update and the automatic update after a merge. Returns a
+        refusal message instead of a result when the update may not run.
+        """
+
         if not self._action_allowed():
             return self._action_lock_message()
         try:
@@ -6030,6 +6328,17 @@ class EnochApplication:
                 result.direct_action_result,
                 self.root,
             )
+        return result
+
+    def _update(self) -> str:
+        result = self._perform_update()
+        if isinstance(result, str):
+            return result
+        # A manual update covers merges waiting for an automatic one.
+        try:
+            clear_update_pending(None, self.root)
+        except (OSError, StateCorruptionError):
+            pass
         if result.restart_required:
             waiting_for = self.restarts.defer("update")
             if waiting_for:
@@ -6489,6 +6798,22 @@ def _repository_from_remote_url(url: str) -> str:
     if path.endswith(".git"):
         path = path[: -len(".git")]
     return path if "/" in path else ""
+
+
+def _landed_review(record: ReviewRecord) -> LandedReview:
+    """What auto-update needs to know about a review Enoch just landed."""
+
+    metadata = record.identity.metadata
+    number = metadata.get("number")
+    url = record.identity.url
+    _repository, parsed_number = parse_review_url(url)
+    label = f"#{number or parsed_number}" if (number or parsed_number) else (url or record.identity.id)
+    return LandedReview(
+        label=label,
+        url=url,
+        repository=str(metadata.get("repository") or "").strip(),
+        base_branch=str(metadata.get("base_branch") or "").strip(),
+    )
 
 
 def _review_identity(reference: str) -> ReviewIdentity:

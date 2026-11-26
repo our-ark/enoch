@@ -103,6 +103,35 @@ def format_pr_auto_merge(enabled: bool) -> str:
     return "on" if enabled else "off"
 
 
+AUTO_UPDATE_SECTION = "update"
+AUTO_UPDATE_KEY = "auto"
+
+
+def auto_update_enabled(root: Path | None = None) -> bool:
+    """Whether a merge Enoch lands on request is followed by /update (default on).
+
+    Only the explicit stored value ``off`` disables it; a missing setting means
+    on. An unreadable setting also means off, so a damaged config never
+    restarts the daemon by itself.
+    """
+
+    try:
+        raw = read_section(AUTO_UPDATE_SECTION, root).get(AUTO_UPDATE_KEY, "")
+    except (OSError, ValueError):
+        return False
+    return str(raw).strip().lower() != "off"
+
+
+def save_auto_update(enabled: bool, root: Path | None = None) -> bool:
+    write_section_value(
+        AUTO_UPDATE_SECTION,
+        AUTO_UPDATE_KEY,
+        "on" if enabled else "off",
+        root,
+    )
+    return auto_update_enabled(root)
+
+
 def format_task_timeout(seconds: int) -> str:
     if seconds % (60 * 60) == 0:
         return f"{seconds // (60 * 60)}h"

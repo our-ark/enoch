@@ -27,6 +27,8 @@ class UpdateResult:
     previous_revision_id: str = ""
     revision_id: str = ""
     authoritative_name: str = ""
+    # Names of the doctor checks that failed; the update was rolled back.
+    doctor_failed_checks: tuple[str, ...] = ()
 
 
 UPDATE_DOCTOR_TIMEOUT_SECONDS = 300
@@ -115,8 +117,11 @@ def update_from_authoritative(
             rollback = f"Rolled back to {previous_head[:7]}."
         except RepositoryProviderError as error:
             rollback = f"Rollback failed: {error}"
-        return _message(
-            "\n\n".join(
+        failed_checks = tuple(
+            check.name for check in doctor.checks if not check.passed and not check.skipped
+        )
+        return UpdateResult(
+            message="\n\n".join(
                 [
                     f"{application_name} updated to latest {authoritative_name}, "
                     "but doctor failed. I am not restarting.",
@@ -125,7 +130,11 @@ def update_from_authoritative(
                     f"The currently running {application_name} process is still "
                     "the pre-update code.",
                 ]
-            )
+            ),
+            direct_action_result="",
+            previous_revision_id=previous_head,
+            authoritative_name=authoritative.name,
+            doctor_failed_checks=failed_checks or ("doctor",),
         )
 
     formatted_doctor = format_doctor_result(doctor)

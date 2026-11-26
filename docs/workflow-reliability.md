@@ -95,6 +95,30 @@ as the task queue is idle. Queued tasks wait for the restarted daemon. A bare
 idle) or `/restart force` (restart now); `/restart cancel` drops a waiting
 restart. Automatic updates use the same deferral.
 
+### Automatic update after a merge
+
+When Enoch lands a review into the authoritative branch of its own repository
+because the human asked for it (`/pr merge`, a natural-language merge, a
+pending merge that the watcher lands later, including one whose CI Enoch fixed,
+or the PR auto-merge policy), it marks an update pending in private state
+(`auto_update.json`). Merges into other repositories or other branches, and
+reviews that someone else had already merged, are ignored.
+
+The daemon loop runs the `/update` flow once no task is running and no direct
+worker is alive: update from the authoritative repository, run doctor, and
+restart through the same restart coordinator only when doctor passed. While the
+update is pending, new tasks wait for it. While another merge on the repository
+is still pending, the update waits for it as well, without holding the queue,
+so CI fix tasks can still run. All merges that land before the update runs
+share it. The flag survives restarts and is cleared when the update completes,
+whatever the outcome. A manual `/update` clears it too.
+
+If doctor fails, the update is rolled back, the daemon keeps running the
+current code, and one alert names the failing check. Any other update failure
+also sends one alert. After a successful restart, the startup message names the
+new revision. `/update auto on|off` turns this off or back on (default on);
+`/config` shows the setting.
+
 When a restart still interrupts a task (crash, manual kill, or
 `/restart force`), the task is paused with trigger `daemon-restart` instead of
 being cancelled or failed, and the restarted daemon resumes it automatically

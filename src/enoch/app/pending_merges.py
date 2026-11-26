@@ -318,7 +318,8 @@ class PendingMergeController:
         run_authorized: Callable[..., Any],
         notify: Callable[[ConversationId, str, str], None],
         record_event: Callable[..., None],
-        after_land: Callable[[], None] = lambda: None,
+        # Runs after the watcher lands ``entry``, e.g. to mark an update pending.
+        after_land: Callable[["PendingMerge"], None] = lambda _entry: None,
         queue_fix: Callable[[ConversationId, str, str], int] | None = None,
         task_status: Callable[[int], str | None] = lambda _task_id: None,
         now: Callable[[], datetime] | None = None,
@@ -886,7 +887,7 @@ class PendingMergeController:
             root=self.root,
         )
         try:
-            self._after_land()
+            self._after_land(entry)
         except StaleDaemonEpoch:
             raise
         except Exception as error:  # noqa: BLE001 - the merge already happened
