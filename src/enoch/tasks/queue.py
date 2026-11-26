@@ -1683,7 +1683,7 @@ def prepare_extension_recovery(
         held = _replace_job(
             running, status="paused", pause_trigger=RECOVERY_HOLD_TRIGGER,
             failure_code="extension_recovery_hold", failure_class="needs_attention",
-            context=(running.context + "\n\nInterrupted task result:\n" + running.result
+            context=((running.context + "\n\nInterrupted task result:\n" + running.result).strip()
                      if running.result else running.context),
             result="Recovery decision pending. Operator retry or cancel is required if recovery is interrupted.",
         )

@@ -27,8 +27,8 @@ class ExtensionRecoveryTests(unittest.TestCase):
                             extension_metadata={owner: {"artifact": "local-report"}}, max_attempts=max_attempts)
         return self.engine.start_next()
 
-    def configure(self, hook):
-        self.engine.configure_extension_recovery({"research": hook}, timeout_seconds=0.05)
+    def configure(self, hook, *, timeout=1.0):
+        self.engine.configure_extension_recovery({"research": hook}, timeout_seconds=timeout)
 
     def test_requeue_note_and_attempt_limit(self):
         job = self.running(max_attempts=2)
@@ -121,7 +121,7 @@ class ExtensionRecoveryTests(unittest.TestCase):
             finished.set()
             return ExtensionRecoveryDecision("requeue")
 
-        self.configure(slow)
+        self.configure(slow, timeout=0.05)
         self.engine.reconcile()
         self.assertTrue(self.engine.find(job.id).needs_attention)
         release.set()

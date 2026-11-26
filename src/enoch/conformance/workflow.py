@@ -57,7 +57,10 @@ class WorkflowEngineConformanceMixin:
                         )
                     return ExtensionRecoveryDecision(action, "inspect existing artifact")
 
-                engine.configure_extension_recovery({"conformance": recovery}, timeout_seconds=0.02)
+                engine.configure_extension_recovery(
+                    {"conformance": recovery},
+                    timeout_seconds=0.02 if action == "timeout" else 1.0,
+                )
                 job = engine.enqueue(42, "recover extension task", context_source="extension:conformance")
                 engine.start_next()
                 try:
