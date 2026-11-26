@@ -5,6 +5,7 @@ the queue is idle. A task that a restart still interrupts is paused, resumed
 automatically after the restart, and told that it was interrupted.
 """
 
+import json
 from pathlib import Path
 import sys
 from tempfile import TemporaryDirectory
@@ -18,11 +19,13 @@ sys.path.insert(0, str(ROOT / "libraries" / "provider-kit" / "src"))
 
 from enoch.app import restarts
 from enoch.app.core import EnochApplication, TaskContextSnapshot
+from enoch.app.epoch import StaleDaemonEpoch, begin_daemon_epoch
 from enoch.app.restarts import RestartCoordinator, runtime_killed_by_signal
 from enoch.identity import load_identity
 from enoch.operations.updater import UpdateResult
 from enoch.providers import AgentRuntimeCancelled, AgentRuntimeError, ChatEvent
 from enoch.runtime_access import resume_state_path
+from enoch.state import StateCorruptionError
 from enoch.tasks.events import load_task_events
 from enoch.tasks.queue import (
     DAEMON_RESTART_PAUSE_TRIGGER,
@@ -249,17 +252,17 @@ class UpdateDefersRestartTests(_AppTestCase):
 
 
 class RestartCommandTests(_AppTestCase):
-    def test_restart_with_running_task_warns_and_offers_to_wait(self) -> None:
+    def test_restart_with_running_task_defaults_to_wait(self) -> None:
         self.queue("work")
         self.start_running()
 
         reply = self.send("/restart")
 
-        self.assertIn("did not restart: task #1 is still running", reply)
-        self.assertIn("/restart wait", reply)
-        self.assertIn("/restart force", reply)
+        self.assertEqual(reply, "Enoch will restart after task #1 finishes.")
         self.schedule_restart.assert_not_called()
-        self.assertFalse(self.app.restarts.pending)
+        self.assertTrue(self.app.restarts.deferred)
+        self.maybe_start()
+        self.assertIsNone(self.app._task_worker)
 
     def test_restart_wait_defers_until_idle(self) -> None:
         self.queue("work")
@@ -307,6 +310,108 @@ class RestartCommandTests(_AppTestCase):
         reply = self.send("/restart sometime")
 
         self.assertIn("/restart wait", reply)
+        self.schedule_restart.assert_not_called()
+
+
+class DurableRestartApplicationTests(_AppTestCase):
+    def request(self):
+        return json.loads(restarts.restart_state_path(self.root).read_text())["current"]
+
+    def test_status_shows_reason_and_current_blockers_then_cancellation(self) -> None:
+        self.queue("work")
+        running = self.start_running()
+        worker = MagicMock()
+        worker.is_alive.return_value = True
+        self.app._direct_workers[7] = worker
+        self.send("/update")
+
+        status = self.send("/status")
+        self.assertIn("Restart: pending (update)", status)
+        self.assertIn("Waiting for: tasks #1 and #7", status)
+        complete_task(running.id, self.root, "done")
+        self.assertIn("Waiting for: task #7", self.send("/status"))
+        self.send("/restart cancel")
+        self.assertIn("Restart: none pending", self.send("/status"))
+        self.assertIsNone(self.request())
+
+    def test_status_shows_scheduled_restart(self) -> None:
+        self.send("/restart")
+        self.assertIn("Restart: scheduled", self.send("/status"))
+        self.assertEqual(self.request()["phase"], "scheduled")
+
+    def test_new_direct_work_is_not_started_during_restart(self) -> None:
+        self.send("/restart")
+        with patch.object(self.app, "_run_direct_work_with_status") as run:
+            reply = self.send("/do new work")
+        self.assertIn("waiting to restart", reply)
+        self.assertIn("/task <request>", reply)
+        run.assert_not_called()
+
+    def test_crash_during_drain_releases_hold_and_resumes_queue(self) -> None:
+        self.queue("interrupted", "next")
+        self.start_running()
+        self.send("/restart")
+        self.assertEqual(self.request()["phase"], "waiting")
+        previous_epoch = self.request()["epoch_token"]
+
+        self.app = self.new_app()
+
+        self.assertNotEqual(previous_epoch, self.app.daemon_epoch.token)
+        self.assertIsNone(self.request())
+        self.assertFalse(self.app.restarts.pending)
+        self.schedule_restart.assert_not_called()
+        started = []
+
+        def run_work(_chat, request, **_kwargs):
+            started.append(request)
+            return "done"
+
+        with patch.object(self.app, "_run_direct_work", side_effect=run_work):
+            self.app._run_task_worker()
+        self.assertEqual(started, ["interrupted", "next"])
+        self.assertEqual(len(task_queue_status(self.root).history), 2)
+
+    def test_successful_drained_restart_runs_pending_tasks_after_startup(self) -> None:
+        self.queue("first", "next")
+        running = self.start_running()
+        self.send("/update")
+        complete_task(running.id, self.root, "done")
+        self.maybe_start()
+        self.assertEqual(self.request()["phase"], "scheduled")
+        self.assertEqual([job.id for job in task_queue_status(self.root).pending], [2])
+
+        self.app = self.new_app()
+        self.assertIsNone(self.request())
+        with patch.object(self.app, "_run_direct_work", return_value="done") as run:
+            self.app._run_task_worker()
+        self.assertEqual(run.call_args.args[1], "next")
+        self.schedule_restart.assert_called_once()
+
+    def test_failed_startup_preserves_request_for_next_successful_startup(self) -> None:
+        self.queue("work")
+        self.start_running()
+        self.send("/restart")
+        saved = self.request()
+        with patch.object(
+            EnochApplication, "_run_profile_hook", side_effect=RuntimeError("startup failed")
+        ):
+            with self.assertRaisesRegex(RuntimeError, "startup failed"):
+                self.new_app()
+        self.assertEqual(self.request(), saved)
+        self.app = self.new_app()
+        self.assertIsNone(self.request())
+        self.assertFalse(self.app.restarts.pending)
+
+    def test_cancel_releases_queue_without_restart(self) -> None:
+        self.queue("work", "next")
+        running = self.start_running()
+        self.send("/restart")
+        self.send("/restart cancel")
+        complete_task(running.id, self.root, "done")
+        with patch.object(self.app, "_run_direct_work", return_value="done") as run:
+            self.app._run_task_worker()
+        self.assertEqual(run.call_args.args[1], "next")
+        self.assertIsNone(self.request())
         self.schedule_restart.assert_not_called()
 
 
@@ -511,6 +616,145 @@ class RetryCancelledTaskTests(_AppTestCase):
 
         with self.assertRaisesRegex(TaskRetryError, "not a failed task"):
             retry_failed_task(queued.id, self.root)
+
+
+class DurableRestartCoordinatorTests(unittest.TestCase):
+    def setUp(self) -> None:
+        directory = TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name)
+        self.epoch = begin_daemon_epoch(self.root)
+        self.busy = (3,)
+        self.schedule = MagicMock()
+        self.events = MagicMock()
+        self.coordinator = self.new_coordinator()
+
+    def new_coordinator(self):
+        return RestartCoordinator(
+            root=self.root, epoch=self.epoch,
+            busy_tasks=lambda: self.busy, schedule=self.schedule, record_event=self.events,
+        )
+
+    def request(self):
+        return json.loads(restarts.restart_state_path(self.root).read_text())["current"]
+
+    def test_reconstruction_preserves_request_within_same_epoch(self) -> None:
+        self.coordinator.defer("update")
+        saved = self.request()
+        restored = self.new_coordinator()
+        restored.complete_startup()
+        self.assertTrue(restored.deferred)
+        self.assertTrue(restored.restart_if_idle())
+        self.assertEqual(self.request(), saved)
+        self.assertEqual(saved["epoch_token"], self.epoch.token)
+        self.assertTrue(saved["requested_at"])
+        self.schedule.assert_not_called()
+
+    def test_new_epoch_clears_old_drain_only_after_successful_startup(self) -> None:
+        self.coordinator.defer("update")
+        self.epoch = begin_daemon_epoch(self.root)
+        restored = self.new_coordinator()
+        self.assertTrue(restored.pending)
+        self.assertIsNotNone(self.request())
+        restored.complete_startup()
+        restored.complete_startup()
+        self.assertFalse(restored.pending)
+        self.assertIsNone(self.request())
+        self.assertEqual(
+            [call.args[0] for call in self.events.call_args_list],
+            ["restart_deferred", "restart_completed"],
+        )
+        self.schedule.assert_not_called()
+
+    def test_cancel_is_durable(self) -> None:
+        self.coordinator.defer("restart")
+        self.assertTrue(self.coordinator.cancel())
+        self.assertFalse(self.new_coordinator().pending)
+        self.assertIsNone(self.request())
+
+    def test_cancel_winning_idle_check_does_not_resurrect_restart(self) -> None:
+        self.coordinator.defer("restart")
+
+        def finish_and_cancel():
+            self.coordinator.cancel()
+            return ()
+
+        with patch.object(self.coordinator, "busy_tasks", side_effect=finish_and_cancel):
+            self.assertFalse(self.coordinator.restart_if_idle())
+        self.assertIsNone(self.request())
+        self.schedule.assert_not_called()
+
+    def test_schedule_is_persisted_before_service_call_and_cleared_after_restart(self) -> None:
+        self.schedule.side_effect = lambda: self.assertEqual(self.request()["phase"], "scheduled")
+        self.coordinator.restart_now("force")
+        self.assertFalse(self.new_coordinator().restart_now("duplicate"))
+        self.epoch = begin_daemon_epoch(self.root)
+        restored = self.new_coordinator()
+        restored.complete_startup()
+        self.assertIsNone(self.request())
+        self.assertFalse(restored.restart_if_idle())
+        self.schedule.assert_called_once()
+
+    def test_schedule_failure_keeps_durable_wait_for_retry(self) -> None:
+        self.coordinator.defer("update")
+        self.busy = ()
+        self.schedule.side_effect = OSError("service unavailable")
+        self.assertTrue(self.coordinator.restart_if_idle())
+        self.assertEqual(self.request()["phase"], "waiting")
+        restored = self.new_coordinator()
+        self.assertTrue(restored.deferred)
+        self.schedule.side_effect = None
+        self.assertTrue(restored.restart_if_idle())
+        self.assertEqual(self.request()["phase"], "scheduled")
+
+    def test_failed_persistence_does_not_schedule_or_create_memory_only_hold(self) -> None:
+        with patch.object(restarts, "atomic_write", side_effect=OSError("disk full")):
+            with self.assertRaisesRegex(OSError, "disk full"):
+                self.coordinator.defer("update")
+            with self.assertRaisesRegex(OSError, "disk full"):
+                self.coordinator.restart_now("force")
+        self.assertFalse(self.coordinator.pending)
+        self.schedule.assert_not_called()
+
+    def test_stale_daemon_cannot_clear_new_daemon_request(self) -> None:
+        self.coordinator.defer("update")
+        self.epoch = begin_daemon_epoch(self.root)
+        replacement = self.new_coordinator()
+        replacement.complete_startup()
+        replacement.defer("restart")
+        saved = self.request()
+        with self.assertRaises(StaleDaemonEpoch):
+            self.coordinator.cancel()
+        self.assertEqual(self.request(), saved)
+
+    def test_stale_daemon_cannot_schedule_drain(self) -> None:
+        self.coordinator.defer("update")
+        self.epoch = begin_daemon_epoch(self.root)
+        self.busy = ()
+        with self.assertRaises(StaleDaemonEpoch):
+            self.coordinator.restart_if_idle()
+        self.schedule.assert_not_called()
+
+    def test_epoch_change_between_persistence_and_service_call_is_fenced(self) -> None:
+        save = self.coordinator._set_request
+
+        def save_then_replace(request):
+            save(request)
+            begin_daemon_epoch(self.root)
+
+        with patch.object(self.coordinator, "_set_request", side_effect=save_then_replace):
+            with self.assertRaises(StaleDaemonEpoch):
+                self.coordinator.restart_now("restart")
+        self.schedule.assert_not_called()
+
+    def test_invalid_state_is_not_silently_discarded(self) -> None:
+        path = restarts.restart_state_path(self.root)
+        for raw in ('{"schema_version": 2}', '{"current": {"phase": "waiting"}}', 'not json'):
+            with self.subTest(raw=raw):
+                path.write_text(raw)
+                with self.assertRaises(StateCorruptionError):
+                    self.new_coordinator()
+                self.assertEqual(path.read_text(), raw)
 
 
 class RestartCoordinatorTests(unittest.TestCase):

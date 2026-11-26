@@ -351,7 +351,6 @@ from enoch.app.restarts import (
     deferred_update_message,
     forced_restart_message,
     interrupted_resume_context,
-    restart_busy_message,
     restart_exhausted_message,
     restart_pause_message,
     restart_resumed_notice,
@@ -691,6 +690,8 @@ class EnochApplication:
         # True while an automatic update runs; new work waits for it.
         self._auto_update_running = False
         self.restarts = RestartCoordinator(
+            root=self.root,
+            epoch=self.daemon_epoch,
             busy_tasks=self._restart_blocking_tasks,
             schedule=lambda: _schedule_daemon_restart(self.root),
             record_event=lambda event, **kwargs: _record_system_event(
@@ -782,6 +783,7 @@ class EnochApplication:
         self.notifications.recover(exclude_key_prefixes=(QUOTA_NOTIFICATION_PREFIX,))
         self._run_profile_hook("on_initialize")
         self._run_extension_hooks("on_initialize")
+        self.restarts.complete_startup()
 
     def _provider_for_authorization(self, kind: str) -> object:
         if kind == "chat":
@@ -2109,6 +2111,11 @@ class EnochApplication:
         if not self._action_allowed():
             return self._action_lock_message()
         queue_status = self.workflow.inspect()
+        if self.restarts.pending:
+            return (
+                f"{self.display_name} is waiting to restart. "
+                f"Use {self.command_prefix}task <request> to queue work for after the restart."
+            )
         if queue_status.paused_count:
             return (
                 f"{self.display_name} has tasks paused for agent runtime access; they resume "
@@ -3177,6 +3184,7 @@ class EnochApplication:
                     self.root,
                     task_status=self.workflow.inspect(),
                 ),
+                self.restarts.status_message(),
             ]
         )
 
@@ -6385,15 +6393,8 @@ class EnochApplication:
                 return f"{self.display_name} will not restart after the running task."
             return f"{self.display_name} has no restart waiting for a task."
         busy = self.restarts.busy_tasks()
-        if busy and mode == "ask":
-            # Warn and offer to wait rather than kill the task silently.
-            return restart_busy_message(
-                self.display_name,
-                busy,
-                command_prefix=self.command_prefix,
-            )
         if busy and mode == "wait":
-            waiting_for = self.restarts.defer("/restart wait")
+            waiting_for = self.restarts.defer("restart")
             if waiting_for:
                 return deferred_restart_message(self.display_name, waiting_for)
         self._restart_after_reply = True

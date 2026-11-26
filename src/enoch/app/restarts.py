@@ -15,10 +15,17 @@ that can lose a task halfway through. This module keeps that from happening:
 """
 from __future__ import annotations
 
+from dataclasses import asdict, dataclass, replace
+import json
+from pathlib import Path
 import re
 import threading
 from typing import Callable, Sequence
 
+from enoch.app.epoch import DaemonEpoch, StaleDaemonEpoch, daemon_epoch_guard
+from enoch.memory.paths import now as current_time
+from enoch.paths import private_state_path
+from enoch.state import StateCorruptionError, atomic_write, file_transaction, load_json_object
 from enoch.tasks.queue import TaskJob
 
 
@@ -37,7 +44,7 @@ _SIGNAL_EXIT = re.compile(
 )
 
 RESTART_MODES = {
-    "": "ask",
+    "": "wait",
     "wait": "wait",
     "force": "force",
     "now": "force",
@@ -93,26 +100,6 @@ def deferred_restart_message(display_name: str, task_ids: Sequence[int]) -> str:
     )
 
 
-def restart_busy_message(
-    display_name: str,
-    task_ids: Sequence[int],
-    *,
-    command_prefix: str = "/",
-) -> str:
-    tasks = format_task_ids(task_ids)
-    verb = "is" if len(task_ids) == 1 else "are"
-    return "\n".join(
-        [
-            f"{display_name} did not restart: {tasks} {verb} still running.",
-            f"{command_prefix}restart wait - restart as soon as {tasks} {_finishes(task_ids)}.",
-            (
-                f"{command_prefix}restart force - restart now; {tasks} "
-                "pauses and resumes automatically after the restart."
-            ),
-        ]
-    )
-
-
 def forced_restart_message(display_name: str, task_ids: Sequence[int]) -> str:
     return "\n".join(
         [
@@ -129,7 +116,7 @@ def restart_usage(prefix: str = "/") -> str:
     return "\n".join(
         [
             "Restart commands:",
-            f"{prefix}restart - restart now when no task is running; otherwise ask first",
+            f"{prefix}restart - restart now when idle; otherwise wait for running work",
             f"{prefix}restart wait - restart as soon as the running task finishes",
             (
                 f"{prefix}restart force - restart now; a running task pauses and "
@@ -196,6 +183,35 @@ def interrupted_resume_context(job: TaskJob) -> str:
     )
 
 
+@dataclass(frozen=True)
+class RestartRequest:
+    reason: str
+    phase: str
+    epoch_token: str
+    requested_at: str
+
+
+def restart_state_path(root: Path | None = None) -> Path:
+    return private_state_path("restart.json", root)
+
+
+def _load_request(path: Path) -> RestartRequest | None:
+    data = load_json_object(path)
+    if data.get("schema_version", 1) != 1:
+        raise StateCorruptionError(path, "unsupported restart schema version")
+    request = data.get("current")
+    if request is None:
+        return None
+    fields = ("reason", "phase", "epoch_token", "requested_at")
+    if (
+        not isinstance(request, dict)
+        or any(not isinstance(request.get(key), str) or not request[key].strip() for key in fields)
+        or request["phase"] not in {"waiting", "scheduled"}
+    ):
+        raise StateCorruptionError(path, "invalid restart request")
+    return RestartRequest(**{key: request[key] for key in fields})
+
+
 class RestartCoordinator:
     """Single path for daemon restarts: never while a task is running.
 
@@ -210,25 +226,78 @@ class RestartCoordinator:
         busy_tasks: Callable[[], tuple[int, ...]],
         schedule: Callable[[], None],
         record_event: Callable[..., None],
+        root: Path | None = None,
+        epoch: DaemonEpoch | None = None,
     ) -> None:
+        if root is not None and epoch is None:
+            raise ValueError("Persistent restart coordination requires a daemon epoch.")
         self._busy_tasks = busy_tasks
         self._schedule = schedule
         self._record_event = record_event
         self._lock = threading.Lock()
-        self._deferred_reason = ""
-        self._scheduled = False
+        self._root = root
+        self._epoch = epoch
+        self._request: RestartRequest | None = None
+        if epoch is not None:
+            with daemon_epoch_guard(epoch, root), file_transaction(restart_state_path(root)):
+                self._request = _load_request(restart_state_path(root))
+
+    def _set_request(self, request: RestartRequest | None) -> None:
+        # Persist before changing admission or invoking the service manager.
+        if self._epoch is not None:
+            path = restart_state_path(self._root)
+            with daemon_epoch_guard(self._epoch, self._root), file_transaction(path):
+                atomic_write(path, json.dumps({
+                    "schema_version": 1,
+                    "current": asdict(request) if request is not None else None,
+                }, indent=2, sort_keys=True) + "\n")
+        self._request = request
+
+    def complete_startup(self) -> None:
+        """A successfully initialized new daemon satisfies the old restart request.
+
+        This includes a crash during drain: the replacement already loaded the
+        code on disk. Holding its recovered tasks would cause a restart loop.
+        Reconstructing a coordinator within the same epoch does not clear it.
+        """
+
+        with self._lock:
+            request = self._request
+            if request is None or self._epoch is None or request.epoch_token == self._epoch.token:
+                return
+            self._set_request(None)
+        self._record_event("restart_completed", details={
+            "reason": request.reason,
+            "previous_phase": request.phase,
+            "requested_at": request.requested_at,
+        })
 
     @property
     def deferred(self) -> bool:
         with self._lock:
-            return bool(self._deferred_reason) and not self._scheduled
+            return self._request is not None and self._request.phase == "waiting"
 
     @property
     def pending(self) -> bool:
         """True while a restart is deferred or already scheduled; hold new work."""
 
         with self._lock:
-            return bool(self._deferred_reason) or self._scheduled
+            return self._request is not None
+
+    def status_message(self) -> str:
+        with self._lock:
+            request = self._request
+        if request is None:
+            return "Restart: none pending."
+        if request.phase == "scheduled":
+            return f"Restart: scheduled ({request.reason}); waiting for the daemon to restart."
+        blockers = self.busy_tasks()
+        waiting_for = format_task_ids(blockers) if blockers else "restart scheduling"
+        return (
+            f"Restart: pending ({request.reason}).\n"
+            f"Waiting for: {waiting_for}.\n"
+            "New tasks will start after the restart."
+        )
 
     def busy_tasks(self) -> tuple[int, ...]:
         return tuple(self._busy_tasks())
@@ -240,9 +309,14 @@ class RestartCoordinator:
         if not blockers:
             return ()
         with self._lock:
-            first = not self._deferred_reason and not self._scheduled
-            if not self._scheduled and not self._deferred_reason:
-                self._deferred_reason = reason
+            first = self._request is None
+            if first:
+                self._set_request(RestartRequest(
+                    reason=reason,
+                    phase="waiting",
+                    epoch_token=self._epoch.token if self._epoch is not None else "",
+                    requested_at=current_time(),
+                ))
         if first:
             self._record_event(
                 "restart_deferred",
@@ -253,16 +327,33 @@ class RestartCoordinator:
     def restart_now(self, reason: str) -> bool:
         """Schedule the restart immediately; False when one is already scheduled."""
 
+        return self._schedule_restart(reason)
+
+    def _schedule_restart(self, reason: str, *, expected: RestartRequest | None = None) -> bool:
         with self._lock:
-            if self._scheduled:
+            # Cancellation may win while restart_if_idle checks the workers.
+            if expected is not None and self._request is not expected:
                 return False
-            self._scheduled = True
-            self._deferred_reason = ""
+            if self._request is not None and self._request.phase == "scheduled":
+                return False
+            previous = self._request
+            self._set_request(
+                replace(previous, phase="scheduled") if previous is not None else RestartRequest(
+                    reason=reason,
+                    phase="scheduled",
+                    epoch_token=self._epoch.token if self._epoch is not None else "",
+                    requested_at=current_time(),
+                )
+            )
         try:
-            self._schedule()
+            if self._epoch is None:
+                self._schedule()
+            else:
+                with daemon_epoch_guard(self._epoch, self._root):
+                    self._schedule()
         except BaseException:
             with self._lock:
-                self._scheduled = False
+                self._set_request(previous)
             raise
         self._record_event("restart_scheduled", details={"reason": reason})
         return True
@@ -271,33 +362,32 @@ class RestartCoordinator:
         """Start a deferred restart once idle. Return True while new work must wait."""
 
         with self._lock:
-            if self._scheduled:
+            request = self._request
+            if request is not None and request.phase == "scheduled":
                 return True
-            reason = self._deferred_reason
-        if not reason:
+        if request is None:
             return False
         if self.busy_tasks():
             return True
         try:
-            self.restart_now(reason)
+            self._schedule_restart(request.reason, expected=request)
+        except StaleDaemonEpoch:
+            raise
         except Exception as error:  # noqa: BLE001 - the next poll retries
-            with self._lock:
-                if not self._scheduled and not self._deferred_reason:
-                    self._deferred_reason = reason
             self._record_event(
                 "restart_failed",
                 status="failed",
-                details={"reason": reason, "error": str(error)},
+                details={"reason": request.reason, "error": str(error)},
             )
-        return True
+        return self.pending
 
     def cancel(self) -> bool:
         """Drop a deferred restart. False when none is waiting."""
 
         with self._lock:
-            if not self._deferred_reason or self._scheduled:
+            if self._request is None or self._request.phase == "scheduled":
                 return False
-            reason = self._deferred_reason
-            self._deferred_reason = ""
+            reason = self._request.reason
+            self._set_request(None)
         self._record_event("restart_deferral_cancelled", details={"reason": reason})
         return True

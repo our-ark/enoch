@@ -32,6 +32,18 @@ from tests.test_enoch_agent_identity import _identity
 
 
 class EnochPrivateStateTests(unittest.TestCase):
+    def test_restart_intent_is_registered_private_state(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / ".enoch" / "restart.json"
+            path.parent.mkdir()
+            path.write_text(json.dumps({"schema_version": 1, "current": None}))
+            plan = plan_private_state(root)
+            self.assertTrue(plan.valid)
+            self.assertEqual(plan.files_checked, 1)
+            path.write_text(json.dumps({"schema_version": 2, "current": None}))
+            self.assertFalse(plan_private_state(root).valid)
+
     def test_portable_self_is_registered_and_schema_validated(self) -> None:
         with TemporaryDirectory() as directory:
             root = Path(directory)
