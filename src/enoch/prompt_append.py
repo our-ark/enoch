@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 import re
+import shlex
 
 
 EDIT_REQUEST_START = "[ENOCH_EDIT_REQUEST]"
@@ -92,11 +93,17 @@ def conversation_turn_prompt(message: str, *, command_prefix: str = "/") -> str:
     ])
 
 
-def work_request_prompt(request: str, *, remote_review: bool = True) -> str:
+def work_request_prompt(
+    request: str,
+    *,
+    remote_review: bool = True,
+    test_python: str | None = None,
+) -> str:
     return _with_blocks(
         f"Proceed with this work request:\n{request.strip()}",
         [
             _work_request_wrapper_block(remote_review=remote_review),
+            _test_environment_block(test_python),
             _state_freshness_block(),
             _memory_request_block(),
             _task_regression_block(),
@@ -258,6 +265,45 @@ def _work_request_wrapper_block(*, remote_review: bool) -> str:
             ]
         )
     lines.append("Keep changes scoped to the request.")
+    return "\n".join(lines)
+
+
+def _test_environment_block(test_python: str | None) -> str:
+    lines = ["Python test environment:"]
+    if test_python:
+        python = shlex.quote(test_python)
+        lines.extend(
+            [
+                (
+                    f"Enoch maintains a persistent test environment whose interpreter is {python}. "
+                    "It has the repository's locked build and test requirements, including pytest "
+                    "and setuptools, plus the local libraries/* packages in editable mode; "
+                    "Doctor keeps it current."
+                ),
+                (
+                    "Run tests with it from the task worktree root, for example "
+                    f"`{python} -m pytest -q` or `{python} -m unittest discover -s tests -t .`."
+                ),
+                (
+                    "Do not create, install into, or delete virtualenvs for testing, and do not "
+                    "pip install into this shared environment. If a needed package is missing, "
+                    "report it instead."
+                ),
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                (
+                    "Enoch's persistent test environment is not ready for this checkout yet; "
+                    "Doctor creates or repairs it when it validates this task."
+                ),
+                (
+                    "Until then, run `-m unittest discover -s tests -t .` with a supported Python "
+                    "from the task worktree root instead of building a temporary virtualenv."
+                ),
+            ]
+        )
     return "\n".join(lines)
 
 

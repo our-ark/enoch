@@ -175,7 +175,7 @@ from enoch.providers.forge import (
 )
 from enoch.identity import Identity, identity_file_path, load_identity
 from enoch.instance import instance_branch
-from enoch.immune import ImmuneResult, run_immune_system
+from enoch.immune import ImmuneResult, discover_test_environment, run_immune_system
 from enoch.learn import (
     LearnError,
     learning_assessment_prompt,
@@ -714,6 +714,9 @@ class EnochApplication:
                 run_immune_system=lambda *args, **kwargs: run_immune_system(
                     *args,
                     **kwargs,
+                ),
+                discover_test_environment=lambda *args, **kwargs: (
+                    discover_test_environment(*args, **kwargs)
                 ),
                 prepare_existing_revision_workspace=lambda *args, **kwargs: (
                     prepare_existing_revision_workspace(*args, **kwargs)

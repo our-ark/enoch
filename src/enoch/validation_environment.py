@@ -15,8 +15,10 @@ from enoch.paths import repo_root
 from enoch.state import atomic_write, file_transaction
 
 
-VALIDATION_ENVIRONMENT_SCHEMA_VERSION = 2
+VALIDATION_ENVIRONMENT_SCHEMA_VERSION = 3
 VALIDATION_REQUIREMENTS = Path(".github/requirements/test-build.txt")
+VALIDATION_TEST_REQUIREMENTS = Path(".github/requirements/test-tools.txt")
+LOCAL_LIBRARIES_DIRECTORY = Path("libraries")
 VALIDATION_ENVIRONMENTS_DIRECTORY = "validation"
 VALIDATION_ENVIRONMENT_HOME = "ENOCH_VALIDATION_ENVIRONMENT_HOME"
 PROVISION_TIMEOUT_SECONDS = 180
@@ -36,6 +38,26 @@ class ValidationEnvironment:
 
 
 @dataclass(frozen=True)
+class ValidationEnvironmentStatus:
+    """Whether the managed environment matches the checkout's current inputs.
+
+    ``state`` is ``ready`` when the environment for the current fingerprint is
+    complete, ``stale`` when an environment exists but no longer matches the
+    requirement and pyproject files, and ``missing`` otherwise.
+    """
+
+    state: str
+    target: Path
+    fingerprint: str
+    environment: ValidationEnvironment | None = None
+    detail: str = ""
+
+    @property
+    def ready(self) -> bool:
+        return self.state == "ready" and self.environment is not None
+
+
+@dataclass(frozen=True)
 class _EnvironmentSpec:
     root: Path
     parent: Path
@@ -46,33 +68,88 @@ class _EnvironmentSpec:
     requirements_file: Path | None
     requirements: tuple[str, ...]
     requirements_digest: str
+    test_requirements_file: Path | None
+    inputs_digest: str
+    editable_sources: tuple[Path, ...]
 
 
 def existing_validation_environment(
     root: Path,
     *,
     base_python: str,
+    source_root: Path | None = None,
 ) -> ValidationEnvironment | None:
     spec = _environment_spec(
         root,
         base_python=base_python,
+        source_root=source_root,
     )
     if not _environment_is_complete(spec):
         return None
     return _environment_result(spec, created=False)
 
 
+def validation_environment_status(
+    root: Path,
+    *,
+    base_python: str,
+    source_root: Path | None = None,
+) -> ValidationEnvironmentStatus:
+    """Inspect the managed environment without running any subprocess."""
+
+    spec = _environment_spec(
+        root,
+        base_python=base_python,
+        source_root=source_root,
+    )
+    if _environment_is_complete(spec):
+        return ValidationEnvironmentStatus(
+            state="ready",
+            target=spec.target,
+            fingerprint=spec.fingerprint,
+            environment=_environment_result(spec, created=False),
+        )
+    if spec.target.exists():
+        return ValidationEnvironmentStatus(
+            state="stale",
+            target=spec.target,
+            fingerprint=spec.fingerprint,
+            detail="the environment is incomplete or its editable libraries moved",
+        )
+    if _has_superseded_environment(spec):
+        return ValidationEnvironmentStatus(
+            state="stale",
+            target=spec.target,
+            fingerprint=spec.fingerprint,
+            detail="requirement or pyproject files changed since it was built",
+        )
+    return ValidationEnvironmentStatus(
+        state="missing",
+        target=spec.target,
+        fingerprint=spec.fingerprint,
+        detail="no environment has been built for this Python yet",
+    )
+
+
 def ensure_validation_environment(
     root: Path,
     *,
     base_python: str,
+    source_root: Path | None = None,
 ) -> ValidationEnvironment:
-    """Create or repair the content-addressed environment used by Doctor tests."""
+    """Create or repair the content-addressed environment used by Doctor tests.
+
+    The environment holds the locked build and test requirements plus the
+    local ``libraries/*`` packages in editable mode. Editable installs point
+    at ``source_root`` (the resident checkout) so that every task worktree can
+    share one environment; tests still import their own checkout first.
+    """
 
     try:
         spec = _environment_spec(
             root,
             base_python=base_python,
+            source_root=source_root,
         )
         spec.parent.mkdir(parents=True, exist_ok=True)
         with file_transaction(spec.parent / ".provision"):
@@ -105,10 +182,21 @@ def _environment_spec(
     root: Path,
     *,
     base_python: str,
+    source_root: Path | None = None,
 ) -> _EnvironmentSpec:
     root_path = repo_root(root)
+    source_path = repo_root(source_root) if source_root is not None else root_path
     requirements_file, requirements, requirements_digest = _build_requirements(
         root_path
+    )
+    test_requirements_file = _test_requirements_file(root_path)
+    editable_sources = _local_library_sources(source_path)
+    inputs_digest = _inputs_digest(
+        root_path,
+        source_path,
+        requirements_file=requirements_file,
+        test_requirements_file=test_requirements_file,
+        editable_sources=editable_sources,
     )
     backend = _build_backend(root_path)
     resolved_python = _resolved_executable(base_python)
@@ -120,6 +208,7 @@ def _environment_spec(
                 "backend": backend,
                 "requirements": requirements,
                 "requirements_digest": requirements_digest,
+                "inputs_digest": inputs_digest,
             },
             sort_keys=True,
         ).encode("utf-8")
@@ -135,7 +224,67 @@ def _environment_spec(
         requirements_file=requirements_file,
         requirements=requirements,
         requirements_digest=requirements_digest,
+        test_requirements_file=test_requirements_file,
+        inputs_digest=inputs_digest,
+        editable_sources=editable_sources,
     )
+
+
+def _test_requirements_file(root: Path) -> Path | None:
+    path = root / VALIDATION_TEST_REQUIREMENTS
+    return path if path.is_file() else None
+
+
+def _local_library_sources(root: Path) -> tuple[Path, ...]:
+    libraries = root / LOCAL_LIBRARIES_DIRECTORY
+    try:
+        candidates = sorted(libraries.iterdir()) if libraries.is_dir() else []
+    except OSError:
+        return ()
+    return tuple(
+        candidate
+        for candidate in candidates
+        if candidate.is_dir() and (candidate / "pyproject.toml").is_file()
+    )
+
+
+def _inputs_digest(
+    root: Path,
+    source_root: Path,
+    *,
+    requirements_file: Path | None,
+    test_requirements_file: Path | None,
+    editable_sources: tuple[Path, ...],
+) -> str:
+    """Hash the requirement and pyproject files that define the environment.
+
+    Paths are recorded relative to their checkout so that every worktree of
+    the same revision maps to the same environment.
+    """
+
+    inputs: list[tuple[str, Path]] = [("pyproject.toml", root / "pyproject.toml")]
+    if requirements_file is not None:
+        inputs.append((VALIDATION_REQUIREMENTS.as_posix(), requirements_file))
+    if test_requirements_file is not None:
+        inputs.append((VALIDATION_TEST_REQUIREMENTS.as_posix(), test_requirements_file))
+    inputs.extend(
+        (
+            (LOCAL_LIBRARIES_DIRECTORY / source.name / "pyproject.toml").as_posix(),
+            source / "pyproject.toml",
+        )
+        for source in editable_sources
+    )
+    digest = hashlib.sha256()
+    for name, path in inputs:
+        try:
+            content = path.read_bytes()
+        except OSError as error:
+            raise ValidationEnvironmentError(
+                f"Could not read validation environment input {name}: {error}"
+            ) from error
+        digest.update(name.encode("utf-8") + b"\0")
+        digest.update(hashlib.sha256(content).digest())
+    return digest.hexdigest()
 
 
 def _environment_parent() -> Path:
@@ -261,7 +410,7 @@ def _create_environment(spec: _EnvironmentSpec, temporary: Path) -> None:
     python = _venv_python(temporary)
     cache = spec.parent / "wheel-cache"
     cache.mkdir(parents=True, exist_ok=True)
-    command = [
+    pip = [
         str(python),
         "-m",
         "pip",
@@ -271,6 +420,7 @@ def _create_environment(spec: _EnvironmentSpec, temporary: Path) -> None:
         "--cache-dir",
         str(cache),
     ]
+    command = list(pip)
     if spec.requirements_file is not None:
         command.extend(
             [
@@ -292,6 +442,45 @@ def _create_environment(spec: _EnvironmentSpec, temporary: Path) -> None:
             "Could not install Enoch's validation prerequisites: "
             + _command_error(installation)
         )
+    if spec.test_requirements_file is not None:
+        tools = _run(
+            [
+                *pip,
+                "--require-hashes",
+                "-r",
+                str(spec.test_requirements_file),
+            ],
+            root=spec.root,
+            environment=environment,
+            timeout=PROVISION_TIMEOUT_SECONDS,
+        )
+        if tools.returncode != 0:
+            raise ValidationEnvironmentError(
+                "Could not install Enoch's locked test requirements: "
+                + _command_error(tools)
+            )
+    if spec.editable_sources:
+        # The locked build backend is already installed, so local libraries
+        # are built in place without network access or build isolation.
+        editable_command = [
+            *pip,
+            "--no-index",
+            "--no-deps",
+            "--no-build-isolation",
+        ]
+        for source in spec.editable_sources:
+            editable_command.extend(["--editable", str(source)])
+        editable = _run(
+            editable_command,
+            root=spec.root,
+            environment=environment,
+            timeout=PROVISION_TIMEOUT_SECONDS,
+        )
+        if editable.returncode != 0:
+            raise ValidationEnvironmentError(
+                "Could not install local libraries in editable mode: "
+                + _command_error(editable)
+            )
     if not _backend_is_available(
         python,
         spec.backend,
@@ -312,6 +501,8 @@ def _create_environment(spec: _EnvironmentSpec, temporary: Path) -> None:
                 "python": spec.base_python,
                 "backend": spec.backend,
                 "requirements_digest": spec.requirements_digest,
+                "inputs_digest": spec.inputs_digest,
+                "editable_sources": [str(source) for source in spec.editable_sources],
                 "created_at": datetime.now(timezone.utc).isoformat(),
             },
             indent=2,
@@ -371,12 +562,41 @@ def _environment_is_complete(spec: _EnvironmentSpec) -> bool:
         payload = json.loads(marker.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return False
-    return (
+    if not (
         isinstance(payload, dict)
         and payload.get("schema") == VALIDATION_ENVIRONMENT_SCHEMA_VERSION
         and payload.get("fingerprint") == spec.fingerprint
         and payload.get("requirements_digest") == spec.requirements_digest
+        and payload.get("inputs_digest") == spec.inputs_digest
+    ):
+        return False
+    # Editable installs break when the checkout they point at disappears.
+    sources = payload.get("editable_sources", [])
+    return isinstance(sources, list) and all(
+        isinstance(source, str) and (Path(source) / "pyproject.toml").is_file()
+        for source in sources
     )
+
+
+def _has_superseded_environment(spec: _EnvironmentSpec) -> bool:
+    """Return whether an older build exists for the same base Python."""
+
+    try:
+        siblings = list(spec.parent.iterdir()) if spec.parent.is_dir() else []
+    except OSError:
+        return False
+    for sibling in siblings:
+        if sibling == spec.target or sibling.name.startswith("."):
+            continue
+        try:
+            payload = json.loads(
+                (sibling / ".complete.json").read_text(encoding="utf-8")
+            )
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            continue
+        if isinstance(payload, dict) and payload.get("python") == spec.base_python:
+            return True
+    return False
 
 
 def _environment_result(
