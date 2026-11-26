@@ -359,6 +359,14 @@ under `.enoch/channels/<provider>/`. Providers translate native events into
 `ChatEvent`; core command and task code does not parse provider-specific
 payloads.
 
+When a message replies to an earlier chat message, providers that know the
+replied-to message's id set `ChatEvent.replied_message_id` (Telegram does;
+Slack leaves it `None`). Enoch maps that id to a task when it is the task's
+start line, legacy status block or final result message, and tells the
+conversation which task and review the reply points at. A reply to the pinned
+task board, or to any other message, maps to nothing. The mapping is data, not
+authorization: a merge still needs the human to ask for it.
+
 Providers that support attachments implement the optional
 `AttachmentProvider` contract. They expose native files as provider-neutral
 `Attachment` values and materialize them only when Enoch asks:

@@ -71,6 +71,50 @@ class TelegramLibraryTests(ProviderContractConformanceMixin, unittest.TestCase):
         self.assertEqual(event.attachments[0].file_id, "large")
         self.assertEqual(event.attachments[0].metadata["width"], 640)
 
+    def test_event_carries_the_replied_message_id(self) -> None:
+        event = telegram_event(
+            {
+                "update_id": 8,
+                "message": {
+                    "message_id": 5,
+                    "chat": {"id": 42},
+                    "text": "retry it",
+                    "reply_to_message": {
+                        "message_id": 3,
+                        "chat": {"id": 42},
+                        "text": "▶️ #12 started: Fix the bug",
+                    },
+                },
+            }
+        )
+
+        assert event is not None
+        self.assertEqual(event.replied_message_id, 3)
+        self.assertEqual(event.replied_text, "▶️ #12 started: Fix the bug")
+
+    def test_event_without_a_reply_has_no_replied_message_id(self) -> None:
+        plain = telegram_event(
+            {
+                "update_id": 8,
+                "message": {"message_id": 5, "chat": {"id": 42}, "text": "hi"},
+            }
+        )
+        malformed = telegram_event(
+            {
+                "update_id": 9,
+                "message": {
+                    "message_id": 6,
+                    "chat": {"id": 42},
+                    "text": "hi",
+                    "reply_to_message": {"message_id": "3", "text": "x"},
+                },
+            }
+        )
+
+        assert plain is not None and malformed is not None
+        self.assertIsNone(plain.replied_message_id)
+        self.assertIsNone(malformed.replied_message_id)
+
     def test_ignores_unsupported_attachment_without_text(self) -> None:
         event = telegram_event(
             {
