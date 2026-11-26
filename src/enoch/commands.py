@@ -10,6 +10,7 @@ from enoch.brain import (
     REASONING_EFFORTS,
     model_summary,
 )
+from enoch.app.restarts import restart_usage
 from enoch.command_surface import lineage_usage
 from enoch.config import write_section_value
 from enoch.agent_identity import AgentIdentityError, load_active_agent_identity
@@ -885,17 +886,39 @@ def pr_usage(prefix: str = "/") -> str:
     return "\n".join(
         [
             "Review commands:",
-            f"{prefix}pr - list open reviews and pending merges in the current repository",
+            f"{prefix}pr - list open reviews, pending merges and reviews whose CI is watched",
             f"{prefix}pr show <review id or URL> - inspect one review",
-            f"{prefix}pr merge <review id or URL> - land exactly that review, now or when it is ready",
+            f"{prefix}pr merge <review id or URL> - land exactly that review end to end, now or when it is ready",
             f"{prefix}pr cancel <review id or URL> - stop waiting to merge that review",
             "A specific review target is required. Natural-language requests resolve it from the conversation and inspect its current state before acting.",
             (
                 "If the review is not ready yet (behind its base branch, CI running, or blocked), "
                 "merge waits and lands it automatically when it is ready, updating the branch "
-                "from its base when needed. It stops without merging if new commits are pushed "
-                "after the request, CI fails, conflicts appear, or it is still not ready after "
-                "2 hours. Conflicted, draft and closed reviews are refused right away."
+                "from its base when needed. You hear back when it lands or when it needs you."
+            ),
+            (
+                "Red CI only counts on a head that already contains the base tip: a head left "
+                "behind by a base that just moved is updated first, and the merge waits for CI "
+                "on the new head."
+            ),
+            (
+                "If CI fails, infrastructure failures are re-run once; otherwise a fix task is "
+                "started at the front of the queue to fix it on the review's own branch, up to "
+                "2 attempts. Commits pushed by those fix tasks are covered by your merge "
+                "request and listed in the final merged message; commits from anyone else "
+                "cancel the merge. If the failure also happens on the base branch, the fix "
+                "goes to a separate review and the merge stops for you."
+            ),
+            (
+                "Waiting stops after 2 hours (not counting time spent fixing CI, at most 6 "
+                "hours overall), or after 3 failed branch updates in a row, with the reason. "
+                "Conflicts are never resolved automatically: conflicted, draft "
+                "and closed reviews are refused right away, or stop the pending merge."
+            ),
+            (
+                "Reviews that tasks publish are watched too: you get one line when CI passes, "
+                "and red CI gets one re-run or one fix task. They are never merged without a "
+                "request."
             ),
         ]
     )
@@ -964,7 +987,7 @@ def _task_usage(prefix: str) -> str:
             f"{command} <request> - queue background work for Enoch",
             f"{command} cancel <id> - cancel a queued background task",
             f"{command} resume <id|all> - continue paused tasks with the same ids",
-            f"{command} retry <id> - retry a failed task as a new linked task",
+            f"{command} retry <id> - retry a failed or cancelled task as a new linked task",
             (
                 f"{command} show <id> - show a task's status, full request, reviews, "
                 "failure, and the context snapshot given to the worker"
@@ -1187,7 +1210,7 @@ CORE_COMMANDS = (
         "update",
         "System",
         "",
-        "update from the authoritative repository, run doctor, and restart if safe",
+        "update from the authoritative repository, run doctor, and restart once no task is running",
     ),
     CoreCommand(
         "restart",
@@ -1195,6 +1218,7 @@ CORE_COMMANDS = (
         "System",
         "",
         "restart Enoch's chat daemon from the locked conversation",
+        restart_usage,
     ),
 )
 
