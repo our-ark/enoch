@@ -48,6 +48,9 @@ def _task_status_message(
         lines.append(f"- running: #{status.running.id} {_clip_activity_text(status.running.text, limit=80)}")
     lines.append(f"- queued: {status.pending_count}")
     lines.append(f"- paused: {status.paused_count}")
+    held = [job for job in status.paused if job.needs_attention]
+    if held:
+        lines.append("- needs operator attention (retry or cancel): " + ", ".join(f"#{job.id}" for job in held))
     lines.append(f"- backlog: {backlog.pending_count}")
     lines.append(f"- cron: {cron.active_count} active, {cron.paused_count} paused")
     return "\n".join(lines)
@@ -94,7 +97,8 @@ def _format_tasks_report(
 
 
 def _format_task_list_item(job: TaskJob) -> str:
-    item = f"#{job.id} [{job.status}] {_clip_activity_text(job.text, limit=120)}"
+    label = "needs attention; retry or cancel" if job.needs_attention else job.status
+    item = f"#{job.id} [{label}] {_clip_activity_text(job.text, limit=120)}"
     details = []
     if job.parent_task_id is not None:
         details.append(f"retry of #{job.parent_task_id}")

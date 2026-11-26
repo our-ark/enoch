@@ -138,6 +138,8 @@ from enoch.vcs_tools import (
     switch_branch,
 )
 from enoch.workflows import (
+    WORKFLOW_FEATURE_EXTENSION_RECOVERY,
+    workflow_features,
     FinalTaskStatus,
     LocalWorkflowEngine,
     TaskReconciliationRequest,
@@ -673,9 +675,20 @@ class EnochApplication:
         self.workflow = validate_workflow_engine(
             workflow or LocalWorkflowEngine(root, epoch=self.daemon_epoch)
         )
+        recovery_hooks = {
+            extension.name: extension.lifecycle.on_task_recovery
+            for extension in self.extensions
+            if extension.lifecycle.on_task_recovery is not None
+        }
+        if recovery_hooks:
+            configure = getattr(self.workflow, "configure_extension_recovery", None)
+            if not callable(configure) or WORKFLOW_FEATURE_EXTENSION_RECOVERY not in workflow_features(self.workflow):
+                raise ValueError("Selected workflow engine does not support extension recovery.")
+            configure(recovery_hooks)
         self.runtime_access = RuntimeAccessResumer(
             root,
-            paused_tasks=lambda: self.workflow.inspect().paused,
+            paused_tasks=lambda: tuple(job for job in self.workflow.inspect().paused
+                                      if not job.needs_attention),
             quota=lambda: self._runtime_quota_snapshot(),
             probe=lambda: self._probe_runtime_access(),
             resume=lambda: self._auto_resume_paused_tasks(),
@@ -937,6 +950,7 @@ class EnochApplication:
         if result.outcome not in {
             "terminal_repair",
             "interrupted_worker_recovery",
+            "extension_recovery",
         } or result.task_id is None:
             return None
         return self.workflow.find(result.task_id)
@@ -2111,6 +2125,8 @@ class EnochApplication:
         if not self._action_allowed():
             return self._action_lock_message()
         queue_status = self.workflow.inspect()
+        if any(job.needs_attention for job in queue_status.paused):
+            return self._recovery_hold_message(queue_status.paused)
         if self.restarts.pending:
             return (
                 f"{self.display_name} is waiting to restart. "
@@ -2265,7 +2281,10 @@ class EnochApplication:
         trigger: str,
         session_key: str,
     ) -> str:
-        if self.workflow.inspect().paused_count:
+        paused_status = self.workflow.inspect()
+        if any(job.needs_attention for job in paused_status.paused):
+            return self._recovery_hold_message(paused_status.paused)
+        if paused_status.paused_count:
             return (
                 f"{self.display_name} has tasks paused for agent runtime access; they resume "
                 "automatically when access returns. To continue sooner, use "
@@ -3438,7 +3457,9 @@ class EnochApplication:
             return _format_compact_task_queued(job.id, retry_of=task_id)
         position = self.workflow.inspect().pending_count
         retry_kind = (
-            "unpublished task"
+            "held task"
+            if original is not None and original.needs_attention
+            else "unpublished task"
             if original is not None and original.status == "completed"
             else "cancelled task"
             if original is not None and original.status == "cancelled"
@@ -3561,12 +3582,25 @@ class EnochApplication:
                         f"Use {self.command_prefix}task retry {task_id} to create a new "
                         "linked task while preserving its failure history."
                     )
+                if job is not None and job.needs_attention:
+                    return (f"Task #{task_id} needs operator attention. Use "
+                            f"{self.command_prefix}task retry {task_id} or "
+                            f"{self.command_prefix}task cancel {task_id}.")
                 return f"Task #{task_id} is not paused."
+            paused = self.workflow.inspect().paused
+            if any(job.needs_attention for job in paused):
+                return self._recovery_hold_message(paused)
             return "No tasks are paused for agent runtime access."
         self._continue_resumed_tasks(resumed)
         task_ids = ", ".join(f"#{job.id}" for job in resumed)
         noun = "task" if len(resumed) == 1 else "tasks"
         return f"Resumed {len(resumed)} {noun}: {task_ids}."
+
+    def _recovery_hold_message(self, jobs: tuple[TaskJob, ...]) -> str:
+        ids = ", ".join(f"#{job.id}" for job in jobs if job.needs_attention)
+        return (f"Tasks {ids} need operator attention after interrupted work. "
+                f"Use {self.command_prefix}task retry <id> or {self.command_prefix}task cancel <id>; "
+                "runtime access recovery will not resume them.")
 
     def _continue_resumed_tasks(
         self,

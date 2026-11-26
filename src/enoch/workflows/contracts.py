@@ -13,18 +13,29 @@ from enoch.tasks.queue import (
     TaskTerminalEvidence,
 )
 from enoch.tasks.payloads import ExtensionArtifactReference, JsonValue
+from enoch.tasks.recovery import ExtensionRecoveryHook
 
 
 WORKFLOW_API_VERSION = 4
 WORKFLOW_FEATURE_STRUCTURED_METADATA = "structured_task_metadata"
 WORKFLOW_FEATURE_ARTIFACT_REFERENCES = "artifact_references"
 WORKFLOW_FEATURE_EXECUTION_LANES = "execution_lanes"
+WORKFLOW_FEATURE_EXTENSION_RECOVERY = "extension_recovery"
 EnqueueMode = Literal["queued", "front", "direct"]
 FinalTaskStatus = Literal["completed", "failed", "cancelled"]
 
 
 class WorkflowEngineError(RuntimeError):
     pass
+
+
+@runtime_checkable
+class ExtensionRecoveryWorkflow(Protocol):
+    """Optional workflow feature, independent of the base engine API version."""
+
+    def configure_extension_recovery(
+        self, hooks: dict[str, ExtensionRecoveryHook], *, timeout_seconds: float = 5.0,
+    ) -> None: ...
 
 
 @runtime_checkable

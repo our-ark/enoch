@@ -5,6 +5,8 @@ from pathlib import Path
 import re
 from typing import Callable, Literal
 
+from enoch.tasks.recovery import ExtensionRecoveryHook
+
 from enoch.identity import Identity
 from enoch.providers.contracts import (
     AgentRuntime,
@@ -724,6 +726,7 @@ class ExtensionLifecycleHooks:
     after_run: ExtensionLifecycleHook | None = None
     on_shutdown: ExtensionLifecycleHook | None = None
     on_peer_event: ExtensionPeerEventHook | None = None
+    on_task_recovery: ExtensionRecoveryHook | None = None
 
 
 @dataclass(frozen=True)

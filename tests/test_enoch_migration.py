@@ -26,6 +26,7 @@ from enoch.migration import (
     verify_imported_migration,
 )
 from enoch.private_state import migrate_private_state
+from enoch.tasks.queue import SCHEMA_VERSION as TASK_QUEUE_SCHEMA_VERSION
 from tests.test_enoch_agent_identity import _identity
 
 
@@ -339,7 +340,7 @@ def _seed_source(root: Path, *, authority_generation: int = 0) -> None:
     (state / "task_queue.json").write_text(
         json.dumps(
             {
-                "schema_version": 15,
+                "schema_version": TASK_QUEUE_SCHEMA_VERSION,
                 "next_id": 43,
                 "pending": [
                     {
