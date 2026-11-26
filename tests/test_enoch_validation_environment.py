@@ -373,6 +373,13 @@ class EnochPersistentTestEnvironmentTests(unittest.TestCase):
         venvs = [command for command in commands if command[1:3] == ["-m", "venv"]]
         self.assertEqual(len(venvs), 2)
 
+    # The lock lives under .github/, which is repository tooling outside the
+    # inheritable body (genesis.toml body_paths); descendants run without it
+    # and the managed environment treats it as optional.
+    @unittest.skipUnless(
+        (ROOT / ".github").is_dir(),
+        "repository test-tool locks are outside the inheritable agent body",
+    )
     def test_repository_test_tools_lock_is_hashed_and_matches_runtime_pins(self) -> None:
         lock = (ROOT / VALIDATION_TEST_REQUIREMENTS).read_text(encoding="utf-8")
         pins = dict(re.findall(r"(?m)^([A-Za-z0-9_.-]+)==([^\s;\\]+)", lock))
