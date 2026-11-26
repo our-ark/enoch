@@ -19,7 +19,7 @@ validation = ["-m", "unittest", "discover", "-s", "tests", "-t", "."]
 
 [[runtime_dependencies]]
 name = "pypdf"
-requirement = "pypdf==6.18.1"
+requirement = "pypdf==6.21.4"
 import_name = "pypdf"
 
 [[runtime_dependencies]]
