@@ -105,15 +105,36 @@ class TelegramClient:
         conversation_id: ConversationId,
         text: str,
     ) -> MessageId | None:
+        return self._send_message(conversation_id, text, silent=False)
+
+    def send_silent_message(
+        self,
+        conversation_id: ConversationId,
+        text: str,
+    ) -> MessageId | None:
+        """Send without a notification sound (``disable_notification``)."""
+
+        return self._send_message(conversation_id, text, silent=True)
+
+    def _send_message(
+        self,
+        conversation_id: ConversationId,
+        text: str,
+        *,
+        silent: bool,
+    ) -> MessageId | None:
         first_message_id: int | None = None
         for chunk in telegram_message_chunks(text, MAX_TELEGRAM_MESSAGE):
+            payload: dict[str, Any] = {
+                "chat_id": conversation_id,
+                "text": chunk.html,
+                "parse_mode": "HTML",
+            }
+            if silent:
+                payload["disable_notification"] = "true"
             data = self._call_with_plain_fallback(
                 "sendMessage",
-                {
-                    "chat_id": conversation_id,
-                    "text": chunk.html,
-                    "parse_mode": "HTML",
-                },
+                payload,
                 plain_text=chunk.plain,
             )
             message_id = _message_id(data)
@@ -216,6 +237,21 @@ class TelegramClient:
                 "chat_id": conversation_id,
                 "message_id": message_id,
                 "disable_notification": "true",
+            },
+        )
+
+    def delete_message(
+        self,
+        conversation_id: ConversationId,
+        message_id: MessageId,
+    ) -> None:
+        """Delete one message; Telegram refuses some old messages."""
+
+        self._call(
+            "deleteMessage",
+            {
+                "chat_id": conversation_id,
+                "message_id": message_id,
             },
         )
 

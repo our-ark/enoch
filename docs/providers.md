@@ -386,6 +386,23 @@ def pin_message(self, conversation_id, message_id):
     ...
 ```
 
+The task board is posted again near the bottom of the chat once enough
+messages have pushed it up (by default, checked every hour, after more than
+10 messages; see `/board repost`). Two more optional contracts make that quiet.
+`SilentMessageProvider` sends a message without notifying the reader, and
+Enoch falls back to `send_message` without it. `MessageDeleteProvider` deletes
+a message Enoch sent, authorized with the `chat.delete` capability; without
+it, or when the platform refuses (for example for an old message), the
+retired board simply stays in the chat:
+
+```python
+def send_silent_message(self, conversation_id, text):
+    ...
+
+def delete_message(self, conversation_id, message_id):
+    ...
+```
+
 ### Capabilities and authorization
 
 Providers may explicitly declare their supported operations with the versioned
@@ -407,9 +424,9 @@ class SlackProvider:
 ```
 
 Core capability names are `chat.receive`, `chat.send`, `chat.edit`,
-`chat.ack`, `chat.attachment`, `chat.pin`, `runtime.respond`, `runtime.execute`,
-`vcs.read`, `vcs.write`, `forge.read`, `forge.publish`, `forge.maintain`,
-`forge.merge`, `service.read`, and `service.manage`.
+`chat.ack`, `chat.attachment`, `chat.pin`, `chat.delete`, `runtime.respond`,
+`runtime.execute`, `vcs.read`, `vcs.write`, `forge.read`, `forge.publish`,
+`forge.maintain`, `forge.merge`, `service.read`, and `service.manage`.
 
 The versioned semantic repository and review contracts add granular
 `vcs.inspect`, `vcs.resolve`, `vcs.ancestry`, `vcs.authoritative`,

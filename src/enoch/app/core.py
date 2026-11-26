@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from contextvars import ContextVar
 from dataclasses import replace
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import os
@@ -126,6 +126,7 @@ from enoch.app.epoch import (
 from enoch.app.effects import DaemonEffectFence
 from enoch.app.notifications import (
     NotificationDeliveryService,
+    NotificationRecord,
     NotificationResult,
 )
 from enoch.vcs_tools import (
@@ -255,6 +256,7 @@ from enoch.providers.contracts import (
     Cursor,
     ForgeProvider,
     ForgeProviderError,
+    MessageDeleteProvider,
     MessageId,
     MessagePinProvider,
     OutboundAttachment,
@@ -382,9 +384,15 @@ from enoch.commands import (
 )
 from enoch.tasks.config import (
     auto_update_enabled,
+    board_repost_settings,
+    format_board_repost,
     format_task_timeout,
+    parse_board_repost_interval,
+    parse_board_repost_threshold,
     pr_auto_merge_enabled,
+    reset_board_repost_settings,
     save_auto_update,
+    save_board_repost_settings,
     save_pr_auto_merge,
     task_timeout_seconds,
 )
@@ -473,10 +481,12 @@ from enoch.app.pending_merges import PendingMerge, PendingMergeController, parse
 from enoch.app.task_board import (
     RenderedTaskBoard,
     TaskBoardState,
+    count_task_board_message,
     load_task_board_state,
     render_quota_line,
     render_task_board,
     save_task_board_state,
+    update_task_board_state,
 )
 from enoch.app.reporting import (
     _evolve_check_reason,
@@ -660,6 +670,7 @@ class EnochApplication:
             root,
             self.daemon_epoch,
             self.authorization,
+            delivery_listener=self._count_delivered_task_board_message,
         )
         self.quota_warnings = QuotaWarningMonitor(
             root, channel=self.channel_name, display_name=self.display_name,
@@ -730,6 +741,9 @@ class EnochApplication:
         self._task_cancellations: dict[int, threading.Event] = {}
         self._stopping = False
         self._task_board_error = ""
+        # When the board re-post check last ran in this daemon (UTC).
+        self._task_board_repost_checked_at: datetime | None = None
+        self._task_board_repost_error = ""
         self.pending_merges = PendingMergeController(
             root,
             review=lambda: self.review,
@@ -918,6 +932,7 @@ class EnochApplication:
             self._maybe_start_task_worker()
             self._maybe_start_lineage_worker()
             self._refresh_task_board()
+            self._maybe_repost_task_board()
         finally:
             self._drain_extension_task_events()
             self._run_extension_hooks("after_run", reverse=True)
@@ -968,6 +983,10 @@ class EnochApplication:
         if receipt.completed:
             self._finish_chat_event(event, receipt)
             return
+        if peer_alias is None and receipt.attempts == 1:
+            # A new message from the human pushes the task board up the chat.
+            # Retried attempts of the same event are not counted again.
+            self._count_task_board_message(chat_id)
 
         event_token = _CURRENT_EVENT_KEY.set(receipt.key)
         thread_token = _CURRENT_THREAD_ID.set(event.thread_id)
@@ -2812,6 +2831,7 @@ class EnochApplication:
         notification_key: str = "",
         thread_id: MessageId | None = None,
         attachments: tuple[OutboundAttachment, ...] = (),
+        silent: bool = False,
     ) -> NotificationResult:
         key = notification_key or self._notification_key(
             "send",
@@ -2821,6 +2841,15 @@ class EnochApplication:
             attachments=attachments,
         )
         try:
+            if silent:
+                return self.notifications.send(
+                    chat_id,
+                    message,
+                    idempotency_key=key,
+                    thread_id=thread_id,
+                    attachments=attachments,
+                    silent=True,
+                )
             return self.notifications.send(
                 chat_id,
                 message,
@@ -3020,6 +3049,8 @@ class EnochApplication:
                 "Task board updates stopped. The last board stays in the chat as it is. "
                 f"Use {command} to post a fresh one."
             )
+        if choice.split(maxsplit=1)[:1] == ["repost"]:
+            return self._task_board_repost_command(choice.split()[1:])
         if choice:
             return _help_message("board", command_prefix=self.command_prefix)
 
@@ -3053,12 +3084,15 @@ class EnochApplication:
                 "Task board posted, but this chat provider did not return a message id, "
                 "so it cannot be kept up to date."
             )
+        # A fresh board starts with nothing below it.
         save_task_board_state(
             TaskBoardState(
                 enabled=True,
                 chat_id=chat_id,
                 message_id=message_id,
                 last_digest=rendered.digest,
+                messages_since_board=0,
+                last_reposted_at=_utc_now().isoformat(),
             ),
             self.root,
         )
@@ -3071,8 +3105,63 @@ class EnochApplication:
         ]
         if previous.message_id is not None and previous.message_id != message_id:
             lines.append("The previous board is no longer updated.")
+        repost = board_repost_settings(self.root)
+        if repost.enabled:
+            lines.append(
+                "It is posted again near the bottom of the chat when more than "
+                f"{repost.threshold} messages appear below it (checked every "
+                f"{format_task_timeout(repost.interval_seconds)}; {command} repost off "
+                "turns this off)."
+            )
         lines.append(f"Use {command} off to stop updates.")
         return "\n".join(lines)
+
+    def _task_board_repost_command(self, words: list[str]) -> str:
+        command = f"{self.command_prefix}board repost"
+        usage = (
+            f"Use {command} <interval> <count> (for example {command} 1h 10), "
+            f"{command} off, {command} on, or {command} default."
+        )
+        try:
+            if not words:
+                current = board_repost_settings(self.root)
+                return "\n".join(
+                    [f"Task board re-post: {format_board_repost(current)}.", usage]
+                )
+            if len(words) == 1 and words[0] in {"off", "stop", "disable"}:
+                save_board_repost_settings(enabled=False, root=self.root)
+                return (
+                    "Task board re-posting is off. The board stays where it is and is "
+                    f"still edited in place. Use {command} on to turn it back on."
+                )
+            if len(words) == 1 and words[0] in {"on", "enable"}:
+                settings = save_board_repost_settings(enabled=True, root=self.root)
+            elif len(words) == 1 and words[0] in {"default", "reset"}:
+                settings = reset_board_repost_settings(self.root)
+            elif len(words) == 2:
+                try:
+                    interval = parse_board_repost_interval(words[0])
+                    threshold = parse_board_repost_threshold(words[1])
+                except ValueError as error:
+                    return f"{error}\n{usage}"
+                settings = save_board_repost_settings(
+                    enabled=True,
+                    interval_seconds=interval,
+                    threshold=threshold,
+                    root=self.root,
+                )
+            else:
+                return usage
+        except (OSError, ValueError) as error:
+            return f"{self.display_name} could not save the task board re-post setting: {error}"
+        # Apply a new interval from now on rather than after the old one.
+        self._task_board_repost_checked_at = None
+        return (
+            f"Task board re-post: {format_board_repost(settings)}. "
+            f"{self.display_name} checks every {format_task_timeout(settings.interval_seconds)} "
+            f"and, when more than {settings.threshold} messages appeared after the board, "
+            "posts a fresh one silently and removes the old one where the chat allows it."
+        )
 
     def _pin_task_board(self, chat_id: ConversationId, message_id: MessageId) -> str:
         """Pin the board when the provider supports it; return a reply fragment."""
@@ -3139,13 +3228,19 @@ class EnochApplication:
                 f"task-board:{state.message_id}:{rendered.digest[:16]}:{uuid4().hex}"
             ),
         )
+        # Locked updates keyed to this message: the message counter may have
+        # moved on while the edit was in flight.
         if result.delivered:
-            save_task_board_state(replace(state, last_digest=rendered.digest), self.root)
+            update_task_board_state(
+                self.root, expected_message_id=state.message_id, last_digest=rendered.digest,
+            )
             self._task_board_error = ""
             return
         # The message may have been deleted or become uneditable. Stop here so
         # the board never retries every cycle or posts a replacement on its own.
-        save_task_board_state(replace(state, enabled=False), self.root)
+        update_task_board_state(
+            self.root, expected_message_id=state.message_id, enabled=False,
+        )
         _record_system_event(
             "task_board_stale",
             self.root,
@@ -3157,6 +3252,148 @@ class EnochApplication:
                 "error": result.error,
             },
         )
+
+    def _count_task_board_message(self, conversation_id: ConversationId | None) -> None:
+        """Count one chat message below the board; never raise into the caller."""
+
+        try:
+            count_task_board_message(conversation_id, self.root)
+        except Exception:
+            # Bookkeeping only: at worst the board is re-posted a little late.
+            pass
+
+    def _count_delivered_task_board_message(self, record: NotificationRecord) -> None:
+        # The board's own posts start a new count rather than adding to it.
+        if _is_task_board_notification(record.idempotency_key):
+            return
+        self._count_task_board_message(record.conversation_id)
+
+    def _maybe_repost_task_board(self, now: datetime | None = None) -> None:
+        """Re-post a board that drifted up the chat; never raise into run_once."""
+
+        try:
+            self._maybe_repost_task_board_once(now or _utc_now())
+        except StaleDaemonEpoch:
+            raise
+        except Exception as error:
+            message = f"{type(error).__name__}: {error}"
+            if message != self._task_board_repost_error:
+                # Log each distinct failure once instead of every check.
+                self._task_board_repost_error = message
+                _record_system_event(
+                    "task_board_repost_failed",
+                    self.root,
+                    status="failed",
+                    details={"error": message},
+                )
+
+    def _maybe_repost_task_board_once(self, now: datetime) -> None:
+        settings = board_repost_settings(self.root)
+        if not settings.enabled:
+            return
+        interval = timedelta(seconds=settings.interval_seconds)
+        last_check = self._task_board_repost_checked_at
+        if last_check is not None and now - last_check < interval:
+            return
+        state = load_task_board_state(self.root)
+        if last_check is None:
+            # After a restart, keep the cadence of the last board post.
+            posted = _parse_utc(state.last_reposted_at)
+            if posted is not None and timedelta(0) <= now - posted < interval:
+                return
+        self._task_board_repost_checked_at = now
+        if not state.active or state.messages_since_board <= settings.threshold:
+            return
+        self._repost_task_board(state, now)
+        self._task_board_repost_error = ""
+
+    def _repost_task_board(self, state: TaskBoardState, now: datetime) -> None:
+        """Post the board again below newer messages and retire the old one."""
+
+        assert state.chat_id is not None and state.message_id is not None
+        old_message_id = state.message_id
+        rendered = self._render_task_board()
+        delivery = self._deliver_message(
+            state.chat_id,
+            rendered.text,
+            notification_key=f"task-board-repost:{old_message_id}:{uuid4().hex}",
+            silent=True,
+        )
+        if not delivery.delivered:
+            # Keep editing the old board; the next check tries again.
+            raise ChatProviderError(f"could not post a fresh task board: {delivery.error}")
+        message_id = normalize_message_id(delivery.message_id)
+        if message_id is None:
+            raise ChatProviderError(
+                "the chat provider did not return an id for the fresh task board"
+            )
+        # Switch first, so a crash below never leaves the state pointing at a
+        # message that is about to be deleted.
+        switched = update_task_board_state(
+            self.root,
+            expected_message_id=old_message_id,
+            message_id=message_id,
+            chat_id=state.chat_id,
+            enabled=True,
+            last_digest=rendered.digest,
+            messages_since_board=0,
+            last_reposted_at=now.isoformat(),
+        )
+        if switched is None:
+            # /board posted or stopped the board meanwhile; this one is unused.
+            _record_system_event(
+                "task_board_repost_superseded",
+                self.root,
+                details={"chat_id": state.chat_id, "message_id": message_id},
+            )
+            return
+        self._task_board_error = ""
+        self._pin_task_board(state.chat_id, message_id)
+        deleted = self._delete_task_board_message(state.chat_id, old_message_id)
+        _record_system_event(
+            "task_board_reposted",
+            self.root,
+            details={
+                "provider": self.channel_name,
+                "chat_id": state.chat_id,
+                "old_message_id": old_message_id,
+                "message_id": message_id,
+                "messages_since_board": state.messages_since_board,
+                "old_board_deleted": deleted,
+            },
+        )
+
+    def _delete_task_board_message(
+        self, chat_id: ConversationId, message_id: MessageId,
+    ) -> bool:
+        """Delete a retired board where the provider can; never raise."""
+
+        if not isinstance(self.client, MessageDeleteProvider):
+            return False
+        try:
+            self.effect_fence.run_authorized(
+                "chat.delete",
+                ("chat.delete",),
+                self.client.delete_message,
+                chat_id,
+                message_id,
+            )
+        except (OSError, ChatProviderError, CapabilityAuthorizationError) as error:
+            # For example, the message is too old to delete. Each retired
+            # board is tried once, so this is logged once; it stays in place.
+            _record_system_event(
+                "task_board_delete_failed",
+                self.root,
+                status="failed",
+                details={
+                    "provider": self.channel_name,
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                    "error": str(error),
+                },
+            )
+            return False
+        return True
 
     def _safe_send_read_ack(self, chat_id: ConversationId, message_id: object) -> None:
         if not isinstance(message_id, (int, str)):
@@ -6646,6 +6883,26 @@ def _signal_reason(signum: int) -> str:
 
 def _find_lineage_adopt_candidate(candidate_id: str, root: Path):
     return find_parent_inbox_candidate(candidate_id, root)
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _parse_utc(value: str) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
+
+
+def _is_task_board_notification(key: str) -> bool:
+    """True for the keys /board and the re-post use to send a board message."""
+
+    return key.startswith("task-board") or ":task-board" in key
 
 
 def _allowed_conversation_id(client: object) -> ConversationId | None:

@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from enoch.app.epoch import DaemonEpoch, daemon_epoch_guard
 from enoch.memory.paths import now as current_time
@@ -19,6 +19,7 @@ from enoch.providers.contracts import (
     NotificationIntent,
     NotificationReceipt,
     OutboundAttachment,
+    SilentMessageProvider,
     normalize_conversation_id,
     normalize_message_id,
 )
@@ -60,6 +61,8 @@ class NotificationRecord:
     error: str = ""
     created_at: str = ""
     updated_at: str = ""
+    # Ask the provider to send without notifying the reader, where it can.
+    silent: bool = False
 
 
 @dataclass(frozen=True)
@@ -81,12 +84,16 @@ class NotificationDeliveryService:
         root: Path,
         epoch: DaemonEpoch,
         authorizer: CapabilityAuthorizer | None = None,
+        delivery_listener: Callable[[NotificationRecord], None] | None = None,
     ) -> None:
         self.provider = provider
         self.provider_name = provider_name.strip().lower() or "chat"
         self.root = root
         self.epoch = epoch
         self.authorizer = authorizer
+        # Called once for each send this service newly delivers (never for
+        # edits or for replays of an already delivered key). It must not raise.
+        self.delivery_listener = delivery_listener
 
     def send(
         self,
@@ -96,6 +103,7 @@ class NotificationDeliveryService:
         idempotency_key: str,
         thread_id: MessageId | None = None,
         attachments: tuple[OutboundAttachment, ...] = (),
+        silent: bool = False,
     ) -> NotificationResult:
         self._authorize(
             "notification.send",
@@ -110,7 +118,7 @@ class NotificationDeliveryService:
             attachments=attachments,
             daemon_epoch=self.epoch.token,
         )
-        return self._deliver(intent)
+        return self._deliver(intent, silent=silent)
 
     def edit(
         self,
@@ -162,7 +170,12 @@ class NotificationDeliveryService:
                 results.append(self._invoke_provider(intent, claimed))
             return tuple(results)
 
-    def _deliver(self, intent: NotificationIntent) -> NotificationResult:
+    def _deliver(
+        self,
+        intent: NotificationIntent,
+        *,
+        silent: bool = False,
+    ) -> NotificationResult:
         with daemon_epoch_guard(self.epoch, self.root):
             existing = notification_record(
                 self.provider_name,
@@ -174,9 +187,10 @@ class NotificationDeliveryService:
                     self.provider_name,
                     intent,
                     self.root,
+                    silent=silent,
                 )
             else:
-                mismatch = _intent_mismatch(existing, intent)
+                mismatch = _intent_mismatch(existing, intent, silent=silent)
                 if mismatch:
                     return NotificationResult(
                         delivered=False,
@@ -244,6 +258,7 @@ class NotificationDeliveryService:
                     receipt,
                     self.root,
                 )
+                self._delivered(completed)
                 return _result(completed)
             if receipt.status == "not_found":
                 if record.attempts >= MAX_DELIVERY_ATTEMPTS:
@@ -305,7 +320,7 @@ class NotificationDeliveryService:
         claimed: NotificationRecord,
     ) -> NotificationResult:
         try:
-            receipt = self._provider_delivery(intent)
+            receipt = self._provider_delivery(intent, silent=claimed.silent)
         except NotificationDeliveryError as error:
             capabilities = _capabilities(self.provider)
             terminal = (
@@ -361,9 +376,24 @@ class NotificationDeliveryService:
             receipt,
             self.root,
         )
+        self._delivered(completed)
         return _result(completed)
 
-    def _provider_delivery(self, intent: NotificationIntent) -> NotificationReceipt:
+    def _delivered(self, record: NotificationRecord) -> None:
+        if record.operation != "send" or self.delivery_listener is None:
+            return
+        try:
+            self.delivery_listener(record)
+        except Exception:
+            # Bookkeeping only: a listener problem never undoes a delivery.
+            pass
+
+    def _provider_delivery(
+        self,
+        intent: NotificationIntent,
+        *,
+        silent: bool = False,
+    ) -> NotificationReceipt:
         durable = _durable_provider(self.provider)
         if durable is not None:
             if intent.attachments and not durable.notification_capabilities.attachments:
@@ -377,7 +407,10 @@ class NotificationDeliveryService:
         if intent.attachments:
             text = _attachment_fallback_text(text, len(intent.attachments))
         if intent.operation == "send":
-            message_id = self.provider.send_message(intent.conversation_id, text)
+            if silent and isinstance(self.provider, SilentMessageProvider):
+                message_id = self.provider.send_silent_message(intent.conversation_id, text)
+            else:
+                message_id = self.provider.send_message(intent.conversation_id, text)
         else:
             assert intent.message_id is not None
             self.provider.edit_message(
@@ -445,6 +478,8 @@ def persist_notification_intent(
     provider: str,
     intent: NotificationIntent,
     root: Path | None = None,
+    *,
+    silent: bool = False,
 ) -> NotificationRecord:
     path = notifications_path(provider, root)
     with file_transaction(path):
@@ -452,7 +487,7 @@ def persist_notification_intent(
         existing_raw = data["notifications"].get(intent.idempotency_key)
         if existing_raw is not None:
             existing = _parse_record(intent.idempotency_key, existing_raw)
-            mismatch = _intent_mismatch(existing, intent)
+            mismatch = _intent_mismatch(existing, intent, silent=silent)
             if mismatch:
                 raise ValueError(mismatch)
             return existing
@@ -470,6 +505,7 @@ def persist_notification_intent(
             attempts=0,
             created_at=timestamp,
             updated_at=timestamp,
+            silent=silent,
         )
         data["notifications"][record.idempotency_key] = _record_json(record)
         _write_notifications(path, data)
@@ -481,8 +517,10 @@ def claim_notification(
     intent: NotificationIntent,
     epoch: DaemonEpoch,
     root: Path | None = None,
+    *,
+    silent: bool = False,
 ) -> NotificationRecord:
-    persist_notification_intent(provider, intent, root)
+    persist_notification_intent(provider, intent, root, silent=silent)
     return reclaim_notification(provider, intent.idempotency_key, epoch, root)
 
 
@@ -632,6 +670,7 @@ def _parse_record(key: str, raw: object) -> NotificationRecord:
         error=str(raw.get("error") or ""),
         created_at=str(raw.get("created_at") or ""),
         updated_at=str(raw.get("updated_at") or ""),
+        silent=raw.get("silent") is True,
     )
 
 
@@ -652,6 +691,7 @@ def _record_json(record: NotificationRecord) -> dict[str, Any]:
         "error": record.error,
         "created_at": record.created_at,
         "updated_at": record.updated_at,
+        "silent": record.silent,
     }
 
 
@@ -674,9 +714,12 @@ def _record_intent(
 def _intent_mismatch(
     record: NotificationRecord,
     intent: NotificationIntent,
+    *,
+    silent: bool | None = None,
 ) -> str:
     if (
-        record.operation != intent.operation
+        (silent is not None and record.silent != silent)
+        or record.operation != intent.operation
         or record.conversation_id != intent.conversation_id
         or record.message_id != intent.message_id
         or record.thread_id != intent.thread_id

@@ -6,12 +6,16 @@ reviews Enoch watches and of the pending backlog and a one-line account quota
 summary, and persists which chat message is the board. Sending, editing, and
 pinning stay in the application shell so they go through the durable
 notification journal and the daemon effect fence.
+
+The state also counts the chat messages that appeared after the board message
+(inbound and outbound, never edits) so the shell can post a fresh board once
+the old one has drifted up the conversation.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
@@ -35,7 +39,7 @@ from enoch.providers.contracts import (
     normalize_conversation_id,
     normalize_message_id,
 )
-from enoch.state import atomic_write, load_json_object
+from enoch.state import atomic_write, file_transaction, load_json_object
 from enoch.tasks.queue import TaskJob, TaskQueueStatus
 
 
@@ -79,6 +83,10 @@ class TaskBoardState:
     chat_id: ConversationId | None = None
     message_id: MessageId | None = None
     last_digest: str = ""
+    # Chat messages that appeared after the board message (not edits).
+    messages_since_board: int = 0
+    # ISO time the current board message was posted, by /board or a re-post.
+    last_reposted_at: str = ""
 
     @property
     def active(self) -> bool:
@@ -99,26 +107,93 @@ def task_board_path(root: Path | None = None) -> Path:
 
 def load_task_board_state(root: Path | None = None) -> TaskBoardState:
     data = load_json_object(task_board_path(root))
+    return _parse_state(data)
+
+
+def save_task_board_state(state: TaskBoardState, root: Path | None = None) -> None:
+    path = task_board_path(root)
+    with file_transaction(path):
+        _write_state(path, state)
+
+
+def update_task_board_state(
+    root: Path | None = None,
+    *,
+    expected_message_id: MessageId | None = None,
+    **changes: object,
+) -> TaskBoardState | None:
+    """Apply ``changes`` to the stored state under the state file lock.
+
+    When ``expected_message_id`` is given, the update applies only while that message
+    is still the board, so a slow edit never overwrites a newer board, and a
+    concurrent message count is never lost. Returns the saved state, or None
+    when the board moved on.
+    """
+
+    path = task_board_path(root)
+    with file_transaction(path):
+        state = _parse_state(load_json_object(path))
+        if expected_message_id is not None and state.message_id != expected_message_id:
+            return None
+        updated = replace(state, **changes)
+        _write_state(path, updated)
+        return updated
+
+
+def count_task_board_message(
+    conversation_id: ConversationId | None,
+    root: Path | None = None,
+) -> bool:
+    """Count one chat message that appeared after an active board.
+
+    Only messages in the board's own conversation count. Returns whether the
+    counter changed.
+    """
+
+    path = task_board_path(root)
+    if not path.exists():
+        return False
+    with file_transaction(path):
+        state = _parse_state(load_json_object(path))
+        if not state.active or normalize_conversation_id(conversation_id) != state.chat_id:
+            return False
+        _write_state(path, replace(state, messages_since_board=state.messages_since_board + 1))
+        return True
+
+
+def _parse_state(data: Mapping) -> TaskBoardState:
+    # Every field has a default, so state files written before a field
+    # existed still load.
     return TaskBoardState(
         enabled=data.get("enabled") is True,
         chat_id=normalize_conversation_id(data.get("chat_id")),
         message_id=normalize_message_id(data.get("message_id")),
         last_digest=str(data.get("last_digest") or ""),
+        messages_since_board=_count(data.get("messages_since_board")),
+        last_reposted_at=str(data.get("last_reposted_at") or ""),
     )
 
 
-def save_task_board_state(state: TaskBoardState, root: Path | None = None) -> None:
+def _write_state(path: Path, state: TaskBoardState) -> None:
     payload = {
         "schema_version": SCHEMA_VERSION,
         "enabled": state.enabled,
         "chat_id": state.chat_id,
         "message_id": state.message_id,
         "last_digest": state.last_digest,
+        "messages_since_board": state.messages_since_board,
+        "last_reposted_at": state.last_reposted_at,
     }
-    atomic_write(
-        task_board_path(root),
-        json.dumps(payload, indent=2, sort_keys=True) + "\n",
-    )
+    atomic_write(path, json.dumps(payload, indent=2, sort_keys=True) + "\n")
+
+
+def _count(value: object) -> int:
+    if isinstance(value, bool):
+        return 0
+    try:
+        return max(0, int(value))  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0
 
 
 def render_task_board(

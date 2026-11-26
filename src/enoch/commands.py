@@ -49,6 +49,8 @@ from enoch.quota import quota_usage
 from enoch.skills import skills_command
 from enoch.tasks.config import (
     auto_update_enabled,
+    board_repost_settings,
+    format_board_repost,
     format_pr_auto_merge,
     format_task_timeout,
     parse_task_timeout,
@@ -515,6 +517,7 @@ def config_status(
         f"- Task timeout: {format_task_timeout(settings.timeout_seconds)}{default}",
         f"- PR auto-merge: {pr_auto_merge_status(root)}",
         f"- Auto-update after merge: {auto_update_status(root)}",
+        f"- Task board re-post: {format_board_repost(board_repost_settings(root))}",
         f"- Profile: {active_profile_name or _selected_profile_name(root)}",
         f"- Providers: {_provider_summary(root)}",
         "",
@@ -539,6 +542,10 @@ def config_status(
             f"Set task timeout with {command} task-timeout <duration> or {command} task-timeout default.",
             f"Set PR auto-merge with {prefix}pr auto-merge on|off.",
             f"Set auto-update after merge with {prefix}update auto on|off.",
+            (
+                f"Set task board re-posting with {prefix}board repost <interval> <count> "
+                f"or {prefix}board repost off."
+            ),
         ]
     )
     if callable(getattr(runtime, "configure", None)):
@@ -1081,9 +1088,17 @@ def _board_usage(prefix: str) -> str:
             ),
             f"{command} off - stop updating the current task board",
             (
+                f"{command} repost <interval> <count> - every <interval>, post the board "
+                "again when more than <count> chat messages appeared after it "
+                "(default 1h 10)"
+            ),
+            f"{command} repost off|on|default - turn re-posting off or on, or restore 1h 10",
+            (
                 f"Running {command} again posts a fresh board and stops updating the old one. "
-                "The board is edited silently. While it is active, each task posts only a "
-                f"start line and a final result; use {prefix}task show <id> for full details."
+                "The board is edited silently. A re-posted board is sent and pinned silently, "
+                "and the old one is deleted where the chat allows it. While the board is "
+                "active, each task posts only a start line and a final result; use "
+                f"{prefix}task show <id> for full details."
             ),
         ]
     )
@@ -1202,7 +1217,7 @@ CORE_COMMANDS = (
         "board",
         "board",
         "Work",
-        "[off]",
+        "[off|repost]",
         "pin a task board that stays up to date",
         _board_usage,
     ),

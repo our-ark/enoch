@@ -125,6 +125,14 @@ try:
 except ImportError:  # provider-kit compatibility during message-pin rollout
     from enoch.providers._message_pin_compat import MessagePinProvider
 
+try:
+    from our_ark_provider_kit import MessageDeleteProvider, SilentMessageProvider
+except ImportError:  # provider-kit compatibility during message-delete rollout
+    from enoch.providers._message_capability_compat import (
+        MessageDeleteProvider,
+        SilentMessageProvider,
+    )
+
 from our_ark_provider_kit import (  # noqa: E402
     REPOSITORY_CONTRACT_VERSION,
     REVIEW_CONTRACT_VERSION,
@@ -188,7 +196,9 @@ __all__ = [
     "EvolutionProvenance",
     "LocalPublishResult",
     "MessageId",
+    "MessageDeleteProvider",
     "MessagePinProvider",
+    "SilentMessageProvider",
     "OutboundAttachment",
     "NOTIFICATION_CONTRACT_VERSION",
     "NotificationCapabilities",
