@@ -414,7 +414,8 @@ class PendingMergeRepairTests(_Harness):
         self.assertEqual(forge.merges, [])
         self.assertEqual(load_pending_merges(self.root), ())
 
-    def test_head_without_the_base_tip_waits_instead_of_fixing(self) -> None:
+    def test_head_without_the_base_tip_is_updated_instead_of_fixed(self) -> None:
+        # Without forge.base-freshness, ci-repair's compare answers the question.
         forge, app = self._red_merge()
         forge.contains_base = False
 
@@ -422,7 +423,10 @@ class PendingMergeRepairTests(_Harness):
 
         self.assertEqual(self._fix_tasks(app), ())
         self.assertEqual(forge.reruns, [])
-        self.assertEqual(self._entry().waiting_for, "waiting for main to settle")
+        self.assertEqual(forge.updates, ["head-91"])
+        entry = self._entry()
+        self.assertEqual(entry.waiting_for, "updating from main")
+        self.assertEqual(entry.allowed_head_shas, ("head-91", "update-1"))
 
     def test_conflicts_are_unchanged_and_never_fixed(self) -> None:
         chat = _Chat()
@@ -733,6 +737,28 @@ class BoardStatusTests(_Harness):
         self.assertEqual(self._board(app), (BoardReview(91, "ci"),))
 
         forge.contains_base = True
+        app.pending_merges.tick()
+        self.assertEqual(self._board(app), (BoardReview(91, "failed"),))
+
+    def test_stale_base_uses_the_shared_base_freshness_rule(self) -> None:
+        forge = _Forge(merge_state="BLOCKED", checks=PENDING, ci_repair=True, base_freshness=True)
+        forge.provider.list_fn.side_effect = lambda root=None, limit=20: (forge.status,)
+        app = self._app(forge)
+        app.pending_merges.tracked_interval_seconds = 0
+        app._watch_published_reviews(
+            SimpleNamespace(id=7, chat_id="room-1", text="Add a feature.", context="", review_urls=(URL,))
+        )
+        app.pending_merges.tick()
+        # forge.base-freshness answers, not the ci-repair comparison.
+        forge.contains_base = True
+        forge.stale_heads.add(forge.status.head_sha)
+        forge.set(merge_state_status="UNSTABLE", checks=RED)
+
+        app.pending_merges.tick()
+        self.assertEqual(self._board(app), (BoardReview(91, "ci"),))
+        self.assertTrue(forge.provider.base_freshness_fn.called)
+
+        forge.stale_heads.clear()
         app.pending_merges.tick()
         self.assertEqual(self._board(app), (BoardReview(91, "failed"),))
 

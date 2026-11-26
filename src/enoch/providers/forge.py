@@ -38,6 +38,10 @@ class FunctionForgeProvider:
     check_failures_fn: Callable[..., Any] | None = None
     rerun_checks_fn: Callable[..., Any] | None = None
     compare_fn: Callable[..., Any] | None = None
+    # Optional ``forge.base-freshness``: whether a review head contains the
+    # current tip of its base, read from version control rather than from a
+    # merge status the forge may still be recomputing after the base moved.
+    base_freshness_fn: Callable[..., Any] | None = None
     name: str = "function-forge"
     provider_kind: str = "forge"
     capabilities: ProviderCapabilities = ProviderCapabilities(
@@ -58,6 +62,7 @@ class FunctionForgeProvider:
             for capability, fn in (
                 ("forge.update-branch", self.update_branch_fn),
                 ("forge.check-status", self.checks_fn),
+                ("forge.base-freshness", self.base_freshness_fn),
                 (
                     "forge.ci-repair",
                     self.check_failures_fn
@@ -180,6 +185,17 @@ class FunctionForgeProvider:
         if self.compare_fn is None:
             raise ForgeProviderError("This forge cannot compare review revisions.")
         return self.compare_fn(reference, base=base, head=head, root=root)
+
+    def inspect_review_base_freshness(
+        self,
+        reference: str,
+        *,
+        head_sha: str = "",
+        root: Path | None = None,
+    ) -> Any:
+        if self.base_freshness_fn is None:
+            raise ForgeProviderError("This forge cannot inspect whether a review contains its base tip.")
+        return self.base_freshness_fn(reference, head_sha=head_sha, root=root)
 
 
 class LocalForgeProvider:

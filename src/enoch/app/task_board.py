@@ -2,19 +2,20 @@
 
 This module is provider-agnostic. It renders the board text from the same task
 queue snapshot that backs ``/queue``, plus one-line summaries of the open
-reviews Enoch watches and of the pending backlog, and persists which chat
-message is the board. Sending, editing, and pinning stay in the application
-shell so they go through the durable notification journal and the daemon
-effect fence.
+reviews Enoch watches and of the pending backlog and a one-line account quota
+summary, and persists which chat message is the board. Sending, editing, and
+pinning stay in the application shell so they go through the durable
+notification journal and the daemon effect fence.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
+import math
 from pathlib import Path
 import re
 
@@ -27,6 +28,7 @@ from enoch.app.pending_merges import (
 )
 from enoch.backlog import BacklogItem, promotion_order
 from enoch.paths import private_state_path
+from enoch.quota import _label, _number, _timestamp, quota_provider_label
 from enoch.providers.contracts import (
     ConversationId,
     MessageId,
@@ -59,6 +61,15 @@ _OPEN_REVIEW_MARKERS = {
     BOARD_CI: "⏳ CI",
 }
 _OPEN_REVIEW_ORDER = {BOARD_FAILED: 0, BOARD_BLOCKED: 0, BOARD_READY: 1, BOARD_CI: 2}
+# The quota line shows a few windows, rounded so it changes (and the board is
+# edited) only when a 10% bucket or a reset time changes. Below the exact
+# threshold the real percent is shown, since that is when it matters.
+QUOTA_BUCKET_PERCENT = 10
+QUOTA_EXACT_BELOW_PERCENT = 20
+QUOTA_PRIMARY_WINDOWS = 2
+QUOTA_WINDOW_LABEL_LIMIT = 16
+# HH:MM alone is ambiguous for a reset more than a day away.
+QUOTA_RESET_HORIZON = timedelta(hours=24)
 _SENTENCE_BREAK = re.compile(r"(?<=[.!?])\s+|(?<=[。！？])")
 
 
@@ -120,6 +131,7 @@ def render_task_board(
     merging: tuple[str, ...] = (),
     open_reviews: Iterable[BoardReview] = (),
     backlog: Iterable[BacklogItem] = (),
+    quota_line: str = "",
 ) -> RenderedTaskBoard:
     """Render the board text and a digest of everything except the footer.
 
@@ -130,6 +142,8 @@ def render_task_board(
     watches, with their cached status; when there are any, one ``Open PRs:``
     line lists them. ``backlog`` holds the pending backlog items; when there
     are any, one ``Up next:`` line previews them in promotion order.
+    ``quota_line`` (see :func:`render_quota_line`) is shown last, just above
+    the footer, when it is non-empty.
     """
 
     footer = f"Updated {_local_clock(updated_at)}"
@@ -141,6 +155,7 @@ def render_task_board(
         merging=merging,
         open_reviews=_open_review_order(open_reviews),
         backlog=promotion_order(backlog),
+        quota_line=quota_line,
     )
     digest = hashlib.sha256(body.encode("utf-8")).hexdigest()
     return RenderedTaskBoard(text=f"{body}\n\n{footer}", digest=digest)
@@ -155,6 +170,7 @@ def _render_body(
     merging: tuple[str, ...] = (),
     open_reviews: tuple[BoardReview, ...] = (),
     backlog: tuple[BacklogItem, ...] = (),
+    quota_line: str = "",
 ) -> str:
     sections = [
         _Section(
@@ -171,14 +187,16 @@ def _render_body(
     backlog_forms = _backlog_line_forms(backlog) or [""]
     review_forms = _open_review_line_forms(open_reviews) or [""]
     # The one-line summaries give way before any task item: first the backlog
-    # preview shrinks to a bare count, then the open-review line shrinks to a
-    # count and finally disappears.
-    candidates = [(review_forms[0], line) for line in backlog_forms]
-    candidates += [(line, backlog_forms[-1]) for line in review_forms[1:]]
+    # preview shrinks to a bare count, then the quota line is dropped, then
+    # the open-review line shrinks to a count and finally disappears.
+    candidates = [(review_forms[0], line, quota_line) for line in backlog_forms]
+    if quota_line:
+        candidates.append((review_forms[0], backlog_forms[-1], ""))
+    candidates += [(line, backlog_forms[-1], "") for line in review_forms[1:]]
     if review_forms[0]:
-        candidates.append(("", backlog_forms[-1]))
-    for review_line, backlog_line in candidates:
-        text = _join(title, sections, queue_command, review_line, backlog_line)
+        candidates.append(("", backlog_forms[-1], ""))
+    for review_line, backlog_line, quota_line in candidates:
+        text = _join(title, sections, queue_command, review_line, backlog_line, quota_line)
         if len(text) <= max_chars:
             break
     # Drop items from the longest section until the board fits, noting how
@@ -189,7 +207,7 @@ def _render_body(
             break
         candidate.shown.pop()
         candidate.hidden += 1
-        text = _join(title, sections, queue_command, review_line, backlog_line)
+        text = _join(title, sections, queue_command, review_line, backlog_line, quota_line)
     if len(text) > max_chars:
         text = text[: max(0, max_chars - 1)].rstrip() + "…"
     return text
@@ -208,6 +226,7 @@ def _join(
     queue_command: str,
     review_line: str = "",
     backlog_line: str = "",
+    quota_line: str = "",
 ) -> str:
     lines = [title]
     for section in sections:
@@ -218,9 +237,11 @@ def _join(
         lines.extend(section.shown)
         if section.hidden:
             lines.append(f"- … {section.hidden} more (see {queue_command})")
-    summaries = [line for line in (review_line, backlog_line) if line]
-    if summaries:
-        lines.extend(["", *summaries])
+    # The open-review, backlog and quota lines share one trailing block above
+    # the footer.
+    trailing = [line for line in (review_line, backlog_line, quota_line) if line]
+    if trailing:
+        lines.extend(["", *trailing])
     return "\n".join(lines)
 
 
@@ -261,6 +282,105 @@ def _open_review_line(reviews: tuple[BoardReview, ...], shown: int) -> str:
     if hidden:
         parts.append(f"+{hidden} more")
     return "Open PRs: " + " · ".join(parts)
+
+
+def render_quota_line(
+    provider: str,
+    snapshot: Mapping | None,
+    *,
+    now: datetime | None = None,
+) -> str:
+    """Return one compact quota line for the board, or "" to omit it.
+
+    Example: ``Quota (Claude): 5h 90% · 7d 60% left · 5h resets 20:30``.
+    Remaining percentages are rounded to the nearest 10% (exact below 20%),
+    so the line changes only when a bucket or a reset time changes. Errors,
+    missing data, and unexpected shapes all yield "" rather than raising.
+    """
+
+    try:
+        return _quota_line(provider, snapshot, now or datetime.now(timezone.utc))
+    except Exception:
+        return ""
+
+
+@dataclass(frozen=True)
+class _QuotaWindow:
+    label: str
+    remaining: int
+    resets_at: datetime | None
+
+
+def _quota_line(provider: str, snapshot: Mapping | None, now: datetime) -> str:
+    if not isinstance(snapshot, Mapping) or snapshot.get("error"):
+        return ""
+    raw_windows = snapshot.get("windows")
+    if not isinstance(raw_windows, (list, tuple)):
+        return ""
+    windows: list[_QuotaWindow] = []
+    labels: list[str] = []
+    for window in raw_windows:
+        if not isinstance(window, Mapping):
+            continue
+        used = _number(window.get("used_percent"))
+        if used is None or used < 0:
+            continue  # Unknown usage is never shown as a number.
+        resets_at = _timestamp(window.get("resets_at"))
+        if resets_at is not None and resets_at <= now:
+            continue  # The provider has not reported the new window yet.
+        label = _label(window.get("label"), limit=QUOTA_WINDOW_LABEL_LIMIT)
+        if not label:
+            continue
+        labels.append(label)
+        windows.append(
+            _QuotaWindow(label, _display_remaining(100 - used), resets_at)
+        )
+    if not windows:
+        return ""
+    prefix = _common_label_prefix(labels)
+    windows = [
+        _QuotaWindow(window.label[len(prefix):], window.remaining, window.resets_at)
+        for window in windows
+    ]
+    # Keep the line short: the provider's primary windows, plus any other
+    # window (for example a per-model one) that is nearly exhausted.
+    shown = [
+        window
+        for index, window in enumerate(windows)
+        if index < QUOTA_PRIMARY_WINDOWS or window.remaining < QUOTA_EXACT_BELOW_PERCENT
+    ]
+    parts = " · ".join(f"{window.label} {window.remaining}%" for window in shown)
+    line = f"Quota ({_label(quota_provider_label(provider), limit=24)}): {parts} left"
+    soonest = [
+        window
+        for window in shown
+        if window.resets_at is not None and window.resets_at - now <= QUOTA_RESET_HORIZON
+    ]
+    if soonest:
+        # The window closest to running out; ties go to the earlier reset.
+        urgent = min(soonest, key=lambda window: (window.remaining, window.resets_at))
+        line += f" · {urgent.label} resets {_local_clock(urgent.resets_at)}"
+    return line
+
+
+def _display_remaining(remaining: float) -> int:
+    remaining = max(0.0, min(100.0, remaining))
+    if remaining < QUOTA_EXACT_BELOW_PERCENT:
+        # Round down so the board never overstates what is left.
+        return math.floor(remaining)
+    return int(math.floor(remaining / QUOTA_BUCKET_PERCENT + 0.5) * QUOTA_BUCKET_PERCENT)
+
+
+def _common_label_prefix(labels: list[str]) -> str:
+    """Return a shared ``name / `` prefix (e.g. Codex's bucket) to drop."""
+
+    if len(labels) < 2:
+        return ""
+    first, _, _ = labels[0].partition(" / ")
+    prefix = f"{first} / "
+    if all(label.startswith(prefix) and len(label) > len(prefix) for label in labels):
+        return prefix
+    return ""
 
 
 def _backlog_line_forms(items: tuple[BacklogItem, ...]) -> list[str]:

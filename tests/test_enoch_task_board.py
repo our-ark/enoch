@@ -1,10 +1,11 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 import sys
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -22,6 +23,7 @@ from enoch.app.pending_merges import (
 from enoch.app.task_board import (
     TaskBoardState,
     load_task_board_state,
+    render_quota_line,
     render_task_board,
     save_task_board_state,
     task_board_path,
@@ -40,6 +42,39 @@ from enoch.tasks.queue import TaskJob, TaskQueueStatus
 
 
 UPDATED_AT = datetime(2026, 11, 24, 14, 5)
+QUOTA_NOW = datetime(2026, 11, 24, 23, 35, tzinfo=timezone.utc)
+FIVE_HOUR_RESET = QUOTA_NOW + timedelta(hours=4, minutes=55)
+SEVEN_DAY_RESET = QUOTA_NOW + timedelta(days=1, hours=4, minutes=25)
+
+
+def _clock(moment: datetime) -> str:
+    return moment.astimezone().strftime("%H:%M")
+
+
+def _quota(
+    five_hour_used: float | None = 13,
+    seven_day_used: float | None = 36,
+    *,
+    five_hour_reset: datetime | None = FIVE_HOUR_RESET,
+    seven_day_reset: datetime | None = SEVEN_DAY_RESET,
+    extra: tuple[dict, ...] = (),
+) -> dict:
+    def window(label: str, used: float | None, reset: datetime | None) -> dict:
+        return {
+            "label": label,
+            "used_percent": used,
+            "resets_at": reset.isoformat() if reset is not None else None,
+        }
+
+    return {
+        "plan": "pro",
+        "source": "Claude Code get_usage (experimental)",
+        "windows": [
+            window("5h", five_hour_used, five_hour_reset),
+            window("7d", seven_day_used, seven_day_reset),
+            *extra,
+        ],
+    }
 
 
 def _job(task_id: int, text: str, **changes) -> TaskJob:
@@ -481,6 +516,226 @@ class TaskBoardRenderTests(unittest.TestCase):
         self.assertTrue(loaded.active)
 
 
+class QuotaLineTests(unittest.TestCase):
+    def line(self, snapshot, provider: str = "claude") -> str:
+        return render_quota_line(provider, snapshot, now=QUOTA_NOW)
+
+    def test_line_shows_both_windows_and_the_5h_reset(self) -> None:
+        self.assertEqual(
+            self.line(_quota()),
+            f"Quota (Claude): 5h 90% · 7d 60% left · 5h resets {_clock(FIVE_HOUR_RESET)}",
+        )
+
+    def test_remaining_is_rounded_to_the_nearest_ten_percent(self) -> None:
+        cases = {13: 90, 17: 80, 15: 90, 25: 80, 0: 100, 76: 20, 100: 0}
+        for used, shown in cases.items():
+            with self.subTest(used=used):
+                expected = shown if shown >= 20 else 100 - used
+                self.assertIn(f"5h {expected}%", self.line(_quota(five_hour_used=used)))
+
+    def test_exact_percent_is_shown_below_twenty(self) -> None:
+        self.assertIn("5h 19%", self.line(_quota(five_hour_used=81)))
+        self.assertIn("5h 7%", self.line(_quota(five_hour_used=93)))
+        # Fractions round down so the board never overstates what is left.
+        self.assertIn("5h 11%", self.line(_quota(five_hour_used=88.5)))
+        self.assertIn("5h 0%", self.line(_quota(five_hour_used=100)))
+        self.assertIn("5h 20%", self.line(_quota(five_hour_used=80)))
+
+    def test_reset_time_is_local_hh_mm_for_the_window_closest_to_running_out(self) -> None:
+        # The 7d window has less left but resets more than a day away, so
+        # only its percentage is shown.
+        self.assertTrue(self.line(_quota()).endswith(f"5h resets {_clock(FIVE_HOUR_RESET)}"))
+
+        soon = QUOTA_NOW + timedelta(hours=20)
+        line = self.line(_quota(seven_day_reset=soon))
+        self.assertTrue(line.endswith(f"· 7d resets {_clock(soon)}"))
+        self.assertEqual(line.count("resets"), 1)
+
+        epoch = self.line(
+            {"windows": [{"label": "5h", "used_percent": 50, "resets_at": FIVE_HOUR_RESET.timestamp()}]}
+        )
+        self.assertEqual(epoch, f"Quota (Claude): 5h 50% left · 5h resets {_clock(FIVE_HOUR_RESET)}")
+
+    def test_line_has_no_reset_when_none_is_reported_soon(self) -> None:
+        self.assertEqual(
+            self.line(_quota(five_hour_reset=None)),
+            "Quota (Claude): 5h 90% · 7d 60% left",
+        )
+
+    def test_expired_and_unknown_windows_are_skipped(self) -> None:
+        expired = QUOTA_NOW - timedelta(minutes=1)
+        self.assertEqual(
+            self.line(_quota(five_hour_reset=expired)),
+            "Quota (Claude): 7d 60% left",
+        )
+        self.assertEqual(
+            self.line(_quota(five_hour_used=None)),
+            "Quota (Claude): 7d 60% left",
+        )
+
+    def test_extra_windows_appear_only_when_nearly_exhausted(self) -> None:
+        opus = {"label": "7d / Opus", "used_percent": 50, "resets_at": SEVEN_DAY_RESET.isoformat()}
+        self.assertNotIn("Opus", self.line(_quota(extra=(opus,))))
+        low = {**opus, "used_percent": 96}
+        self.assertIn("· 7d / Opus 4% left", self.line(_quota(extra=(low,))))
+
+    def test_shared_codex_bucket_prefix_is_dropped(self) -> None:
+        snapshot = {
+            "windows": [
+                {"label": "codex / 5h", "used_percent": 40, "resets_at": None},
+                {"label": "codex / 7d", "used_percent": 10, "resets_at": None},
+            ]
+        }
+        self.assertEqual(self.line(snapshot, "codex"), "Quota (GPT / Codex): 5h 60% · 7d 90% left")
+
+    def test_unavailable_or_failed_quota_yields_no_line(self) -> None:
+        for snapshot in (
+            None,
+            {"error": "quota query failed. Check CLI login and version on this host."},
+            {**_quota(), "error": "Plan quota is unavailable for this authentication mode."},
+            {"windows": []},
+            {"windows": "broken"},
+            {"windows": [None, {"label": "5h"}, {"used_percent": "x"}]},
+            {"windows": [{"label": "", "used_percent": 10}]},
+            "not a mapping",
+        ):
+            with self.subTest(snapshot=snapshot):
+                self.assertEqual(self.line(snapshot), "")
+
+
+class TaskBoardQuotaRenderTests(unittest.TestCase):
+    def test_quota_line_sits_last_above_the_footer(self) -> None:
+        quota = render_quota_line("claude", _quota(), now=QUOTA_NOW)
+        text = render_task_board(
+            _status(),
+            updated_at=UPDATED_AT,
+            merging=("PR #5",),
+            backlog=(_backlog_item(3, "Only item"),),
+            quota_line=quota,
+        ).text
+
+        self.assertTrue(
+            text.endswith(
+                "Merging:\n- PR #5\n\nUp next: 1 in backlog (#3 [p1] Only item)\n"
+                f"{quota}\n\nUpdated 14:05"
+            )
+        )
+        self.assertEqual(len([line for line in text.splitlines() if "Quota" in line]), 1)
+        self.assertEqual(
+            [line for line in text.splitlines() if line.endswith(":")],
+            ["Running:", "Queued:", "Paused:", "Merging:"],
+        )
+
+    def test_open_prs_then_backlog_then_quota_share_the_trailing_block(self) -> None:
+        quota = render_quota_line("claude", _quota(), now=QUOTA_NOW)
+        status = _status(running=_job(7, "Implement the board", status="running"))
+        backlog = (_backlog_item(3, "Only item"),)
+        reviews = _reviews((96, "ready"), (97, "failed"))
+        text = render_task_board(
+            status,
+            updated_at=UPDATED_AT,
+            open_reviews=reviews,
+            backlog=backlog,
+            quota_line=quota,
+        ).text
+
+        self.assertTrue(
+            text.endswith(
+                "\n\nOpen PRs: #97 ❌ CI failed · #96 ✅ ready\n"
+                "Up next: 1 in backlog (#3 [p1] Only item)\n"
+                f"{quota}\n\nUpdated 14:05"
+            )
+        )
+        # Tight boards shed the quota line before the open-review line, and
+        # both before any task item.
+        bare = render_task_board(status, updated_at=UPDATED_AT, backlog=backlog).text
+        tight = render_task_board(
+            status,
+            updated_at=UPDATED_AT,
+            open_reviews=reviews,
+            backlog=backlog,
+            quota_line=quota,
+            max_chars=len(bare) + len("\nOpen PRs: 2") + 1,
+        ).text
+        self.assertNotIn("Quota", tight)
+        self.assertIn("Open PRs: ", tight)
+        self.assertIn("- #7 ", tight)
+
+    def test_quota_line_without_backlog_follows_paused(self) -> None:
+        quota = render_quota_line("claude", _quota(), now=QUOTA_NOW)
+        text = render_task_board(_status(), updated_at=UPDATED_AT, quota_line=quota).text
+
+        self.assertIn(f"Paused:\n- none\n\n{quota}\n\nUpdated 14:05", text)
+
+    def test_no_quota_line_leaves_the_board_unchanged(self) -> None:
+        empty = render_task_board(_status(), updated_at=UPDATED_AT, quota_line="")
+        without = render_task_board(_status(), updated_at=UPDATED_AT)
+
+        self.assertEqual(empty, without)
+        self.assertNotIn("Quota", empty.text)
+
+    def test_digest_changes_only_when_a_bucket_or_reset_changes(self) -> None:
+        status = _status(pending=(_job(1, "Work"),))
+
+        def digest(snapshot) -> str:
+            line = render_quota_line("claude", snapshot, now=QUOTA_NOW)
+            return render_task_board(status, updated_at=UPDATED_AT, quota_line=line).digest
+
+        baseline = digest(_quota(13, 36))  # 87% and 64% left: 90% / 60%.
+        for same in (_quota(11, 36), _quota(14, 39), _quota(6, 44)):
+            self.assertEqual(digest(same), baseline)
+        self.assertNotEqual(digest(_quota(17, 36)), baseline)  # 83% -> 80%.
+        self.assertNotEqual(digest(_quota(13, 46)), baseline)  # 7d 54% -> 50%.
+        later_reset = FIVE_HOUR_RESET + timedelta(minutes=30)
+        self.assertNotEqual(digest(_quota(five_hour_reset=later_reset)), baseline)
+        # Below 20% every percent counts.
+        self.assertNotEqual(digest(_quota(82)), digest(_quota(83)))
+
+    def test_truncation_drops_quota_before_hiding_tasks(self) -> None:
+        status = _status(
+            running=_job(1, "Running work"),
+            pending=(_job(2, "Queued work"), _job(3, "More queued work")),
+            paused=(_job(4, "Paused work", status="paused"),),
+        )
+        quota = render_quota_line("claude", _quota(), now=QUOTA_NOW)
+        bare = render_task_board(status, updated_at=UPDATED_AT).text
+
+        rendered = render_task_board(
+            status, updated_at=UPDATED_AT, quota_line=quota, max_chars=len(bare) + 5,
+        )
+
+        self.assertEqual(rendered.text, bare)
+        for item in ("#1 Running work", "#2 Queued work", "#3 More queued work", "#4 Paused work"):
+            self.assertIn(item, rendered.text)
+        self.assertNotIn("more (see", rendered.text)
+
+        roomy = render_task_board(
+            status, updated_at=UPDATED_AT, quota_line=quota, max_chars=len(bare) + len(quota) + 2,
+        )
+        self.assertIn(f"\n\n{quota}\n\nUpdated 14:05", roomy.text)
+
+    def test_truncation_with_quota_keeps_every_task_section(self) -> None:
+        pending = tuple(_job(index, "queued request " * 10) for index in range(1, 80))
+        paused = (_job(90, "Paused work", status="paused"),)
+        backlog = tuple(_backlog_item(index, "backlog request " * 5) for index in range(1, 9))
+
+        rendered = render_task_board(
+            _status(running=_job(100, "Running work"), pending=pending, paused=paused),
+            updated_at=UPDATED_AT,
+            max_chars=1200,
+            backlog=backlog,
+            quota_line=render_quota_line("claude", _quota(), now=QUOTA_NOW),
+        )
+
+        self.assertLessEqual(len(rendered.text), 1200)
+        self.assertIn("Running:\n- #100 Running work", rendered.text)
+        self.assertIn("Queued:\n- #1 ", rendered.text)
+        self.assertIn("more (see /queue)", rendered.text)
+        self.assertIn("Paused:\n- #90 Paused work", rendered.text)
+        self.assertNotIn("Quota", rendered.text)
+        self.assertTrue(rendered.text.endswith("Updated 14:05"))
+
+
 class TaskBoardCommandTests(unittest.TestCase):
     def test_board_is_registered_with_help(self) -> None:
         command = core_command("board")
@@ -576,6 +831,7 @@ class TaskBoardRefreshTests(unittest.TestCase):
         self.chat = _LegacyChat()
         self.app = EnochApplication(load_identity(), self.root, self.chat)
         self.status = _status()
+        self._quota_shift = datetime.now(timezone.utc) - QUOTA_NOW
         inspect = patch.object(self.app.workflow, "inspect", side_effect=lambda: self.status)
         inspect.start()
         self.addCleanup(inspect.stop)
@@ -780,6 +1036,102 @@ class TaskBoardRefreshTests(unittest.TestCase):
             self.app.run_once()
 
         refresh.assert_called_once_with()
+
+    def _live_quota(
+        self, five_hour_used: float | None = 13, seven_day_used: float | None = 36,
+    ) -> dict:
+        """Return ``_quota`` with its reset times moved next to the real clock.
+
+        The application renders the board with the wall clock, so the fixed
+        ``QUOTA_NOW`` resets would expire (hiding their windows) once real time
+        passes them. The shift is fixed in setUp, so every snapshot in a test
+        keeps the same reset times and the board digest stays comparable.
+        """
+
+        return _quota(
+            five_hour_used,
+            seven_day_used,
+            five_hour_reset=FIVE_HOUR_RESET + self._quota_shift,
+            seven_day_reset=SEVEN_DAY_RESET + self._quota_shift,
+        )
+
+    def _use_quota_runtime(self, snapshot) -> Mock:
+        reader = Mock(return_value=snapshot)
+        self.app.runtime = SimpleNamespace(name="claude", quota=reader)
+        return reader
+
+    def _poll_quota(self, snapshot) -> None:
+        self.app.quota_warnings.collect = lambda: iter([("claude", snapshot)])
+        self.app.quota_warnings.check_once()
+
+    def test_board_shows_the_cached_quota_without_calling_the_provider(self) -> None:
+        reader = self._use_quota_runtime(self._live_quota())
+        self._poll_quota(self._live_quota())
+
+        with patch("enoch.quota.quota_snapshots") as snapshots, \
+                patch("enoch.quota.load_provider") as load:
+            self.app._task_board_command("")
+            for _ in range(3):
+                self.app._refresh_task_board()
+
+        reader.assert_not_called()
+        snapshots.assert_not_called()
+        load.assert_not_called()
+        board = self.chat.sent[0][1]
+        self.assertIn("\n\nQuota (Claude): 5h ", board)
+        self.assertIn(" left · 5h resets ", board)
+        self.assertTrue(board.splitlines()[-3].startswith("Quota (Claude): "))
+        self.assertEqual(self.chat.edits, [])
+
+    def test_quota_changes_inside_a_bucket_do_not_edit_the_board(self) -> None:
+        self._use_quota_runtime(self._live_quota())
+        self._poll_quota(self._live_quota(13, 36))
+        self.app._task_board_command("")
+
+        self._poll_quota(self._live_quota(11, 39))
+        self.app._refresh_task_board()
+        self.assertEqual(self.chat.edits, [])
+
+        self._poll_quota(self._live_quota(17, 39))
+        self.app._refresh_task_board()
+        self.app._refresh_task_board()
+        self.assertEqual(len(self.chat.edits), 1)
+        self.assertIn("5h 80% · 7d 60% left", self.chat.edits[0][2])
+
+    def test_board_shows_only_the_active_runtime_quota(self) -> None:
+        self._use_quota_runtime(self._live_quota())
+        self.app.quota_warnings.collect = lambda: iter([("codex", self._live_quota())])
+        self.app.quota_warnings.check_once()
+
+        self.app._task_board_command("")
+
+        self.assertNotIn("Quota", self.chat.sent[0][1])
+
+    def test_unavailable_quota_omits_the_line_and_keeps_refreshing(self) -> None:
+        self._use_quota_runtime(None)
+        self._poll_quota({"error": "quota query failed. Check CLI login and version on this host."})
+        self.app._task_board_command("")
+        self.assertNotIn("Quota", self.chat.sent[0][1])
+
+        self.status = _status(pending=(_job(4, "New work"),))
+        with patch.object(
+            self.app.quota_warnings, "latest_snapshot", side_effect=RuntimeError("boom"),
+        ), patch("enoch.app.core._record_system_event") as record:
+            self.app._refresh_task_board()
+
+        record.assert_not_called()
+        self.assertEqual(len(self.chat.edits), 1)
+        self.assertIn("Queued:\n- #4 New work", self.chat.edits[0][2])
+        self.assertNotIn("Quota", self.chat.edits[0][2])
+
+    def test_stale_quota_snapshot_is_not_shown(self) -> None:
+        self._use_quota_runtime(self._live_quota())
+        self.app.quota_warnings.collect = lambda: iter([("claude", self._live_quota())])
+        self.app.quota_warnings.check_once(now=datetime.now(timezone.utc) - timedelta(hours=1))
+
+        self.app._task_board_command("")
+
+        self.assertNotIn("Quota", self.chat.sent[0][1])
 
     def test_unknown_argument_shows_usage(self) -> None:
         reply = self.app._task_board_command("sideways")

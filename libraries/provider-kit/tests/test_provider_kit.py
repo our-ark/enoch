@@ -144,6 +144,18 @@ class ProviderKitTests(unittest.TestCase):
         self.assertEqual(event.attachments, (attachment,))
         self.assertEqual(event.attachments[0].metadata["width"], 640)
 
+    def test_chat_event_replied_message_id_defaults_to_none(self) -> None:
+        event = ChatEvent(cursor=1, conversation_id="chat", text="hello")
+        reply = ChatEvent(
+            cursor=2,
+            conversation_id="chat",
+            text="retry it",
+            replied_message_id="message-7",
+        )
+
+        self.assertIsNone(event.replied_message_id)
+        self.assertEqual(reply.replied_message_id, "message-7")
+
     def test_capability_contracts_normalize_and_validate_requirements(self) -> None:
         capabilities = ProviderCapabilities(
             provider_kind="runtime",

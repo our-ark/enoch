@@ -36,6 +36,9 @@ from enoch.state import StateCorruptionError, file_transaction, load_json_object
 
 SCHEMA_VERSION = 15
 DEFAULT_MAX_ATTEMPTS = 3
+# Pause trigger for a task interrupted by a daemon restart. Such tasks resume
+# automatically once the daemon is back instead of waiting for runtime access.
+DAEMON_RESTART_PAUSE_TRIGGER = "daemon-restart"
 ReconciliationOutcome = Literal[
     "no_op",
     "terminal_repair",
@@ -108,6 +111,12 @@ class TaskJob:
     terminal_status: str = ""
     terminal_evidence_source: str = ""
     terminal_evidence_at: str = ""
+    # Trigger of the most recent pause, kept after resume so the next run knows
+    # why it was interrupted.
+    pause_trigger: str = ""
+    # Chat message that carried the task's final result. Optional so queues
+    # written before it existed still load unchanged.
+    result_message_id: MessageId | None = None
 
     # Compatibility aliases for task queue schema <= 11 and workflow API v1.
     @property
@@ -337,7 +346,7 @@ def retry_failed_task(
                 job
                 for job in _history_jobs(data)
                 if job.id == task_id and (
-                    job.status == "failed"
+                    job.status in {"failed", "cancelled"}
                     or (job.status == "completed" and _job_has_unpublished_revision(job))
                 )
             ),
@@ -345,7 +354,8 @@ def retry_failed_task(
         )
         if original is None:
             raise TaskRetryError(
-                f"Task #{task_id} is not a failed task or an unpublished captured task available for retry."
+                f"Task #{task_id} is not a failed task, a cancelled task, or an unpublished "
+                "captured task available for retry."
             )
         existing_retries = [
             job
@@ -650,6 +660,81 @@ def record_task_status_message(
         data["paused"] = paused
         data["running"] = _job_to_dict(running) if running is not None else None
         _write_queue(data, root)
+
+
+def record_task_result_message(
+    task_id: int,
+    message_id: MessageId,
+    root: Path | None = None,
+) -> None:
+    """Remember which chat message carried the task's final result.
+
+    The final message is sent after the task left ``running``, so the task is
+    usually in history (or paused) by now; every section is searched.
+    """
+
+    normalized = normalize_message_id(message_id)
+    if normalized is None:
+        return
+    with _queue_transaction(root):
+        data = _load_queue(root)
+        changed = False
+        for key in ("pending", "paused", "history"):
+            jobs = []
+            for job in _section_jobs(data, key):
+                if job.id == task_id:
+                    job = _replace_job(job, result_message_id=normalized)
+                    changed = True
+                jobs.append(_job_to_dict(job))
+            data[key] = jobs
+        running = _parse_job(data.get("running"))
+        if running is not None and running.id == task_id:
+            running = _replace_job(running, result_message_id=normalized)
+            changed = True
+        if not changed:
+            return
+        data["running"] = _job_to_dict(running) if running is not None else None
+        _write_queue(data, root)
+
+
+def find_task_by_message(
+    message_id: MessageId | None,
+    root: Path | None = None,
+    *,
+    chat_id: ConversationId | None = None,
+) -> TaskJob | None:
+    """Return the task whose start/status line or final message has this id.
+
+    Running, pending, paused and history are searched, newest history first.
+    When ``chat_id`` is given, only tasks in that conversation match, since
+    chat message ids are only unique within one conversation.
+    """
+
+    wanted = _message_key(message_id)
+    if wanted is None:
+        return None
+    wanted_chat = _message_key(chat_id)
+    status = task_queue_status(root)
+    candidates = [
+        *([status.running] if status.running is not None else []),
+        *status.pending,
+        *status.paused,
+        *reversed(status.history),
+    ]
+    for job in candidates:
+        if wanted_chat is not None and _message_key(job.chat_id) != wanted_chat:
+            continue
+        if wanted in {
+            _message_key(job.status_message_id),
+            _message_key(job.result_message_id),
+        }:
+            return job
+    return None
+
+
+def _message_key(value: object) -> str | None:
+    normalized = normalize_message_id(value)
+    return None if normalized is None else str(normalized)
 
 
 def begin_next_task(root: Path | None = None) -> TaskJob | None:
@@ -974,6 +1059,7 @@ def pause_task(
             terminal_status="",
             terminal_evidence_source="",
             terminal_evidence_at="",
+            pause_trigger=trigger.strip(),
         )
         paused = [job for job in _paused_jobs(data) if job.id != task_id]
         paused.append(paused_job)
@@ -1042,7 +1128,11 @@ def resume_paused_tasks(
                 root,
                 event_actor=event_actor,
                 trigger=trigger,
-                result="Resumed after agent runtime access was restored.",
+                result=(
+                    "Resumed after the daemon restarted."
+                    if job.pause_trigger == DAEMON_RESTART_PAUSE_TRIGGER
+                    else "Resumed after agent runtime access was restored."
+                ),
             )
         return resumed
 
@@ -1714,7 +1804,8 @@ def reconcile_running_task(
                 worker_lease_id="",
                 failure_code="worker_interrupted",
                 failure_class="transient",
-                retryable=False,
+                # Never resumed automatically again, but a human may retry it.
+                retryable=True,
                 next_attempt_at="",
             )
             history = _history_jobs(data)
@@ -2041,6 +2132,14 @@ def _paused_jobs(data: dict) -> list[TaskJob]:
     return [job for job in jobs if job is not None]
 
 
+def _section_jobs(data: dict, key: str) -> list[TaskJob]:
+    raw = data.get(key)
+    if not isinstance(raw, list):
+        return []
+    jobs = [_parse_job(item) for item in raw]
+    return [job for job in jobs if job is not None]
+
+
 def _history_jobs(data: dict) -> list[TaskJob]:
     raw = data.get("history")
     if not isinstance(raw, list):
@@ -2251,6 +2350,8 @@ def _parse_job(raw: object) -> TaskJob | None:
         raw.get("terminal_evidence_source") or ""
     ).strip().lower()
     terminal_evidence_at = str(raw.get("terminal_evidence_at") or "").strip()
+    pause_trigger = str(raw.get("pause_trigger") or "").strip()
+    result_message_id = normalize_message_id(raw.get("result_message_id"))
     if terminal_status and terminal_status not in {
         "completed",
         "failed",
@@ -2322,6 +2423,8 @@ def _parse_job(raw: object) -> TaskJob | None:
         terminal_status=terminal_status,
         terminal_evidence_source=terminal_evidence_source,
         terminal_evidence_at=terminal_evidence_at,
+        pause_trigger=pause_trigger,
+        result_message_id=result_message_id,
     )
 
 
@@ -2390,6 +2493,12 @@ def _job_to_dict(job: TaskJob | None) -> dict:
         "terminal_status": job.terminal_status,
         "terminal_evidence_source": job.terminal_evidence_source,
         "terminal_evidence_at": job.terminal_evidence_at,
+        **({"pause_trigger": job.pause_trigger} if job.pause_trigger else {}),
+        **(
+            {"result_message_id": job.result_message_id}
+            if job.result_message_id is not None
+            else {}
+        ),
     }
 
 
@@ -2454,6 +2563,8 @@ def _replace_job(job: TaskJob, **changes: object) -> TaskJob:
         "terminal_status": job.terminal_status,
         "terminal_evidence_source": job.terminal_evidence_source,
         "terminal_evidence_at": job.terminal_evidence_at,
+        "pause_trigger": job.pause_trigger,
+        "result_message_id": job.result_message_id,
     }
     values.update(changes)
     return TaskJob(**values)

@@ -148,7 +148,10 @@ def format_task_final_message(
     if final_status == "failed" and job.failure_code:
         lines.extend(
             [
-                f"Failure: {job.failure_code} ({job.failure_class or 'unknown'}, non-retryable)",
+                (
+                    f"Failure: {job.failure_code} ({job.failure_class or 'unknown'}, "
+                    f"{'retryable' if job.retryable else 'non-retryable'})"
+                ),
                 f"Attempts: {job.attempt}/{job.max_attempts}",
             ]
         )

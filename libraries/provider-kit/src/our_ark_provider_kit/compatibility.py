@@ -14,6 +14,7 @@ from our_ark_provider_kit.contracts import (
     RepositoryProviderError,
     RepositoryRevision,
     RepositoryWorkspace,
+    ReviewBaseFreshness,
     ReviewCloseRequest,
     ReviewFeatures,
     ReviewCheckFailure,
@@ -514,6 +515,34 @@ class LegacyForgeReviewAdapter:
         result = compare(review.id, base=base, head=revision, root=root)
         if not isinstance(result, ReviewRevisionComparison):
             raise ReviewProviderError("Forge returned invalid revision comparison data.")
+        return result
+
+    def inspect_review_base_freshness(
+        self,
+        review: ReviewIdentity,
+        *,
+        revision: str,
+        root: Path | None = None,
+    ) -> ReviewBaseFreshness:
+        """Report whether ``revision`` contains the current tip of the review's base.
+
+        The optional ``forge.base-freshness`` operation. Forges answer from
+        version control data, so the answer is current even while their merge
+        status is still being recomputed after the base moved.
+        """
+
+        inspect_freshness = self._required_forge_operation(
+            "inspect_review_base_freshness",
+            "forge.base-freshness",
+            "inspect whether a review contains its base tip",
+        )
+        result = inspect_freshness(review.id, head_sha=revision, root=root)
+        if not isinstance(result, ReviewBaseFreshness):
+            raise ReviewProviderError("Forge returned invalid base freshness data.")
+        if result.revision != revision.strip():
+            raise ReviewProviderError(
+                f"Forge compared {result.revision} with the base instead of {revision}."
+            )
         return result
 
     def _required_forge_operation(
