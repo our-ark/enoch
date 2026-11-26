@@ -32,6 +32,12 @@ never merges them. Once that CI watch settles, a review on Enoch's own
 watcher keeps a cached board status for it (ready, CI, failed, or blocked) that
 the task board reads without calling the forge.
 
+Land before next: a pending merge of a review an Enoch task published records
+that task (``PendingMerge.task_id``) and holds the task queue (``holding``)
+until it lands. When it stops, is cancelled or times out instead, its one
+notice also says the queue continues. A pending merge whose forge cannot be
+checked still stops after ``max_wait``, so no review holds the queue forever.
+
 This module is provider-agnostic: it uses the review provider's optional
 ``forge.check-status``, ``forge.update-branch`` and ``forge.ci-repair``
 operations. Forges without check-status keep today's behavior, where reviews
@@ -127,6 +133,7 @@ _MERGE_FIX_GOAL = (
     "including your fix commits."
 )
 _WATCH_FIX_GOAL = "Nobody has asked to merge it yet; just make its CI green."
+QUEUE_RELEASED = "The task queue continues."
 
 
 @dataclass(frozen=True)
@@ -148,6 +155,9 @@ class PendingMerge:
     # Branch updates that failed in a row, and the last reason; reset on success.
     update_failures: int = 0
     update_error: str = ""
+    # The Enoch task that published this review, or 0. Such a merge holds the
+    # task queue until it lands or stops ("land before next").
+    task_id: int = 0
 
     @property
     def key(self) -> str:
@@ -381,12 +391,15 @@ class PendingMergeController:
         self,
         chat_id: ConversationId,
         current: ReviewRecord,
+        *,
+        task_id: int = 0,
     ) -> MergePlan:
         """Decide how to handle a human's merge request for ``current``.
 
         Closed, draft and conflicting reviews, and every request on a forge
         without check-status, use the existing landing path, so the forge's
-        own refusal messages still apply.
+        own refusal messages still apply. ``task_id`` names the Enoch task that
+        published the review; a pending merge for it holds the task queue.
         """
 
         if not self.supported() or _terminal_refusal(current):
@@ -421,7 +434,7 @@ class PendingMergeController:
                 if not self._can_repair():
                     self.discard(current)
                     return MergePlan("reply", _ci_failed_message(number, checks, current))
-                return self._plan_repair(chat_id, current, checks, label)
+                return self._plan_repair(chat_id, current, checks, label, task_id)
             # Otherwise the forge could not answer now: wait, never refuse.
         if merge_state == "behind" and not self._can_update():
             return MergePlan(
@@ -429,7 +442,7 @@ class PendingMergeController:
                 f"{label} is behind {base} and must be updated before it can merge. "
                 "This forge cannot update review branches automatically.",
             )
-        entry = self._record_request(chat_id, current)
+        entry = self._record_request(chat_id, current, task_id)
         if merge_state == "behind":
             entry = self._update_branch(entry, head)
         reasons = _waiting_reasons(merge_state, checks if checks_current else None, base)
@@ -447,10 +460,11 @@ class PendingMergeController:
         current: ReviewRecord,
         checks: ReviewCheckReport,
         label: str,
+        task_id: int = 0,
     ) -> MergePlan:
         """Record the request for a red review and start repairing it right away."""
 
-        entry = self._record_request(chat_id, current)
+        entry = self._record_request(chat_id, current, task_id)
         number = entry.number
         fixing = entry.repair.active_attempt
         if fixing is not None:
@@ -513,7 +527,11 @@ class PendingMergeController:
             "pending_merge_cancelled",
             details=_details(target, reason="cancelled by request"),
         )
-        return f"Cancelled the pending merge for {target.label}. It will not be merged automatically."
+        message = (
+            f"Cancelled the pending merge for {target.label}. "
+            "It will not be merged automatically."
+        )
+        return f"{message} {QUEUE_RELEASED}" if target.task_id else message
 
     def entries(self) -> tuple[PendingMerge, ...]:
         with self._lock:
@@ -557,6 +575,21 @@ class PendingMergeController:
                     + (f" {watch.url}" if watch.url else "")
                 )
         return tuple(lines)
+
+    def holding(self) -> PendingMerge | None:
+        """The oldest pending merge of a task's review; it holds the task queue.
+
+        Never raises: unreadable state must not stop the queue.
+        """
+
+        try:
+            entries = self.entries()
+        except Exception:  # noqa: BLE001 - fail open; the queue keeps running
+            return None
+        held = [entry for entry in entries if entry.task_id > 0]
+        if not held:
+            return None
+        return min(held, key=lambda entry: entry.requested_at)
 
     def board_items(self) -> tuple[str, ...]:
         try:
@@ -653,7 +686,10 @@ class PendingMergeController:
             raise
         except Exception as error:  # noqa: BLE001 - one review must not stop the rest
             self._report_error("pending_merge_check_failed", error, entry)
-            return
+            stuck = self._stuck(entry, error)
+            if stuck is None:
+                return
+            outcome = stuck
         for name, status, details in outcome.events:
             self._record_event(name, status=status, details=details)
         if outcome.entry is None:
@@ -670,6 +706,21 @@ class PendingMergeController:
                 outcome.notice,
                 f"pending-merge:{entry.key}:{entry.requested_at}:{suffix}",
             )
+
+    def _stuck(self, entry: PendingMerge, error: Exception) -> _Outcome | None:
+        """Stop a merge whose checks keep failing once ``max_wait`` has passed."""
+
+        requested = _parse_time(entry.requested_at)
+        if requested is not None and self._now() - requested < self.max_wait:
+            return None
+        return _done(
+            entry,
+            f"⏹ Not merging {entry.label}: still not ready after {_span(self.max_wait)} "
+            f"(could not check it: {_update_reason(str(error))}). "
+            "Ask again to merge it when it is ready.",
+            "timeout",
+            error=str(error),
+        )
 
     def _process(self, entry: PendingMerge) -> _Outcome:
         current = self._inspect(entry.identity())
@@ -1459,7 +1510,12 @@ class PendingMergeController:
     def _load(self) -> tuple[PendingMerge, ...]:
         return load_pending_merges(self.root)
 
-    def _record_request(self, chat_id: ConversationId, current: ReviewRecord) -> PendingMerge:
+    def _record_request(
+        self,
+        chat_id: ConversationId,
+        current: ReviewRecord,
+        task_id: int = 0,
+    ) -> PendingMerge:
         head = _head(current)
         entry = PendingMerge(
             number=_number(current),
@@ -1471,6 +1527,7 @@ class PendingMergeController:
             requested_at=_format_time(self._now()),
             chat_id=chat_id,
             base_branch=_base_branch(current),
+            task_id=max(0, int(task_id or 0)),
         )
         with self._lock:
             entries = self._load()
@@ -1479,7 +1536,11 @@ class PendingMergeController:
             if previous is not None:
                 # A repeated request keeps the fix-attempt budget and any running
                 # fix task, so its push is still recognized.
-                entry = replace(entry, repair=previous.repair)
+                entry = replace(
+                    entry,
+                    repair=previous.repair,
+                    task_id=entry.task_id or previous.task_id,
+                )
                 attempt = previous.repair.active_attempt
                 if attempt is not None:
                     entry = entry.allow(attempt.head)
@@ -1565,6 +1626,9 @@ class PendingMergeController:
 
 
 def _done(entry: PendingMerge, notice: str, reason: str, **extra: object) -> _Outcome:
+    if entry.task_id:
+        # This merge held the task queue; its one stop notice says it moves on.
+        notice = f"{notice} {QUEUE_RELEASED}"
     return _Outcome(
         None,
         notice,
@@ -1657,11 +1721,16 @@ def _watch_details(watch: WatchedReview, **extra: object) -> dict[str, object]:
 _REVIEW_URL = re.compile(r"^https?://[^/]+/(?P<repository>.+?)/(?:-/)?(?:pull|pulls|merge_requests)/(?P<number>\d+)/?$")
 
 
-def _parse_review_url(url: str) -> tuple[str, int]:
+def parse_review_url(url: str) -> tuple[str, int]:
+    """``(owner/repository, number)`` of a forge review URL, or ``("", 0)``."""
+
     match = _REVIEW_URL.match(url.strip())
     if match is None:
         return "", 0
     return match.group("repository"), int(match.group("number"))
+
+
+_parse_review_url = parse_review_url
 
 
 def _signal(record: ReviewRecord, name: str) -> str:
@@ -1732,6 +1801,8 @@ def _details(entry: PendingMerge, **extra: object) -> dict[str, object]:
         "allowed_head_shas": list(entry.allowed_head_shas),
         "requested_at": entry.requested_at,
     }
+    if entry.task_id:
+        details["task_id"] = entry.task_id
     details.update(extra)
     return details
 
@@ -1776,6 +1847,7 @@ def _entry_to_json(entry: PendingMerge) -> dict[str, object]:
         "repair": ci_repair_to_json(entry.repair),
         "update_failures": entry.update_failures,
         "update_error": entry.update_error,
+        "task_id": entry.task_id,
     }
 
 
@@ -1804,6 +1876,10 @@ def _entry_from_json(item: object) -> PendingMerge | None:
         update_failures = max(0, int(item.get("update_failures") or 0))
     except (TypeError, ValueError):
         update_failures = 0
+    try:
+        task_id = max(0, int(item.get("task_id") or 0))
+    except (TypeError, ValueError):
+        task_id = 0
     return PendingMerge(
         number=number,
         url=str(item.get("url") or "").strip(),
@@ -1820,6 +1896,7 @@ def _entry_from_json(item: object) -> PendingMerge | None:
         repair=ci_repair_from_json(item.get("repair")),
         update_failures=update_failures,
         update_error=str(item.get("update_error") or "").strip(),
+        task_id=task_id,
     )
 
 

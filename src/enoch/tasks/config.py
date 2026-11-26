@@ -71,6 +71,38 @@ def save_task_timeout(timeout_seconds: int | None, root: Path | None = None) -> 
     return task_settings(root)
 
 
+PR_AUTO_MERGE_SECTION = "pr"
+PR_AUTO_MERGE_KEY = "auto_merge"
+
+
+def pr_auto_merge_enabled(root: Path | None = None) -> bool:
+    """Whether a task's single published review is merged when ready (default off).
+
+    Only the explicit stored value ``on`` enables it; anything else, including
+    a missing or unreadable setting, means off.
+    """
+
+    try:
+        raw = read_section(PR_AUTO_MERGE_SECTION, root).get(PR_AUTO_MERGE_KEY, "")
+    except (OSError, ValueError):
+        return False
+    return str(raw).strip().lower() == "on"
+
+
+def save_pr_auto_merge(enabled: bool, root: Path | None = None) -> bool:
+    write_section_value(
+        PR_AUTO_MERGE_SECTION,
+        PR_AUTO_MERGE_KEY,
+        "on" if enabled else "off",
+        root,
+    )
+    return pr_auto_merge_enabled(root)
+
+
+def format_pr_auto_merge(enabled: bool) -> str:
+    return "on" if enabled else "off"
+
+
 def format_task_timeout(seconds: int) -> str:
     if seconds % (60 * 60) == 0:
         return f"{seconds // (60 * 60)}h"

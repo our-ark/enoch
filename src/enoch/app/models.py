@@ -24,6 +24,8 @@ class WorkStatusMessage:
     latest_update: str = "Queued."
     reviews: list[str] = field(default_factory=list)
     context: str = ""
+    # "merge when ready" or "no merge" for a per-task merge override.
+    merge: str = ""
 
     @property
     def prs(self) -> list[str]:
