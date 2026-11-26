@@ -117,6 +117,10 @@ class TaskJob:
     # Chat message that carried the task's final result. Optional so queues
     # written before it existed still load unchanged.
     result_message_id: MessageId | None = None
+    # Per-task merge override from the human's own words: "auto" (merge when
+    # ready), "never" (no merge), or empty to follow /pr auto-merge. Optional
+    # so queues written before it existed still load unchanged.
+    merge_policy: str = ""
 
     # Compatibility aliases for task queue schema <= 11 and workflow API v1.
     @property
@@ -269,6 +273,7 @@ def enqueue_task(
     extension_metadata: dict[str, JsonValue] | None = None,
     extension_artifact_refs: tuple[ExtensionArtifactReference, ...] = (),
     execution_lane: str = "",
+    merge_policy: str = "",
 ) -> TaskJob:
     cleaned = " ".join(text.split())
     if not cleaned:
@@ -321,6 +326,7 @@ def enqueue_task(
             extension_artifact_refs=extension_artifact_refs,
             execution_lane=execution_lane,
             idempotency_key=idempotency_key.strip(),
+            merge_policy=_merge_policy(merge_policy),
         )
         pending = data.setdefault("pending", [])
         pending.append(_job_to_dict(job))
@@ -426,6 +432,7 @@ def retry_failed_task(
                 original.extension_artifact_refs
             ),
             execution_lane=original.execution_lane,
+            merge_policy=original.merge_policy,
         )
         pending = data.setdefault("pending", [])
         pending.append(_job_to_dict(job))
@@ -475,6 +482,7 @@ def enqueue_task_front(
     extension_metadata: dict[str, JsonValue] | None = None,
     extension_artifact_refs: tuple[ExtensionArtifactReference, ...] = (),
     execution_lane: str = "",
+    merge_policy: str = "",
 ) -> TaskJob:
     cleaned = " ".join(text.split())
     if not cleaned:
@@ -527,6 +535,7 @@ def enqueue_task_front(
             extension_artifact_refs=extension_artifact_refs,
             execution_lane=execution_lane,
             idempotency_key=idempotency_key.strip(),
+            merge_policy=_merge_policy(merge_policy),
         )
         pending = data.setdefault("pending", [])
         pending.insert(0, _job_to_dict(job))
@@ -564,6 +573,7 @@ def begin_direct_task(
     extension_metadata: dict[str, JsonValue] | None = None,
     extension_artifact_refs: tuple[ExtensionArtifactReference, ...] = (),
     execution_lane: str = "",
+    merge_policy: str = "",
 ) -> TaskJob:
     cleaned = " ".join(text.split())
     if not cleaned:
@@ -621,6 +631,7 @@ def begin_direct_task(
             extension_artifact_refs=extension_artifact_refs,
             execution_lane=execution_lane,
             idempotency_key=idempotency_key.strip(),
+            merge_policy=_merge_policy(merge_policy),
         )
         data["running"] = _job_to_dict(job)
         data["next_id"] = job.id + 1
@@ -737,7 +748,13 @@ def _message_key(value: object) -> str | None:
     return None if normalized is None else str(normalized)
 
 
-def begin_next_task(root: Path | None = None) -> TaskJob | None:
+def begin_next_task(
+    root: Path | None = None,
+    *,
+    triggers: frozenset[str] | None = None,
+) -> TaskJob | None:
+    """Start the first due pending task; with ``triggers``, only one of those."""
+
     with _queue_transaction(root):
         data = _load_queue(root)
         if _parse_job(data.get("running")) is not None:
@@ -755,6 +772,7 @@ def begin_next_task(root: Path | None = None) -> TaskJob | None:
                 index
                 for index, candidate in enumerate(pending)
                 if _task_is_due(candidate)
+                and (triggers is None or candidate.trigger in triggers)
                 and _lane_predecessors_finished(
                     candidate,
                     pending[:index],
@@ -2352,6 +2370,7 @@ def _parse_job(raw: object) -> TaskJob | None:
     terminal_evidence_at = str(raw.get("terminal_evidence_at") or "").strip()
     pause_trigger = str(raw.get("pause_trigger") or "").strip()
     result_message_id = normalize_message_id(raw.get("result_message_id"))
+    merge_policy = _merge_policy(raw.get("merge_policy"))
     if terminal_status and terminal_status not in {
         "completed",
         "failed",
@@ -2425,6 +2444,7 @@ def _parse_job(raw: object) -> TaskJob | None:
         terminal_evidence_at=terminal_evidence_at,
         pause_trigger=pause_trigger,
         result_message_id=result_message_id,
+        merge_policy=merge_policy,
     )
 
 
@@ -2499,6 +2519,7 @@ def _job_to_dict(job: TaskJob | None) -> dict:
             if job.result_message_id is not None
             else {}
         ),
+        **({"merge_policy": job.merge_policy} if job.merge_policy else {}),
     }
 
 
@@ -2565,9 +2586,15 @@ def _replace_job(job: TaskJob, **changes: object) -> TaskJob:
         "terminal_evidence_at": job.terminal_evidence_at,
         "pause_trigger": job.pause_trigger,
         "result_message_id": job.result_message_id,
+        "merge_policy": job.merge_policy,
     }
     values.update(changes)
     return TaskJob(**values)
+
+
+def _merge_policy(value: object) -> str:
+    text = str(value or "").strip().lower()
+    return text if text in {"auto", "never"} else ""
 
 
 def _next_id(data: dict) -> int:

@@ -111,6 +111,7 @@ class LocalWorkflowEngine:
         extension_metadata: dict[str, JsonValue] | None = None,
         extension_artifact_refs: tuple[ExtensionArtifactReference, ...] = (),
         execution_lane: str = "",
+        merge_policy: str = "",
     ) -> TaskJob:
         function = {
             "queued": enqueue_task,
@@ -152,11 +153,18 @@ class LocalWorkflowEngine:
                 extension_metadata=extension_metadata,
                 extension_artifact_refs=extension_artifact_refs,
                 execution_lane=execution_lane,
+                **({"merge_policy": merge_policy} if merge_policy else {}),
             )
 
-    def start_next(self) -> TaskJob | None:
+    def start_next(
+        self,
+        *,
+        triggers: frozenset[str] | None = None,
+    ) -> TaskJob | None:
         with self._mutation():
-            return begin_next_task(self.root)
+            if triggers is None:
+                return begin_next_task(self.root)
+            return begin_next_task(self.root, triggers=triggers)
 
     def claim(
         self,

@@ -12,6 +12,7 @@ import signal
 import threading
 import time
 from typing import Any, Callable
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 from enoch.quota import quota_command, quota_provider_label, quota_snapshots
@@ -133,6 +134,7 @@ from enoch.vcs_tools import (
     delete_branch,
     current_branch,
     ensure_clean_worktree,
+    run_git,
     switch_branch,
 )
 from enoch.workflows import (
@@ -357,13 +359,19 @@ from enoch.commands import (
     inherit_command,
     lineage_command,
     mission_command,
+    pr_auto_merge_status,
     pr_usage,
     runtime_command_reference,
     skills_command,
     status_message,
     worktree_usage,
 )
-from enoch.tasks.config import format_task_timeout, task_timeout_seconds
+from enoch.tasks.config import (
+    format_task_timeout,
+    pr_auto_merge_enabled,
+    save_pr_auto_merge,
+    task_timeout_seconds,
+)
 from enoch.tasks.failures import (
     TaskFailure,
     automatic_retry_delay_seconds,
@@ -439,7 +447,13 @@ from enoch.app.presentation import (
 )
 from enoch.state import StateCorruptionError
 from enoch.app.ci_repair import extract_ci_fix_results, record_ci_fix_result
-from enoch.app.pending_merges import PendingMergeController
+from enoch.app.merge_policy import (
+    RequestOptionError,
+    merge_policy_label,
+    split_request_options,
+    wants_auto_merge,
+)
+from enoch.app.pending_merges import PendingMerge, PendingMergeController, parse_review_url
 from enoch.app.task_board import (
     RenderedTaskBoard,
     TaskBoardState,
@@ -484,6 +498,9 @@ from enoch.application import (
 
 
 TASK_CONTEXT_SOURCE_CHAT = "chat-snapshot"
+# Trigger of the automatic CI fix tasks the pending-merge watcher queues.
+CI_REPAIR_TRIGGER = "ci-repair"
+CI_FIX_TRIGGERS = frozenset({CI_REPAIR_TRIGGER})
 NEEDS_CLARIFICATION_PREFIX = "NEEDS_CLARIFICATION:"
 NO_EXTRA_TASK_CONTEXT = "No extra context needed."
 _CURRENT_EVENT_KEY: ContextVar[str] = ContextVar("enoch_event_key", default="")
@@ -696,7 +713,7 @@ class EnochApplication:
                 self.root,
                 **kwargs,
             ),
-            after_land=self._reconcile_lineage_adoptions,
+            after_land=self._after_requested_merge,
             queue_fix=self._queue_ci_fix_task,
             task_status=self._task_status_for,
         )
@@ -851,9 +868,11 @@ class EnochApplication:
                 self.handle_event(event)
             self._run_due_evidence_scans()
             self._run_due_evolve_schedule()
+            # Merges first: a landed or stopped merge releases the task queue
+            # hold in the same cycle ("land before next").
+            self.pending_merges.tick()
             self._maybe_start_task_worker()
             self._maybe_start_lineage_worker()
-            self.pending_merges.tick()
             self._refresh_task_board()
         finally:
             self._drain_extension_task_events()
@@ -1169,6 +1188,8 @@ class EnochApplication:
             return spec.usage or f"{spec.command} - {spec.summary}"
         core_help = _help_message(topic, command_prefix=self.command_prefix)
         if topic.strip():
+            if topic.strip().lower().lstrip("/").split(maxsplit=1)[0] == "pr":
+                core_help += f"\n\nPR auto-merge: {pr_auto_merge_status(self.root)}."
             return core_help
         domain_only = self.presentation.default_help_scope == "domain" and not show_all
         sections = [] if domain_only else [core_help]
@@ -2039,6 +2060,13 @@ class EnochApplication:
         command, argument = _parse_chat_command(text)
         if command != "/do" or not argument:
             return f"Use {self.command_prefix}do <request> to run work now."
+        try:
+            options = split_request_options(argument)
+        except RequestOptionError as error:
+            return f"{error} Nothing was started."
+        argument, merge_policy = options.request, options.merge
+        if not argument:
+            return f"Use {self.command_prefix}do [--merge=auto|never] <request> to run work now."
         if not self.profile.workflow.allow_direct_work:
             return (
                 f"Profile {self.profile.display_name} does not permit immediate "
@@ -2062,24 +2090,30 @@ class EnochApplication:
                 source="chat-task",
                 trigger="/do",
                 reason=snapshot.codex_unavailable_reason,
+                merge_policy=merge_policy,
             )
         if snapshot.error:
             return f"{self.display_name} could not prepare conversation context for that {self.command_prefix}do request yet: {snapshot.error}"
         if snapshot.clarification:
             return f"{self.display_name} needs one clarification before running that: {snapshot.clarification}"
-        if running is not None:
+        held_by = self._land_hold_label()
+        if running is not None or held_by:
+            # Land before next also holds /do: it runs once the review lands.
             return self._queue_direct_work_next(
                 chat_id,
                 argument,
                 running,
                 context=snapshot.context,
                 context_source=snapshot.source,
+                merge_policy=merge_policy,
+                held_by=held_by,
             )
         return self._run_direct_work_with_status(
             chat_id,
             argument,
             context=snapshot.context,
             context_source=snapshot.source,
+            merge_policy=merge_policy,
         )
 
     def _resolve_task_context_snapshot(
@@ -2117,6 +2151,7 @@ class EnochApplication:
         context: str = "",
         context_source: str = "",
         session_key: str = "",
+        merge_policy: str = "",
     ) -> str:
         context = context.strip()
         context_source = context_source.strip()
@@ -2129,6 +2164,7 @@ class EnochApplication:
                 context=context,
                 context_source=context_source,
                 idempotency_key=_event_idempotency_key("direct"),
+                **_merge_option(merge_policy),
                 **self._profile_task_options(),
             )
         except TaskAlreadyExists as duplicate:
@@ -2147,7 +2183,9 @@ class EnochApplication:
         if not session_key:
             session_key = f"{self._session_key(chat_id)}:do:{direct_task.id}"
         if self._compact_task_messages():
-            status_text = _format_compact_task_start(direct_task.id, request)
+            status_text = _format_compact_task_start(
+                direct_task.id, request, direct_task.merge_policy
+            )
         else:
             status_text = self._format_work_status(
                 WorkStatusMessage(
@@ -2159,6 +2197,7 @@ class EnochApplication:
                     status="running",
                     latest_update="Starting work.",
                     context=context,
+                    merge=merge_policy_label(direct_task.merge_policy),
                 )
             )
         message_id = self._safe_send_message_id(
@@ -2370,10 +2409,12 @@ class EnochApplication:
         self,
         chat_id: int,
         request: str,
-        running: TaskJob,
+        running: TaskJob | None,
         *,
         context: str = "",
         context_source: str = "",
+        merge_policy: str = "",
+        held_by: str = "",
     ) -> str:
         try:
             job = self.workflow.enqueue(
@@ -2384,13 +2425,20 @@ class EnochApplication:
                 context=context,
                 context_source=context_source,
                 idempotency_key=_event_idempotency_key("direct-next"),
+                **_merge_option(merge_policy),
                 **self._profile_task_options(),
             )
         except (OSError, ValueError):
             return f"{self.display_name} could not queue that {self.command_prefix}do request."
+        waiting = (
+            f"running task #{running.id}"
+            if running is not None
+            else f"{held_by} to land"
+        )
         if self._compact_task_messages():
             # The board shows the queue; the start line is sent when it runs.
-            return _format_compact_task_queued(job.id)
+            queued = _format_compact_task_queued(job.id)
+            return queued if running is not None else f"{queued} Waiting for {held_by} to land."
         message = self._format_work_status(
             WorkStatusMessage(
                 chat_id=chat_id,
@@ -2399,8 +2447,9 @@ class EnochApplication:
                 started_at=time.monotonic(),
                 task_id=job.id,
                 status="queued",
-                latest_update=f"Queued next after running task #{running.id}.",
+                latest_update=f"Queued next after {waiting}.",
                 context=job.context,
+                merge=merge_policy_label(job.merge_policy),
             )
         )
         message_id = self._safe_send_message_id(
@@ -2413,7 +2462,7 @@ class EnochApplication:
             self._work_status_messages[job.id] = message_id
             self.workflow.record_status_message(job.id, message_id)
             return ""
-        return f"Queued task #{job.id} to run next after task #{running.id}."
+        return f"Queued task #{job.id} to run next after {waiting}."
 
     def _start_direct_work_worker(self, job: TaskJob, *, session_key: str) -> None:
         worker = threading.Thread(
@@ -2858,6 +2907,7 @@ class EnochApplication:
             merging=self.pending_merges.board_items(),
             backlog=self._task_board_backlog(),
             quota_line=self._task_board_quota_line(),
+            held_by=self._land_hold_label(),
         )
 
     def _task_board_quota_line(self) -> str:
@@ -3221,6 +3271,15 @@ class EnochApplication:
             return f"Use {self.command_prefix}task retry <id> to retry a failed or cancelled task as a new linked task."
         if subcommand == "resume" and resume_target is None:
             return f"Use {self.command_prefix}task resume <id|all> to continue paused tasks."
+        merge_policy = ""
+        if cancel_id is None and retry_id is None and resume_target is None:
+            try:
+                options = split_request_options(argument)
+            except RequestOptionError as error:
+                return f"{error} Nothing was queued."
+            argument, merge_policy = options.request, options.merge
+            if not argument:
+                return f"Use {self.command_prefix}task [--merge=auto|never] <request> to queue background work."
         if cancel_id is not None:
             cancelled = self.workflow.cancel(cancel_id)
             if cancelled is None:
@@ -3258,6 +3317,7 @@ class EnochApplication:
                 source="task",
                 trigger="/task",
                 reason=snapshot.codex_unavailable_reason,
+                merge_policy=merge_policy,
             )
         if snapshot.error:
             return f"{self.display_name} could not prepare conversation context for that task yet: {snapshot.error}"
@@ -3271,6 +3331,7 @@ class EnochApplication:
                 context=snapshot.context,
                 context_source=snapshot.source,
                 idempotency_key=_event_idempotency_key("task"),
+                **_merge_option(merge_policy),
                 **self._profile_task_options(),
             )
         except (OSError, ValueError):
@@ -3290,6 +3351,7 @@ class EnochApplication:
                 status="queued",
                 latest_update=f"Queued at position {position}.",
                 context=job.context,
+                merge=merge_policy_label(job.merge_policy),
             )
         )
         message_id = self._safe_send_message_id(
@@ -3377,6 +3439,7 @@ class EnochApplication:
         source: str,
         trigger: str,
         reason: str,
+        merge_policy: str = "",
     ) -> str:
         try:
             job = self.workflow.enqueue(
@@ -3389,6 +3452,7 @@ class EnochApplication:
                 event_actor="human",
                 trigger=trigger,
                 idempotency_key=_event_idempotency_key(f"paused:{trigger}"),
+                **_merge_option(merge_policy),
                 **self._profile_task_options(),
             )
             paused = self.workflow.pause(
@@ -3605,7 +3669,7 @@ class EnochApplication:
             source="task",
             initiated_by="agent",
             event_actor="system",
-            trigger="ci-repair",
+            trigger=CI_REPAIR_TRIGGER,
             idempotency_key=idempotency_key,
             **self._profile_task_options(),
         )
@@ -4490,7 +4554,12 @@ class EnochApplication:
             status = self.workflow.inspect()
             if status.running is not None or status.paused_count:
                 return
-            if status.pending_count == 0 and self._promote_next_backlog_if_idle() is None:
+            # Land before next: while a task's review is still merging, only
+            # its CI fix tasks may start, and nothing is promoted from backlog.
+            if self._land_hold() is not None:
+                if not any(_is_ci_fix_task(job) for job in status.pending):
+                    return
+            elif status.pending_count == 0 and self._promote_next_backlog_if_idle() is None:
                 return
             self._task_worker = threading.Thread(
                 target=self._run_task_worker,
@@ -4504,7 +4573,14 @@ class EnochApplication:
             while not self._stopping:
                 if self.restarts.restart_if_idle():
                     return
-                job = self.workflow.start_next()
+                if self._land_hold() is not None:
+                    # Land before next: only CI fix tasks run until the review
+                    # lands or its pending merge stops; the tick restarts us.
+                    job = self.workflow.start_next(triggers=CI_FIX_TRIGGERS)
+                    if job is None:
+                        return
+                else:
+                    job = self.workflow.start_next()
                 if job is None:
                     if self._promote_next_backlog_if_idle() is None:
                         return
@@ -4902,7 +4978,7 @@ class EnochApplication:
         created_status_message = False
         if message_id is None:
             if self._compact_task_messages():
-                status_text = _format_compact_task_start(job.id, job.text)
+                status_text = _format_compact_task_start(job.id, job.text, job.merge_policy)
             else:
                 status_text = self._format_work_status(
                     WorkStatusMessage(
@@ -4915,6 +4991,7 @@ class EnochApplication:
                         latest_update=start_update,
                         reviews=list(job.review_urls),
                         context=job.context,
+                        merge=merge_policy_label(job.merge_policy),
                     )
                 )
             message_id = self._safe_send_message_id(
@@ -4937,6 +5014,7 @@ class EnochApplication:
             latest_update=start_update,
             reviews=list(job.review_urls),
             context=job.context,
+            merge=merge_policy_label(job.merge_policy),
         )
         token = _CURRENT_WORK_STATUS.set(task_status)
         task_token = _CURRENT_TASK_ID.set(job.id)
@@ -5192,6 +5270,9 @@ class EnochApplication:
             )
             self._record_automatic_learning(summary_job, command=command, result=reply)
             self._watch_published_reviews(summary_job)
+            merge_note = self._apply_merge_policy_safely(summary_job)
+        else:
+            merge_note = ""
         if task_status is not None:
             task_status.reviews = list(summary_job.review_urls)
             if not compact:
@@ -5218,6 +5299,8 @@ class EnochApplication:
             reply,
             compact=compact,
         )
+        if merge_note:
+            final_message += f"\n\n{merge_note}"
         rejected_attachments = _CURRENT_OUTPUT_REJECTIONS.get()
         if rejected_attachments:
             final_message += (
@@ -5653,6 +5736,8 @@ class EnochApplication:
             except (ReviewProviderError, ForgeProviderError, CapabilityAuthorizationError) as error:
                 return f"{self.display_name} could not inspect that review: {error}"
             return _format_review(review)
+        if parts[0].lower() in {"auto-merge", "automerge", "auto_merge"}:
+            return self._pr_auto_merge(chat_id, parts[1:])
         if len(parts) != 2 or parts[0].lower() not in {"merge", "cancel"}:
             return pr_usage(self.command_prefix)
         allowed_chat_id = _allowed_conversation_id(self.client)
@@ -5672,7 +5757,7 @@ class EnochApplication:
             current = self.review.inspect_review(_review_identity(parts[1]), self.root)
             if current.state == "landed":
                 self.pending_merges.discard(current)
-                self._reconcile_lineage_adoptions()
+                self._after_requested_merge()
                 return _format_review_land_result(ReviewLandResult(
                     review=current.identity, status="landed", revision=current.landed_revision,
                     landed_at=current.landed_at,
@@ -5680,7 +5765,12 @@ class EnochApplication:
                 ))
             # A review that is not ready yet is recorded and landed later by the
             # pending-merge watcher; this request is its only authorization.
-            plan = self.pending_merges.plan(chat_id, current)
+            # A review an Enoch task published holds the queue until it lands.
+            plan = self.pending_merges.plan(
+                chat_id,
+                current,
+                task_id=self._task_for_review(current.identity.url or parts[1]),
+            )
             if plan.action != "land":
                 return plan.message
             result = self.effect_fence.run_authorized(
@@ -5697,8 +5787,224 @@ class EnochApplication:
             return f"{self.display_name} could not land that review: {error}"
         except (OSError, StateCorruptionError) as error:
             return f"{self.display_name} could not record that merge request: {error}"
-        self._reconcile_lineage_adoptions()
+        self._after_requested_merge()
         return _format_review_land_result(result)
+
+    def _pr_auto_merge(self, chat_id: ConversationId, values: list[str]) -> str:
+        command = f"{self.command_prefix}pr auto-merge"
+        if not values:
+            return (
+                f"PR auto-merge: {pr_auto_merge_status(self.root)}. "
+                f"Change it with {command} on|off."
+            )
+        if len(values) != 1 or values[0].lower() not in {"on", "off"}:
+            return f"Use {command} on|off, or {command} to show the setting."
+        allowed_chat_id = _allowed_conversation_id(self.client)
+        if allowed_chat_id is None or allowed_chat_id != chat_id:
+            return (
+                f"{self.display_name} will only change merge authorization from her locked "
+                f"{provider_label(self.channel_name)} conversation."
+            )
+        try:
+            enabled = save_pr_auto_merge(values[0].lower() == "on", self.root)
+        except (OSError, StateCorruptionError) as error:
+            return f"{self.display_name} could not save PR auto-merge: {error}"
+        _record_system_event(
+            "pr_auto_merge_changed",
+            self.root,
+            details={"enabled": enabled},
+        )
+        if enabled:
+            return (
+                "PR auto-merge is on. When a task finishes with exactly one PR on this "
+                "repository, I merge it when it is ready, like /pr merge, and the next "
+                "queued task waits for it to land. Start a request with --merge=never to "
+                "skip one task."
+            )
+        return (
+            "PR auto-merge is off. Task PRs are merged only when you ask, or when a "
+            "request starts with --merge=auto."
+        )
+
+    def _after_requested_merge(self) -> None:
+        """Hook point after a requested merge lands, including auto-merges.
+
+        Runs for /pr merge, the pending-merge watcher, and merges registered by
+        the PR auto-merge policy, which all count as requested merges.
+        """
+
+        self._reconcile_lineage_adoptions()
+
+    # Land before next ------------------------------------------------------
+
+    def _land_hold(self) -> PendingMerge | None:
+        """The pending merge of a task's review that holds the task queue."""
+
+        return self.pending_merges.holding()
+
+    def _land_hold_label(self) -> str:
+        """``#N`` of the review holding the queue, for the board; never raises."""
+
+        try:
+            hold = self._land_hold()
+        except Exception:  # noqa: BLE001 - the board must still render
+            return ""
+        if hold is None:
+            return ""
+        return f"#{hold.number}" if hold.number else hold.label
+
+    def _apply_merge_policy_safely(self, job: TaskJob) -> str:
+        try:
+            return self._apply_merge_policy(job)
+        except StaleDaemonEpoch:
+            raise
+        except Exception as error:  # noqa: BLE001 - must not fail a finished task
+            _record_system_event(
+                "pr_auto_merge_failed",
+                self.root,
+                status="failed",
+                details={"task_id": job.id, "error": str(error)},
+            )
+            return f"Not merging automatically: {error}"
+
+    def _published_reviews(self, job: TaskJob) -> tuple[str, ...]:
+        """Reviews ``job`` published, not ones its request only mentioned."""
+
+        requested = f"{job.text}\n{job.context}"
+        return tuple(url for url in job.review_urls if url not in requested)
+
+    def _authoritative_repository(self) -> str:
+        """``owner/name`` of the authoritative remote, or empty when unknown."""
+
+        try:
+            provider = load_provider("vcs", self.root)
+            remote = str(getattr(provider, "remote", "") or "origin")
+            result = run_git(["remote", "get-url", remote], self.root)
+        except Exception:  # noqa: BLE001 - unknown means never auto-merge
+            return ""
+        if result.returncode != 0:
+            return ""
+        return _repository_from_remote_url(result.stdout)
+
+    def _is_authoritative_review(self, url: str) -> bool:
+        repository, number = parse_review_url(url)
+        expected = self._authoritative_repository()
+        return bool(repository and number and expected) and (
+            repository.casefold() == expected.casefold()
+        )
+
+    def _task_for_review(self, reference: str) -> int:
+        """The completed task that published this review on this repository, or 0."""
+
+        repository, number = parse_review_url(reference)
+        if not repository or not number:
+            return 0
+        try:
+            history = self.workflow.inspect().history
+        except Exception:  # noqa: BLE001 - linking is best effort
+            return 0
+        for job in sorted(history, key=lambda item: item.id, reverse=True):
+            if job.status != "completed" or job.trigger == CI_REPAIR_TRIGGER:
+                continue
+            for url in self._published_reviews(job):
+                found_repository, found_number = parse_review_url(url)
+                if (
+                    found_number == number
+                    and found_repository.casefold() == repository.casefold()
+                ):
+                    return job.id if self._is_authoritative_review(url) else 0
+        return 0
+
+    def _apply_merge_policy(self, job: TaskJob) -> str:
+        """Register a finished task's single review for merging; returns a note.
+
+        Applies when /pr auto-merge is on or the task says --merge=auto, unless
+        it says --merge=never. Only exactly one review on the authoritative
+        repository is merged; with zero or several, nothing is merged and the
+        note says so. Enoch's own automatic tasks (CI fixes) are never merged.
+        """
+
+        if job.trigger == CI_REPAIR_TRIGGER or job.initiated_by != "human":
+            return ""
+        enabled = pr_auto_merge_enabled(self.root)
+        if not wants_auto_merge(job.merge_policy, enabled=enabled):
+            return ""
+        published = self._published_reviews(job)
+        on_repository = [url for url in published if self._is_authoritative_review(url)]
+        if len(on_repository) != 1:
+            if on_repository:
+                labels = ", ".join(_review_label(url) for url in on_repository)
+                note = (
+                    f"Not merging automatically: task #{job.id} published "
+                    f"{len(on_repository)} PRs ({labels}). Merge the one you want with "
+                    f"{self.command_prefix}pr merge <number>."
+                )
+            else:
+                note = (
+                    f"Not merging automatically: task #{job.id} published no PR on this "
+                    "repository."
+                )
+            _record_system_event(
+                "pr_auto_merge_skipped",
+                self.root,
+                details={"task_id": job.id, "reviews": list(on_repository)},
+            )
+            return note
+        return self._auto_merge_review(job, on_repository[0])
+
+    def _auto_merge_review(self, job: TaskJob, url: str) -> str:
+        """Run /pr merge for ``url`` on behalf of the policy, pinned to its current head."""
+
+        label = _review_label(url)
+        allowed_chat_id = _allowed_conversation_id(self.client)
+        if allowed_chat_id is None or allowed_chat_id != job.chat_id:
+            return (
+                f"Not merging {label} automatically: merges are only requested from "
+                f"{self.display_name}'s locked conversation."
+            )
+        try:
+            self.authorization.require("forge.inspect", ("forge.inspect",))
+            current = self.review.inspect_review(_review_identity(url), self.root)
+            if current.state == "landed":
+                self.pending_merges.discard(current)
+                self._after_requested_merge()
+                return f"{label} is already merged."
+            plan = self.pending_merges.plan(job.chat_id, current, task_id=job.id)
+            _record_system_event(
+                "pr_auto_merge_requested",
+                self.root,
+                details={
+                    "task_id": job.id,
+                    "review": url,
+                    "head": current.versions[-1].revision.id if current.versions else "",
+                    "policy": job.merge_policy or "setting",
+                    "action": plan.action,
+                },
+            )
+            if plan.action != "land":
+                hold = self._land_hold()
+                waits = (
+                    " The next queued task waits for it to land."
+                    if hold is not None and hold.task_id == job.id
+                    else ""
+                )
+                return f"Auto-merge: {plan.message}{waits}"
+            head = plan.expected_revision or (
+                current.versions[-1].revision.id if current.versions else ""
+            )
+            result = self.effect_fence.run_authorized(
+                "forge.land",
+                ("forge.land",),
+                self.review.land_review,
+                ReviewLandRequest(_review_identity(url), expected_revision=head),
+                root=self.root,
+            )
+        except (ReviewProviderError, ForgeProviderError, CapabilityAuthorizationError) as error:
+            return f"{self.display_name} could not merge {label} automatically: {error}"
+        except (OSError, StateCorruptionError) as error:
+            return f"{self.display_name} could not record the merge of {label}: {error}"
+        self._after_requested_merge()
+        return f"Auto-merge: {_format_review_land_result(result)}"
 
     def _update(self) -> str:
         if not self._action_allowed():
@@ -6148,6 +6454,39 @@ def _replied_message_text(message: dict[str, Any]) -> str:
         if isinstance(value, str) and value.strip():
             return value.strip()
     return ""
+
+
+def _is_ci_fix_task(job: TaskJob) -> bool:
+    """An automatic CI fix task; these still run while a review is landing."""
+
+    return job.trigger in CI_FIX_TRIGGERS
+
+
+def _merge_option(merge_policy: str) -> dict[str, str]:
+    """``merge_policy`` keyword for workflow.enqueue, only when it is set."""
+
+    return {"merge_policy": merge_policy} if merge_policy else {}
+
+
+def _review_label(url: str) -> str:
+    _repository, number = parse_review_url(url)
+    return f"PR #{number}" if number else url
+
+
+def _repository_from_remote_url(url: str) -> str:
+    """``owner/name`` from an https, ssh or scp-style git remote URL."""
+
+    text = url.strip()
+    if "://" in text:
+        path = urlsplit(text).path
+    elif ":" in text:
+        path = text.split(":", 1)[1]
+    else:
+        return ""
+    path = path.strip("/")
+    if path.endswith(".git"):
+        path = path[: -len(".git")]
+    return path if "/" in path else ""
 
 
 def _review_identity(reference: str) -> ReviewIdentity:

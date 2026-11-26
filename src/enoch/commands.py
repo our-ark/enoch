@@ -12,7 +12,7 @@ from enoch.brain import (
 )
 from enoch.app.restarts import restart_usage
 from enoch.command_surface import lineage_usage
-from enoch.config import write_section_value
+from enoch.config import read_section, write_section_value
 from enoch.agent_identity import AgentIdentityError, load_active_agent_identity
 from enoch.identity import Identity, identity_file_path, load_identity, update_mission
 from enoch.identity_context import display_ancestor
@@ -48,8 +48,10 @@ from enoch.profiles import ProfileError, available_profiles, load_profile
 from enoch.quota import quota_usage
 from enoch.skills import skills_command
 from enoch.tasks.config import (
+    format_pr_auto_merge,
     format_task_timeout,
     parse_task_timeout,
+    pr_auto_merge_enabled,
     save_task_timeout,
     task_settings,
 )
@@ -510,6 +512,7 @@ def config_status(
     lines = [
         "Enoch config:",
         f"- Task timeout: {format_task_timeout(settings.timeout_seconds)}{default}",
+        f"- PR auto-merge: {pr_auto_merge_status(root)}",
         f"- Profile: {active_profile_name or _selected_profile_name(root)}",
         f"- Providers: {_provider_summary(root)}",
         "",
@@ -532,6 +535,7 @@ def config_status(
                 f"or {command} reasoning-effort default."
             ),
             f"Set task timeout with {command} task-timeout <duration> or {command} task-timeout default.",
+            f"Set PR auto-merge with {prefix}pr auto-merge on|off.",
         ]
     )
     if callable(getattr(runtime, "configure", None)):
@@ -539,6 +543,17 @@ def config_status(
             f"Use {command} runtime {runtime.name} to see provider-specific runtime settings."
         )
     return "\n".join(lines)
+
+
+def pr_auto_merge_status(root: Path | None) -> str:
+    """``on`` or ``off``, marking the never-changed default."""
+
+    try:
+        stored = read_section("pr", root).get("auto_merge", "").strip()
+    except (OSError, ValueError):
+        stored = ""
+    value = format_pr_auto_merge(pr_auto_merge_enabled(root))
+    return value if stored else f"{value} (default)"
 
 
 def model_config_status(
@@ -890,6 +905,20 @@ def pr_usage(prefix: str = "/") -> str:
             f"{prefix}pr show <review id or URL> - inspect one review",
             f"{prefix}pr merge <review id or URL> - land exactly that review end to end, now or when it is ready",
             f"{prefix}pr cancel <review id or URL> - stop waiting to merge that review",
+            f"{prefix}pr auto-merge on|off - merge each task's PR when it is ready (default off)",
+            (
+                "Land before next: with auto-merge on, a task that published exactly one PR "
+                "on this repository has it merged as if you ran pr merge on the head it "
+                "finished with; zero or several PRs are never merged, you are told instead. "
+                "Per task, start a do or task request with --merge=never (don't merge) or "
+                "--merge=auto (merge when ready, even when off); other options are rejected."
+            ),
+            (
+                "While a task's PR has a pending merge, the next queued task waits for it to "
+                "land (CI fix tasks for it still run first). If the merge stops, is cancelled "
+                "or times out, you get one notice and the queue continues. A PR without a "
+                "pending merge never holds the queue."
+            ),
             "A specific review target is required. Natural-language requests resolve it from the conversation and inspect its current state before acting.",
             (
                 "If the review is not ready yet (behind its base branch, CI running, or blocked), "
@@ -985,6 +1014,10 @@ def _task_usage(prefix: str) -> str:
         [
             "Task commands:",
             f"{command} <request> - queue background work for Enoch",
+            (
+                f"{command} --merge=auto|never <request> - merge this task's PR when it is "
+                f"ready, or never, regardless of {prefix}pr auto-merge (also for {prefix}do)"
+            ),
             f"{command} cancel <id> - cancel a queued background task",
             f"{command} resume <id|all> - continue paused tasks with the same ids",
             f"{command} retry <id> - retry a failed or cancelled task as a new linked task",

@@ -62,9 +62,14 @@ class WorkflowEngine(Protocol):
         extension_metadata: dict[str, JsonValue] | None = None,
         extension_artifact_refs: tuple[ExtensionArtifactReference, ...] = (),
         execution_lane: str = "",
+        merge_policy: str = "",
     ) -> TaskJob: ...
 
-    def start_next(self) -> TaskJob | None: ...
+    def start_next(
+        self,
+        *,
+        triggers: frozenset[str] | None = None,
+    ) -> TaskJob | None: ...
 
     def claim(
         self,
