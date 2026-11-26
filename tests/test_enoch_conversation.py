@@ -381,7 +381,7 @@ class ReplyAfterQueuedWorkTests(unittest.TestCase):
                 order = []
                 chat.send_message = Mock(side_effect=lambda chat_id, text: order.append(("sent", text)) or "m")
 
-                def restart_from_chat():
+                def restart_from_chat(_argument=""):
                     app._restart_after_reply = True
                     return "Enoch is restarting."
 
