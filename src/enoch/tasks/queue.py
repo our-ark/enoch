@@ -32,9 +32,10 @@ from enoch.tasks.payloads import (
     require_extension_payload_namespace,
 )
 from enoch.state import StateCorruptionError, file_transaction, load_json_object
+from enoch.tasks.recovery import RECOVERY_HOLD_TRIGGER, ExtensionRecoveryDecision
 
 
-SCHEMA_VERSION = 15
+SCHEMA_VERSION = 16
 DEFAULT_MAX_ATTEMPTS = 3
 # Pause trigger for a task interrupted by a daemon restart. Such tasks resume
 # automatically once the daemon is back instead of waiting for runtime access.
@@ -45,6 +46,7 @@ ReconciliationOutcome = Literal[
     "interrupted_worker_recovery",
     "conflict",
     "unsupported_evidence",
+    "extension_recovery",
 ]
 TerminalTaskStatus = Literal["completed", "failed", "cancelled"]
 LEGACY_REVIEW_URL_PATTERN = re.compile(
@@ -121,6 +123,10 @@ class TaskJob:
     # ready), "never" (no merge), or empty to follow /pr auto-merge. Optional
     # so queues written before it existed still load unchanged.
     merge_policy: str = ""
+
+    @property
+    def needs_attention(self) -> bool:
+        return self.status == "paused" and self.pause_trigger == RECOVERY_HOLD_TRIGGER
 
     # Compatibility aliases for task queue schema <= 11 and workflow API v1.
     @property
@@ -347,6 +353,17 @@ def retry_failed_task(
 ) -> TaskJob:
     with _queue_transaction(root):
         data = _load_queue(root)
+        held = next((job for job in _paused_jobs(data)
+                     if job.id == task_id and job.pause_trigger == RECOVERY_HOLD_TRIGGER), None)
+        if held is not None:
+            if event_actor != "human":
+                raise TaskRetryError("Recovery holds require an explicit operator retry or cancel.")
+            original_held = _replace_job(
+                held, status="cancelled", completed_at=current_time(),
+                result=held.result + "\nSuperseded by an operator-requested retry.",
+            )
+            data["paused"] = [_job_to_dict(job) for job in _paused_jobs(data) if job.id != task_id]
+            data["history"] = [*data.get("history", []), _job_to_dict(original_held)]
         original = next(
             (
                 job
@@ -390,13 +407,19 @@ def retry_failed_task(
                 f"in status {latest.status}."
             )
         artifact_result = reconciled_result.strip()
+        retry_context = original.context
+        if held is not None:
+            retry_context += (
+                "\n\nOperator-requested retry after an extension recovery hold:\n"
+                + held.result
+            )
         publication_only = _job_has_unpublished_revision(original) and not task_result_has_review(artifact_result)
         job = TaskJob(
             id=_next_id(data),
             chat_id=original.chat_id,
             text=original.text,
             created_at=current_time(),
-            context=original.context,
+            context=retry_context,
             context_source=original.context_source,
             source=original.source,
             initiated_by="human",
@@ -438,6 +461,9 @@ def retry_failed_task(
         pending.append(_job_to_dict(job))
         data["next_id"] = job.id + 1
         _write_queue(data, root)
+        if held is not None:
+            _record_task_event_safely(original_held, "cancelled", root,
+                                      event_actor=event_actor, trigger=trigger, result=original_held.result)
         _record_task_event_safely(
             job,
             "created",
@@ -1111,7 +1137,8 @@ def resume_paused_tasks(
         selected = [
             job
             for job in paused
-            if task_id is None or job.id == task_id
+            if (task_id is None or job.id == task_id)
+            and job.pause_trigger != RECOVERY_HOLD_TRIGGER
         ]
         if not selected:
             return ()
@@ -1639,6 +1666,90 @@ def cancel_running_task(
             result=result,
         )
         return cancelled
+
+
+def prepare_extension_recovery(
+    expected: TaskJob, root: Path, *, worker_liveness: Callable[[TaskJob], bool],
+) -> TaskJob | None:
+    """Park an inactive task before invoking untrusted-duration recovery advice."""
+    with _queue_transaction(root):
+        data = _load_queue(root)
+        running = _parse_job(data.get("running"))
+        if running != expected or running is None or worker_liveness(running):
+            return None
+        terminal, _, conflict = _terminal_reconciliation_evidence(running)
+        if terminal or conflict:
+            return None
+        held = _replace_job(
+            running, status="paused", pause_trigger=RECOVERY_HOLD_TRIGGER,
+            failure_code="extension_recovery_hold", failure_class="needs_attention",
+            context=((running.context + "\n\nInterrupted task result:\n" + running.result).strip()
+                     if running.result else running.context),
+            result="Recovery decision pending. Operator retry or cancel is required if recovery is interrupted.",
+        )
+        data["running"] = None
+        data["paused"] = [*data.get("paused", []), _job_to_dict(held)]
+        _write_queue(data, root)
+        _record_task_event_safely(held, "paused", root, event_actor="system",
+                                  trigger=RECOVERY_HOLD_TRIGGER, result=held.result)
+        return held
+
+
+def apply_extension_recovery(
+    held: TaskJob, decision: ExtensionRecoveryDecision, root: Path, *, checked_at: str,
+) -> TaskReconciliationResult:
+    with _queue_transaction(root):
+        data = _load_queue(root)
+        current = next((job for job in _paused_jobs(data) if job.id == held.id), None)
+        if current != held:
+            return TaskReconciliationResult(
+                outcome="conflict", checked_at=checked_at, task_id=held.id,
+                reason="Task changed during extension recovery.", recorded=False,
+            )
+        source = f"extension-recovery:{held.context_source.removeprefix('extension:')}"
+        evidence = decision.evidence
+        if decision.action == "requeue" and held.attempt >= held.max_attempts:
+            evidence = TaskTerminalEvidence(
+                "failed", "Extension recovery exhausted the task attempt limit.",
+                source=source, failure_code="worker_interrupted", failure_class="transient", retryable=True,
+            )
+        updates = dict(worker_id="", worker_pid=None, worker_heartbeat_at="", worker_lease_id="")
+        if evidence is not None:
+            finished = _replace_job(
+                held, **updates, status=evidence.status, completed_at=checked_at,
+                result=evidence.result, terminal_status=evidence.status,
+                terminal_evidence_source=source, terminal_evidence_at=checked_at,
+                failure_code=evidence.failure_code, failure_class=evidence.failure_class,
+                retryable=evidence.retryable,
+            )
+            data["history"] = [*data.get("history", []), _job_to_dict(finished)]
+        elif decision.action == "requeue":
+            context = held.context
+            if decision.note.strip():
+                context += "\n\nExtension recovery note:\n" + decision.note.strip()
+            finished = _replace_job(
+                held, **updates, status="pending", started_at="", context=context,
+                pause_trigger="", failure_code="worker_interrupted", failure_class="transient",
+                retryable=True, next_attempt_at="", result=decision.note,
+            )
+            data["pending"] = [_job_to_dict(finished), *data.get("pending", [])]
+        else:
+            finished = _replace_job(held, **updates, result=decision.note or held.result)
+        data["paused"] = [_job_to_dict(job) for job in _paused_jobs(data) if job.id != held.id]
+        if finished.status == "paused":
+            data["paused"].append(_job_to_dict(finished))
+        result = TaskReconciliationResult(
+            outcome="extension_recovery", checked_at=checked_at, task_id=held.id,
+            previous_status="running", resulting_status=finished.status,
+            evidence=(source,), reason=finished.result,
+        )
+        data["reconciliation"] = _reconciliation_to_dict(result)
+        _write_queue(data, root)
+        _record_task_event_safely(
+            finished, "queued" if finished.status == "pending" else finished.status,
+            root, event_actor="system", trigger=source, result=finished.result,
+        )
+        return result
 
 
 def recover_interrupted_task(root: Path | None = None) -> TaskJob | None:
@@ -2216,6 +2327,7 @@ def _parse_reconciliation(raw: object) -> TaskReconciliationResult | None:
         "interrupted_worker_recovery",
         "conflict",
         "unsupported_evidence",
+        "extension_recovery",
     }:
         return None
     task_id = _positive_int(raw.get("task_id"))

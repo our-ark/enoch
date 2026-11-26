@@ -124,7 +124,7 @@ class EnochTaskQueueTests(unittest.TestCase):
         )
         self.assertEqual(loaded.review_url, loaded.review_urls[0])
         self.assertTrue(loaded.review_published)
-        self.assertEqual(rewritten["schema_version"], 15)
+        self.assertEqual(rewritten["schema_version"], 16)
         self.assertEqual(persisted["workspace_id"], "legacy-workspace-id")
         self.assertEqual(persisted["revision_id"], "legacy-revision")
         self.assertEqual(persisted["extension_metadata"], {})

@@ -262,8 +262,11 @@ def _render_body(
             [_running_item(status.running)] if status.running is not None else [],
         ),
         _Section(queued, [_task_item(job) for job in status.pending]),
-        _Section("Paused", [_task_item(job) for job in status.paused]),
+        _Section("Paused", [_task_item(job) for job in status.paused if not job.needs_attention]),
     ]
+    held = [job for job in status.paused if job.needs_attention]
+    if held:
+        sections.append(_Section("Needs attention (retry or cancel)", [_task_item(job) for job in held]))
     if merging:
         sections.append(
             _Section("Merging", [f"- {_short(item, REQUEST_LIMIT)}" for item in merging])

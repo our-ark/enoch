@@ -86,7 +86,7 @@ STATE_FILE_SCHEMAS = (
     StateFileSchema("conversation/*.json", 1, (("steps", []),), (("steps", (list,)),)),
     StateFileSchema(
         "task_queue.json",
-        15,
+        16,
         (
             ("next_id", 1),
             ("pending", []),

@@ -10,6 +10,16 @@ the lightweight suites from `our_ark_provider_kit.conformance`. Packages that
 extend the complete agent can import the same provider suites plus workflow and
 profile suites from `enoch.conformance`.
 
+## Extension recovery
+
+`WorkflowEngineConformanceMixin` checks the optional `extension_recovery` feature
+when declared: requeue context, hold across restart, terminal finalization,
+hook exception/timeout fallback, explicit cancellation, and stale-epoch rejection.
+Engines without the feature skip these checks and retain the base API v4 contract.
+The public types are `ExtensionRecoverySnapshot`, `ExtensionRecoveryDecision`,
+`ExtensionRecoveryHook`, and `ExtensionRecoveryWorkflow`; the recovery contract is
+independently versioned by `EXTENSION_RECOVERY_API_VERSION = 1`.
+
 ## Provider contract
 
 Combine `ProviderContractConformanceMixin` with `unittest.TestCase`, declare the

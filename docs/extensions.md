@@ -16,7 +16,7 @@ The version 1 API provides:
 - a constrained façade over Enoch's single governed workflow.
 
 Extensions do not receive polling ownership, provider selection, task execution,
-recovery, publication, finalization, or raw queue mutation APIs. They can
+publication, finalization, or raw queue mutation APIs. They can
 enqueue and inspect work, then request bounded lifecycle transitions through
 `ExtensionWorkflow`; Enoch remains the single lifecycle owner.
 
@@ -389,6 +389,58 @@ Applications embedding Enoch may pass `extensions=` directly to
 Command names must be globally unique across Enoch core commands, the active
 profile, and every loaded extension. Invalid or conflicting selections fail at
 startup so `/help` remains authoritative.
+
+### Interrupted-task recovery
+
+`ExtensionLifecycleHooks.on_task_recovery(snapshot)` is an optional bounded
+advisory hook. `EXTENSION_RECOVERY_API_VERSION = 1` defines its public contract.
+The application registers it with the authoritative workflow before startup
+recovery. Custom engines must declare the optional `extension_recovery` feature
+and implement `ExtensionRecoveryWorkflow.configure_extension_recovery()`;
+otherwise configuring an extension with this hook fails explicitly at startup.
+Base workflow API v4 and extensions without the hook retain their existing behavior.
+
+The `ExtensionRecoverySnapshot` contains the owner name and a detached `TaskJob`
+snapshot: ID, attempt and limit, heartbeat/lease, metadata, artifact references,
+publication and runtime evidence. Only the task's `context_source` owner receives
+it. Existing durable terminal evidence and conflict rules take precedence.
+
+```python
+from enoch.extensions import ExtensionRecoveryDecision, ExtensionLifecycleHooks
+from enoch.workflows import TaskTerminalEvidence
+
+def recover(snapshot):
+    verified = inspect_existing_artifact(snapshot.task.extension_metadata)
+    if verified:
+        return ExtensionRecoveryDecision(
+            "finalize",
+            evidence=TaskTerminalEvidence("completed", "Artifact independently verified."),
+        )
+    return ExtensionRecoveryDecision("hold", "Inspect the remote artifact before retrying.")
+
+hooks = ExtensionLifecycleHooks(on_task_recovery=recover)
+```
+
+Decisions are `requeue` (optional note appended to the next attempt's context),
+`hold`, or `finalize` (requires typed terminal evidence). Attempts remain bounded.
+The engine alone applies the decision under its epoch fence and queue transaction,
+checking that the task has not changed while the hook ran. Finalization records
+an `extension-recovery:<owner>` evidence source and a terminal event once.
+
+Before calling the hook, the engine durably parks the task in the paused bucket
+with `pause_trigger=extension-recovery-hold` and `needs_attention=True`. This is
+not a runtime-access pause: automatic recovery and `/task resume` never release
+it. A crash before a decision, exception, invalid result, or timeout leaves it
+held for an explicit human `/task retry <id>` or `/task cancel <id>`. A retry
+creates a new linked task and cancels the old hold with an audit event. The queue
+and task board label these holds as needing attention. Queue schema v16 records
+these semantics, so older applications reject the state at startup.
+
+Hooks have a five-second default deadline (custom embedding hosts may configure
+the engine timeout). They run outside queue and epoch locks. Trusted Python
+cannot be forcibly stopped: a timed-out hook may finish later, but its decision
+is discarded. Hooks should inspect evidence without producing external side
+effects; the snapshot is not a capability sandbox.
 
 ## Trust and compatibility
 

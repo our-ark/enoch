@@ -3,15 +3,18 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
+import threading
 from typing import Any
 
 from enoch.app.epoch import DaemonEpoch, StaleDaemonEpoch, begin_daemon_epoch
 from enoch.tasks.payloads import ExtensionArtifactReference
+from enoch.tasks.recovery import ExtensionRecoveryDecision
 from enoch.workflows import (
     WORKFLOW_API_VERSION,
     WORKFLOW_FEATURE_ARTIFACT_REFERENCES,
     WORKFLOW_FEATURE_EXECUTION_LANES,
     WORKFLOW_FEATURE_STRUCTURED_METADATA,
+    WORKFLOW_FEATURE_EXTENSION_RECOVERY,
     TaskReconciliationRequest,
     TaskTerminalEvidence,
     WorkflowEngine,
@@ -32,6 +35,74 @@ class WorkflowEngineConformanceMixin:
 
     def begin_fencing_epoch(self, root: Path) -> DaemonEpoch:
         return begin_daemon_epoch(root, provider="conformance")
+
+    def test_conformance_extension_recovery_decisions(self) -> None:
+        for action in ("requeue", "hold", "finalize", "exception", "timeout"):
+            with self.subTest(action=action), TemporaryDirectory() as directory:
+                root = Path(directory)
+                engine = self._new_engine(root)
+                if WORKFLOW_FEATURE_EXTENSION_RECOVERY not in workflow_features(engine):
+                    self.skipTest("Engine does not declare extension recovery.")
+                release = threading.Event()
+
+                def recovery(_snapshot):
+                    if action == "exception":
+                        raise ValueError("unavailable evidence")
+                    if action == "timeout":
+                        release.wait(1)
+                        return ExtensionRecoveryDecision("requeue")
+                    if action == "finalize":
+                        return ExtensionRecoveryDecision(
+                            action, evidence=TaskTerminalEvidence("completed", "verified"),
+                        )
+                    return ExtensionRecoveryDecision(action, "inspect existing artifact")
+
+                engine.configure_extension_recovery(
+                    {"conformance": recovery},
+                    timeout_seconds=0.02 if action == "timeout" else 1.0,
+                )
+                job = engine.enqueue(42, "recover extension task", context_source="extension:conformance")
+                engine.start_next()
+                try:
+                    engine.reconcile()
+                finally:
+                    release.set()
+                recovered = engine.find(job.id)
+                if action == "requeue":
+                    self.assertEqual(recovered.status, "pending")
+                    self.assertIn("inspect existing artifact", recovered.context)
+                    self.assertEqual(engine.start_next().attempt, 2)
+                elif action == "finalize":
+                    self.assertEqual(recovered.status, "completed")
+                    self.assertEqual(recovered.terminal_evidence_source, "extension-recovery:conformance")
+                    engine.reconcile()
+                    self.assertEqual(len(engine.inspect().history), 1)
+                else:
+                    self.assertTrue(recovered.needs_attention)
+                    epoch = self.begin_fencing_epoch(root)
+                    restarted = self.create_workflow(root, epoch=epoch)
+                    restarted.recover()
+                    self.assertEqual(restarted.resume(), ())
+                    self.assertTrue(restarted.find(job.id).needs_attention)
+                    self.assertEqual(restarted.cancel(job.id).status, "cancelled")
+
+    def test_conformance_extension_recovery_rejects_stale_decisions(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            engine = self._new_engine(root)
+            if WORKFLOW_FEATURE_EXTENSION_RECOVERY not in workflow_features(engine):
+                self.skipTest("Engine does not declare extension recovery.")
+
+            def takeover(_snapshot):
+                self.begin_fencing_epoch(root)
+                return ExtensionRecoveryDecision("requeue")
+
+            engine.configure_extension_recovery({"conformance": takeover})
+            job = engine.enqueue(42, "stale recovery", context_source="extension:conformance")
+            engine.start_next()
+            with self.assertRaises(StaleDaemonEpoch):
+                engine.reconcile()
+            self.assertTrue(engine.find(job.id).needs_attention)
 
     def test_conformance_workflow_lifecycle(self) -> None:
         with TemporaryDirectory() as directory:
