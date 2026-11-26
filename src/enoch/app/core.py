@@ -2905,6 +2905,8 @@ class EnochApplication:
             title=f"{self.display_name} task board",
             queue_command=f"{self.command_prefix}queue",
             merging=self.pending_merges.board_items(),
+            # Cached watcher state only: the board refresh never calls the forge.
+            open_reviews=self.pending_merges.board_reviews(),
             backlog=self._task_board_backlog(),
             quota_line=self._task_board_quota_line(),
             held_by=self._land_hold_label(),

@@ -5,7 +5,7 @@ import sys
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -13,6 +13,13 @@ sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "libraries" / "provider-kit" / "src"))
 
 from enoch.app.core import EnochApplication
+from enoch.app.pending_merges import (
+    BoardReview,
+    PendingMerge,
+    WatchedReview,
+    save_ci_watches,
+    save_pending_merges,
+)
 from enoch.app.task_board import (
     TaskBoardState,
     load_task_board_state,
@@ -87,6 +94,41 @@ def _backlog_item(item_id: int, text: str, *, priority: str = "p1") -> BacklogIt
         text=text,
         priority=priority,
         created_at="2026-11-24T13:00:00+00:00",
+    )
+
+
+def _reviews(*pairs: tuple[int, str]) -> tuple[BoardReview, ...]:
+    return tuple(BoardReview(number, status) for number, status in pairs)
+
+
+def _watch(number: int, status: str, *, authoritative: bool | None = True) -> WatchedReview:
+    url = f"https://github.com/our-ark/enoch/pull/{number}"
+    return WatchedReview(
+        number=number,
+        url=url,
+        repository="our-ark/enoch",
+        review_id=url,
+        chat_id=42,
+        task_id=number,
+        started_at="2026-11-24T13:00:00Z",
+        settled=True,
+        board_status=status,
+        authoritative=authoritative,
+    )
+
+
+def _pending_merge(number: int) -> PendingMerge:
+    url = f"https://github.com/our-ark/enoch/pull/{number}"
+    return PendingMerge(
+        number=number,
+        url=url,
+        repository="our-ark/enoch",
+        review_id=url,
+        authorized_head_sha=f"head-{number}",
+        allowed_head_shas=(f"head-{number}",),
+        requested_at="2026-11-24T13:00:00Z",
+        chat_id=42,
+        waiting_for="waiting for CI",
     )
 
 
@@ -214,6 +256,105 @@ class TaskBoardRenderTests(unittest.TestCase):
 
         self.assertNotEqual(first.text, later.text)
         self.assertEqual(first.digest, later.digest)
+
+    def test_open_prs_line_orders_problems_then_ready_then_ci(self) -> None:
+        reviews = _reviews(
+            (101, "ci"),
+            (98, "ready"),
+            (97, "failed"),
+            (99, "blocked"),
+            (96, "failed"),
+        )
+
+        text = render_task_board(
+            _status(),
+            updated_at=UPDATED_AT,
+            merging=("#91 (waiting for CI)",),
+            open_reviews=reviews,
+            backlog=(_backlog_item(8, "Later work"),),
+        ).text
+
+        line = "Open PRs: #96 ❌ CI failed · #97 ❌ CI failed · #99 ⚠️ blocked · #98 ✅ ready · #101 ⏳ CI"
+        self.assertIn(
+            f"Merging:\n- #91 (waiting for CI)\n\n{line}\nUp next: 1 in backlog",
+            text,
+        )
+        self.assertEqual([row for row in text.splitlines() if row.startswith("Open PRs")], [line])
+        self.assertTrue(text.endswith("\n\nUpdated 14:05"))
+
+    def test_open_prs_line_shows_four_and_counts_the_rest(self) -> None:
+        reviews = _reviews(*((number, "ready") for number in range(90, 97)))
+
+        text = render_task_board(_status(), updated_at=UPDATED_AT, open_reviews=reviews).text
+
+        self.assertIn(
+            "Open PRs: #90 ✅ ready · #91 ✅ ready · #92 ✅ ready · #93 ✅ ready · +3 more",
+            text,
+        )
+        self.assertNotIn("#94", text)
+
+        five = render_task_board(
+            _status(), updated_at=UPDATED_AT, open_reviews=reviews[:5]
+        ).text
+        self.assertIn("#94 ✅ ready", five)
+        self.assertNotIn("more", five)
+
+    def test_board_has_no_open_prs_line_when_there_are_none(self) -> None:
+        empty = render_task_board(_status(), updated_at=UPDATED_AT, open_reviews=())
+        without = render_task_board(_status(), updated_at=UPDATED_AT)
+
+        self.assertNotIn("Open PRs", empty.text)
+        self.assertEqual(empty.text, without.text)
+        self.assertEqual(empty.digest, without.digest)
+
+    def test_open_prs_digest_changes_only_with_the_set_or_a_marker(self) -> None:
+        reviews = _reviews((96, "ci"), (97, "ready"))
+
+        first = render_task_board(_status(), updated_at=UPDATED_AT, open_reviews=reviews)
+        same = render_task_board(
+            _status(),
+            updated_at=datetime(2026, 11, 24, 18, 30),
+            open_reviews=tuple(reversed(reviews)),
+        )
+        status_changed = render_task_board(
+            _status(), updated_at=UPDATED_AT, open_reviews=_reviews((96, "ready"), (97, "ready"))
+        )
+        set_changed = render_task_board(
+            _status(), updated_at=UPDATED_AT, open_reviews=reviews[:1]
+        )
+
+        self.assertEqual(first.digest, same.digest)
+        self.assertEqual(len({first.digest, status_changed.digest, set_changed.digest}), 3)
+        line = next(row for row in first.text.splitlines() if row.startswith("Open PRs"))
+        self.assertNotRegex(line, r"\d{1,2}:\d{2}|\bmin\b|ago|elapsed")
+
+    def test_open_prs_line_gives_way_before_any_task_item(self) -> None:
+        status = _status(
+            running=_job(7, "Implement the board " * 3, status="running"),
+            pending=tuple(_job(index, f"Queued request {index} " * 3) for index in range(8, 12)),
+            paused=(_job(5, "Paused work " * 3, status="paused"),),
+        )
+        reviews = _reviews(*((number, "failed") for number in range(90, 99)))
+        bare = render_task_board(status, updated_at=UPDATED_AT).text
+
+        for slack in (0, 5, 20, 40):
+            with self.subTest(slack=slack):
+                text = render_task_board(
+                    status,
+                    updated_at=UPDATED_AT,
+                    open_reviews=reviews,
+                    max_chars=len(bare) + slack,
+                ).text
+
+                self.assertLessEqual(len(text), len(bare) + slack)
+                self.assertNotIn("more (see", text)
+                for task_id in (7, 8, 9, 10, 11, 5):
+                    self.assertIn(f"- #{task_id} ", text)
+                self.assertTrue(text.endswith("Updated 14:05"))
+        roomy = render_task_board(
+            status, updated_at=UPDATED_AT, open_reviews=reviews, max_chars=len(bare) + 20
+        ).text
+        self.assertIn("Open PRs: 9", roomy)
 
     def test_board_has_no_backlog_line_when_backlog_is_empty(self) -> None:
         with_empty = render_task_board(_status(), updated_at=UPDATED_AT, backlog=())
@@ -484,6 +625,41 @@ class TaskBoardQuotaRenderTests(unittest.TestCase):
             [line for line in text.splitlines() if line.endswith(":")],
             ["Running:", "Queued:", "Paused:", "Merging:"],
         )
+
+    def test_open_prs_then_backlog_then_quota_share_the_trailing_block(self) -> None:
+        quota = render_quota_line("claude", _quota(), now=QUOTA_NOW)
+        status = _status(running=_job(7, "Implement the board", status="running"))
+        backlog = (_backlog_item(3, "Only item"),)
+        reviews = _reviews((96, "ready"), (97, "failed"))
+        text = render_task_board(
+            status,
+            updated_at=UPDATED_AT,
+            open_reviews=reviews,
+            backlog=backlog,
+            quota_line=quota,
+        ).text
+
+        self.assertTrue(
+            text.endswith(
+                "\n\nOpen PRs: #97 ❌ CI failed · #96 ✅ ready\n"
+                "Up next: 1 in backlog (#3 [p1] Only item)\n"
+                f"{quota}\n\nUpdated 14:05"
+            )
+        )
+        # Tight boards shed the quota line before the open-review line, and
+        # both before any task item.
+        bare = render_task_board(status, updated_at=UPDATED_AT, backlog=backlog).text
+        tight = render_task_board(
+            status,
+            updated_at=UPDATED_AT,
+            open_reviews=reviews,
+            backlog=backlog,
+            quota_line=quota,
+            max_chars=len(bare) + len("\nOpen PRs: 2") + 1,
+        ).text
+        self.assertNotIn("Quota", tight)
+        self.assertIn("Open PRs: ", tight)
+        self.assertIn("- #7 ", tight)
 
     def test_quota_line_without_backlog_follows_paused(self) -> None:
         quota = render_quota_line("claude", _quota(), now=QUOTA_NOW)
@@ -799,6 +975,61 @@ class TaskBoardRefreshTests(unittest.TestCase):
             ["task_board_refresh_failed"],
         )
         self.assertEqual(self.chat.edits, [])
+
+    def test_open_prs_line_reads_watched_reviews_and_skips_merging_ones(self) -> None:
+        save_ci_watches(
+            (
+                _watch(96, "ready"),
+                _watch(97, "failed"),
+                _watch(98, "ci"),
+                _watch(99, "ready", authoritative=False),
+                _watch(100, "ready", authoritative=None),
+            ),
+            self.root,
+        )
+        save_pending_merges((_pending_merge(98),), self.root)
+
+        text = self.app._render_task_board().text
+
+        self.assertIn("Merging:\n- #98 (waiting for CI)", text)
+        self.assertIn("Open PRs: #97 ❌ CI failed · #96 ✅ ready\n", text + "\n")
+        self.assertEqual(text.count("#98"), 1)
+        self.assertNotIn("#99", text)
+        self.assertNotIn("#100", text)
+
+    def test_open_prs_line_edits_the_board_only_when_it_changes(self) -> None:
+        save_ci_watches((_watch(96, "ci"),), self.root)
+        self.app._task_board_command("")
+        self.assertIn("Open PRs: #96 ⏳ CI", self.chat.sent[0][1])
+
+        for _ in range(3):
+            self.app._refresh_task_board()
+        self.assertEqual(self.chat.edits, [])
+
+        save_ci_watches((_watch(96, "ready"),), self.root)
+        self.app._refresh_task_board()
+        self.app._refresh_task_board()
+        save_ci_watches((), self.root)
+        self.app._refresh_task_board()
+
+        texts = [edit[2] for edit in self.chat.edits]
+        self.assertEqual(len(texts), 2)
+        self.assertIn("Open PRs: #96 ✅ ready", texts[0])
+        self.assertNotIn("Open PRs", texts[1])
+
+    def test_board_refresh_never_calls_the_forge(self) -> None:
+        save_ci_watches((_watch(96, "ready"), _watch(97, "failed")), self.root)
+        save_pending_merges((_pending_merge(91),), self.root)
+        self.app._task_board_command("")
+        forge = MagicMock()
+        self.app.review = forge
+        save_ci_watches((_watch(96, "ci"), _watch(97, "failed")), self.root)
+
+        self.app._refresh_task_board()
+
+        self.assertEqual(forge.mock_calls, [])
+        self.assertEqual(len(self.chat.edits), 1)
+        self.assertIn("Open PRs: #97 ❌ CI failed · #96 ⏳ CI", self.chat.edits[0][2])
 
     def test_run_once_refreshes_the_board(self) -> None:
         with patch.object(self.app, "_refresh_task_board") as refresh:
