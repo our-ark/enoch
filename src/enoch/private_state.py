@@ -196,6 +196,12 @@ STATE_FILE_SCHEMAS = (
         (("current", (dict, type(None))),),
     ),
     StateFileSchema(
+        "restart.json",
+        1,
+        (("current", None),),
+        (("current", (dict, type(None))),),
+    ),
+    StateFileSchema(
         "migration_source.json",
         1,
         fields=(

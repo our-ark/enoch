@@ -91,9 +91,21 @@ restart while a task is running or a direct worker is alive. `/update` still
 checks out the new revision and runs doctor, then replies with one line such as
 `Updated to <rev>; will restart after task #N finishes.` and restarts as soon
 as the task queue is idle. Queued tasks wait for the restarted daemon. A bare
-`/restart` with a running task warns and offers `/restart wait` (restart once
-idle) or `/restart force` (restart now); `/restart cancel` drops a waiting
-restart. Automatic updates use the same deferral.
+`/restart` waits in the same way; `/restart wait` is an explicit alias.
+`/restart force` restarts immediately, and `/restart cancel` drops a waiting
+restart and releases the queue. Automatic updates use the same deferral.
+`/status` shows the pending restart, its reason, and the tasks it is waiting for.
+New `/do` work is refused during the wait; `/task` can still queue work.
+
+Restart intent is atomically saved in private `restart.json` before admission
+is held or a restart is scheduled. It belongs to the requesting daemon epoch.
+Once a replacement daemon successfully initializes, it records completion and
+clears the old intent before starting queued work. A crash during the wait
+also satisfies the restart on the next successful startup: the replacement
+already loaded the code on disk, so it must not retain the old queue hold or
+schedule another restart. Reconstructing the coordinator within the same epoch
+preserves the wait. Cancellation is durable; a failed service-manager call
+preserves a deferred request for the next poll to retry.
 
 ### Automatic update after a merge
 
