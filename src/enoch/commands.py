@@ -10,6 +10,7 @@ from enoch.brain import (
     REASONING_EFFORTS,
     model_summary,
 )
+from enoch.app.restarts import restart_usage
 from enoch.command_surface import lineage_usage
 from enoch.config import write_section_value
 from enoch.agent_identity import AgentIdentityError, load_active_agent_identity
@@ -986,7 +987,7 @@ def _task_usage(prefix: str) -> str:
             f"{command} <request> - queue background work for Enoch",
             f"{command} cancel <id> - cancel a queued background task",
             f"{command} resume <id|all> - continue paused tasks with the same ids",
-            f"{command} retry <id> - retry a failed task as a new linked task",
+            f"{command} retry <id> - retry a failed or cancelled task as a new linked task",
             (
                 f"{command} show <id> - show a task's status, full request, reviews, "
                 "failure, and the context snapshot given to the worker"
@@ -1209,7 +1210,7 @@ CORE_COMMANDS = (
         "update",
         "System",
         "",
-        "update from the authoritative repository, run doctor, and restart if safe",
+        "update from the authoritative repository, run doctor, and restart once no task is running",
     ),
     CoreCommand(
         "restart",
@@ -1217,6 +1218,7 @@ CORE_COMMANDS = (
         "System",
         "",
         "restart Enoch's chat daemon from the locked conversation",
+        restart_usage,
     ),
 )
 

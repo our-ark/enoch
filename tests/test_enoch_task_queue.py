@@ -533,7 +533,8 @@ class EnochTaskQueueTests(unittest.TestCase):
         self.assertEqual(failed.status, "failed")
         self.assertEqual(failed.failure_code, "worker_interrupted")
         self.assertEqual(failed.failure_class, "transient")
-        self.assertFalse(failed.retryable)
+        # Never resumed automatically again, but a human may /task retry it.
+        self.assertTrue(failed.retryable)
         self.assertEqual(status.history[-1], failed)
         self.assertEqual(
             [event.event for event in events].count("retrying"),

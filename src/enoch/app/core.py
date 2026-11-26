@@ -323,10 +323,27 @@ from enoch.extensions.schedules import (
 )
 from enoch.runtime import DEFAULT_BRANCH
 from enoch.tasks.queue import (
+    DAEMON_RESTART_PAUSE_TRIGGER,
     TaskJob,
     TaskQueueStatus,
     TaskAlreadyExists,
     TaskRetryError,
+)
+from enoch.app.restarts import (
+    RESTART_MODES,
+    RESTARTED_RESUME_TRIGGER,
+    SHUTDOWN_SIGNALLED,
+    RestartCoordinator,
+    deferred_restart_message,
+    deferred_update_message,
+    forced_restart_message,
+    interrupted_resume_context,
+    restart_busy_message,
+    restart_exhausted_message,
+    restart_pause_message,
+    restart_resumed_notice,
+    restart_usage,
+    shutdown_interrupted,
 )
 from enoch.commands import (
     CoreCommand,
@@ -639,6 +656,15 @@ class EnochApplication:
         self.previous_shutdown_warning = previous_shutdown_warning
         self.offset: Cursor | None = _load_provider_cursor(self.channel_name, root)
         self._restart_after_reply = False
+        self.restarts = RestartCoordinator(
+            busy_tasks=self._restart_blocking_tasks,
+            schedule=lambda: _schedule_daemon_restart(self.root),
+            record_event=lambda event, **kwargs: _record_system_event(
+                event,
+                self.root,
+                **kwargs,
+            ),
+        )
         self._pending_session_syncs: list[tuple[int, str]] = []
         self._contextualized_sessions: set[str] = set()
         self._task_worker: threading.Thread | None = None
@@ -704,6 +730,7 @@ class EnochApplication:
         )
         recovered = self.workflow.recover()
         _cleanup_completed_task_worktree(recovered, root)
+        self._restart_resumed_tasks = self._resume_tasks_interrupted_by_restart(recovered)
         self._work_status_messages: dict[int, MessageId] = _load_task_status_messages(
             self.workflow
         )
@@ -767,6 +794,7 @@ class EnochApplication:
         )
         if not result.delivered:
             raise ChatProviderError(result.error or "Startup notification was not delivered.")
+        self._announce_restart_resumed_tasks()
 
     def start(self) -> None:
         """Run process-start hooks once, independently of chat notification."""
@@ -805,6 +833,7 @@ class EnochApplication:
 
     def run_once(self) -> None:
         require_current_daemon_epoch(self.daemon_epoch, self.root)
+        self._announce_restart_resumed_tasks()
         self._maybe_start_lineage_worker()
         self._run_profile_hook("before_run")
         self._run_extension_hooks("before_run")
@@ -1060,7 +1089,7 @@ class EnochApplication:
         acknowledge_event(self.channel_name, receipt.key, self.root)
         if self._restart_after_reply:
             self._restart_after_reply = False
-            _schedule_daemon_restart(self.root)
+            self.restarts.restart_now("chat command")
             return
         self._maybe_start_lineage_worker()
 
@@ -1246,7 +1275,7 @@ class EnochApplication:
             "worktree": lambda: self._worktree(chat_id, argument),
             "pr": lambda: self._pr(chat_id, argument),
             "update": lambda: self._update_from_chat(chat_id),
-            "restart": self._restart_from_chat,
+            "restart": lambda: self._restart_from_chat(argument),
         }
 
     def _update_from_chat(self, chat_id: ConversationId) -> str:
@@ -3186,7 +3215,7 @@ class EnochApplication:
         if subcommand == "cancel" and cancel_id is None:
             return f"Use {self.command_prefix}task cancel <id> to cancel a queued task."
         if subcommand == "retry" and retry_id is None:
-            return f"Use {self.command_prefix}task retry <id> to retry a failed task as a new linked task."
+            return f"Use {self.command_prefix}task retry <id> to retry a failed or cancelled task as a new linked task."
         if subcommand == "resume" and resume_target is None:
             return f"Use {self.command_prefix}task resume <id|all> to continue paused tasks."
         if cancel_id is not None:
@@ -3299,7 +3328,13 @@ class EnochApplication:
         if self._compact_task_messages():
             return _format_compact_task_queued(job.id, retry_of=task_id)
         position = self.workflow.inspect().pending_count
-        retry_kind = "unpublished task" if original is not None and original.status == "completed" else "failed task"
+        retry_kind = (
+            "unpublished task"
+            if original is not None and original.status == "completed"
+            else "cancelled task"
+            if original is not None and original.status == "cancelled"
+            else "failed task"
+        )
         message = self._format_work_status(
             WorkStatusMessage(
                 chat_id=job.chat_id,
@@ -3329,7 +3364,7 @@ class EnochApplication:
             self._work_status_messages[job.id] = message_id
             self.workflow.record_status_message(job.id, message_id)
             return ""
-        return f"Queued retry task #{job.id} for failed task #{task_id}."
+        return f"Queued retry task #{job.id} for {retry_kind} #{task_id}."
 
     def _queue_paused_request(
         self,
@@ -3409,9 +3444,9 @@ class EnochApplication:
         if not resumed:
             if task_id is not None:
                 job = self.workflow.find(task_id)
-                if job is not None and job.status == "failed":
+                if job is not None and job.status in {"failed", "cancelled"}:
                     return (
-                        f"Task #{task_id} is failed, not paused. "
+                        f"Task #{task_id} is {job.status}, not paused. "
                         f"Use {self.command_prefix}task retry {task_id} to create a new "
                         "linked task while preserving its failure history."
                     )
@@ -3422,7 +3457,12 @@ class EnochApplication:
         noun = "task" if len(resumed) == 1 else "tasks"
         return f"Resumed {len(resumed)} {noun}: {task_ids}."
 
-    def _continue_resumed_tasks(self, resumed: tuple[TaskJob, ...]) -> None:
+    def _continue_resumed_tasks(
+        self,
+        resumed: tuple[TaskJob, ...],
+        *,
+        latest_update: str = "Resumed after agent runtime access was restored.",
+    ) -> None:
         compact = self._compact_task_messages()
         for job in resumed:
             message_id = self._work_status_messages.get(job.id) or job.status_message_id
@@ -3440,7 +3480,7 @@ class EnochApplication:
                             started_at=time.monotonic(),
                             task_id=job.id,
                             status="queued",
-                            latest_update="Resumed after agent runtime access was restored.",
+                            latest_update=latest_update,
                             context=job.context,
                         )
                     ),
@@ -4439,6 +4479,9 @@ class EnochApplication:
         with self._task_worker_lock:
             if self._stopping:
                 return
+            # A pending restart holds new work; it starts once the queue is idle.
+            if self.restarts.restart_if_idle():
+                return
             if self._task_worker is not None and self._task_worker.is_alive():
                 return
             status = self.workflow.inspect()
@@ -4456,6 +4499,8 @@ class EnochApplication:
     def _run_task_worker(self) -> None:
         try:
             while not self._stopping:
+                if self.restarts.restart_if_idle():
+                    return
                 job = self.workflow.start_next()
                 if job is None:
                     if self._promote_next_backlog_if_idle() is None:
@@ -5014,6 +5059,34 @@ class EnochApplication:
                 require_current_daemon_epoch(self.daemon_epoch, self.root)
             except StaleDaemonEpoch:
                 return
+            restart_paused = False
+            restart_failed = False
+            if (
+                completed_status in {"cancelled", "failed"}
+                and not deadline.expired.is_set()
+                and shutdown_interrupted(lambda: self._stopping, reply)
+            ):
+                # A daemon restart, not the task, stopped this run. Pause it so
+                # it resumes after the restart; never cancel or fail it.
+                if job.attempt < job.max_attempts:
+                    completed_status = "paused"
+                    restart_paused = True
+                    reply = restart_pause_message(
+                        job.id,
+                        task_status.latest_update if task_status is not None else "",
+                    )
+                else:
+                    completed_status = "failed"
+                    restart_failed = True
+                    reply = restart_exhausted_message(
+                        job,
+                        command_prefix=self.command_prefix,
+                    )
+                    failure = TaskFailure(
+                        code="worker_interrupted",
+                        failure_class="transient",
+                        retryable=True,
+                    )
             if completed_status == "cancelled":
                 finished_job = self._finalize_with_terminal_evidence(
                     job.id,
@@ -5024,8 +5097,14 @@ class EnochApplication:
                     worker_id=worker_id,
                 )
             elif completed_status == "failed":
-                failure_actor = "system" if deadline.expired.is_set() else "agent"
-                failure_trigger = "task-timeout" if deadline.expired.is_set() else "task-runner"
+                failure_actor = "system" if deadline.expired.is_set() or restart_failed else "agent"
+                failure_trigger = (
+                    "task-timeout"
+                    if deadline.expired.is_set()
+                    else DAEMON_RESTART_PAUSE_TRIGGER
+                    if restart_failed
+                    else "task-runner"
+                )
                 failure = failure or classify_task_failure(reply)
                 if failure.retryable and job.attempt < job.max_attempts:
                     finished_job = self.workflow.retry_running(
@@ -5050,17 +5129,21 @@ class EnochApplication:
                         worker_id=worker_id,
                         failure_code=failure.code,
                         failure_class=failure.failure_class,
-                        retryable=False,
+                        retryable=restart_failed,
                     )
             elif completed_status == "paused":
                 finished_job = self.workflow.pause(
                     job.id,
                     result=reply,
                     event_actor="system",
-                    trigger="runtime-unavailable",
+                    trigger=(
+                        DAEMON_RESTART_PAUSE_TRIGGER
+                        if restart_paused
+                        else "runtime-unavailable"
+                    ),
                     worker_id=worker_id,
                 )
-                if finished_job is not None:
+                if finished_job is not None and not restart_paused:
                     self._record_runtime_access_pause(pause_reason, pause_resets_at)
             else:
                 finished_job = self._finalize_with_terminal_evidence(
@@ -5112,7 +5195,14 @@ class EnochApplication:
                 final_token = _CURRENT_WORK_STATUS.set(task_status)
                 try:
                     self._update_work_status(
-                        _final_task_status_update(completed_status, command_prefix=self.command_prefix),
+                        (
+                            "Paused for restart. Resumes automatically after the restart."
+                            if restart_paused
+                            else _final_task_status_update(
+                                completed_status,
+                                command_prefix=self.command_prefix,
+                            )
+                        ),
                         status=completed_status,
                     )
                 finally:
@@ -5630,6 +5720,11 @@ class EnochApplication:
                 self.root,
             )
         if result.restart_required:
+            waiting_for = self.restarts.defer("update")
+            if waiting_for:
+                # Never kill a running task: the new code is checked out and
+                # doctor passed, so restart as soon as the queue is idle.
+                return deferred_update_message(result.revision_id, waiting_for)
             self._restart_after_reply = True
         return result.message
 
@@ -5653,7 +5748,7 @@ class EnochApplication:
     def _action_lock_message(self) -> str:
         return _format_action_lock_message(self.channel_name)
 
-    def _restart_from_chat(self) -> str:
+    def _restart_from_chat(self, argument: str = "") -> str:
         if _allowed_conversation_id(self.client) is None:
             label = provider_label(self.channel_name)
             return "\n".join(
@@ -5662,12 +5757,106 @@ class EnochApplication:
                     self._action_lock_message(),
                 ]
             )
+        mode = RESTART_MODES.get(argument.strip().lower())
+        if mode is None:
+            return restart_usage(self.command_prefix)
+        if mode == "cancel":
+            if self.restarts.cancel():
+                return f"{self.display_name} will not restart after the running task."
+            return f"{self.display_name} has no restart waiting for a task."
+        busy = self.restarts.busy_tasks()
+        if busy and mode == "ask":
+            # Warn and offer to wait rather than kill the task silently.
+            return restart_busy_message(
+                self.display_name,
+                busy,
+                command_prefix=self.command_prefix,
+            )
+        if busy and mode == "wait":
+            waiting_for = self.restarts.defer("/restart wait")
+            if waiting_for:
+                return deferred_restart_message(self.display_name, waiting_for)
         self._restart_after_reply = True
+        if busy and mode == "force":
+            return forced_restart_message(self.display_name, busy)
         return "\n".join(
             [
                 f"{self.display_name} is restarting.",
                 "Daemon mode will restart after this reply is delivered.",
             ]
+        )
+
+    def _restart_blocking_tasks(self) -> tuple[int, ...]:
+        """Tasks a restart would interrupt: the running task and live direct workers."""
+
+        task_ids: list[int] = []
+        running = self.workflow.inspect().running
+        if running is not None:
+            task_ids.append(running.id)
+        current = threading.current_thread()
+        for task_id, worker in tuple(self._direct_workers.items()):
+            if worker is current or not worker.is_alive() or task_id in task_ids:
+                continue
+            task_ids.append(task_id)
+        return tuple(task_ids)
+
+    def _resume_tasks_interrupted_by_restart(
+        self,
+        recovered: TaskJob | None,
+    ) -> tuple[TaskJob, ...]:
+        """Resume tasks a restart interrupted, through the same pause/resume path.
+
+        A task paused during a graceful shutdown is already paused. A task whose
+        worker died with the daemon (crash or kill) comes back from recovery as
+        pending; it is paused first so both cases resume the same way.
+        """
+
+        if (
+            recovered is not None
+            and recovered.status == "pending"
+            and recovered.failure_code == "worker_interrupted"
+        ):
+            self.workflow.pause(
+                recovered.id,
+                result=restart_pause_message(recovered.id),
+                event_actor="system",
+                trigger=DAEMON_RESTART_PAUSE_TRIGGER,
+            )
+        interrupted = [
+            job
+            for job in self.workflow.inspect().paused
+            if job.pause_trigger == DAEMON_RESTART_PAUSE_TRIGGER
+        ]
+        resumed: list[TaskJob] = []
+        # Each resume moves the task to the front; go backwards to keep order.
+        for job in reversed(interrupted):
+            resumed[:0] = self.workflow.resume(
+                task_id=job.id,
+                event_actor="system",
+                trigger=RESTARTED_RESUME_TRIGGER,
+            )
+        return tuple(resumed)
+
+    def _announce_restart_resumed_tasks(self) -> None:
+        resumed, self._restart_resumed_tasks = self._restart_resumed_tasks, ()
+        if not resumed:
+            return
+        by_chat: dict[ConversationId, list[TaskJob]] = {}
+        for job in resumed:
+            by_chat.setdefault(job.chat_id, []).append(job)
+        for chat_id, jobs in by_chat.items():
+            self._safe_send_message(
+                chat_id,
+                restart_resumed_notice(jobs),
+                notification_key=(
+                    f"daemon:{self.daemon_epoch.generation}:restart-resumed:"
+                    + ",".join(str(job.id) for job in jobs)
+                ),
+                thread_id=jobs[0].thread_id,
+            )
+        self._continue_resumed_tasks(
+            resumed,
+            latest_update="Resumed after the restart.",
         )
 
     def _record_turn(self, chat_id: ConversationId, text: str, reply: str) -> None:
@@ -5781,6 +5970,9 @@ def _notify_shutdown(bot: EnochApplication, reason: str) -> None:
 
 def _install_shutdown_handlers() -> None:
     def handle_signal(signum: int, _frame: Any) -> None:
+        # Mark the shutdown first so a task whose runtime saw the same signal
+        # is paused for the restart instead of failed.
+        SHUTDOWN_SIGNALLED.set()
         raise ShutdownRequested(_signal_reason(signum))
 
     for signum in (signal.SIGTERM, signal.SIGINT):
@@ -6195,12 +6387,19 @@ def _evolve_task_context(candidate: EvolveCandidate) -> str:
 
 def _task_worker_context(job: TaskJob, *, workflow: WorkflowEngine | None = None) -> str:
     parts = [job.context.strip()]
+    if job.pause_trigger == DAEMON_RESTART_PAUSE_TRIGGER:
+        parts.append(interrupted_resume_context(job))
     if job.parent_task_id is not None and workflow is not None:
-        from enoch.app.validation_repair import retry_failure_context
+        from enoch.app.validation_repair import (
+            retry_cancelled_context,
+            retry_failure_context,
+        )
 
         previous = workflow.find(job.parent_task_id)
         if previous is not None and previous.status == "failed":
             parts.append(retry_failure_context(previous))
+        elif previous is not None and previous.status == "cancelled":
+            parts.append(retry_cancelled_context(previous))
     provenance = _evolution_provenance_for_job(job)
     if provenance is not None:
         parts.extend(
