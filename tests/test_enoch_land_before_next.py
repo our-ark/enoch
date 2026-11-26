@@ -22,6 +22,7 @@ from enoch.app.core import (
     TaskContextSnapshot,
     _repository_from_remote_url,
 )
+from enoch.app.auto_update import LandedReview
 from enoch.app.merge_policy import (
     RequestOptionError,
     merge_policy_label,
@@ -34,7 +35,7 @@ from enoch.app.task_board import render_task_board
 from enoch.commands import config_status, pr_usage
 from enoch.identity import load_identity
 from enoch.prompt_append import conversation_turn_prompt, work_request_prompt
-from enoch.tasks.config import pr_auto_merge_enabled, save_pr_auto_merge
+from enoch.tasks.config import pr_auto_merge_enabled, save_auto_update, save_pr_auto_merge
 from enoch.tasks.queue import (
     _job_to_dict,
     _parse_job,
@@ -233,7 +234,9 @@ class LandBeforeNextTests(unittest.TestCase):
 
         self.assertIn(": landed.", note)
         self.assertEqual(forge.merges, ["head-91"])
-        after.assert_called_once_with()
+        after.assert_called_once_with(
+            LandedReview("#91", URL, "our-ark/enoch", "main")
+        )
         self.assertIsNone(app._land_hold())
 
     def test_policy_off_does_not_register(self) -> None:
@@ -447,6 +450,9 @@ class LandBeforeNextTests(unittest.TestCase):
         return [text for _chat, text in chat.sent]
 
     def test_hold_releases_when_the_pr_lands(self) -> None:
+        # With auto-update on, the pending update holds the queue next; that
+        # is covered in test_enoch_auto_update.
+        save_auto_update(False, self.root)
         chat = _Chat()
         app, forge = self._held(chat)
         forge.set(merge_state_status="CLEAN", checks=(ReviewCheck("CI / test", "success"),))
