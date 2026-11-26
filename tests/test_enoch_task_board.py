@@ -22,11 +22,13 @@ from enoch.app.pending_merges import (
 )
 from enoch.app.task_board import (
     TaskBoardState,
+    count_task_board_message,
     load_task_board_state,
     render_quota_line,
     render_task_board,
     save_task_board_state,
     task_board_path,
+    update_task_board_state,
 )
 from enoch.backlog import (
     BacklogItem,
@@ -35,9 +37,21 @@ from enoch.backlog import (
     promote_next_backlog_item,
     remove_backlog_item,
 )
-from enoch.commands import core_command, help_message
+from enoch.app.notifications import (
+    NotificationDeliveryService,
+    notification_record,
+    notifications_path,
+)
+from enoch.commands import config_status, core_command, help_message
 from enoch.identity import load_identity
-from enoch.providers import ChatEvent, ChatProviderError, MessagePinProvider
+from enoch.providers import (
+    ChatEvent,
+    ChatProviderError,
+    MessageDeleteProvider,
+    MessagePinProvider,
+    SilentMessageProvider,
+)
+from enoch.tasks.config import board_repost_settings
 from enoch.tasks.queue import TaskJob, TaskQueueStatus
 
 
@@ -510,6 +524,8 @@ class TaskBoardRenderTests(unittest.TestCase):
                 "chat_id": 42,
                 "message_id": 9,
                 "last_digest": "abc",
+                "messages_since_board": 0,
+                "last_reposted_at": "",
             },
         )
         self.assertEqual(loaded, TaskBoardState(True, 42, 9, "abc"))
@@ -745,7 +761,7 @@ class TaskBoardCommandTests(unittest.TestCase):
         usage = command.usage_message("/")
         self.assertIn("/board off", usage)
         self.assertIn("/board - post a task board", usage)
-        self.assertIn("/board [off]", help_message())
+        self.assertIn("/board [off|repost]", help_message())
 
     def test_board_is_off_by_default(self) -> None:
         with TemporaryDirectory() as directory:
@@ -779,8 +795,13 @@ class TaskBoardCommandTests(unittest.TestCase):
         self.assertTrue(board[1].startswith("Enoch task board\n"))
         self.assertIn("cannot pin messages", reply[1])
         self.assertIn("/board off", reply[1])
-        self.assertEqual(state, TaskBoardState(True, 42, 1, state.last_digest))
+        self.assertEqual(
+            (state.enabled, state.chat_id, state.message_id), (True, 42, 1),
+        )
         self.assertTrue(state.last_digest)
+        self.assertTrue(state.last_reposted_at)
+        # The /board reply is the one chat message below the new board.
+        self.assertEqual(state.messages_since_board, 1)
 
     def test_board_command_pins_when_supported(self) -> None:
         with TemporaryDirectory() as directory:
@@ -1140,6 +1161,375 @@ class TaskBoardRefreshTests(unittest.TestCase):
         self.assertEqual(self.chat.sent, [])
 
 
+class TaskBoardRepostTests(unittest.TestCase):
+    """The board is posted again once enough messages pushed it up the chat."""
+
+    def setUp(self) -> None:
+        directory = TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name)
+        self.status = _status()
+        self.chat = _DeletingChat()
+        self.app = self._app(self.chat)
+        worker = patch.object(EnochApplication, "_maybe_start_task_worker")
+        worker.start()
+        self.addCleanup(worker.stop)
+
+    def _app(self, chat) -> EnochApplication:
+        app = EnochApplication(load_identity(), self.root, chat)
+        inspect = patch.object(app.workflow, "inspect", side_effect=lambda: self.status)
+        inspect.start()
+        self.addCleanup(inspect.stop)
+        return app
+
+    def _post_board(self) -> TaskBoardState:
+        self.app._task_board_command("")
+        return load_task_board_state(self.root)
+
+    def _set_count(self, count: int) -> None:
+        update_task_board_state(self.root, messages_since_board=count)
+
+    def _later(self, **delta) -> datetime:
+        # /board stamps the real clock, so checks run relative to it.
+        return datetime.now(timezone.utc) + timedelta(**delta)
+
+    def test_counts_inbound_and_outbound_messages_but_not_edits(self) -> None:
+        self._post_board()
+        self.assertEqual(load_task_board_state(self.root).messages_since_board, 0)
+
+        event = ChatEvent(cursor=7, conversation_id=42, message_id=30, text="/queue")
+        self.app.handle_event(event)  # Gary's message and Enoch's reply
+        self.app.handle_event(event)  # a replayed event is not counted again
+        self.app._safe_send_message(42, "Started task #5.")  # task start line
+        self.app._safe_send_message(42, "Task #5 finished.")  # task final line
+        self.app._safe_send_message(99, "Elsewhere")  # another conversation
+        self.status = _status(pending=(_job(4, "New work"),))
+        self.app._refresh_task_board()  # board edit
+        self.app._safe_edit_message(42, 3, "Edited start line")  # other edit
+
+        self.assertEqual(len(self.chat.edits), 2)
+        self.assertEqual(load_task_board_state(self.root).messages_since_board, 4)
+
+    def test_counter_ignores_messages_while_board_is_inactive(self) -> None:
+        self.app._safe_send_message(42, "No board yet")
+        self.assertFalse(task_board_path(self.root).exists())
+
+        self._post_board()
+        self.app._safe_send_message(42, "Board is on")
+        self.app._task_board_command("off")
+        self.app._safe_send_message(42, "Board is off")
+
+        self.assertEqual(load_task_board_state(self.root).messages_since_board, 1)
+
+    def test_no_repost_at_or_below_threshold(self) -> None:
+        self._post_board()
+        self._set_count(10)
+
+        self.app._maybe_repost_task_board(self._later(hours=2))
+
+        self.assertEqual(len(self.chat.sent), 1)
+        self.assertEqual(self.chat.deleted, [])
+        self.assertEqual(load_task_board_state(self.root).message_id, 1)
+
+    def test_repost_above_threshold_is_silent_pins_and_deletes_old(self) -> None:
+        before = self._post_board()
+        self._set_count(11)
+        now = self._later(hours=1, minutes=1)
+
+        with patch("enoch.app.core._record_system_event") as record:
+            self.app._maybe_repost_task_board(now)
+        state = load_task_board_state(self.root)
+
+        self.assertEqual(len(self.chat.sent), 2)
+        self.assertEqual(self.chat.silent, [2])
+        self.assertTrue(self.chat.sent[1][1].startswith("Enoch task board\n"))
+        self.assertEqual(self.chat.pins, [(42, 1), (42, 2)])
+        self.assertEqual(self.chat.deleted, [(42, 1)])
+        self.assertEqual(
+            state,
+            TaskBoardState(
+                enabled=True,
+                chat_id=42,
+                message_id=2,
+                last_digest=before.last_digest,
+                messages_since_board=0,
+                last_reposted_at=now.isoformat(),
+            ),
+        )
+        events = [call.args[0] for call in record.call_args_list]
+        self.assertEqual(events, ["task_board_reposted"])
+        self.assertTrue(record.call_args.kwargs["details"]["old_board_deleted"])
+
+        # Edits continue, change-only, on the new message.
+        self.app._refresh_task_board()
+        self.status = _status(pending=(_job(4, "New work"),))
+        self.app._refresh_task_board()
+        self.assertEqual([edit[1] for edit in self.chat.edits], [2])
+
+    def test_repost_goes_through_the_notification_journal_and_effect_fence(self) -> None:
+        self._post_board()
+        self._set_count(11)
+
+        with patch.object(
+            self.app.effect_fence, "run_authorized", wraps=self.app.effect_fence.run_authorized,
+        ) as fenced:
+            self.app._maybe_repost_task_board(self._later(hours=2))
+
+        self.assertEqual(
+            [call.args[0] for call in fenced.call_args_list], ["chat.pin", "chat.delete"],
+        )
+        records = json.loads(_notifications_file(self.root).read_text())["notifications"]
+        repost = [key for key in records if key.startswith("task-board-repost:1:")]
+        self.assertEqual(len(repost), 1)
+        self.assertTrue(records[repost[0]]["silent"])
+        self.assertEqual(records[repost[0]]["status"], "delivered")
+
+    def test_hourly_check_is_throttled(self) -> None:
+        self._post_board()
+        first = self._later(hours=1)
+        self._set_count(5)
+        self.app._maybe_repost_task_board(first)  # due, but too few messages
+
+        self._set_count(11)
+        self.app._maybe_repost_task_board(first + timedelta(minutes=30))
+        self.app._maybe_repost_task_board(first + timedelta(minutes=59))
+        self.assertEqual(len(self.chat.sent), 1)
+
+        self.app._maybe_repost_task_board(first + timedelta(hours=1))
+        self.assertEqual(len(self.chat.sent), 2)
+        self.assertEqual(load_task_board_state(self.root).message_id, 2)
+
+        # The new board starts a new count; the next check finds too few.
+        self._set_count(3)
+        self.app._maybe_repost_task_board(first + timedelta(hours=2))
+        self.assertEqual(len(self.chat.sent), 2)
+
+    def test_first_check_waits_an_interval_after_the_board_was_posted(self) -> None:
+        self._post_board()
+        self._set_count(50)
+
+        self.app._maybe_repost_task_board(self._later(minutes=30))
+        self.assertEqual(len(self.chat.sent), 1)
+
+        self.app._maybe_repost_task_board(self._later(minutes=61))
+        self.assertEqual(len(self.chat.sent), 2)
+
+    def test_without_delete_silent_or_pin_support_the_board_still_moves(self) -> None:
+        self.chat = _LegacyChat()
+        self.app = self._app(self.chat)
+        self.assertNotIsInstance(self.chat, MessageDeleteProvider)
+        self.assertNotIsInstance(self.chat, SilentMessageProvider)
+        self._post_board()
+        self._set_count(11)
+
+        with patch("enoch.app.core._record_system_event") as record:
+            self.app._maybe_repost_task_board(self._later(hours=2))
+        state = load_task_board_state(self.root)
+
+        self.assertEqual(len(self.chat.sent), 2)  # the old and the new board
+        self.assertTrue(self.chat.sent[1][1].startswith("Enoch task board\n"))
+        self.assertEqual((state.message_id, state.messages_since_board), (2, 0))
+        self.assertTrue(state.active)
+        self.assertEqual([call.args[0] for call in record.call_args_list], ["task_board_reposted"])
+        self.assertFalse(record.call_args.kwargs["details"]["old_board_deleted"])
+
+    def test_failed_delete_leaves_old_board_and_logs_once(self) -> None:
+        self.chat.delete_error = "Bad Request: message can't be deleted"
+        self.chat.pin_error = "not enough rights"
+        self._post_board()
+        self._set_count(11)
+
+        with patch("enoch.app.core._record_system_event") as record:
+            self.app._maybe_repost_task_board(self._later(hours=2))
+            self.app._maybe_repost_task_board(self._later(hours=4))
+        state = load_task_board_state(self.root)
+
+        events = [call.args[0] for call in record.call_args_list]
+        self.assertEqual(
+            events, ["task_board_pin_failed", "task_board_delete_failed", "task_board_reposted"],
+        )
+        self.assertEqual(self.chat.delete_attempts, 1)
+        self.assertEqual((state.message_id, state.messages_since_board), (2, 0))
+        self.assertTrue(state.active)
+
+    def test_failed_send_keeps_the_old_board_and_logs_once(self) -> None:
+        self._post_board()
+        self._set_count(11)
+        self.chat.send_error = "Too Many Requests"
+
+        with patch("enoch.app.core._record_system_event") as record:
+            self.app._maybe_repost_task_board(self._later(hours=2))
+            self.app._maybe_repost_task_board(self._later(hours=4))
+        state = load_task_board_state(self.root)
+
+        self.assertEqual(
+            [call.args[0] for call in record.call_args_list], ["task_board_repost_failed"],
+        )
+        self.assertEqual((state.message_id, state.messages_since_board), (1, 11))
+        self.assertTrue(state.active)
+        self.assertEqual(self.chat.deleted, [])
+
+    def test_counter_survives_restart(self) -> None:
+        self._post_board()
+        for index in range(12):
+            self.app._safe_send_message(42, f"Update {index}")
+
+        restarted = self._app(_DeletingChat())
+        self.assertEqual(load_task_board_state(self.root).messages_since_board, 12)
+        restarted._maybe_repost_task_board(self._later(hours=2))
+
+        self.assertEqual(restarted.client.silent, [1])
+        self.assertEqual(restarted.client.deleted, [(42, 1)])
+        self.assertEqual(load_task_board_state(self.root).messages_since_board, 0)
+
+    def test_old_state_file_loads_with_defaults(self) -> None:
+        path = task_board_path(self.root)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "enabled": True,
+                    "chat_id": 42,
+                    "message_id": 609,
+                    "last_digest": "abc",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        state = load_task_board_state(self.root)
+        self.assertEqual(state, TaskBoardState(True, 42, 609, "abc", 0, ""))
+
+        self.assertTrue(count_task_board_message(42, self.root))
+        self.assertFalse(count_task_board_message(7, self.root))
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(raw["messages_since_board"], 1)
+        self.assertEqual(raw["message_id"], 609)
+
+        # With no recorded post time, the first check runs right away.
+        self._set_count(11)
+        self.app._maybe_repost_task_board(self._later(seconds=1))
+        self.assertEqual(self.chat.deleted, [(42, 609)])
+        self.assertEqual(load_task_board_state(self.root).message_id, 1)
+
+    def test_board_command_resets_the_counter(self) -> None:
+        self._post_board()
+        self._set_count(7)
+
+        reply = self.app._task_board_command("")
+        state = load_task_board_state(self.root)
+
+        self.assertEqual((state.message_id, state.messages_since_board), (2, 0))
+        self.assertTrue(state.last_reposted_at)
+        self.assertIn(
+            "posted again near the bottom of the chat when more than 10 messages appear "
+            "below it (checked every 1h; /board repost off turns this off)",
+            reply,
+        )
+
+        # Through the chat, the reply to /board lands below the board.
+        self.app.handle_event(ChatEvent(cursor=9, conversation_id=42, message_id=40, text="/board"))
+        self.assertEqual(load_task_board_state(self.root).messages_since_board, 1)
+
+    def test_settings_default_off_and_custom(self) -> None:
+        self.assertEqual(board_repost_settings(self.root).interval_seconds, 3600)
+        self.assertEqual(board_repost_settings(self.root).threshold, 10)
+        self.assertIn(
+            "every 1h after more than 10 new messages (default)",
+            self.app._task_board_command("repost"),
+        )
+        self.assertIn(
+            "- Task board re-post: every 1h after more than 10 new messages (default)",
+            config_status(self.root, runtime=self.app.runtime),
+        )
+        self._post_board()
+
+        reply = self.app._task_board_command("repost off")
+        self.assertIn("re-posting is off", reply)
+        self.assertIn("- Task board re-post: off", config_status(self.root, runtime=self.app.runtime))
+        self._set_count(100)
+        self.app._maybe_repost_task_board(self._later(hours=3))
+        self.assertEqual(len(self.chat.sent), 1)  # the board only
+
+        reply = self.app._task_board_command("repost 30m 3")
+        self.assertIn("every 30m after more than 3 new messages", reply)
+        settings = board_repost_settings(self.root)
+        self.assertEqual((settings.enabled, settings.interval_seconds, settings.threshold), (True, 1800, 3))
+        self._set_count(3)
+        self.app._maybe_repost_task_board(self._later(minutes=31))
+        self.assertEqual(len(self.chat.sent), 1)
+        self._set_count(4)
+        self.app._maybe_repost_task_board(self._later(minutes=62))
+        self.assertEqual(len(self.chat.sent), 2)
+
+        self.app._task_board_command("repost off")
+        reply = self.app._task_board_command("repost on")
+        self.assertIn("every 30m after more than 3 new messages.", reply)
+        reply = self.app._task_board_command("repost default")
+        self.assertIn("every 1h after more than 10 new messages (default)", reply)
+
+    def test_invalid_settings_are_rejected(self) -> None:
+        for argument in ("repost 1m 10", "repost 2d 10", "repost 1h 0", "repost 1h lots", "repost 1h"):
+            with self.subTest(argument=argument):
+                reply = self.app._task_board_command(argument)
+                self.assertIn("/board repost", reply)
+                self.assertTrue(board_repost_settings(self.root).uses_defaults)
+
+    def test_help_mentions_repost(self) -> None:
+        usage = core_command("board").usage_message("/")
+
+        self.assertIn("/board repost <interval> <count>", usage)
+        self.assertIn("/board repost off", usage)
+
+    def test_run_once_checks_the_repost_and_never_raises(self) -> None:
+        with patch.object(self.app, "_maybe_repost_task_board") as check:
+            self.app.run_once()
+        check.assert_called_once_with()
+
+        self._post_board()
+        with patch(
+            "enoch.app.core.board_repost_settings", side_effect=RuntimeError("boom"),
+        ), patch("enoch.app.core._record_system_event") as record:
+            self.app.run_once()
+            self.app.run_once()
+
+        self.assertEqual(
+            [call.args[0] for call in record.call_args_list if call.args[0].startswith("task_board")],
+            ["task_board_repost_failed"],
+        )
+
+
+class SilentNotificationTests(unittest.TestCase):
+    def test_silent_send_is_journaled_and_uses_the_silent_capability(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            chat = _DeletingChat()
+            app = EnochApplication(load_identity(), root, chat)
+            delivered = []
+            service = NotificationDeliveryService(
+                chat, "test", root, app.daemon_epoch, delivery_listener=delivered.append,
+            )
+
+            first = service.send(42, "Quiet", idempotency_key="quiet", silent=True)
+            replay = service.send(42, "Quiet", idempotency_key="quiet", silent=True)
+            loud = service.send(42, "Loud", idempotency_key="loud")
+            mismatch = service.send(42, "Loud", idempotency_key="loud", silent=True)
+            service.edit(42, 1, "Edited", idempotency_key="edit")
+            record = notification_record("test", "quiet", root)
+
+        self.assertTrue(first.delivered and replay.delivered and loud.delivered)
+        self.assertFalse(mismatch.delivered)
+        self.assertEqual(chat.silent, [1])
+        self.assertEqual(len(chat.sent), 2)
+        self.assertTrue(record.silent)
+        self.assertEqual([item.idempotency_key for item in delivered], ["quiet", "loud"])
+
+
+def _notifications_file(root: Path) -> Path:
+    return notifications_path("test", root)
+
+
 class _LegacyChat:
     name = "test"
     provider_kind = "chat"
@@ -1155,6 +1545,8 @@ class _LegacyChat:
         return []
 
     def send_message(self, conversation_id, text):
+        if getattr(self, "send_error", ""):
+            raise ChatProviderError(self.send_error)
         self.sent.append((conversation_id, text))
         return len(self.sent)
 
@@ -1178,6 +1570,28 @@ class _PinningChat(_LegacyChat):
         if self.pin_error:
             raise ChatProviderError(self.pin_error)
         self.pins.append((conversation_id, message_id))
+
+
+class _DeletingChat(_PinningChat):
+    """Pins, deletes, and sends silently, like the Telegram provider."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.deleted: list[tuple[int, int]] = []
+        self.delete_attempts = 0
+        self.delete_error = ""
+        self.silent: list[int] = []
+
+    def send_silent_message(self, conversation_id, text):
+        message_id = self.send_message(conversation_id, text)
+        self.silent.append(message_id)
+        return message_id
+
+    def delete_message(self, conversation_id, message_id):
+        self.delete_attempts += 1
+        if self.delete_error:
+            raise ChatProviderError(self.delete_error)
+        self.deleted.append((conversation_id, message_id))
 
 
 if __name__ == "__main__":

@@ -14,8 +14,10 @@ from our_ark_provider_kit import (
     Attachment,
     AttachmentProvider,
     ChatProvider,
+    MessageDeleteProvider,
     MessagePinProvider,
     ProviderContractConformanceMixin,
+    SilentMessageProvider,
 )
 from our_ark_telegram import (
     TelegramBotPeer,
@@ -41,6 +43,8 @@ class TelegramLibraryTests(ProviderContractConformanceMixin, unittest.TestCase):
         self.assertIsInstance(client, ChatProvider)
         self.assertIsInstance(client, AttachmentProvider)
         self.assertIsInstance(client, MessagePinProvider)
+        self.assertIsInstance(client, MessageDeleteProvider)
+        self.assertIsInstance(client, SilentMessageProvider)
         self.assertEqual(client.allowed_conversation_id, 42)
 
     def test_event_exposes_largest_photo_as_attachment(self) -> None:
@@ -257,6 +261,48 @@ class TelegramLibraryTests(ProviderContractConformanceMixin, unittest.TestCase):
 
         with self.assertRaisesRegex(TelegramError, "not enough rights"):
             client.pin_message(42, 9)
+
+    def test_send_silent_message_disables_notification(self) -> None:
+        client = TelegramClient(TelegramConfig(token="test"))
+        calls = []
+
+        def fake_call(method, payload):
+            calls.append((method, payload))
+            return {"ok": True, "result": {"message_id": 77}}
+
+        client._call = fake_call
+        silent_id = client.send_silent_message(42, "Board")
+        loud_id = client.send_message(42, "Reply")
+
+        self.assertEqual((silent_id, loud_id), (77, 77))
+        self.assertEqual([method for method, _ in calls], ["sendMessage", "sendMessage"])
+        self.assertEqual(calls[0][1]["disable_notification"], "true")
+        self.assertEqual(calls[0][1]["chat_id"], 42)
+        self.assertNotIn("disable_notification", calls[1][1])
+
+    def test_delete_message_calls_delete_message(self) -> None:
+        client = TelegramClient(TelegramConfig(token="test"))
+        calls = []
+
+        def fake_call(method, payload):
+            calls.append((method, payload))
+            return {"ok": True, "result": True}
+
+        client._call = fake_call
+        client.delete_message(42, 9)
+
+        self.assertEqual(calls, [("deleteMessage", {"chat_id": 42, "message_id": 9})])
+
+    def test_delete_message_failure_raises_provider_error(self) -> None:
+        client = TelegramClient(TelegramConfig(token="test"))
+
+        def fake_call(method, payload):
+            raise TelegramError("Bad Request: message can't be deleted")
+
+        client._call = fake_call
+
+        with self.assertRaisesRegex(TelegramError, "can't be deleted"):
+            client.delete_message(42, 9)
 
     def test_format_rejection_falls_back_to_original_plain_text(self) -> None:
         client = TelegramClient(TelegramConfig(token="test"))

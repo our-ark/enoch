@@ -1295,6 +1295,38 @@ class MessagePinProvider(Protocol):
 
 
 @runtime_checkable
+class MessageDeleteProvider(Protocol):
+    """Optional chat capability: delete one message the agent sent.
+
+    Platforms may refuse, for example when the message is too old; providers
+    then raise ``ChatProviderError``. Providers without native deletion simply
+    do not implement this protocol.
+    """
+
+    def delete_message(
+        self,
+        conversation_id: ConversationId,
+        message_id: MessageId,
+    ) -> None: ...
+
+
+@runtime_checkable
+class SilentMessageProvider(Protocol):
+    """Optional chat capability: send a message without notifying anyone.
+
+    Agents use it for housekeeping messages that should not buzz the reader.
+    Providers without a notification-free send simply do not implement this
+    protocol, and agents fall back to ``send_message``.
+    """
+
+    def send_silent_message(
+        self,
+        conversation_id: ConversationId,
+        text: str,
+    ) -> MessageId | None: ...
+
+
+@runtime_checkable
 class AgentRuntime(Protocol):
     name: str
     provider_kind: str
