@@ -293,6 +293,7 @@ def telegram_event(update: dict[str, Any]) -> ChatEvent | None:
         replied_text=_replied_text(message),
         raw=update,
         attachments=attachments,
+        replied_message_id=_replied_message_id(message),
     )
 
 
@@ -379,6 +380,16 @@ def _replied_text(message: dict[str, Any]) -> str:
         if isinstance(value, str) and value.strip():
             return value.strip()
     return ""
+
+
+def _replied_message_id(message: dict[str, Any]) -> int | None:
+    reply = message.get("reply_to_message")
+    if not isinstance(reply, dict):
+        return None
+    message_id = reply.get("message_id")
+    if isinstance(message_id, bool) or not isinstance(message_id, int):
+        return None
+    return message_id
 
 
 def _integer(value: object) -> int:

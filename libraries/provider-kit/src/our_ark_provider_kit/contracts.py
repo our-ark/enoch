@@ -300,6 +300,9 @@ class ChatEvent:
     raw: dict[str, Any] = field(default_factory=dict)
     attachments: tuple[Attachment, ...] = ()
     thread_id: MessageId | None = None
+    # Id of the chat message this event replies to, when the provider knows
+    # it. Agents may map it to their own records; it is never authorization.
+    replied_message_id: MessageId | None = None
 
 
 @dataclass(frozen=True)

@@ -110,6 +110,13 @@ class WorkflowEngine(Protocol):
 
     def find(self, task_id: int) -> TaskJob | None: ...
 
+    def find_by_message(
+        self,
+        message_id: MessageId,
+        *,
+        chat_id: ConversationId | None = None,
+    ) -> TaskJob | None: ...
+
     def retry_running(
         self,
         task_id: int,
@@ -171,6 +178,12 @@ class WorkflowEngine(Protocol):
     ) -> TaskJob | None: ...
 
     def record_status_message(
+        self,
+        task_id: int,
+        message_id: MessageId,
+    ) -> None: ...
+
+    def record_result_message(
         self,
         task_id: int,
         message_id: MessageId,
