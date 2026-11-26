@@ -25,10 +25,12 @@ from enoch.tasks.queue import (
     enqueue_task,
     enqueue_task_front,
     fail_task,
+    find_task_by_message,
     heartbeat_task,
     pause_task,
     record_task_publication,
     record_task_result,
+    record_task_result_message,
     record_task_runtime_result,
     record_task_status_message,
     record_task_terminal_evidence,
@@ -286,6 +288,14 @@ class LocalWorkflowEngine:
     def inspect(self) -> TaskQueueStatus:
         return task_queue_status(self.root)
 
+    def find_by_message(
+        self,
+        message_id: MessageId,
+        *,
+        chat_id: ConversationId | None = None,
+    ) -> TaskJob | None:
+        return find_task_by_message(message_id, self.root, chat_id=chat_id)
+
     def find(self, task_id: int) -> TaskJob | None:
         status = self.inspect()
         return next(
@@ -419,6 +429,10 @@ class LocalWorkflowEngine:
     def record_status_message(self, task_id: int, message_id: MessageId) -> None:
         with self._mutation():
             record_task_status_message(task_id, message_id, self.root)
+
+    def record_result_message(self, task_id: int, message_id: MessageId) -> None:
+        with self._mutation():
+            record_task_result_message(task_id, message_id, self.root)
 
     def record_workspace(
         self,

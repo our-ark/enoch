@@ -17,6 +17,26 @@ is missing or below the project requirement. When that preflight fails, Doctor
 skips the suite instead of reporting downstream packaging failures as source
 regressions.
 
+## Persistent test environment
+
+Doctor maintains a persistent, content-addressed virtualenv outside the
+repository (under `~/.enoch/validation/`, or `ENOCH_VALIDATION_ENVIRONMENT_HOME`)
+and runs the suite with it. It contains the locked build backend from
+`.github/requirements/test-build.txt`, the locked test runners from
+`.github/requirements/test-tools.txt` (pytest and the pinned `pypdf`), and the
+local `libraries/*` packages installed in editable mode from the resident
+checkout. Task worktrees share one environment: the tests put their own
+checkout's `src` and library paths first on `sys.path`.
+
+The environment is keyed on a hash of the requirement files, the root
+`pyproject.toml`, and each `libraries/*/pyproject.toml`. Doctor's
+`test environment` check reports it as up to date, or creates or repairs it
+when it is missing or stale. If provisioning fails, for example without
+network access, the check is skipped and Doctor falls back to the configured
+Python. Task work prompts give workers the environment's interpreter so they
+run `-m pytest` or `-m unittest` with it instead of building throwaway
+virtualenvs.
+
 The service-provider suites verify manifest generation and lifecycle command
 delegation independently. GitHub Actions runs them on Linux alongside the core
 suite, so systemd support remains part of the required regression gate while

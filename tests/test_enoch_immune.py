@@ -20,14 +20,17 @@ from enoch.immune import (
     _limit_output,
     _memory_storage_check,
     _test_command,
+    _test_environment_check,
     _validation_python_and_backend_check,
     diagnose_output,
+    discover_test_environment,
     run_immune_system,
 )
 from enoch.providers.registry import ProviderError
 from enoch.validation_environment import (
     ValidationEnvironment,
     ValidationEnvironmentError,
+    ValidationEnvironmentStatus,
 )
 
 
@@ -51,6 +54,19 @@ def _check(
 
 
 class EnochImmuneTests(unittest.TestCase):
+    def setUp(self) -> None:
+        # These cases script subprocess results for the original checks; the
+        # managed test environment check has dedicated coverage below.
+        environment_check = patch(
+            "enoch.immune._test_environment_check",
+            return_value=(
+                None,
+                _check("test environment", category="environment readiness"),
+            ),
+        )
+        environment_check.start()
+        self.addCleanup(environment_check.stop)
+
     def test_doctor_runs_flat_and_package_tests_and_preserves_failures(self) -> None:
         for packaged in (False, True):
             for succeeds in (False, True):
@@ -221,6 +237,7 @@ class EnochImmuneTests(unittest.TestCase):
             [check.name for check in result.checks],
             [
                 "python runtime",
+                "test environment",
                 "build backend",
                 "tests",
                 "import smoke",
@@ -234,6 +251,7 @@ class EnochImmuneTests(unittest.TestCase):
             [check.category for check in result.checks],
             [
                 "code health",
+                "environment readiness",
                 "environment readiness",
                 "code health",
                 "code health",
@@ -300,7 +318,8 @@ class EnochImmuneTests(unittest.TestCase):
 
         self.assertFalse(result.passed)
         self.assertIn("Timed out after 1 second(s).", result.output)
-        self.assertFalse(result.checks[2].passed)
+        tests = next(check for check in result.checks if check.name == "tests")
+        self.assertFalse(tests.passed)
 
     @patch("enoch.immune._memory_storage_check")
     @patch("enoch.immune._forge_provider_check")
@@ -326,8 +345,8 @@ class EnochImmuneTests(unittest.TestCase):
         result = run_immune_system(ROOT)
 
         self.assertTrue(result.passed)
-        self.assertEqual(result.checks[6].name, "git worktree")
-        self.assertEqual(result.checks[6].summary, "worktree dirty")
+        worktree = next(check for check in result.checks if check.name == "git worktree")
+        self.assertEqual(worktree.summary, "worktree dirty")
 
     @patch("enoch.immune._memory_storage_check")
     @patch("enoch.immune._forge_provider_check")
@@ -664,6 +683,157 @@ FAIL: test_wheel (tests.test_portable.PortableTests.test_wheel)
         self.assertFalse(check.passed)
         self.assertEqual(check.name, "forge provider")
         self.assertIn("bad provider config", check.output)
+
+
+MANAGED = ValidationEnvironment(
+    root=Path("/managed"),
+    python=Path("/managed/bin/python"),
+    fingerprint="abc",
+)
+
+
+def _status(state: str, *, detail: str = "") -> ValidationEnvironmentStatus:
+    return ValidationEnvironmentStatus(
+        state=state,
+        target=MANAGED.root,
+        fingerprint=MANAGED.fingerprint,
+        environment=MANAGED if state == "ready" else None,
+        detail=detail,
+    )
+
+
+class EnochTestEnvironmentCheckTests(unittest.TestCase):
+    @patch("enoch.immune.ensure_validation_environment")
+    @patch("enoch.immune.validation_environment_status", return_value=_status("ready"))
+    def test_up_to_date_environment_passes_without_repair(
+        self,
+        status: MagicMock,
+        ensure: MagicMock,
+    ) -> None:
+        python, check = _test_environment_check(ROOT, source_root=Path("/resident"))
+
+        self.assertEqual(python, "/managed/bin/python")
+        self.assertTrue(check.passed)
+        self.assertFalse(check.skipped)
+        self.assertEqual(check.name, "test environment")
+        self.assertEqual(check.category, "environment readiness")
+        self.assertEqual(check.summary, "up to date")
+        self.assertEqual(status.call_args.kwargs["source_root"], Path("/resident"))
+        ensure.assert_not_called()
+
+    def test_missing_or_stale_environment_is_repaired(self) -> None:
+        for state, summary in (("missing", "created (missing)"), ("stale", "repaired (stale)")):
+            with self.subTest(state=state), \
+                 patch("enoch.immune.validation_environment_status",
+                       return_value=_status(state, detail="requirement or pyproject files changed")), \
+                 patch("enoch.immune.ensure_validation_environment",
+                       return_value=replace(MANAGED, created=True)) as ensure:
+                python, check = _test_environment_check(ROOT, source_root=Path("/resident"))
+
+            self.assertEqual(python, "/managed/bin/python")
+            self.assertTrue(check.passed)
+            self.assertFalse(check.skipped)
+            self.assertEqual(check.summary, summary)
+            self.assertIn(state, check.output)
+            ensure.assert_called_once()
+            self.assertEqual(ensure.call_args.kwargs["source_root"], Path("/resident"))
+
+    @patch(
+        "enoch.immune.ensure_validation_environment",
+        side_effect=ValidationEnvironmentError("network unavailable"),
+    )
+    @patch("enoch.immune.validation_environment_status", return_value=_status("missing"))
+    def test_repair_failure_falls_back_without_failing_doctor(
+        self,
+        _status_check: MagicMock,
+        _ensure: MagicMock,
+    ) -> None:
+        python, check = _test_environment_check(ROOT)
+
+        self.assertIsNone(python)
+        self.assertTrue(check.passed)
+        self.assertTrue(check.skipped)
+        self.assertIn("repair failed", check.summary)
+        self.assertIn("network unavailable", check.output)
+
+    @patch("enoch.immune.ensure_validation_environment")
+    @patch("enoch.immune._build_backend_check")
+    def test_backend_check_does_not_retry_repair_after_environment_failure(
+        self,
+        build_backend_check: MagicMock,
+        ensure: MagicMock,
+    ) -> None:
+        build_backend_check.return_value = replace(
+            _check("build backend", passed=False, category="environment readiness"),
+            summary="missing setuptools.build_meta",
+        )
+
+        _python, check = _validation_python_and_backend_check(ROOT, 120, repair=False)
+
+        self.assertFalse(check.passed)
+        ensure.assert_not_called()
+
+    @patch("enoch.immune._memory_storage_check", return_value=_check("state storage"))
+    @patch("enoch.immune._vcs_workspace_check", return_value=_check("git worktree"))
+    @patch("enoch.immune._forge_provider_check", return_value=_check("forge"))
+    @patch("enoch.immune._runtime_provider_check", return_value=_check("runtime"))
+    @patch("enoch.immune._python_runtime_check", return_value=_check("python runtime"))
+    @patch("enoch.immune._build_backend_check")
+    @patch("enoch.immune._run_check")
+    @patch("enoch.immune._test_environment_check")
+    def test_doctor_runs_tests_with_managed_environment(
+        self,
+        environment_check: MagicMock,
+        run_check: MagicMock,
+        build_backend_check: MagicMock,
+        *_checks: MagicMock,
+    ) -> None:
+        environment_check.return_value = (
+            "/managed/bin/python",
+            _check("test environment", category="environment readiness"),
+        )
+        build_backend_check.return_value = _check(
+            "build backend", category="environment readiness",
+        )
+        run_check.side_effect = lambda name, *_args: _check(name)
+        with TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            worktree, resident = base / "worktree", base / "resident"
+            worktree.mkdir()
+            resident.mkdir()
+            with patch.dict("os.environ", {}, clear=False) as environment:
+                environment.pop("ENOCH_TEST_COMMAND", None)
+                result = run_immune_system(worktree, state_root=resident)
+
+        self.assertTrue(result.passed)
+        environment_check.assert_called_once_with(
+            worktree.resolve(), source_root=resident.resolve(),
+        )
+        self.assertEqual(build_backend_check.call_args.kwargs["python"], "/managed/bin/python")
+        tests_command = next(
+            call.args[1] for call in run_check.call_args_list if call.args[0] == "tests"
+        )
+        self.assertEqual(tests_command[0], "/managed/bin/python")
+        self.assertEqual([check.name for check in result.checks][:3],
+                         ["python runtime", "test environment", "build backend"])
+
+    def test_discovery_reports_only_ready_environments(self) -> None:
+        cases = (("ready", "/managed/bin/python"), ("stale", None), ("missing", None))
+        for state, expected in cases:
+            with self.subTest(state=state), \
+                 patch("enoch.immune.validation_environment_status",
+                       return_value=_status(state)) as status:
+                discovered = discover_test_environment(ROOT, state_root=Path("/resident"))
+
+            self.assertEqual(discovered, expected)
+            self.assertEqual(status.call_args.kwargs["source_root"], Path("/resident").resolve())
+
+    @patch(
+        "enoch.immune.validation_environment_status",
+        side_effect=ValidationEnvironmentError("unreadable pyproject"),
+    )
+    def test_discovery_errors_are_not_fatal(self, _status_check: MagicMock) -> None:
+        self.assertIsNone(discover_test_environment(ROOT))
 
 
 if __name__ == "__main__":

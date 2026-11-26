@@ -24,6 +24,7 @@ from enoch.validation_environment import (
     ValidationEnvironmentError,
     ensure_validation_environment,
     existing_validation_environment,
+    validation_environment_status,
 )
 
 
@@ -89,9 +90,17 @@ def run_immune_system(
     ]
     test_check: DoctorCheckResult
     if os.environ.get("ENOCH_TEST_COMMAND") is None:
+        managed_python, environment_check = _test_environment_check(
+            root_path,
+            source_root=operational_root,
+        )
+        checks.append(environment_check)
         validation_python, build_backend = _validation_python_and_backend_check(
             root_path,
             timeout,
+            python=managed_python,
+            source_root=operational_root,
+            repair=not environment_check.skipped,
         )
         checks.append(build_backend)
         if build_backend.passed:
@@ -196,31 +205,137 @@ def _python_runtime_check(root: Path, timeout: float) -> DoctorCheckResult:
     )
 
 
+def discover_test_environment(
+    root: Path,
+    *,
+    state_root: Path | None = None,
+) -> str | None:
+    """Return the managed test Python when it is ready for ``root``.
+
+    This only inspects files, so callers such as task startup can use it
+    cheaply; Doctor's test-environment check is what creates and repairs it.
+    """
+
+    root_path = repo_root(root)
+    try:
+        status = validation_environment_status(
+            root_path,
+            base_python=_python_executable(),
+            source_root=repo_root(state_root or root_path),
+        )
+    except ValidationEnvironmentError:
+        return None
+    return str(status.environment.python) if status.ready and status.environment else None
+
+
+def _test_environment_check(
+    root: Path,
+    *,
+    source_root: Path | None = None,
+) -> tuple[str | None, DoctorCheckResult]:
+    """Verify Enoch's persistent test environment, repairing it when needed.
+
+    Returns the managed Python when the environment is usable. When it cannot
+    be prepared, the check is reported as skipped so Doctor falls back to the
+    configured Python instead of failing for a missing network.
+    """
+
+    name = "test environment"
+    category = "environment readiness"
+    base_python = _python_executable()
+    command = "verify Enoch-managed test environment"
+    try:
+        status = validation_environment_status(
+            root,
+            base_python=base_python,
+            source_root=source_root,
+        )
+    except ValidationEnvironmentError as error:
+        return None, DoctorCheckResult(
+            name=name,
+            passed=True,
+            command=command,
+            output=str(error),
+            category=category,
+            summary="could not inspect; using the configured Python",
+            skipped=True,
+        )
+    if status.ready and status.environment is not None:
+        return str(status.environment.python), DoctorCheckResult(
+            name=name,
+            passed=True,
+            command=command,
+            output=f"Managed test environment {status.fingerprint} is up to date.",
+            category=category,
+            summary="up to date",
+        )
+
+    command = "provision Enoch-managed test environment"
+    try:
+        managed = ensure_validation_environment(
+            root,
+            base_python=base_python,
+            source_root=source_root,
+        )
+    except ValidationEnvironmentError as error:
+        return None, DoctorCheckResult(
+            name=name,
+            passed=True,
+            command=command,
+            output=_join_output(
+                f"Managed test environment was {status.state}: {status.detail}.",
+                "Enoch could not prepare it; tests use the configured Python.",
+                str(error),
+            ),
+            category=category,
+            summary=f"{status.state}; repair failed, using the configured Python",
+            skipped=True,
+        )
+    action = "created" if status.state == "missing" else "repaired"
+    return str(managed.python), DoctorCheckResult(
+        name=name,
+        passed=True,
+        command=command,
+        output=f"Managed test environment was {status.state} ({status.detail}); {action} {managed.fingerprint}.",
+        category=category,
+        summary=f"{action} ({status.state})",
+    )
+
+
 def _validation_python_and_backend_check(
     root: Path,
     timeout: float,
+    *,
+    python: str | None = None,
+    source_root: Path | None = None,
+    repair: bool = True,
 ) -> tuple[str, DoctorCheckResult]:
     base_python = _python_executable()
-    try:
-        existing = existing_validation_environment(
-            root,
-            base_python=base_python,
-        )
-    except ValidationEnvironmentError:
-        existing = None
-    validation_python = str(existing.python) if existing else base_python
+    if python is not None:
+        validation_python = python
+    else:
+        try:
+            existing = existing_validation_environment(
+                root,
+                base_python=base_python,
+                source_root=source_root,
+            )
+        except ValidationEnvironmentError:
+            existing = None
+        validation_python = str(existing.python) if existing else base_python
     check = _build_backend_check(
         root,
         timeout,
         python=validation_python,
     )
-    if check.passed or not _managed_environment_can_repair(check):
+    if check.passed or not repair or not _managed_environment_can_repair(check):
         return validation_python, check
 
     try:
         managed = ensure_validation_environment(
             root,
             base_python=base_python,
+            source_root=source_root,
         )
     except ValidationEnvironmentError as error:
         return validation_python, DoctorCheckResult(

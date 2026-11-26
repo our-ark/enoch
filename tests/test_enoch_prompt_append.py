@@ -75,6 +75,40 @@ class EnochPromptAppendTests(unittest.TestCase):
         self.assertIn("preserve the local task branch", prompt)
         self.assertNotIn("publish the pull request", prompt)
 
+    def test_work_request_prompt_points_workers_at_managed_test_environment(self) -> None:
+        for remote_review in (True, False):
+            with self.subTest(remote_review=remote_review):
+                prompt = work_request_prompt(
+                    "Fix the parser.",
+                    remote_review=remote_review,
+                    test_python="/managed env/bin/python",
+                )
+
+                self.assertIn("Python test environment:", prompt)
+                self.assertIn("persistent test environment", prompt)
+                self.assertIn("`'/managed env/bin/python' -m pytest -q`", prompt)
+                self.assertIn(
+                    "`'/managed env/bin/python' -m unittest discover -s tests -t .`",
+                    prompt,
+                )
+                self.assertIn("including pytest and setuptools", prompt)
+                self.assertIn("libraries/* packages in editable mode", prompt)
+                self.assertIn("Do not create, install into, or delete virtualenvs", prompt)
+                self.assertIn("do not pip install into this shared environment", prompt)
+                self.assertLess(
+                    prompt.index("Python test environment:"),
+                    prompt.index("Repository state:"),
+                )
+
+    def test_work_request_prompt_explains_missing_test_environment(self) -> None:
+        prompt = work_request_prompt("Fix the parser.")
+
+        self.assertIn("Python test environment:", prompt)
+        self.assertIn("not ready for this checkout yet", prompt)
+        self.assertIn("Doctor creates or repairs it", prompt)
+        self.assertIn("instead of building a temporary virtualenv", prompt)
+        self.assertNotIn("-m pytest", prompt)
+
     def test_extract_edit_request_strips_marker_from_visible_reply(self) -> None:
         reply = f"I can do that.\n\n{EDIT_REQUEST_START}\nUpdate README.\n{EDIT_REQUEST_END}"
 

@@ -22,6 +22,9 @@ STATE_HOME = Path(tempfile.mkdtemp(prefix="enoch-test-state-"))
 
 os.environ["ENOCH_STATE_REDIRECT_ROOT"] = str(SOURCE_ROOT)
 os.environ["ENOCH_STATE_HOME"] = str(STATE_HOME)
+# Doctor and task prompts discover Enoch's managed test environment. Tests must
+# never inspect, provision, or repair the developer's persistent environments.
+os.environ["ENOCH_VALIDATION_ENVIRONMENT_HOME"] = str(STATE_HOME / "validation")
 
 # Reuse the PDF dependency installed by the test environment. Private state is
 # cleared between cases, so tests must not fetch it into that state repeatedly.
