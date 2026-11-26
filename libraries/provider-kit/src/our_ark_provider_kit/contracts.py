@@ -1025,6 +1025,7 @@ class PullRequestMergeStatus:
     merge_state_status: str = ""
     head_sha: str = ""
     note: str | None = None
+    title: str = ""
 
 
 @dataclass(frozen=True)
