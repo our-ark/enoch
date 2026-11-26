@@ -370,7 +370,7 @@ def inspect_pull_request_merge(
             target.reference,
             "--json",
             (
-                "number,state,isDraft,mergeable,mergeStateStatus,mergedAt,"
+                "number,title,state,isDraft,mergeable,mergeStateStatus,mergedAt,"
                 "mergeCommit,baseRefName,headRefOid,url"
             ),
         ],
@@ -420,6 +420,7 @@ def inspect_pull_request_merge(
         mergeable=str(data.get("mergeable") or "").strip().upper(),
         merge_state_status=str(data.get("mergeStateStatus") or "").strip().upper(),
         head_sha=str(data.get("headRefOid") or "").strip(),
+        title=str(data.get("title") or "").strip(),
     )
 
 

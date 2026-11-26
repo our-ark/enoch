@@ -574,11 +574,57 @@ class EnochGithubWorkflowTests(unittest.TestCase):
                 "https://github.com/our-ark/enoch/pull/12",
                 "--json",
                 (
-                    "number,state,isDraft,mergeable,mergeStateStatus,mergedAt,"
+                    "number,title,state,isDraft,mergeable,mergeStateStatus,mergedAt,"
                     "mergeCommit,baseRefName,headRefOid,url"
                 ),
             ],
         )
+
+    @patch("our_ark_github.workflow.subprocess.run")
+    @patch(
+        "our_ark_github.workflow.shutil.which",
+        return_value="/usr/local/bin/gh",
+    )
+    def test_review_display_shows_the_pull_request_title_from_github(
+        self,
+        _which: MagicMock,
+        run: MagicMock,
+    ) -> None:
+        # Regression: review displays printed "Untitled review" because the
+        # merge inspection never requested or mapped the PR title.
+        from our_ark_github import GithubForgeProvider
+        from our_ark_provider_kit import ReviewIdentity, as_review_provider
+        from enoch.app.presentation import format_review
+
+        title = "Fix order-dependent provider-kit agent manifest test"
+        run.return_value = _process_result(
+            stdout=json.dumps(
+                {
+                    "number": 91,
+                    "title": title,
+                    "state": "OPEN",
+                    "isDraft": False,
+                    "mergeable": "MERGEABLE",
+                    "mergeStateStatus": "BEHIND",
+                    "mergedAt": None,
+                    "mergeCommit": None,
+                    "baseRefName": "main",
+                    "headRefOid": "c184b22aa",
+                    "url": "https://github.com/our-ark/enoch/pull/91",
+                }
+            )
+        )
+        url = "https://github.com/our-ark/enoch/pull/91"
+        provider = as_review_provider(GithubForgeProvider(gh="/usr/local/bin/gh"))
+
+        status = inspect_pull_request_merge(url, ROOT)
+        record = provider.inspect_review(ReviewIdentity(id=url, url=url), ROOT)
+        rendered = format_review(record)
+
+        self.assertEqual(status.title, title)
+        self.assertEqual(record.title, title)
+        self.assertIn(f"Title: {title}", rendered)
+        self.assertNotIn("Untitled review", rendered)
 
     def test_parses_numeric_pull_request_target_for_current_repository(self) -> None:
         target = parse_pull_request_target(" 12 ")
