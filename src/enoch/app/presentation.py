@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 
+from enoch.app.merge_policy import merge_policy_label
 from enoch.app.models import WorkStatusMessage
 from enoch.app.task_board import REQUEST_LIMIT, _short as _short_board_text
 from enoch.providers.contracts import (
@@ -181,6 +182,7 @@ def format_work_status_message(
     lines = [
         title,
         f"Status: {status.status}",
+        *([f"Merge: {status.merge}"] if status.merge else []),
         f"Time: {elapsed}",
         f"Latest update: {status.latest_update}",
         "Reviews published:",
@@ -215,8 +217,10 @@ def short_request(text: str, limit: int = REQUEST_LIMIT) -> str:
     return _short_board_text(first_line, limit)
 
 
-def format_compact_task_start(task_id: int, request: str) -> str:
-    return f"▶️ #{task_id} started: {short_request(request)}"
+def format_compact_task_start(task_id: int, request: str, merge_policy: str = "") -> str:
+    label = merge_policy_label(merge_policy)
+    suffix = f" · {label}" if label else ""
+    return f"▶️ #{task_id} started: {short_request(request)}{suffix}"
 
 
 def format_compact_task_queued(task_id: int, *, retry_of: int | None = None) -> str:
@@ -282,6 +286,9 @@ def format_task_details(job: TaskJob, *, task_label: str = "Task") -> str:
     ]
     if job.parent_task_id is not None:
         lines.append(f"Retry of: #{job.parent_task_id}")
+    merge = merge_policy_label(job.merge_policy)
+    if merge:
+        lines.append(f"Merge: {merge}")
     lines.extend(["", "Request:", job.text.strip() or "(empty)", "", "Review URLs:"])
     lines.extend([f"- {url}" for url in job.review_urls] or ["- none"])
     if job.status == "failed":

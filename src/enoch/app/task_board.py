@@ -132,6 +132,7 @@ def render_task_board(
     open_reviews: Iterable[BoardReview] = (),
     backlog: Iterable[BacklogItem] = (),
     quota_line: str = "",
+    held_by: str = "",
 ) -> RenderedTaskBoard:
     """Render the board text and a digest of everything except the footer.
 
@@ -143,7 +144,8 @@ def render_task_board(
     line lists them. ``backlog`` holds the pending backlog items; when there
     are any, one ``Up next:`` line previews them in promotion order.
     ``quota_line`` (see :func:`render_quota_line`) is shown last, just above
-    the footer, when it is non-empty.
+    the footer, when it is non-empty. ``held_by`` names the review (``#91``)
+    whose pending merge holds queued tasks; the Queued heading then says so.
     """
 
     footer = f"Updated {_local_clock(updated_at)}"
@@ -156,6 +158,7 @@ def render_task_board(
         open_reviews=_open_review_order(open_reviews),
         backlog=promotion_order(backlog),
         quota_line=quota_line,
+        held_by=held_by,
     )
     digest = hashlib.sha256(body.encode("utf-8")).hexdigest()
     return RenderedTaskBoard(text=f"{body}\n\n{footer}", digest=digest)
@@ -171,13 +174,19 @@ def _render_body(
     open_reviews: tuple[BoardReview, ...] = (),
     backlog: tuple[BacklogItem, ...] = (),
     quota_line: str = "",
+    held_by: str = "",
 ) -> str:
+    queued = (
+        f"Queued (waiting for {held_by} to land)"
+        if held_by and status.pending
+        else "Queued"
+    )
     sections = [
         _Section(
             "Running",
             [_running_item(status.running)] if status.running is not None else [],
         ),
-        _Section("Queued", [_task_item(job) for job in status.pending]),
+        _Section(queued, [_task_item(job) for job in status.pending]),
         _Section("Paused", [_task_item(job) for job in status.paused]),
     ]
     if merging:
