@@ -1352,7 +1352,7 @@ class EnochTelegramTests(unittest.TestCase):
         self.assertIn("/task <request> - queue background work for Enoch", reply)
         self.assertIn("/task cancel <id> - cancel a queued background task", reply)
         self.assertIn("/task resume <id|all> - continue paused tasks with the same ids", reply)
-        self.assertIn("/task retry <id> - retry a failed task as a new linked task", reply)
+        self.assertIn("/task retry <id> - retry a failed or cancelled task as a new linked task", reply)
         self.assertNotIn("/task regress", reply)
         self.assertNotIn("/task resolve", reply)
         self.assertNotIn("Enoch Telegram commands:", reply)

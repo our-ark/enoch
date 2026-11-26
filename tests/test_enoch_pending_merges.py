@@ -32,13 +32,17 @@ from enoch.commands import pr_usage
 from enoch.identity import load_identity
 from enoch.providers.forge import FunctionForgeProvider
 from enoch.tasks.queue import TaskQueueStatus
-from our_ark_github.workflow import _require_mergeable_pull_request
+from our_ark_github.workflow import PublishError, _require_mergeable_pull_request
 from our_ark_provider_kit import (
     PullRequestBranchUpdateResult,
     PullRequestMergeResult,
     PullRequestMergeStatus,
+    ReviewBaseFreshness,
     ReviewCheck,
+    ReviewCheckFailure,
     ReviewCheckReport,
+    ReviewCommit,
+    ReviewRevisionComparison,
 )
 from tests.test_enoch_application import _Chat, _Runtime
 
@@ -59,12 +63,26 @@ class _Forge:
         update_branch: bool = True,
         verify_update: bool | None = None,
         verified_update_heads: bool = True,
+        ci_repair: bool = False,
+        base_freshness: bool = False,
     ) -> None:
         self.status = _status(merge_state_status=merge_state)
         self.checks = checks
         self.updates: list[str] = []
+        # Every update call, and errors the next calls raise (in order).
+        self.update_attempts: list[str] = []
+        self.update_errors: list[Exception] = []
         self.merges: list[str] = []
         self.verified_update_heads = verified_update_heads
+        # forge.ci-repair fakes: failure evidence, re-runs, and a commit graph.
+        self.failures: tuple[ReviewCheckFailure, ...] | None = None
+        self.reruns: list[str] = []
+        self.parents: dict[str, str] = {}
+        self.subjects: dict[str, str] = {}
+        self.contains_base = True
+        # forge.base-freshness fake: heads that lack the current base tip.
+        self.stale_heads: set[str] = set()
+        self.freshness_error: Exception | None = None
         self.inspect = MagicMock(side_effect=lambda reference, root=None: self.status)
         optional = {}
         if check_status:
@@ -73,6 +91,12 @@ class _Forge:
             optional["update_branch_fn"] = MagicMock(side_effect=self._update)
         if verify_update is not None:
             optional["verify_update_fn"] = MagicMock(return_value=verify_update)
+        if ci_repair:
+            optional["check_failures_fn"] = MagicMock(side_effect=self._failures)
+            optional["rerun_checks_fn"] = MagicMock(side_effect=self._rerun)
+            optional["compare_fn"] = MagicMock(side_effect=self._compare)
+        if base_freshness:
+            optional["base_freshness_fn"] = MagicMock(side_effect=self._freshness)
         self.provider = FunctionForgeProvider(
             close_fn=MagicMock(),
             create_fn=MagicMock(),
@@ -92,9 +116,66 @@ class _Forge:
     def _checks(self, reference, root=None) -> ReviewCheckReport:
         return ReviewCheckReport(revision=self.status.head_sha, checks=self.checks)
 
+    def push(self, head: str, *, subject: str = "", parent: str = "") -> None:
+        """Simulate a push on top of the current head; CI restarts on it."""
+
+        self.parents[head] = parent or self.status.head_sha
+        self.subjects[head] = subject
+        self.status = replace(self.status, head_sha=head)
+        self.checks = (ReviewCheck("CI / test", "pending"),)
+
+    def _failures(self, reference, *, head_sha, root=None) -> tuple[ReviewCheckFailure, ...]:
+        if head_sha != self.status.head_sha:
+            raise AssertionError("failure evidence must be read for the inspected head")
+        if self.failures is not None:
+            return self.failures
+        return tuple(
+            ReviewCheckFailure(
+                check.name,
+                check.detail or "failure",
+                run_id="4544",
+                job_id="1386",
+                log="FAILED tests/test_x.py::test_y - AssertionError",
+            )
+            for check in self.checks
+            if check.state == "failure"
+        )
+
+    def _rerun(self, reference, *, head_sha, root=None) -> tuple[str, ...]:
+        if head_sha != self.status.head_sha:
+            raise AssertionError("re-runs must be pinned to the inspected head")
+        self.reruns.append(head_sha)
+        self.checks = tuple(
+            ReviewCheck(check.name, "pending") if check.state == "failure" else check
+            for check in self.checks
+        )
+        return ("4544",)
+
+    def _compare(self, reference, *, base, head, root=None) -> ReviewRevisionComparison:
+        if base == "main":
+            return ReviewRevisionComparison(base, head, self.contains_base)
+        commits = []
+        cursor = head
+        while cursor != base and cursor in self.parents:
+            commits.append(ReviewCommit(cursor, self.subjects.get(cursor, "")))
+            cursor = self.parents[cursor]
+        descends = cursor == base
+        return ReviewRevisionComparison(
+            base, head, descends, tuple(reversed(commits)) if descends else ()
+        )
+
+    def _freshness(self, reference, *, head_sha="", root=None) -> ReviewBaseFreshness:
+        if self.freshness_error is not None:
+            raise self.freshness_error
+        head = head_sha or self.status.head_sha
+        return ReviewBaseFreshness("main", "main-tip", head, 1 if head in self.stale_heads else 0)
+
     def _update(self, reference, *, expected_head_sha, root=None) -> PullRequestBranchUpdateResult:
         if expected_head_sha != self.status.head_sha:
             raise AssertionError("update must be pinned to the inspected head")
+        self.update_attempts.append(expected_head_sha)
+        if self.update_errors:
+            raise self.update_errors.pop(0)
         previous = self.status.head_sha
         new_head = f"update-{len(self.updates) + 1}"
         self.updates.append(previous)
@@ -263,6 +344,95 @@ class PendingMergeTests(unittest.TestCase):
 
         self.assertEqual(forge.merges, ["update-2"])
         self.assertEqual(chat.sent, [("room-1", "✅ Merged #91.")])
+
+    def test_failed_update_is_retried_each_cycle_then_stops_with_the_reason(self) -> None:
+        forge = _Forge(merge_state="BEHIND", checks=(ReviewCheck("CI / test", "success"),))
+        reason = "GitHub returned HTTP 422 Unprocessable Entity with an empty response"
+        forge.update_errors = [
+            PublishError(f"Could not update PR #91 from main: {reason}") for _ in range(3)
+        ]
+        chat = _Chat()
+        app = self._app(forge, chat)
+
+        with patch("enoch.app.core._record_system_event") as record:
+            reply = app._pr("room-1", "merge 91")
+            self.assertIn("isn't ready yet (behind main", reply)
+            (entry,) = self._entries()
+            self.assertEqual(entry.update_failures, 1)
+            self.assertEqual(entry.waiting_for, "updating from main")
+
+            app.pending_merges.tick()
+            self.assertEqual(self._entries()[0].update_failures, 2)
+            self.assertEqual(chat.sent, [])
+
+            app.pending_merges.tick()
+
+        self.assertEqual(forge.update_attempts, ["head-91"] * 3)
+        self.assertEqual(forge.updates, [])
+        self.assertEqual(forge.merges, [])
+        self.assertEqual(self._entries(), ())
+        self.assertEqual(
+            chat.sent,
+            [("room-1", f"⏹ Not merging #91: could not update the branch from main ({reason}).")],
+        )
+        failed = [
+            call.kwargs["details"]
+            for call in record.call_args_list
+            if call.args[0] == "pending_merge_update_failed"
+        ]
+        self.assertEqual([details["failures"] for details in failed], [1, 2, 3])
+        (stopped,) = [
+            call.kwargs["details"]
+            for call in record.call_args_list
+            if call.args[0] == "pending_merge_stopped"
+        ]
+        self.assertEqual(stopped["reason"], "update-failed")
+        self.assertIn(reason, stopped["error"])
+
+    def test_a_successful_update_resets_the_failure_count(self) -> None:
+        forge = _Forge(merge_state="BEHIND")
+        forge.update_errors = [PublishError("Could not update PR #91 from main: HTTP 502")] * 2
+        chat = _Chat()
+        app = self._app(forge, chat)
+        app._pr("room-1", "merge 91")
+        app.pending_merges.tick()
+        self.assertEqual(self._entries()[0].update_failures, 2)
+
+        app.pending_merges.tick()  # third attempt succeeds
+        (entry,) = self._entries()
+        self.assertEqual((entry.update_failures, entry.update_error), (0, ""))
+        self.assertEqual(entry.allowed_head_shas, ("head-91", "update-1"))
+
+        # main moves again; two more failures do not stop the merge.
+        forge.update_errors = [PublishError("Could not update PR #91 from main: HTTP 502")] * 2
+        forge.set(merge_state_status="BEHIND", checks=(ReviewCheck("CI / test", "success"),))
+        app.pending_merges.tick()
+        app.pending_merges.tick()
+        self.assertEqual(self._entries()[0].update_failures, 2)
+        self.assertEqual(chat.sent, [])
+
+        app.pending_merges.tick()
+        forge.set(merge_state_status="CLEAN", checks=(ReviewCheck("CI / test", "success"),))
+        app.pending_merges.tick()
+        self.assertEqual(forge.merges, ["update-2"])
+        self.assertEqual(chat.sent, [("room-1", "✅ Merged #91.")])
+
+    def test_update_failures_survive_a_daemon_restart(self) -> None:
+        forge = _Forge(merge_state="BEHIND")
+        forge.update_errors = [PublishError("Could not update PR #91 from main: HTTP 502")] * 3
+        self._app(forge)._pr("room-1", "merge 91")
+        self._app(forge).pending_merges.tick()
+
+        stored = json.loads(pending_merges_path(self.root).read_text())["merges"][0]
+        self.assertEqual(stored["update_failures"], 2)
+        self.assertEqual(stored["update_error"], "Could not update PR #91 from main: HTTP 502")
+
+        chat = _Chat()
+        self._app(forge, chat).pending_merges.tick()
+        self.assertEqual(
+            chat.sent,
+            [("room-1", "⏹ Not merging #91: could not update the branch from main (HTTP 502).")],
+        )
 
     def test_unverified_update_head_is_accepted_only_when_the_forge_verifies_it(self) -> None:
         for verified, merged in ((True, ["update-1"]), (False, [])):
@@ -632,7 +802,14 @@ class PendingMergeTests(unittest.TestCase):
         self.assertIn("pending merges", usage)
         self.assertIn("lands it automatically when it is ready", usage)
         self.assertIn("2 hours", usage)
-        self.assertIn("Conflicted, draft and closed reviews are refused right away", usage)
+        self.assertIn("conflicted, draft and closed reviews are refused right away", usage)
+        self.assertIn("end to end", usage)
+        self.assertIn("covered by your merge request and listed in the final merged message", usage)
+        self.assertIn("commits from anyone else cancel the merge", usage)
+        self.assertIn("re-run once", usage)
+        self.assertIn("up to 2 attempts", usage)
+        self.assertIn("6 hours overall", usage)
+        self.assertIn("never merged without a request", usage)
 
     def test_corrupt_entries_are_skipped_on_load(self) -> None:
         path = pending_merges_path(self.root)

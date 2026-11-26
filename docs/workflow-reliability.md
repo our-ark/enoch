@@ -84,6 +84,29 @@ Automatic retry resumes at that boundary instead of running the coding agent
 again. Schema 11's `committed`, `pushed`, and `pr_opened` checkpoints remain
 readable and are normalized when a legacy Git/GitHub task resumes.
 
+## Daemon restarts
+
+A restart ends every worker the daemon owns, so `/update` and `/restart` never
+restart while a task is running or a direct worker is alive. `/update` still
+checks out the new revision and runs doctor, then replies with one line such as
+`Updated to <rev>; will restart after task #N finishes.` and restarts as soon
+as the task queue is idle. Queued tasks wait for the restarted daemon. A bare
+`/restart` with a running task warns and offers `/restart wait` (restart once
+idle) or `/restart force` (restart now); `/restart cancel` drops a waiting
+restart. Automatic updates use the same deferral.
+
+When a restart still interrupts a task (crash, manual kill, or
+`/restart force`), the task is paused with trigger `daemon-restart` instead of
+being cancelled or failed, and the restarted daemon resumes it automatically
+through the same resume path used after runtime access returns. The resumed
+run is told that an earlier attempt was interrupted: it inspects what the
+interrupted step already did and reports it rather than repeating it. Each
+resume consumes an attempt; an interruption on the final attempt leaves the
+task failed and retryable, so `/task retry <id>` creates a new linked task.
+
+`/task retry <id>` also accepts cancelled tasks and links the new task to the
+cancelled one in the same way.
+
 ## Scheduled occurrences
 
 Cron and evolve schedules use claim-and-ack. Claiming a due occurrence does not

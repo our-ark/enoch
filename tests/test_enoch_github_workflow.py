@@ -15,8 +15,11 @@ from our_ark_github.workflow import (
     PublishError,
     PullRequestMergeStatus,
     close_pull_request,
+    compare_pull_request_revisions,
+    inspect_pull_request_base_freshness,
     create_pull_request,
     inspect_pull_request,
+    inspect_pull_request_check_failures,
     inspect_pull_request_checks,
     inspect_pull_request_merge,
     list_open_pull_requests,
@@ -25,6 +28,7 @@ from our_ark_github.workflow import (
     prepare_local_publish,
     publish_revision_for_review,
     push_current_branch,
+    rerun_failed_pull_request_checks,
     update_pull_request_branch,
     verify_pull_request_branch_update,
 )
@@ -790,7 +794,7 @@ class EnochGithubWorkflowTests(unittest.TestCase):
     ) -> None:
         inspect.return_value = _merge_status(merge_state_status="BEHIND")
         run.side_effect = [
-            _process_result(stdout='{"message":"Updating pull request branch."}'),
+            _http_result(202, "Accepted", '{"message":"Updating pull request branch."}'),
             _process_result(stdout='{"head":{"sha":"abc123"}}'),
             _process_result(stdout='{"head":{"sha":"merge789"}}'),
             _process_result(
@@ -809,6 +813,7 @@ class EnochGithubWorkflowTests(unittest.TestCase):
             [
                 "/usr/local/bin/gh",
                 "api",
+                "--include",
                 "--method",
                 "PUT",
                 "repos/our-ark/enoch/pulls/12/update-branch",
@@ -847,8 +852,9 @@ class EnochGithubWorkflowTests(unittest.TestCase):
                 _merge_status(mergeable="CONFLICTING", merge_state_status="BEHIND"),
                 "merge conflicts",
             ),
-            (_merge_status(merge_state_status="BLOCKED"), "merge state: blocked"),
-            (_merge_status(merge_state_status="CLEAN"), "merge state: clean"),
+            (_merge_status(merge_state_status="UNKNOWN"), "merge state: unknown"),
+            (_merge_status(merge_state_status=""), "merge state: unknown"),
+            (_merge_status(mergeable="UNKNOWN", merge_state_status="UNSTABLE"), "merge state: unstable"),
             (_merge_status(merge_state_status="BEHIND", is_draft=True), "is a draft"),
             (_merge_status(merge_state_status="BEHIND", state="CLOSED"), "not open"),
         )
@@ -862,6 +868,108 @@ class EnochGithubWorkflowTests(unittest.TestCase):
     @patch("our_ark_github.workflow.subprocess.run")
     @patch("our_ark_github.workflow.shutil.which", return_value="/usr/local/bin/gh")
     @patch("our_ark_github.workflow.inspect_pull_request_merge")
+    def test_branch_update_refuses_a_settled_head_that_contains_the_base_tip(
+        self,
+        inspect: MagicMock,
+        _which: MagicMock,
+        run: MagicMock,
+    ) -> None:
+        for state in ("BLOCKED", "CLEAN", "UNSTABLE"):
+            with self.subTest(state=state):
+                run.reset_mock()
+                inspect.return_value = _merge_status(merge_state_status=state)
+                run.side_effect = _base_tip_responses(behind_by=0)
+                with self.assertRaisesRegex(PublishError, f"merge state: {state.lower()}"):
+                    update_pull_request_branch("12", expected_head_sha="abc123", root=ROOT)
+                for call in run.call_args_list:
+                    self.assertNotIn("--method", call.args[0])
+
+    @patch("our_ark_github.workflow.time.sleep")
+    @patch("our_ark_github.workflow.subprocess.run")
+    @patch("our_ark_github.workflow.shutil.which", return_value="/usr/local/bin/gh")
+    @patch("our_ark_github.workflow.inspect_pull_request_merge")
+    def test_branch_update_trusts_the_compare_api_over_a_stale_merge_state(
+        self,
+        inspect: MagicMock,
+        _which: MagicMock,
+        run: MagicMock,
+        _sleep: MagicMock,
+    ) -> None:
+        # The base just moved: GitHub still says UNSTABLE, but the head is behind.
+        inspect.return_value = _merge_status(merge_state_status="UNSTABLE")
+        run.side_effect = [
+            *_base_tip_responses(behind_by=1),
+            _http_result(202, "Accepted", '{"message":"Updating pull request branch."}'),
+            _process_result(stdout='{"head":{"sha":"merge789"}}'),
+            _process_result(
+                stdout='{"sha":"merge789","parents":[{"sha":"abc123"},{"sha":"main456"}]}'
+            ),
+        ]
+
+        result = update_pull_request_branch("12", expected_head_sha="abc123", root=ROOT)
+
+        self.assertEqual(result.head_sha, "merge789")
+        self.assertEqual(
+            [call.args[0][2:] for call in run.call_args_list[:2]],
+            [
+                ["repos/our-ark/enoch/git/ref/heads/main"],
+                ["repos/our-ark/enoch/compare/main456...abc123?per_page=1"],
+            ],
+        )
+        self.assertEqual(
+            run.call_args_list[2].args[0][2:],
+            [
+                "--include",
+                "--method",
+                "PUT",
+                "repos/our-ark/enoch/pulls/12/update-branch",
+                "--input",
+                "-",
+            ],
+        )
+        self.assertEqual(
+            json.loads(run.call_args_list[2].kwargs["input"]),
+            {"expected_head_sha": "abc123"},
+        )
+
+    @patch("our_ark_github.workflow.subprocess.run")
+    @patch("our_ark_github.workflow.shutil.which", return_value="/usr/local/bin/gh")
+    @patch("our_ark_github.workflow.inspect_pull_request_merge")
+    def test_base_freshness_compares_the_head_with_the_current_base_tip(
+        self,
+        inspect: MagicMock,
+        _which: MagicMock,
+        run: MagicMock,
+    ) -> None:
+        inspect.return_value = _merge_status(merge_state_status="UNSTABLE")
+        run.side_effect = _base_tip_responses(behind_by=3)
+
+        result = inspect_pull_request_base_freshness("12", head_sha="abc123", root=ROOT)
+
+        self.assertEqual(result.base_branch, "main")
+        self.assertEqual(result.base_revision, "main456")
+        self.assertEqual(result.revision, "abc123")
+        self.assertEqual(result.behind_by, 3)
+        self.assertFalse(result.contains_base)
+
+        run.side_effect = _base_tip_responses(behind_by=0)
+        self.assertTrue(inspect_pull_request_base_freshness("12", root=ROOT).contains_base)
+
+        for payload in ({"status": "behind"}, {"behind_by": -1}, {"behind_by": "2"}):
+            with self.subTest(payload=payload):
+                run.side_effect = [
+                    _process_result(stdout='{"object":{"sha":"main456"}}'),
+                    _process_result(stdout=json.dumps(payload)),
+                ]
+                with self.assertRaisesRegex(PublishError, "invalid base comparison"):
+                    inspect_pull_request_base_freshness("12", head_sha="abc123", root=ROOT)
+        run.side_effect = [_process_result(returncode=1, stderr="HTTP 404: Not Found")]
+        with self.assertRaisesRegex(PublishError, "HTTP 404"):
+            inspect_pull_request_base_freshness("12", head_sha="abc123", root=ROOT)
+
+    @patch("our_ark_github.workflow.subprocess.run")
+    @patch("our_ark_github.workflow.shutil.which", return_value="/usr/local/bin/gh")
+    @patch("our_ark_github.workflow.inspect_pull_request_merge")
     def test_branch_update_reports_github_head_guard_rejection(
         self,
         inspect: MagicMock,
@@ -869,12 +977,28 @@ class EnochGithubWorkflowTests(unittest.TestCase):
         run: MagicMock,
     ) -> None:
         inspect.return_value = _merge_status(merge_state_status="BEHIND")
-        run.return_value = _process_result(
+        run.return_value = _http_result(
+            422,
+            "Unprocessable Entity",
+            '{"message":"expected head sha didn\'t match current head ref.","status":"422"}',
             returncode=1,
-            stderr="HTTP 422: expected head sha didn't match current head ref.",
+            stderr="gh: expected head sha didn't match current head ref. (HTTP 422)",
         )
 
-        with self.assertRaisesRegex(PublishError, "expected head sha didn't match"):
+        with self.assertRaisesRegex(
+            PublishError,
+            r"from main: expected head sha didn't match current head ref\. \(HTTP 422 Unprocessable Entity\)",
+        ):
+            update_pull_request_branch("12", expected_head_sha="abc123", root=ROOT)
+        run.assert_called_once()
+
+        # Without captured headers, gh's stderr still names a definite 4xx.
+        run.reset_mock()
+        run.return_value = _process_result(
+            returncode=1,
+            stderr="gh: expected head sha didn't match current head ref. (HTTP 422)",
+        )
+        with self.assertRaisesRegex(PublishError, r"didn't match current head ref\. \(HTTP 422\)"):
             update_pull_request_branch("12", expected_head_sha="abc123", root=ROOT)
         run.assert_called_once()
 
@@ -891,7 +1015,7 @@ class EnochGithubWorkflowTests(unittest.TestCase):
     ) -> None:
         inspect.return_value = _merge_status(merge_state_status="BEHIND")
         run.side_effect = [
-            _process_result(stdout='{"message":"Updating pull request branch."}'),
+            _http_result(202, "Accepted", '{"message":"Updating pull request branch."}'),
             _process_result(stdout='{"head":{"sha":"other000"}}'),
             _process_result(stdout='{"sha":"other000","parents":[{"sha":"elsewhere"}]}'),
         ]
@@ -1054,6 +1178,132 @@ class EnochGithubWorkflowTests(unittest.TestCase):
         )
 
 
+    @patch("our_ark_github.workflow.subprocess.run")
+    @patch("our_ark_github.workflow.shutil.which", return_value="/usr/local/bin/gh")
+    def test_reads_failed_check_logs_for_the_current_head(
+        self,
+        _which: MagicMock,
+        run: MagicMock,
+    ) -> None:
+        run.side_effect = [
+            _process_result(stdout=json.dumps(_red_rollup())),
+            _process_result(stdout="x" * 20000 + "FAILED tests/test_a.py::test_b"),
+        ]
+
+        (failure,) = inspect_pull_request_check_failures("12", head_sha="abc123", root=ROOT)
+
+        self.assertEqual(failure.name, "Tests / test (3.12)")
+        self.assertEqual(failure.detail, "failure")
+        self.assertEqual((failure.run_id, failure.job_id), ("4544", "1386"))
+        self.assertTrue(failure.log.endswith("FAILED tests/test_a.py::test_b"))
+        self.assertLessEqual(len(failure.log), 12000)
+        self.assertEqual(
+            run.call_args_list[1].args[0],
+            [
+                "/usr/local/bin/gh", "run", "view", "--job", "1386", "--log-failed",
+                "--repo", "our-ark/enoch",
+            ],
+        )
+
+    @patch("our_ark_github.workflow.subprocess.run")
+    @patch("our_ark_github.workflow.shutil.which", return_value="/usr/local/bin/gh")
+    def test_unreadable_failed_log_is_left_empty(self, _which: MagicMock, run: MagicMock) -> None:
+        run.side_effect = [
+            _process_result(stdout=json.dumps(_red_rollup())),
+            _process_result(returncode=1, stderr="HTTP 403"),
+        ]
+
+        (failure,) = inspect_pull_request_check_failures("12", head_sha="abc123", root=ROOT)
+
+        self.assertEqual(failure.log, "")
+
+    @patch("our_ark_github.workflow.subprocess.run")
+    @patch("our_ark_github.workflow.shutil.which", return_value="/usr/local/bin/gh")
+    def test_reruns_only_failed_jobs_pinned_to_the_head(
+        self,
+        _which: MagicMock,
+        run: MagicMock,
+    ) -> None:
+        run.side_effect = [
+            _process_result(stdout=json.dumps(_red_rollup())),
+            _process_result(),
+        ]
+
+        self.assertEqual(
+            rerun_failed_pull_request_checks("12", head_sha="abc123", root=ROOT),
+            ("4544",),
+        )
+        self.assertEqual(
+            run.call_args_list[1].args[0],
+            ["/usr/local/bin/gh", "run", "rerun", "4544", "--failed", "--repo", "our-ark/enoch"],
+        )
+
+        run.side_effect = [_process_result(stdout=json.dumps(_red_rollup()))]
+        with self.assertRaisesRegex(PublishError, "head changed"):
+            rerun_failed_pull_request_checks("12", head_sha="other", root=ROOT)
+
+    @patch("our_ark_github.workflow.subprocess.run")
+    @patch("our_ark_github.workflow.shutil.which", return_value="/usr/local/bin/gh")
+    @patch("our_ark_github.workflow.inspect_pull_request_merge")
+    def test_compares_revisions_and_lists_new_commits(
+        self,
+        inspect: MagicMock,
+        _which: MagicMock,
+        run: MagicMock,
+    ) -> None:
+        inspect.return_value = _merge_status()
+        run.return_value = _process_result(
+            stdout=json.dumps(
+                {
+                    "status": "ahead",
+                    "commits": [
+                        {"sha": "fix1234567", "commit": {"message": "Fix the test\n\nBody"}},
+                    ],
+                }
+            )
+        )
+
+        result = compare_pull_request_revisions("12", base="abc123", head="fix1234567", root=ROOT)
+
+        self.assertTrue(result.descends)
+        self.assertEqual([(c.revision, c.subject) for c in result.commits], [("fix1234567", "Fix the test")])
+        self.assertEqual(
+            run.call_args.args[0],
+            ["/usr/local/bin/gh", "api", "repos/our-ark/enoch/compare/abc123...fix1234567"],
+        )
+        for status in ("diverged", "behind"):
+            run.return_value = _process_result(stdout=json.dumps({"status": status, "commits": []}))
+            self.assertFalse(
+                compare_pull_request_revisions("12", base="main", head="x", root=ROOT).descends
+            )
+
+
+def _red_rollup() -> dict[str, object]:
+    return {
+        "number": 12,
+        "url": "https://github.com/our-ark/enoch/pull/12",
+        "headRefOid": "abc123",
+        "statusCheckRollup": [
+            {
+                "__typename": "CheckRun",
+                "name": "test (3.12)",
+                "workflowName": "Tests",
+                "status": "COMPLETED",
+                "conclusion": "FAILURE",
+                "detailsUrl": "https://github.com/our-ark/enoch/actions/runs/4544/job/1386",
+            },
+            {
+                "__typename": "CheckRun",
+                "name": "test (3.13)",
+                "workflowName": "Tests",
+                "status": "COMPLETED",
+                "conclusion": "SUCCESS",
+                "detailsUrl": "https://github.com/our-ark/enoch/actions/runs/4544/job/1387",
+            },
+        ],
+    }
+
+
 def _doctor_result(passed: bool, summary: str) -> MagicMock:
     result = MagicMock()
     result.passed = passed
@@ -1074,6 +1324,37 @@ def _git_result(returncode: int, stdout: str = "", stderr: str = "") -> MagicMoc
     result.stdout = stdout
     result.stderr = stderr
     return result
+
+
+def _base_tip_responses(*, behind_by: int) -> list[MagicMock]:
+    return [
+        _process_result(stdout='{"ref":"refs/heads/main","object":{"sha":"main456"}}'),
+        _process_result(
+            stdout=json.dumps({"status": "behind" if behind_by else "ahead", "behind_by": behind_by})
+        ),
+    ]
+
+
+def _http_result(
+    status: int,
+    phrase: str,
+    body: str = "",
+    *,
+    returncode: int | None = None,
+    stderr: str = "",
+) -> MagicMock:
+    """What ``gh api --include`` prints: status line, headers, blank line, body."""
+
+    headers = (
+        f"HTTP/2.0 {status} {phrase}\r\n"
+        f"Content-Length: {len(body)}\r\n"
+        "Content-Type: application/json; charset=utf-8\r\n"
+        "Server: github.com\r\n"
+        "\r\n"
+    )
+    if returncode is None:
+        returncode = 0 if status < 400 else 1
+    return _process_result(returncode=returncode, stdout=headers + body, stderr=stderr)
 
 
 def _process_result(returncode: int = 0, stdout: str = "", stderr: str = "") -> MagicMock:

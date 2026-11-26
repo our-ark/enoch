@@ -36,6 +36,9 @@ from enoch.state import StateCorruptionError, file_transaction, load_json_object
 
 SCHEMA_VERSION = 15
 DEFAULT_MAX_ATTEMPTS = 3
+# Pause trigger for a task interrupted by a daemon restart. Such tasks resume
+# automatically once the daemon is back instead of waiting for runtime access.
+DAEMON_RESTART_PAUSE_TRIGGER = "daemon-restart"
 ReconciliationOutcome = Literal[
     "no_op",
     "terminal_repair",
@@ -108,6 +111,9 @@ class TaskJob:
     terminal_status: str = ""
     terminal_evidence_source: str = ""
     terminal_evidence_at: str = ""
+    # Trigger of the most recent pause, kept after resume so the next run knows
+    # why it was interrupted.
+    pause_trigger: str = ""
 
     # Compatibility aliases for task queue schema <= 11 and workflow API v1.
     @property
@@ -337,7 +343,7 @@ def retry_failed_task(
                 job
                 for job in _history_jobs(data)
                 if job.id == task_id and (
-                    job.status == "failed"
+                    job.status in {"failed", "cancelled"}
                     or (job.status == "completed" and _job_has_unpublished_revision(job))
                 )
             ),
@@ -345,7 +351,8 @@ def retry_failed_task(
         )
         if original is None:
             raise TaskRetryError(
-                f"Task #{task_id} is not a failed task or an unpublished captured task available for retry."
+                f"Task #{task_id} is not a failed task, a cancelled task, or an unpublished "
+                "captured task available for retry."
             )
         existing_retries = [
             job
@@ -974,6 +981,7 @@ def pause_task(
             terminal_status="",
             terminal_evidence_source="",
             terminal_evidence_at="",
+            pause_trigger=trigger.strip(),
         )
         paused = [job for job in _paused_jobs(data) if job.id != task_id]
         paused.append(paused_job)
@@ -1042,7 +1050,11 @@ def resume_paused_tasks(
                 root,
                 event_actor=event_actor,
                 trigger=trigger,
-                result="Resumed after agent runtime access was restored.",
+                result=(
+                    "Resumed after the daemon restarted."
+                    if job.pause_trigger == DAEMON_RESTART_PAUSE_TRIGGER
+                    else "Resumed after agent runtime access was restored."
+                ),
             )
         return resumed
 
@@ -1714,7 +1726,8 @@ def reconcile_running_task(
                 worker_lease_id="",
                 failure_code="worker_interrupted",
                 failure_class="transient",
-                retryable=False,
+                # Never resumed automatically again, but a human may retry it.
+                retryable=True,
                 next_attempt_at="",
             )
             history = _history_jobs(data)
@@ -2251,6 +2264,7 @@ def _parse_job(raw: object) -> TaskJob | None:
         raw.get("terminal_evidence_source") or ""
     ).strip().lower()
     terminal_evidence_at = str(raw.get("terminal_evidence_at") or "").strip()
+    pause_trigger = str(raw.get("pause_trigger") or "").strip()
     if terminal_status and terminal_status not in {
         "completed",
         "failed",
@@ -2322,6 +2336,7 @@ def _parse_job(raw: object) -> TaskJob | None:
         terminal_status=terminal_status,
         terminal_evidence_source=terminal_evidence_source,
         terminal_evidence_at=terminal_evidence_at,
+        pause_trigger=pause_trigger,
     )
 
 
@@ -2390,6 +2405,7 @@ def _job_to_dict(job: TaskJob | None) -> dict:
         "terminal_status": job.terminal_status,
         "terminal_evidence_source": job.terminal_evidence_source,
         "terminal_evidence_at": job.terminal_evidence_at,
+        **({"pause_trigger": job.pause_trigger} if job.pause_trigger else {}),
     }
 
 
@@ -2454,6 +2470,7 @@ def _replace_job(job: TaskJob, **changes: object) -> TaskJob:
         "terminal_status": job.terminal_status,
         "terminal_evidence_source": job.terminal_evidence_source,
         "terminal_evidence_at": job.terminal_evidence_at,
+        "pause_trigger": job.pause_trigger,
     }
     values.update(changes)
     return TaskJob(**values)

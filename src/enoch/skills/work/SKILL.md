@@ -53,8 +53,8 @@ When work is queued:
    memory, and event state in the resident
    worktree. Remove successful task worktrees after handoff; preserve failed or
    paused worktrees for inspection and recovery.
-9. `/task retry <id>` retries only a failed task by creating a new task with a
-   new id and `parent_task_id`; never rewrite the original failure. Preserve the
+9. `/task retry <id>` retries only a failed or cancelled task by creating a new
+   task with a new id and `parent_task_id`; never rewrite the original failure. Preserve the
    request, context, source, provenance, and any recoverable task
    workspace/revision. Before new execution, reconcile recorded review
    identities with the configured review provider; reuse a validated open or
@@ -72,6 +72,10 @@ When work is queued:
     events. Keep `/task retry <id>` as the explicit human override.
 12. `/task resume <id|all>` resumes only paused tasks without changing their
     ids or causal history.
+13. Never restart the daemon while a task is running. Defer `/update` and
+    automatic-update restarts until the queue is idle. If a restart still
+    interrupts a task, pause it and resume it automatically after the restart;
+    the resumed run reports the interrupted step instead of repeating it.
 
 ## Inheritance
 
