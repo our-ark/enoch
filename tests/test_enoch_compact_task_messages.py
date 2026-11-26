@@ -486,17 +486,21 @@ class CompactFinalMessageTests(_AppTestCase):
             core._CURRENT_OUTPUT_REJECTIONS.set(2)
             return "Done."
 
-        with patch.object(self.app, "_safe_send_message", return_value="") as send:
+        with patch.object(self.app, "_safe_send_message_id", return_value=None) as send:
             self.run_job(run_task)
 
-        send.assert_called_once()
+        finals = [
+            call
+            for call in send.call_args_list
+            if call.kwargs.get("notification_key") == "task:1:final"
+        ]
+        self.assertEqual(len(finals), 1)
         self.assertEqual(
-            send.call_args.args[1],
+            finals[0].args[1],
             "✅ #1 completed\nDone.\n\n[Attachment not sent: 2 runtime file references "
             "failed the outbound safety checks.]",
         )
-        self.assertEqual(send.call_args.kwargs["attachments"], (attachment,))
-        self.assertEqual(send.call_args.kwargs["notification_key"], "task:1:final")
+        self.assertEqual(finals[0].kwargs["attachments"], (attachment,))
 
     def test_stop_does_not_edit_the_start_line(self) -> None:
         def run_task(*_args, **_kwargs):
