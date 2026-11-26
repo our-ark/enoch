@@ -419,7 +419,16 @@ with `update_review_branch(reference, *, expected_head_sha, root=None)`, which
 must refuse when the head is no longer `expected_head_sha`, and optionally
 `verify_review_branch_update(reference, *, previous_head_sha, head_sha,
 root=None)`. A forge's `merge_pull_request` may also accept
-`expected_head_sha` so landing is pinned to the authorized head.
+`expected_head_sha` so landing is pinned to the authorized head. A failed
+update should raise with the forge's real reason; the pending-merge watcher
+retries it on each cycle and stops after three failures in a row, telling the
+requester why. The GitHub forge reports the HTTP status and message from
+`update-branch` (any 2xx, including an empty `202 Accepted`, counts as
+accepted and the new head is then confirmed). When GitHub keeps failing
+without a reason (an empty error body, a 5xx, or no answer) while the PR is
+still open, mergeable and at the expected head, it merges the base into the PR
+branch in a throwaway local worktree and pushes without force, stopping on any
+conflict.
 
 A third optional capability, `forge.ci-repair`, pairs with
 `inspect_review_check_failures(reference, *, head_sha, root=None)` (a
@@ -429,6 +438,18 @@ root=None)` (re-run only the failed jobs, refusing when the head moved), and
 `compare_review_revisions(reference, *, base, head, root=None)` (a
 `ReviewRevisionComparison` saying whether `head` contains `base`, plus the
 commits it adds).
+
+A fourth optional capability, `forge.base-freshness`, pairs with
+`inspect_review_base_freshness(reference, *, head_sha="", root=None)`. It
+returns a `ReviewBaseFreshness`: the base branch, its current tip, the compared
+head, and `behind_by`, the number of base commits the head does not contain
+(`contains_base` is `behind_by == 0`). Forges answer from version control
+data, not from a merge status they may still be recomputing after the base
+moved. The GitHub provider reads the base ref and calls the compare API.
+`enoch.app.review_freshness.head_contains_base_tip` is the shared rule built
+on it. It falls back to `compare_review_revisions` against the base branch
+when only `forge.ci-repair` is declared, and returns `None` when the forge
+cannot tell.
 
 With `forge.check-status`, a human request to land one exact review that is
 not ready yet is recorded as a pending merge in private state. The daemon
@@ -440,6 +461,16 @@ own CI fix tasks for this merge. It stops on other new pushes, conflicts, or
 after 2 hours of waiting. Forges without `forge.check-status` keep the
 immediate behavior, where reviews that are not ready are refused with the
 forge's reason.
+
+Red CI is final only on a head that already contains the base tip. Right
+after the base moves, GitHub can briefly report UNSTABLE or UNKNOWN instead of
+BEHIND, next to the failed checks of the old head. So before refusing or
+repairing red CI, Enoch asks the forge whether the head contains the base tip.
+If it does not, the review is treated as behind: the branch is updated, pinned
+to the inspected head, and Enoch waits for CI on the new head. An unknown or
+missing merge state means keep waiting: Enoch neither refuses nor lands on
+it. The GitHub provider accepts that update while its merge state is still
+stale, but only after the compare API confirms the head is behind.
 
 With `forge.ci-repair` as well, red CI on a head that already contains the
 base tip does not stop the merge. Infrastructure failures (cancelled or

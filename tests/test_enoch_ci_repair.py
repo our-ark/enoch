@@ -413,7 +413,8 @@ class PendingMergeRepairTests(_Harness):
         self.assertEqual(forge.merges, [])
         self.assertEqual(load_pending_merges(self.root), ())
 
-    def test_head_without_the_base_tip_waits_instead_of_fixing(self) -> None:
+    def test_head_without_the_base_tip_is_updated_instead_of_fixed(self) -> None:
+        # Without forge.base-freshness, ci-repair's compare answers the question.
         forge, app = self._red_merge()
         forge.contains_base = False
 
@@ -421,7 +422,10 @@ class PendingMergeRepairTests(_Harness):
 
         self.assertEqual(self._fix_tasks(app), ())
         self.assertEqual(forge.reruns, [])
-        self.assertEqual(self._entry().waiting_for, "waiting for main to settle")
+        self.assertEqual(forge.updates, ["head-91"])
+        entry = self._entry()
+        self.assertEqual(entry.waiting_for, "updating from main")
+        self.assertEqual(entry.allowed_head_shas, ("head-91", "update-1"))
 
     def test_conflicts_are_unchanged_and_never_fixed(self) -> None:
         chat = _Chat()

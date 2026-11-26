@@ -31,6 +31,7 @@ class GithubForgeProvider:
                 "forge.update-branch",
                 "forge.check-status",
                 "forge.ci-repair",
+                "forge.base-freshness",
             }
         ),
     )
@@ -117,6 +118,13 @@ class GithubForgeProvider:
             reference,
             base=base,
             head=head,
+            root=root,
+        )
+
+    def inspect_review_base_freshness(self, reference: str, *, head_sha: str = "", root=None):
+        return workflow.inspect_pull_request_base_freshness(
+            reference,
+            head_sha=head_sha,
             root=root,
         )
 
