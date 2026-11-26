@@ -21,12 +21,14 @@ from our_ark_provider_kit import (
     ChatEvent,
     ChatProvider,
     DurableNotificationProvider,
+    MessageDeleteProvider,
     MessagePinProvider,
     NotificationCapabilities,
     NotificationIntent,
     NotificationReceipt,
     OutboundAttachment,
     ProviderCapabilities,
+    SilentMessageProvider,
     REPOSITORY_CONTRACT_VERSION,
     REVIEW_CONTRACT_VERSION,
     RepositoryProvider,
@@ -196,6 +198,24 @@ class ProviderKitTests(unittest.TestCase):
         self.assertNotIsInstance(FakeChatProvider(), MessagePinProvider)
         self.assertIsInstance(PinningChatProvider(), MessagePinProvider)
         self.assertIsInstance(PinningChatProvider(), ChatProvider)
+
+    def test_message_delete_contract_is_optional_and_runtime_checkable(self) -> None:
+        class DeletingChatProvider(FakeChatProvider):
+            def delete_message(self, conversation_id, message_id):
+                return None
+
+        self.assertNotIsInstance(FakeChatProvider(), MessageDeleteProvider)
+        self.assertIsInstance(DeletingChatProvider(), MessageDeleteProvider)
+        self.assertIsInstance(DeletingChatProvider(), ChatProvider)
+
+    def test_silent_message_contract_is_optional_and_runtime_checkable(self) -> None:
+        class SilentChatProvider(FakeChatProvider):
+            def send_silent_message(self, conversation_id, text):
+                return 1
+
+        self.assertNotIsInstance(FakeChatProvider(), SilentMessageProvider)
+        self.assertIsInstance(SilentChatProvider(), SilentMessageProvider)
+        self.assertIsInstance(SilentChatProvider(), ChatProvider)
 
     def test_notification_contract_validates_operations_and_versions(self) -> None:
         attachment = OutboundAttachment(

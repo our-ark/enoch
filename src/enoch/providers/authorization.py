@@ -23,6 +23,7 @@ DEFAULT_PROVIDER_CAPABILITIES = {
             "chat.attachment",
             "chat.attach",
             "chat.pin",
+            "chat.delete",
         }
     ),
     "runtime": frozenset({"runtime.respond", "runtime.execute"}),
