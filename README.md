@@ -300,6 +300,16 @@ not task token totals. In Slack, use `.quota` or the compatible `!quota`.
 Descendants inherit this command; those with compact help list it in
 `/help --all`. See [provider quota support](docs/providers.md#account-quota).
 
+Use `/usage [today|7d]` to see where runtime tokens go. Every runtime call
+(task workers, CI fix tasks, conversation turns, task-context snapshots,
+evolve/evidence turns, and anything else) appends one record to a private daily
+ledger under `.enoch/usage/`: timestamp, category, task id, provider, model,
+and token counts only, never prompt or reply text. Raw days are kept for 14
+days and then folded into `.enoch/usage/summary.json`. The report lists totals
+per category, the top tasks by input tokens, and the average conversation turn.
+Each task's final message ends with a `Tokens: … in (…% cached) · … out` line,
+and the task board shows a rounded `Today:` line just above the quota line.
+
 While the daemon runs, it also checks quota once a minute and sends a warning
 to its configured owner conversation at 10%, 5%, and 1% remaining. Each warning
 includes the affected window, actual remaining percentage, reset time, and
