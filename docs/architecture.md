@@ -31,6 +31,7 @@ provider loading and validation boundary.
 | `enoch.profiles` | Versioned downstream-agent commands, prompt context, lifecycle hooks, and discovery |
 | `enoch.extensions` | Namespaced domain commands, lifecycle hooks, state, and constrained access to the shared workflow |
 | `enoch.workflows` | Versioned queue lifecycle contract and fenced local engine |
+| `enoch.embedding` | Typed evolve-command and bounded task-execution contracts for embedded hosts |
 | `enoch.conformance` | Reusable provider, runtime, workflow, and profile contract tests |
 | `enoch.memory` | Durable memory paths, prompts, and storage |
 | `enoch.lineage` | Ancestor discovery, durable background Codex assessments, explicit task linkage, and verified adoption |
