@@ -29,6 +29,7 @@ from enoch.tasks.queue import (
     find_task_by_message,
     heartbeat_task,
     pause_task,
+    record_ended_task_reviews,
     record_task_publication,
     record_task_result,
     record_task_result_message,
@@ -595,6 +596,14 @@ class LocalWorkflowEngine:
                 evidence,
                 self.root,
             )
+
+    def record_ended_task_reviews(
+        self,
+        task_id: int,
+        review_urls: tuple[str, ...],
+    ) -> TaskJob | None:
+        with self._mutation():
+            return record_ended_task_reviews(task_id, review_urls, self.root)
 
     def worker_is_active(self, job: TaskJob) -> bool:
         return self._tracked_worker_is_active(job)

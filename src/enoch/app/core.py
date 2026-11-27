@@ -364,6 +364,7 @@ from enoch.tasks.queue import (
     TaskAlreadyExists,
     TaskRetryError,
     review_urls_in_text,
+    task_has_unfinished_review,
 )
 from enoch.app.auto_update import (
     LandedReview,
@@ -521,7 +522,12 @@ from enoch.app.merge_policy import (
     split_request_options,
     wants_auto_merge,
 )
-from enoch.app.pending_merges import PendingMerge, PendingMergeController, parse_review_url
+from enoch.app.pending_merges import (
+    OPEN_REVIEW_LIST_LIMIT,
+    PendingMerge,
+    PendingMergeController,
+    parse_review_url,
+)
 from enoch.app.task_board import (
     RenderedTaskBoard,
     TaskBoardState,
@@ -2672,6 +2678,10 @@ class EnochApplication:
         if completed_status == "completed":
             self._record_automatic_learning(completed, command=trigger, result=reply)
             self._watch_published_reviews(completed)
+        elif completed_status in {"failed", "cancelled"}:
+            _ended, note = self._ended_task_review(completed)
+            if note:
+                reply = f"{reply}\n\n{note}"
         return reply
 
     def _queue_direct_work_next(
@@ -3898,8 +3908,12 @@ class EnochApplication:
             )
         except (OSError, ReviewProviderError, TaskRetryError) as error:
             return f"{self.display_name} could not retry task #{task_id}: {error}"
+        # A task that ended unfinished after opening its PR: the retry continues
+        # on that PR and branch instead of opening a duplicate.
+        continues = _continue_review_line(original) if original is not None else ""
         if self._compact_task_messages():
-            return _format_compact_task_queued(job.id, retry_of=task_id)
+            queued = _format_compact_task_queued(job.id, retry_of=task_id)
+            return f"{queued} {continues}" if continues else queued
         position = self.workflow.inspect().pending_count
         retry_kind = (
             "held task"
@@ -3910,6 +3924,17 @@ class EnochApplication:
             if original is not None and original.status == "cancelled"
             else "failed task"
         )
+        if continues:
+            latest_update = (
+                f"Retry of {retry_kind} #{task_id} queued at position {position}. {continues}"
+            )
+        elif job.review_urls:
+            latest_update = (
+                f"Retry of {retry_kind} #{task_id} reconciled "
+                f"{len(job.review_urls)} existing review(s)."
+            )
+        else:
+            latest_update = f"Retry of {retry_kind} #{task_id} queued at position {position}."
         message = self._format_work_status(
             WorkStatusMessage(
                 chat_id=job.chat_id,
@@ -3918,14 +3943,7 @@ class EnochApplication:
                 started_at=time.monotonic(),
                 task_id=job.id,
                 status="queued",
-                latest_update=(
-                    (
-                        f"Retry of {retry_kind} #{task_id} reconciled "
-                        f"{len(job.review_urls)} existing review(s)."
-                    )
-                    if job.review_urls
-                    else f"Retry of {retry_kind} #{task_id} queued at position {position}."
-                ),
+                latest_update=latest_update,
                 context=job.context,
             )
         )
@@ -3939,7 +3957,8 @@ class EnochApplication:
             self._work_status_messages[job.id] = message_id
             self.workflow.record_status_message(job.id, message_id)
             return ""
-        return f"Queued retry task #{job.id} for {retry_kind} #{task_id}."
+        queued = f"Queued retry task #{job.id} for {retry_kind} #{task_id}."
+        return f"{queued} {continues}" if continues else queued
 
     def _queue_paused_request(
         self,
@@ -5623,7 +5642,7 @@ class EnochApplication:
                 "review_published",
             }:
                 outcome = self._resume_task_publish(job)
-            elif job.review_urls:
+            elif job.review_urls and not self._continues_unfinished_review(job):
                 reply = job.result
                 outcome = WorkOutcome.completed(reply)
             elif not self._action_allowed():
@@ -5811,6 +5830,7 @@ class EnochApplication:
             allow_resolution=completed_status == "completed",
         )
         summary_job = authoritative_job
+        turn_note = ""
         compact = self._compact_task_messages()
         if completed_status == "retrying":
             # While the board is active it shows the task queued again, so a
@@ -5839,6 +5859,12 @@ class EnochApplication:
             self._record_automatic_learning(summary_job, command=command, result=reply)
             self._watch_published_reviews(summary_job)
             merge_note = self._apply_merge_policy_safely(summary_job)
+        elif completed_status in {"failed", "cancelled"}:
+            # A task that ended unfinished may still have opened its PR: record
+            # and watch it, never merge it, and say it needs a decision.
+            summary_job, merge_note = self._ended_task_review(summary_job)
+            # The conversation remembers it too, so the PR is not mistaken for missing.
+            turn_note = merge_note
         else:
             merge_note = ""
         if task_status is not None:
@@ -5888,7 +5914,11 @@ class EnochApplication:
             self.workflow.record_result_message(job.id, final_message_id)
         _CURRENT_OUTPUT_ATTACHMENTS.set(())
         _CURRENT_OUTPUT_REJECTIONS.set(0)
-        self._record_turn(job.chat_id, f"{command} {job.text}", reply)
+        self._record_turn(
+            job.chat_id,
+            f"{command} {job.text}",
+            f"{reply}\n\n{turn_note}" if turn_note else reply,
+        )
         if command == "/do":
             self._maybe_start_task_worker()
 
@@ -6251,12 +6281,21 @@ class EnochApplication:
             return f"{self.display_name} could not inspect task #{task_id} worktree: {error}"
         if state is None:
             return f"Task #{task_id} has no registered task worktree."
-        active = _active_tasks_for_worktree(state, self.workflow.inspect())
+        queue_status = self.workflow.inspect()
+        active = _active_tasks_for_worktree(state, queue_status)
         if active:
             labels = ", ".join(f"#{job.id} [{job.status}]" for job in active)
             return (
                 f"{self.display_name} will not remove task #{task_id} worktree because it is still "
                 f"used by {labels}."
+            )
+        open_reviews = self._open_unfinished_reviews(_tasks_for_worktree(state, queue_status))
+        if open_reviews:
+            labels = ", ".join(_review_label(url) for url in open_reviews)
+            return (
+                f"{self.display_name} will not remove task #{task_id} worktree while {labels} "
+                "from its unfinished task is open. Merge or close it first, or use "
+                f"{self.command_prefix}task retry to continue on it."
             )
         try:
             result = self.effect_fence.run_authorized(
@@ -6921,9 +6960,7 @@ class EnochApplication:
     ) -> tuple[str, ...]:
         """The ``urls`` whose review head is the tip of ``job``'s pushed branch."""
 
-        if not job.workspace_id:
-            return ()
-        tip = self._remote_branch_revision(job.workspace_id)
+        tip = self._task_branch_tip(job)
         if not tip:
             return ()
         self.authorization.require("forge.inspect", ("forge.inspect",))
@@ -6933,10 +6970,149 @@ class EnochApplication:
                 record = self.review.inspect_review(_review_identity(url), self.root)
             except (ReviewProviderError, ForgeProviderError, ValueError):
                 continue
-            head = record.versions[-1].revision.id if record.versions else ""
-            if head == tip:
+            if _is_task_branch_review(record, tip):
                 owned.append(url)
         return tuple(owned)
+
+    def _open_review_on_task_branch(self, job: TaskJob) -> str:
+        """URL of the open review opened from ``job``'s own branch, or "".
+
+        The same ownership rule as ``_reviews_on_task_branch``: the review's
+        head is the tip of the task's workspace branch on the authoritative
+        remote. Costs one ``ls-remote`` and, only when the branch was pushed,
+        one forge listing. Raises on forge or authorization errors.
+        """
+
+        tip = self._task_branch_tip(job)
+        if not tip:
+            return ""
+        self.authorization.require("forge.list", ("forge.inspect",))
+        for record in self.review.list_open_reviews(self.root, limit=OPEN_REVIEW_LIST_LIMIT):
+            if record.identity.url and _is_task_branch_review(record, tip):
+                return record.identity.url
+        return ""
+
+    def _task_branch_tip(self, job: TaskJob) -> str:
+        """Tip of ``job``'s own workspace branch on the authoritative remote, or ""."""
+
+        if not job.workspace_id:
+            return ""
+        return self._remote_branch_revision(job.workspace_id)
+
+    def _ended_task_review(self, job: TaskJob) -> tuple[TaskJob, str]:
+        """Record, watch and report the PR a timed-out, failed or stopped task opened.
+
+        ``job`` has ended as failed or cancelled; paused tasks have not ended
+        and are never passed here. A review already attributed to the task is
+        used as is; otherwise one cheap lookup finds an open review opened
+        from the task's own branch and records it on the task. Its CI is
+        watched (re-runs and fix tasks as for any watched review), but it is
+        never merged automatically: the task did not finish, so the review
+        may be incomplete. ``/pr auto-merge`` and ``--merge=auto`` therefore
+        do not apply, and it never holds the queue; the returned note tells
+        the human it needs their decision.
+
+        Returns the (updated) job and that note, or the job unchanged and ""
+        when there is no such review. Never raises: a lookup error leaves the
+        plain failure message.
+        """
+
+        if job.status not in {"failed", "cancelled"}:
+            return job, ""
+        try:
+            reviews = self._published_reviews(job)
+            if not reviews:
+                url = self._open_review_on_task_branch(job)
+                # A review the request itself named is not the task's own.
+                if not url or url in f"{job.text}\n{job.context}":
+                    return job, ""
+                job = self._record_ended_task_reviews(job, (url,))
+                reviews = (url,)
+            self._watch_published_reviews(job)
+            watching = self.pending_merges.supported()
+        except StaleDaemonEpoch:
+            raise
+        except Exception as error:  # noqa: BLE001 - the plain failure message stays
+            _record_system_event(
+                "task_review_lookup_failed",
+                self.root,
+                status="failed",
+                details={"task_id": job.id, "error": str(error)},
+            )
+            return job, ""
+        _record_system_event(
+            "task_ended_with_review",
+            self.root,
+            details={
+                "task_id": job.id,
+                "status": job.status,
+                "failure_code": job.failure_code,
+                "workspace_id": job.workspace_id,
+                "reviews": list(reviews),
+            },
+        )
+        return job, _ended_task_review_note(
+            job,
+            reviews,
+            watching=watching,
+            command_prefix=self.command_prefix,
+        )
+
+    def _record_ended_task_reviews(self, job: TaskJob, reviews: tuple[str, ...]) -> TaskJob:
+        """Store ``reviews`` on the ended ``job`` when the engine supports it.
+
+        ``record_ended_task_reviews`` is the optional ``EndedTaskReviewWorkflow``
+        method; engines without it still work.
+        """
+
+        record = getattr(self.workflow, "record_ended_task_reviews", None)
+        recorded = record(job.id, reviews) if callable(record) else None
+        if recorded is not None:
+            return recorded
+        # Still reported and watched; only the stored record lacks it.
+        merged = tuple(dict.fromkeys((*job.review_urls, *reviews)))
+        return replace(job, review_urls=merged)
+
+    def _continues_unfinished_review(self, job: TaskJob) -> bool:
+        """True when ``job`` retries a task that left an unfinished review.
+
+        Such a retry continues work on that review; it is not complete just
+        because the review exists.
+        """
+
+        if job.parent_task_id is None:
+            return False
+        parent = self.workflow.find(job.parent_task_id)
+        return parent is not None and task_has_unfinished_review(parent)
+
+    def _open_unfinished_reviews(self, jobs: tuple[TaskJob, ...]) -> tuple[str, ...]:
+        """Reviews that ``jobs`` left unfinished and that may still be open.
+
+        Their task's worktree and branch are kept while they are open. A
+        review whose state cannot be read counts as open.
+        """
+
+        reviews = tuple(
+            dict.fromkeys(
+                url
+                for job in jobs
+                if task_has_unfinished_review(job)
+                for url in job.review_urls
+            )
+        )
+        still_open = []
+        for url in reviews:
+            try:
+                self.authorization.require("forge.inspect", ("forge.inspect",))
+                record = self.review.inspect_review(_review_identity(url), self.root)
+            except StaleDaemonEpoch:
+                raise
+            except Exception:  # noqa: BLE001 - unknown means keep the worktree
+                still_open.append(url)
+                continue
+            if record.state not in {"landed", "closed"} and record.landed_revision is None:
+                still_open.append(url)
+        return tuple(still_open)
 
     def _remote_branch_revision(self, branch: str) -> str:
         """Tip of ``branch`` on the authoritative remote, or empty when unknown."""
@@ -7623,6 +7799,69 @@ def _review_label(url: str) -> str:
     return f"PR #{number}" if number else url
 
 
+def _continue_review_line(job: TaskJob) -> str:
+    """How a retry of ``job`` continues on the PR it left unfinished, or ""."""
+
+    if not task_has_unfinished_review(job):
+        return ""
+    reviews = ", ".join(
+        url if _review_label(url) == url else f"{_review_label(url)} ({url})"
+        for url in job.review_urls
+    )
+    branch = f" on branch {job.workspace_id}" if job.workspace_id else ""
+    return f"It continues on {reviews}{branch} instead of opening a new PR."
+
+
+def _is_task_branch_review(record: ReviewRecord, tip: str) -> bool:
+    """True when ``record``'s head is ``tip``, the pushed tip of a task's own branch.
+
+    This is what makes a review the task's own: the task opened or pushed it
+    from its workspace branch. A review URL its result only mentions is not.
+    """
+
+    head = record.versions[-1].revision.id if record.versions else ""
+    return bool(tip) and head == tip
+
+
+def _ended_task_review_note(
+    job: TaskJob,
+    reviews: tuple[str, ...],
+    *,
+    watching: bool,
+    command_prefix: str = "/",
+) -> str:
+    """Tell the human a timed-out, failed or stopped task left open reviews.
+
+    They are never merged automatically, so the note asks for a decision.
+    """
+
+    if job.status == "cancelled":
+        ended = "Stopped"
+    elif job.failure_code == "task_timeout":
+        ended = "Timed out"
+    else:
+        ended = "Failed"
+    opened = ", ".join(
+        url if _review_label(url) == url else f"{_review_label(url)} ({url})"
+        for url in reviews
+    )
+    watched = "; CI is being watched." if watching else "."
+    retry = f"{command_prefix}task retry {job.id}"
+    if len(reviews) == 1:
+        _repository, number = parse_review_url(reviews[0])
+        target = f"#{number}" if number else reviews[0]
+        return (
+            f"{ended} after opening {opened}{watched} The task did not finish, so the "
+            "PR may be incomplete and is not merged automatically: it needs your "
+            f"decision. Say 'merge {target}' to land it, or use {retry} to continue on it."
+        )
+    return (
+        f"{ended} after opening {opened}{watched} The task did not finish, so these "
+        "PRs may be incomplete and are not merged automatically: they need your "
+        f"decision. Say 'merge #<number>' to land one, or use {retry} to continue on them."
+    )
+
+
 def _repository_from_remote_url(url: str) -> str:
     """``owner/name`` from an https, ssh or scp-style git remote URL."""
 
@@ -7913,6 +8152,7 @@ def _task_worker_context(job: TaskJob, *, workflow: WorkflowEngine | None = None
         parts.append(interrupted_resume_context(job))
     if job.parent_task_id is not None and workflow is not None:
         from enoch.app.validation_repair import (
+            continue_review_context,
             retry_cancelled_context,
             retry_failure_context,
         )
@@ -7922,6 +8162,8 @@ def _task_worker_context(job: TaskJob, *, workflow: WorkflowEngine | None = None
             parts.append(retry_failure_context(previous))
         elif previous is not None and previous.status == "cancelled":
             parts.append(retry_cancelled_context(previous))
+        if previous is not None and task_has_unfinished_review(previous):
+            parts.append(continue_review_context(previous))
     provenance = _evolution_provenance_for_job(job)
     if provenance is not None:
         parts.extend(

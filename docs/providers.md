@@ -520,6 +520,14 @@ stored as the task's review, never watched for that task, never merged by the
 PR auto-merge policy or a `--merge=auto` override, and never hold the task
 queue.
 
+A task that times out, fails or is stopped after it opened its review from
+its own branch still has that review recorded, mentioned in its final message
+and watched for CI like any published review (re-runs and fix tasks
+included). Because the task did not finish, the review may be incomplete: it
+is never merged by the PR auto-merge policy or a `--merge=auto` override, and
+the message asks the human to decide. An explicit merge request still lands
+it as usual, and `/task retry` continues on the same review and branch.
+
 Ordinary queued tasks require `runtime.execute`, `vcs.inspect`,
 `vcs.authoritative`, `vcs.workspace`, `vcs.capture`, and `forge.review`.
 Enoch verifies those grants and the required repository features before
