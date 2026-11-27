@@ -46,6 +46,7 @@ from enoch.providers.registry import (
 )
 from enoch.profiles import ProfileError, available_profiles, load_profile
 from enoch.quota import quota_usage
+from enoch.usage_ledger import token_usage_help
 from enoch.skills import skills_command
 from enoch.tasks.config import (
     auto_update_enabled,
@@ -1196,6 +1197,10 @@ CORE_COMMANDS = (
     CoreCommand(
         "quota", "quota", "Common", "[gpt|claude|all]",
         "show account quota remaining and reset times", quota_usage,
+    ),
+    CoreCommand(
+        "usage", "usage", "Common", "[today|7d]",
+        "show runtime token usage by category and task", token_usage_help,
     ),
     CoreCommand("do", "do", "Work", "<request>", "run work now instead of queueing it"),
     CoreCommand(
