@@ -167,6 +167,12 @@ class ScheduleConformance(
 
 ## Application composition
 
+`EmbeddingConformanceMixin` covers the independently versioned public embedding
+API: typed evolve replies, idle and bounded pending-task execution, and stale
+epoch errors. Provide `create_embedded_application(root)` and
+`enqueue_embedding_task(app)` using hermetic providers. See the
+[public inventory and compatibility policy](embedding-api.md).
+
 Descendant launchers should use `ApplicationCompositionConformanceMixin` and
 return their versioned `ApplicationComposition` from `create_composition`.
 The suite checks the public API version, descendant identity loader, mutable

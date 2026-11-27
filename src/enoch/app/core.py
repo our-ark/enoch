@@ -72,6 +72,13 @@ from enoch.cron import (
     record_cron_task,
 )
 from enoch.documents import document_context
+from enoch.embedding import (
+    EMBEDDING_API_VERSION,
+    EmbeddingConversationDenied,
+    EvolveCommandResult,
+    PendingTaskExecutionResult,
+    PendingTaskStopReason,
+)
 from enoch.evolution.core import (
     MODE_AUTO_EVOLVE,
     MODE_DISABLED,
@@ -600,6 +607,8 @@ def _shutdown_message(
 
 
 class EnochApplication:
+    embedding_api_version = EMBEDDING_API_VERSION
+
     def __init__(
         self,
         identity: Identity,
@@ -969,6 +978,50 @@ class EnochApplication:
         } or result.task_id is None:
             return None
         return self.workflow.find(result.task_id)
+
+    def handle_evolve_command(
+        self, conversation_id: ConversationId, argument: str = "",
+    ) -> EvolveCommandResult:
+        """Handle arguments after /evolve; the host delivers the returned reply."""
+
+        self.effect_fence.require_current()
+        if not self._chat_allowed(conversation_id):
+            raise EmbeddingConversationDenied("Conversation is not allowed by the chat provider.")
+        if not isinstance(argument, str):
+            raise TypeError("argument must be a string containing the arguments after /evolve.")
+        try:
+            return EvolveCommandResult(conversation_id, self._evolve(conversation_id, argument))
+        finally:
+            # Handlers may translate runtime errors into replies; never hide takeover.
+            self.effect_fence.require_current()
+
+    def resume_pending_tasks(
+        self, *, max_tasks: int = 1, promote_backlog: bool = False,
+        reconcile_schedules: bool = False,
+    ) -> PendingTaskExecutionResult:
+        """Synchronously execute bounded pending work without lifting pause holds."""
+
+        self.effect_fence.require_current()
+        if type(max_tasks) is not int or max_tasks < 1:
+            raise ValueError("max_tasks must be a positive integer.")
+        if type(promote_backlog) is not bool or type(reconcile_schedules) is not bool:
+            raise TypeError("promote_backlog and reconcile_schedules must be booleans.")
+        owner = threading.current_thread()
+        with self._task_worker_lock:
+            if self._task_worker is not None and self._task_worker.is_alive():
+                return PendingTaskExecutionResult((), "busy")
+            # Reserve the existing worker slot, not a second queue owner.
+            self._task_worker = owner
+        try:
+            return self._drain_pending_tasks(
+                max_tasks=max_tasks, promote_backlog=promote_backlog,
+                reconcile_schedules=reconcile_schedules,
+            )
+        finally:
+            with self._task_worker_lock:
+                if self._task_worker is owner:
+                    self._task_worker = None
+            self.effect_fence.require_current()
 
     def handle_event(self, event: ChatEvent) -> None:
         require_current_daemon_epoch(self.daemon_epoch, self.root)
@@ -4888,36 +4941,65 @@ class EnochApplication:
 
     def _run_task_worker(self) -> None:
         try:
-            while not self._stopping:
-                if self.restarts.restart_if_idle():
-                    return
-                if self._auto_update_holds_work():
-                    return
-                if self._land_hold() is not None:
-                    # Land before next: only CI fix tasks run until the review
-                    # lands or its pending merge stops; the tick restarts us.
-                    job = self.workflow.start_next(triggers=CI_FIX_TRIGGERS)
-                    if job is None:
-                        return
-                else:
-                    job = self.workflow.start_next()
+            self._drain_pending_tasks(
+                max_tasks=None, promote_backlog=True, reconcile_schedules=True,
+            )
+        except StaleDaemonEpoch:
+            return
+
+    def _drain_pending_tasks(
+        self, *, max_tasks: int | None, promote_backlog: bool,
+        reconcile_schedules: bool,
+    ) -> PendingTaskExecutionResult:
+        task_ids: list[int] = []
+        reason: PendingTaskStopReason
+        while True:
+            self.effect_fence.require_current()
+            if self._stopping:
+                reason = "stopping"
+                break
+            if self.restarts.restart_if_idle():
+                reason = "restart"
+                break
+            if self._auto_update_holds_work():
+                reason = "update"
+                break
+            status = self.workflow.inspect()
+            if status.paused_count:
+                reason = "paused"
+                break
+            if status.running is not None:
+                reason = "busy"
+                break
+            if max_tasks is not None and len(task_ids) >= max_tasks:
+                reason = "limit"
+                break
+            if self._land_hold() is not None:
+                job = self.workflow.start_next(triggers=CI_FIX_TRIGGERS)
                 if job is None:
-                    if self._promote_next_backlog_if_idle() is None:
-                        return
+                    reason = "review"
+                    break
+            else:
+                job = self.workflow.start_next()
+            if job is None and promote_backlog:
+                if self._promote_next_backlog_if_idle() is not None:
                     job = self.workflow.start_next()
-                    if job is None:
-                        return
-                self._run_task_job(job)
+            if job is None:
+                reason = "idle"
+                break
+            self._run_task_job(job)
+            self.effect_fence.require_current()
+            task_ids.append(job.id)
+            if reconcile_schedules:
                 self._cron_scheduler_wake.set()
                 try:
                     self._enqueue_due_cron_jobs()
                     self._enqueue_due_extension_schedules()
+                except StaleDaemonEpoch:
+                    raise
                 except Exception as error:
                     print(f"Enoch scheduler error after task completion: {error}")
-                if self.workflow.inspect().paused_count:
-                    return
-        except StaleDaemonEpoch:
-            return
+        return PendingTaskExecutionResult(tuple(task_ids), reason)
 
     def _promote_next_backlog_if_idle(self) -> TaskJob | None:
         status = self.workflow.inspect()
