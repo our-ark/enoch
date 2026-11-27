@@ -50,6 +50,22 @@ class ExtensionRecoveryWorkflow(Protocol):
 
 
 @runtime_checkable
+class EndedTaskReviewWorkflow(Protocol):
+    """Optional: attribute a review to a task that already ended unfinished.
+
+    Enoch calls it when a timed-out, failed or stopped task turns out to have
+    opened a review from its own branch. Engines without it still work; the
+    review is then reported and watched but not stored on the task.
+    """
+
+    def record_ended_task_reviews(
+        self,
+        task_id: int,
+        review_urls: tuple[str, ...],
+    ) -> TaskJob | None: ...
+
+
+@runtime_checkable
 class WorkflowEngine(Protocol):
     """Versioned single-owner task lifecycle contract."""
 

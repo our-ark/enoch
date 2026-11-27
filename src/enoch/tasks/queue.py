@@ -1549,6 +1549,38 @@ def record_task_terminal_evidence(
         return updated
 
 
+def record_ended_task_reviews(
+    task_id: int,
+    review_urls: tuple[str, ...],
+    root: Path | None = None,
+) -> TaskJob | None:
+    """Attribute reviews to a task that already ended as failed or cancelled.
+
+    The caller must have confirmed the task published them (for example, an
+    open review whose head is the tip of the task's own branch). Returns the
+    updated task, or ``None`` when it is not a failed or cancelled task.
+    """
+
+    reviews = _parse_review_urls(review_urls)
+    with _queue_transaction(root):
+        data = _load_queue(root)
+        history = _history_jobs(data)
+        for index, job in enumerate(history):
+            if job.id != task_id:
+                continue
+            if job.status not in ENDED_UNFINISHED_STATUSES:
+                return None
+            merged = _merge_review_urls(job.review_urls, reviews)
+            if merged == job.review_urls:
+                return job
+            updated = _replace_job(job, review_urls=merged)
+            history[index] = updated
+            data["history"] = [_job_to_dict(item) for item in history]
+            _write_queue(data, root)
+            return updated
+    return None
+
+
 def _finish_running_task(
     task_id: int,
     status: str,
@@ -2251,6 +2283,31 @@ def review_urls_in_text(text: str) -> tuple[str, ...]:
     """
 
     return _merge_review_urls(tuple(LEGACY_REVIEW_URL_PATTERN.findall(text)))
+
+
+# Statuses of a task that ended without finishing its work.
+ENDED_UNFINISHED_STATUSES = frozenset({"failed", "cancelled"})
+# Publish stages Enoch's own publish step records once the work is done; a
+# retry resumes publication from them instead of redoing the work.
+_PUBLISH_STAGES = frozenset({"committed", "pushed", "pr_opened", "captured", "review_published"})
+
+
+def task_has_unfinished_review(job: TaskJob) -> bool:
+    """True when a failed or cancelled task left a review its run never finished.
+
+    The review is the task's own (attributed to it), but the task timed out,
+    failed or was stopped before it finished, and Enoch's publish step never
+    recorded it. The review may therefore be incomplete: it is never merged
+    automatically, and a retry continues work on it instead of treating the
+    task as already done.
+    """
+
+    return (
+        job.status in ENDED_UNFINISHED_STATUSES
+        and bool(job.review_urls)
+        and not job.review_published
+        and job.publish_stage not in _PUBLISH_STAGES
+    )
 
 
 def _job_has_confirmed_published_review(job: TaskJob) -> bool:

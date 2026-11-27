@@ -125,6 +125,20 @@ caller confirmed as `retry_failed(reconciled_review_urls=...)`. Review URLs
 that only appear in result text are references and never become the task's
 reviews.
 
+A task can time out, fail or be stopped after its run already pushed its
+branch and opened a review. When a task ends as failed or cancelled (paused
+tasks have not ended and are skipped), Enoch makes one cheap lookup for an
+open review whose head is the tip of the task's own workspace branch on the
+authoritative remote, the same ownership rule as above. A lookup error only
+leaves the plain failure message. A found review is attributed to the ended
+task through the optional `EndedTaskReviewWorkflow.record_ended_task_reviews()`
+method, which the local engine implements; engines without it still report
+and watch the review. The task stays failed or cancelled, so
+`task_has_unfinished_review()` marks it: a retry carries the review, is told
+to continue on that review and branch instead of opening a duplicate, and is
+not treated as already done because the review exists. The task's worktree
+and branch are kept while that review is open.
+
 Profiles do not receive or own the concrete engine. Their
 `CommandContext.enqueue_task()` method routes through the engine selected by
 the application, preserving one queue owner and keeping profile packages

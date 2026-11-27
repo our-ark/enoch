@@ -143,6 +143,15 @@ task failed and retryable, so `/task retry <id>` creates a new linked task.
 `/task retry <id>` also accepts cancelled tasks and links the new task to the
 cancelled one in the same way.
 
+A task can time out, fail or be stopped after its run already pushed its own
+branch and opened a pull request. Enoch then records that pull request on the
+task, says so in the final message, and watches its CI, but never merges it
+automatically because the work may be incomplete; the human decides, for
+example by asking to merge it. The task stays failed or cancelled, and
+`/task retry <id>` names the pull request and branch: the retry continues on
+them instead of opening a duplicate. The task's worktree is kept while that
+pull request is open.
+
 ## Scheduled occurrences
 
 Cron and evolve schedules use claim-and-ack. Claiming a due occurrence does not

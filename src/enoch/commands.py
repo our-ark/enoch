@@ -961,6 +961,9 @@ def pr_usage(prefix: str = "/") -> str:
                 "finished with; zero or several PRs are never merged, you are told instead. "
                 "A PR counts only if the task opened or pushed it from its own branch; one "
                 "its result merely mentions does not. "
+                "A PR from a task that timed out, failed or was stopped is recorded and its "
+                "CI watched, but it is never merged automatically: merge it yourself or retry "
+                "the task to continue on it. "
                 "Per task, start a do or task request with --merge=never (don't merge) or "
                 "--merge=auto (merge when ready, even when off); other options are rejected."
             ),
@@ -1071,7 +1074,8 @@ def _task_usage(prefix: str) -> str:
             ),
             f"{command} cancel <id> - cancel a queued background task",
             f"{command} resume <id|all> - continue paused tasks with the same ids",
-            f"{command} retry <id> - retry a failed or cancelled task as a new linked task",
+            f"{command} retry <id> - retry a failed or cancelled task as a new linked task "
+            "(it continues on a PR the task already opened)",
             (
                 f"{command} show <id> - show a task's status, full request, reviews, "
                 "failure, and the context snapshot given to the worker"
