@@ -97,7 +97,7 @@ class QueueMessageLookupTests(unittest.TestCase):
         done = enqueue_task(42, "done work", self.root)
         begin_next_task(self.root)
         record_task_status_message(done.id, 10, self.root)
-        complete_task(done.id, self.root, result=f"Opened {REVIEW}")
+        complete_task(done.id, self.root, result=f"Opened {REVIEW}", review_urls=(REVIEW,))
         record_task_result_message(done.id, 11, self.root)
 
         paused = enqueue_task(42, "paused work", self.root)
@@ -251,11 +251,20 @@ class _AppTestCase(unittest.TestCase):
         values.update(changes)
         return ChatEvent(**values)
 
-    def run_queued_task(self, text: str, reply: str) -> TaskJob:
+    def run_queued_task(self, text: str, reply: str, *, published: str = "") -> TaskJob:
         job = enqueue_task(42, text, self.root)
         started = begin_next_task(self.root)
         assert started is not None and started.id == job.id
-        with patch.object(self.app, "_run_direct_work", return_value=reply):
+
+        def run(*_args, **_kwargs):
+            if published:
+                # As the publish stage records the review it opened.
+                self.app._record_current_publish_stage(
+                    "review_published", review_url=published, review_published=True
+                )
+            return reply
+
+        with patch.object(self.app, "_run_direct_work", side_effect=run):
             self.app._run_task_job(started)
         return self.app.workflow.find(job.id)
 
@@ -267,7 +276,7 @@ class FinalMessageRecordingTests(_AppTestCase):
     def test_compact_mode_records_start_line_and_final_message(self) -> None:
         self.activate_board()
 
-        finished = self.run_queued_task("Fix the bug", f"Opened {REVIEW}")
+        finished = self.run_queued_task("Fix the bug", f"Opened {REVIEW}", published=REVIEW)
 
         self.assertEqual(
             [text for _chat, text in self.chat.sent],
@@ -295,7 +304,9 @@ class ReplyTargetPromptTests(_AppTestCase):
     def setUp(self) -> None:
         super().setUp()
         self.activate_board()
-        self.task = self.run_queued_task("Add a reply-routing feature", f"Opened {REVIEW}")
+        self.task = self.run_queued_task(
+            "Add a reply-routing feature", f"Opened {REVIEW}", published=REVIEW
+        )
         self.runtime.respond.reset_mock()
         self.requests.clear()
 

@@ -393,6 +393,9 @@ class CompactStartAndQueueTests(_AppTestCase):
         def run_task(*_args, **_kwargs):
             self.app._send_step_update(42, "Editing files.")
             self.app._send_progress(42, 60, "workspace-write")
+            self.app._record_current_publish_stage(
+                "review_published", review_url=REVIEW, review_published=True
+            )
             self.app._update_work_status("Publishing.", review_url=REVIEW)
             return f"Opened {REVIEW}"
 

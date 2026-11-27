@@ -959,6 +959,8 @@ def pr_usage(prefix: str = "/") -> str:
                 "Land before next: with auto-merge on, a task that published exactly one PR "
                 "on this repository has it merged as if you ran pr merge on the head it "
                 "finished with; zero or several PRs are never merged, you are told instead. "
+                "A PR counts only if the task opened or pushed it from its own branch; one "
+                "its result merely mentions does not. "
                 "Per task, start a do or task request with --merge=never (don't merge) or "
                 "--merge=auto (merge when ready, even when off); other options are rejected."
             ),
