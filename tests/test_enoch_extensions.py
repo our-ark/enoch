@@ -49,6 +49,7 @@ from enoch.providers import (
 from enoch.tasks.events import load_task_events
 from enoch.tasks.queue import task_queue_status
 from enoch.workflows import (
+    WORKFLOW_FEATURE_EXTENSION_RECOVERY,
     WORKFLOW_FEATURE_ARTIFACT_REFERENCES,
     WORKFLOW_FEATURE_EXECUTION_LANES,
     WORKFLOW_FEATURE_STRUCTURED_METADATA,
@@ -617,6 +618,7 @@ class EnochExtensionTests(unittest.TestCase):
                     WORKFLOW_FEATURE_ARTIFACT_REFERENCES,
                     WORKFLOW_FEATURE_EXECUTION_LANES,
                     WORKFLOW_FEATURE_STRUCTURED_METADATA,
+                    WORKFLOW_FEATURE_EXTENSION_RECOVERY,
                 }
             ),
         )

@@ -102,6 +102,11 @@ embedding and tests. Enoch's own executable uses the default
 `ApplicationComposition`, so the descendant path and the built-in path share
 one startup implementation.
 
+Hosts with their own event loop can use the versioned
+[embedding API](embedding-api.md) for evolve commands and bounded pending-task
+execution. This leaves task ownership in the existing workflow and defaults to
+no backlog promotion or schedule reconciliation.
+
 ## Conformance and packaging
 
 Descendant packages can inherit

@@ -3,10 +3,12 @@ from enoch.workflows.contracts import (
     WORKFLOW_FEATURE_ARTIFACT_REFERENCES,
     WORKFLOW_FEATURE_EXECUTION_LANES,
     WORKFLOW_FEATURE_STRUCTURED_METADATA,
+    WORKFLOW_FEATURE_EXTENSION_RECOVERY,
     EnqueueMode,
     FinalTaskStatus,
     WorkflowEngine,
     WorkflowEngineError,
+    ExtensionRecoveryWorkflow,
     validate_workflow_engine,
     workflow_features,
 )
@@ -23,6 +25,7 @@ __all__ = [
     "WORKFLOW_FEATURE_ARTIFACT_REFERENCES",
     "WORKFLOW_FEATURE_EXECUTION_LANES",
     "WORKFLOW_FEATURE_STRUCTURED_METADATA",
+    "WORKFLOW_FEATURE_EXTENSION_RECOVERY",
     "EnqueueMode",
     "FinalTaskStatus",
     "LocalWorkflowEngine",
@@ -31,6 +34,7 @@ __all__ = [
     "TaskTerminalEvidence",
     "WorkflowEngine",
     "WorkflowEngineError",
+    "ExtensionRecoveryWorkflow",
     "validate_workflow_engine",
     "workflow_features",
 ]

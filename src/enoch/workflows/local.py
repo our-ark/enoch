@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import nullcontext
+import math
 import os
 from pathlib import Path
 import threading
@@ -44,13 +45,17 @@ from enoch.tasks.queue import (
     task_queue_status,
     task_result_has_review,
     task_worker_is_active,
+    prepare_extension_recovery,
+    apply_extension_recovery,
 )
+from enoch.tasks.recovery import ExtensionRecoveryHook, ExtensionRecoverySnapshot, invoke_recovery_hook
 from enoch.tasks.payloads import ExtensionArtifactReference, JsonValue
 from enoch.workflows.contracts import (
     WORKFLOW_API_VERSION,
     WORKFLOW_FEATURE_ARTIFACT_REFERENCES,
     WORKFLOW_FEATURE_EXECUTION_LANES,
     WORKFLOW_FEATURE_STRUCTURED_METADATA,
+    WORKFLOW_FEATURE_EXTENSION_RECOVERY,
     EnqueueMode,
     FinalTaskStatus,
 )
@@ -65,6 +70,7 @@ class LocalWorkflowEngine:
             WORKFLOW_FEATURE_ARTIFACT_REFERENCES,
             WORKFLOW_FEATURE_EXECUTION_LANES,
             WORKFLOW_FEATURE_STRUCTURED_METADATA,
+            WORKFLOW_FEATURE_EXTENSION_RECOVERY,
         }
     )
 
@@ -82,6 +88,18 @@ class LocalWorkflowEngine:
         self._worker_liveness = worker_liveness
         self._worker_threads: dict[str, threading.Thread] = {}
         self._worker_threads_lock = threading.Lock()
+        self._recovery_hooks: dict[str, ExtensionRecoveryHook] = {}
+        self._recovery_timeout = 5.0
+
+    def configure_extension_recovery(
+        self, hooks: dict[str, ExtensionRecoveryHook], *, timeout_seconds: float = 5.0,
+    ) -> None:
+        if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+            raise ValueError("Recovery timeout must be finite and positive.")
+        if any(not callable(hook) for hook in hooks.values()):
+            raise ValueError("Recovery hooks must be callable.")
+        self._recovery_hooks = dict(hooks)
+        self._recovery_timeout = timeout_seconds
 
     def enqueue(
         self,
@@ -268,15 +286,11 @@ class LocalWorkflowEngine:
         raise ValueError(f"Unknown final task status {status!r}.")
 
     def recover(self) -> TaskJob | None:
-        with self._mutation():
-            result = reconcile_running_task(
-                root=self.root,
-                worker_liveness=self._tracked_worker_is_active,
-                checked_at=self._clock(),
-            )
+        result = self._reconcile_with_recovery()
         if result.outcome not in {
             "terminal_repair",
             "interrupted_worker_recovery",
+            "extension_recovery",
         } or result.task_id is None:
             return None
         return self.find(result.task_id)
@@ -285,13 +299,47 @@ class LocalWorkflowEngine:
         self,
         request: TaskReconciliationRequest | None = None,
     ) -> TaskReconciliationResult:
+        return self._reconcile_with_recovery(request)
+
+    def _reconcile_with_recovery(
+        self, request: TaskReconciliationRequest | None = None,
+    ) -> TaskReconciliationResult:
+        if not self._recovery_hooks:
+            with self._mutation():
+                return reconcile_running_task(
+                    request, self.root, worker_liveness=self._tracked_worker_is_active,
+                    checked_at=self._clock(),
+                )
         with self._mutation():
-            return reconcile_running_task(
-                request,
-                self.root,
-                worker_liveness=self._tracked_worker_is_active,
-                checked_at=self._clock(),
+            running = self.inspect().running
+            owner = ""
+            if running is not None and running.context_source.startswith("extension:"):
+                owner = running.context_source.removeprefix("extension:")
+            hook = self._recovery_hooks.get(owner)
+            # Preserve the caller's compare-and-swap constraints before invoking a hook.
+            matches = request is None or (
+                running is not None
+                and request.expected_task_id == running.id
+                and request.expected_worker_id == running.worker_id
+                and request.expected_worker_heartbeat_at == running.worker_heartbeat_at
+                and request.expected_worker_lease_id == running.worker_lease_id
             )
+            held = None
+            if running is not None and hook is not None and matches:
+                held = prepare_extension_recovery(
+                    running, self.root, worker_liveness=self._tracked_worker_is_active,
+                )
+            if held is None:
+                return reconcile_running_task(
+                    request, self.root, worker_liveness=self._tracked_worker_is_active,
+                    checked_at=self._clock(),
+                )
+        assert running is not None and hook is not None
+        decision = invoke_recovery_hook(
+            hook, ExtensionRecoverySnapshot(owner, running), self._recovery_timeout,
+        )
+        with self._mutation():
+            return apply_extension_recovery(held, decision, self.root, checked_at=self._clock())
 
     def inspect(self) -> TaskQueueStatus:
         return task_queue_status(self.root)

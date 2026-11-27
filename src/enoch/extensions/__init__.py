@@ -1,3 +1,9 @@
+from enoch.tasks.recovery import (
+    EXTENSION_RECOVERY_API_VERSION,
+    ExtensionRecoveryDecision,
+    ExtensionRecoveryHook,
+    ExtensionRecoverySnapshot,
+)
 from enoch.extensions.contracts import (
     AGENT_EXTENSION_API_VERSION,
     EXTENSION_COMMAND_RESULT_API_VERSION,
@@ -46,6 +52,10 @@ from enoch.extensions.schedules import (
 
 
 __all__ = [
+    "EXTENSION_RECOVERY_API_VERSION",
+    "ExtensionRecoveryDecision",
+    "ExtensionRecoveryHook",
+    "ExtensionRecoverySnapshot",
     "AGENT_EXTENSION_API_VERSION",
     "EXTENSION_COMMAND_RESULT_API_VERSION",
     "EXTENSION_SCHEDULE_API_VERSION",

@@ -15,6 +15,7 @@ from our_ark_provider_kit.conformance import (
 
 from enoch.conformance.profile import ProfileCommandCase, ProfileConformanceMixin
 from enoch.conformance.application import ApplicationCompositionConformanceMixin
+from enoch.conformance.embedding import EmbeddingConformanceMixin
 from enoch.conformance.extension import (
     AgentExtensionConformanceMixin,
     ExtensionCommandCase,
@@ -30,6 +31,7 @@ __all__ = [
     "ApplicationCompositionConformanceMixin",
     "AgentExtensionConformanceMixin",
     "DurableNotificationConformanceMixin",
+    "EmbeddingConformanceMixin",
     "ExtensionCommandCase",
     "ExtensionScheduleConformanceMixin",
     "ProfileCommandCase",

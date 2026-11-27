@@ -272,6 +272,8 @@ class EnochPortableInstallTests(unittest.TestCase):
         self.assertEqual(result["extension_version"], "0.0.1")
         self.assertEqual(result["extension_api_version"], 1)
         self.assertEqual(result["composition_api_version"], 1)
+        self.assertEqual(result["embedding_api_version"], 1)
+        self.assertTrue(result["embedding_reply"])
         self.assertEqual(result["composition"], "portable-descendant")
         self.assertEqual(result["workflow_api_version"], 4)
         self.assertEqual(result["conformance_api_version"], 1)
@@ -757,6 +759,7 @@ _INSTALLED_TASK_SCRIPT = textwrap.dedent(
     )
     from enoch.conformance import CONFORMANCE_API_VERSION
     from enoch.extensions import AGENT_EXTENSION_API_VERSION
+    from enoch.embedding import EMBEDDING_API_VERSION, EvolveCommandResult
     from enoch.identity import load_identity
     from enoch.providers import (
         REPOSITORY_CONTRACT_VERSION,
@@ -886,9 +889,10 @@ _INSTALLED_TASK_SCRIPT = textwrap.dedent(
     )
     queued = workflow.inspect().pending[-1]
     profile_command_reply = chat.sent[-1][1]
-    running = workflow.start_next()
-    assert running is not None and running.id == queued.id
-    app._run_task_job(running)
+    embedding_reply = app.handle_evolve_command("portable-room")
+    assert isinstance(embedding_reply, EvolveCommandResult)
+    execution = app.resume_pending_tasks()
+    assert execution.task_ids == (queued.id,)
     completed = workflow.inspect().history[-1]
     app.handle_event(
         ChatEvent(
@@ -954,6 +958,8 @@ _INSTALLED_TASK_SCRIPT = textwrap.dedent(
         "extension_version": version("enoch-portable-notes-extension"),
         "extension_api_version": AGENT_EXTENSION_API_VERSION,
         "composition_api_version": APPLICATION_COMPOSITION_API_VERSION,
+        "embedding_api_version": EMBEDDING_API_VERSION,
+        "embedding_reply": embedding_reply.reply,
         "composition": components.composition_name,
         "workflow_api_version": workflow.api_version,
         "conformance_api_version": CONFORMANCE_API_VERSION,

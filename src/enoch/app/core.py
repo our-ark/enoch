@@ -16,6 +16,24 @@ from urllib.parse import urlsplit
 from uuid import uuid4
 
 from enoch.quota import quota_command, quota_provider_label, quota_snapshots
+from enoch.config import read_section
+from enoch.usage_ledger import (
+    CATEGORY_CI_FIX,
+    CATEGORY_CONVERSATION,
+    CATEGORY_EVOLVE,
+    CATEGORY_OTHER,
+    CATEGORY_SNAPSHOT,
+    CATEGORY_TASK,
+    UsageTotals,
+    board_usage_line,
+    format_task_tokens_line,
+    format_usage_report,
+    load_usage_report,
+    parse_usage_period,
+    record_runtime_usage,
+    task_usage,
+    token_usage_help,
+)
 from enoch.quota_warnings import NOTIFICATION_PREFIX as QUOTA_NOTIFICATION_PREFIX, QuotaWarningMonitor
 from enoch.runtime_access import RuntimeAccessResumer, is_usage_limit_text
 
@@ -72,6 +90,13 @@ from enoch.cron import (
     record_cron_task,
 )
 from enoch.documents import document_context
+from enoch.embedding import (
+    EMBEDDING_API_VERSION,
+    EmbeddingConversationDenied,
+    EvolveCommandResult,
+    PendingTaskExecutionResult,
+    PendingTaskStopReason,
+)
 from enoch.evolution.core import (
     MODE_AUTO_EVOLVE,
     MODE_DISABLED,
@@ -139,6 +164,8 @@ from enoch.vcs_tools import (
     switch_branch,
 )
 from enoch.workflows import (
+    WORKFLOW_FEATURE_EXTENSION_RECOVERY,
+    workflow_features,
     FinalTaskStatus,
     LocalWorkflowEngine,
     TaskReconciliationRequest,
@@ -443,6 +470,7 @@ from enoch.app.execution_context import (
     CURRENT_REGRESSION_SIGNALS as _CURRENT_REGRESSION_SIGNALS,
     CURRENT_TASK_ID as _CURRENT_TASK_ID,
     CURRENT_TASK_WORKER_ID as _CURRENT_TASK_WORKER_ID,
+    CURRENT_USAGE_CATEGORY as _CURRENT_USAGE_CATEGORY,
     CURRENT_WORK_STATUS as _CURRENT_WORK_STATUS,
 )
 from enoch.app.inbox import (
@@ -482,6 +510,7 @@ from enoch.app.presentation import (
     format_task_details as _format_task_details,
     format_task_final_message as _format_task_final_message,
     format_work_status_message as _format_work_status_message,
+    short_request as _short_request,
 )
 from enoch.state import StateCorruptionError
 from enoch.app.ci_repair import extract_ci_fix_results, record_ci_fix_result
@@ -614,6 +643,8 @@ def _shutdown_message(
 
 
 class EnochApplication:
+    embedding_api_version = EMBEDDING_API_VERSION
+
     def __init__(
         self,
         identity: Identity,
@@ -700,9 +731,20 @@ class EnochApplication:
         self.workflow = validate_workflow_engine(
             workflow or LocalWorkflowEngine(root, epoch=self.daemon_epoch)
         )
+        recovery_hooks = {
+            extension.name: extension.lifecycle.on_task_recovery
+            for extension in self.extensions
+            if extension.lifecycle.on_task_recovery is not None
+        }
+        if recovery_hooks:
+            configure = getattr(self.workflow, "configure_extension_recovery", None)
+            if not callable(configure) or WORKFLOW_FEATURE_EXTENSION_RECOVERY not in workflow_features(self.workflow):
+                raise ValueError("Selected workflow engine does not support extension recovery.")
+            configure(recovery_hooks)
         self.runtime_access = RuntimeAccessResumer(
             root,
-            paused_tasks=lambda: self.workflow.inspect().paused,
+            paused_tasks=lambda: tuple(job for job in self.workflow.inspect().paused
+                                      if not job.needs_attention),
             quota=lambda: self._runtime_quota_snapshot(),
             probe=lambda: self._probe_runtime_access(),
             resume=lambda: self._auto_resume_paused_tasks(),
@@ -971,9 +1013,54 @@ class EnochApplication:
         if result.outcome not in {
             "terminal_repair",
             "interrupted_worker_recovery",
+            "extension_recovery",
         } or result.task_id is None:
             return None
         return self.workflow.find(result.task_id)
+
+    def handle_evolve_command(
+        self, conversation_id: ConversationId, argument: str = "",
+    ) -> EvolveCommandResult:
+        """Handle arguments after /evolve; the host delivers the returned reply."""
+
+        self.effect_fence.require_current()
+        if not self._chat_allowed(conversation_id):
+            raise EmbeddingConversationDenied("Conversation is not allowed by the chat provider.")
+        if not isinstance(argument, str):
+            raise TypeError("argument must be a string containing the arguments after /evolve.")
+        try:
+            return EvolveCommandResult(conversation_id, self._evolve(conversation_id, argument))
+        finally:
+            # Handlers may translate runtime errors into replies; never hide takeover.
+            self.effect_fence.require_current()
+
+    def resume_pending_tasks(
+        self, *, max_tasks: int = 1, promote_backlog: bool = False,
+        reconcile_schedules: bool = False,
+    ) -> PendingTaskExecutionResult:
+        """Synchronously execute bounded pending work without lifting pause holds."""
+
+        self.effect_fence.require_current()
+        if type(max_tasks) is not int or max_tasks < 1:
+            raise ValueError("max_tasks must be a positive integer.")
+        if type(promote_backlog) is not bool or type(reconcile_schedules) is not bool:
+            raise TypeError("promote_backlog and reconcile_schedules must be booleans.")
+        owner = threading.current_thread()
+        with self._task_worker_lock:
+            if self._task_worker is not None and self._task_worker.is_alive():
+                return PendingTaskExecutionResult((), "busy")
+            # Reserve the existing worker slot, not a second queue owner.
+            self._task_worker = owner
+        try:
+            return self._drain_pending_tasks(
+                max_tasks=max_tasks, promote_backlog=promote_backlog,
+                reconcile_schedules=reconcile_schedules,
+            )
+        finally:
+            with self._task_worker_lock:
+                if self._task_worker is owner:
+                    self._task_worker = None
+            self.effect_fence.require_current()
 
     def handle_event(self, event: ChatEvent) -> None:
         require_current_daemon_epoch(self.daemon_epoch, self.root)
@@ -1364,12 +1451,31 @@ class EnochApplication:
             "quota": lambda: quota_command(
                 argument, self.root, runtime=self.runtime, prefix=self.command_prefix,
             ),
+            "usage": lambda: self._usage_command(argument),
             "doctor": self._doctor,
             "worktree": lambda: self._worktree(chat_id, argument),
             "pr": lambda: self._pr(chat_id, argument),
             "update": lambda: self._update_from_chat(chat_id, argument),
             "restart": lambda: self._restart_from_chat(argument),
         }
+
+    def _usage_command(self, argument: str) -> str:
+        """Read-only ``/usage [today|7d]`` report from the private usage ledger."""
+
+        period = parse_usage_period(argument)
+        if period is None:
+            return token_usage_help(self.command_prefix)
+        days, label = period
+        try:
+            report = load_usage_report(self.root, days=days)
+            titles: dict[int, str] = {}
+            for task_id in report.by_task:
+                job = self.workflow.find(task_id)
+                if job is not None:
+                    titles[task_id] = _short_request(job.text, 48)
+            return format_usage_report(report, label=label, task_titles=titles)
+        except Exception as error:  # noqa: BLE001 - a report must never break the turn
+            return f"{self.display_name} could not read the usage ledger: {type(error).__name__}."
 
     def _update_from_chat(self, chat_id: ConversationId, argument: str = "") -> str:
         parts = argument.split()
@@ -1638,19 +1744,38 @@ class EnochApplication:
         compact: bool = False,
     ) -> str:
         if compact:
-            return _format_compact_task_final_message(
+            message = _format_compact_task_final_message(
                 job,
                 final_status,
                 result,
                 task_label=self.profile.presentation.task_label,
                 command_prefix=self.command_prefix,
             )
-        return _format_task_final_message(
-            job,
-            final_status,
-            result,
-            task_label=self.profile.presentation.task_label,
-        )
+        else:
+            message = _format_task_final_message(
+                job,
+                final_status,
+                result,
+                task_label=self.profile.presentation.task_label,
+            )
+        tokens = self._task_tokens_line(job)
+        return f"{message}\n{tokens}" if tokens else message
+
+    def _task_tokens_line(self, job: TaskJob) -> str:
+        """``Tokens: 8.1M in (98% cached) · 62k out`` for a task; "" if unknown.
+
+        Sums the task's ledger records (every attempt and repair turn); falls
+        back to the worker usage stored on the job. Never raises.
+        """
+
+        try:
+            totals = task_usage(self.root, job.id, since=job.created_at)
+            if totals.empty and job.runtime_usage:
+                totals = UsageTotals()
+                totals.add(job.runtime_usage)
+            return format_task_tokens_line(totals)
+        except Exception:
+            return ""
 
     def _compact_task_messages(self) -> bool:
         """True while the task board is active.
@@ -1815,6 +1940,7 @@ class EnochApplication:
         *,
         execution: RuntimeExecutionControl,
         image_paths: tuple[Path, ...] = (),
+        usage_category: str = CATEGORY_OTHER,
     ):
         session_key = execution.session_key
         needs_context = bool(session_key) and session_key not in self._contextualized_sessions
@@ -1850,8 +1976,54 @@ class EnochApplication:
         )
         if needs_context:
             self._contextualized_sessions.add(session_key)
+        self._record_runtime_usage(result, usage_category)
         self._capture_runtime_output(result)
         return result
+
+    def _record_runtime_usage(
+        self,
+        result: object,
+        category: str,
+        *,
+        task_id: int | None = None,
+    ) -> None:
+        """Append one token-usage record to the private ledger; never raises.
+
+        Only token counts and labels are stored, never prompt or reply text.
+        A result without usage data is recorded with zero counts.
+        """
+
+        try:
+            record_runtime_usage(
+                self.root,
+                category=category,
+                usage=getattr(result, "usage", None),
+                provider=str(getattr(self.runtime, "name", "") or ""),
+                model=self._runtime_model_label(),
+                task_id=task_id if task_id is not None else _CURRENT_TASK_ID.get(),
+            )
+        except Exception as error:  # noqa: BLE001 - usage visibility must not break a turn
+            _record_system_event(
+                "usage_ledger_failed",
+                self.root,
+                status="failed",
+                details={"error": type(error).__name__},
+            )
+
+    def _runtime_model_label(self) -> str:
+        """Configured model for the active runtime, or "default"; never raises."""
+
+        try:
+            name = str(getattr(self.runtime, "name", "") or "").strip()
+            for variable in (f"ENOCH_{name.upper()}_MODEL", f"OUR_ARK_{name.upper()}_MODEL"):
+                value = os.environ.get(variable, "").strip()
+                if name and value:
+                    return value
+            section = str(getattr(self.runtime, "config_section", "") or name)
+            model = read_section(section, self.root).get("model", "").strip() if section else ""
+            return model or "default"
+        except Exception:
+            return "default"
 
     def _capture_runtime_output(self, result) -> None:
         capture = capture_runtime_attachments(result, self.root)
@@ -1886,6 +2058,7 @@ class EnochApplication:
                     request_id=f"conversation:{chat_id}",
                     session_key=resolved_session_key,
                 ),
+                usage_category=CATEGORY_CONVERSATION,
             ).final_text
         except (
             AgentRuntimeError,
@@ -1911,6 +2084,7 @@ class EnochApplication:
                 request_id=f"evidence:{phase}:{uuid4().hex}",
                 session_key="",
             ),
+            usage_category=CATEGORY_EVOLVE,
         ).final_text
 
     def _respond_to_image(
@@ -1966,6 +2140,7 @@ class EnochApplication:
                 runtime=self.runtime,
                 session_key=self._session_key(chat_id),
                 effect_fence=self.effect_fence,
+                on_result=lambda result: self._record_runtime_usage(result, CATEGORY_OTHER),
             )
 
     def _conversation_command_reference(self) -> str:
@@ -2021,6 +2196,7 @@ class EnochApplication:
                     execution=RuntimeExecutionControl(
                         request_id=f"conversation:{request_id}", session_key=session_key,
                     ),
+                    usage_category=CATEGORY_CONVERSATION,
                 ).final_text
             except (AgentRuntimeError, CapabilityAuthorizationError, TypeError) as error:
                 raise ConversationTurnError(
@@ -2149,6 +2325,8 @@ class EnochApplication:
         if not self._action_allowed():
             return self._action_lock_message()
         queue_status = self.workflow.inspect()
+        if any(job.needs_attention for job in queue_status.paused):
+            return self._recovery_hold_message(queue_status.paused)
         if self.restarts.pending:
             return (
                 f"{self.display_name} is waiting to restart. "
@@ -2211,6 +2389,7 @@ class EnochApplication:
                     request_id=f"task-context:{chat_id}",
                     session_key=self._session_key(chat_id),
                 ),
+                usage_category=CATEGORY_SNAPSHOT,
             ).final_text
         except AgentRuntimeAccessUnavailable as error:
             return TaskContextSnapshot(codex_unavailable_reason=str(error))
@@ -2303,7 +2482,10 @@ class EnochApplication:
         trigger: str,
         session_key: str,
     ) -> str:
-        if self.workflow.inspect().paused_count:
+        paused_status = self.workflow.inspect()
+        if any(job.needs_attention for job in paused_status.paused):
+            return self._recovery_hold_message(paused_status.paused)
+        if paused_status.paused_count:
             return (
                 f"{self.display_name} has tasks paused for agent runtime access; they resume "
                 "automatically when access returns. To continue sooner, use "
@@ -2337,6 +2519,7 @@ class EnochApplication:
         job = claimed
         task_token = _CURRENT_TASK_ID.set(job.id)
         worker_token = _CURRENT_TASK_WORKER_ID.set(worker_id)
+        usage_token = _CURRENT_USAGE_CATEGORY.set(_task_usage_category(job))
         regression_token = _CURRENT_REGRESSION_SIGNALS.set(())
         cancellation_event = threading.Event()
         self._task_cancellations[job.id] = cancellation_event
@@ -2427,6 +2610,7 @@ class EnochApplication:
             _CURRENT_REGRESSION_SIGNALS.reset(regression_token)
             _CURRENT_TASK_ID.reset(task_token)
             _CURRENT_TASK_WORKER_ID.reset(worker_token)
+            _CURRENT_USAGE_CATEGORY.reset(usage_token)
             self._task_cancellations.pop(job.id, None)
             if completed_status == "cancelled":
                 finished_job = self._finalize_with_terminal_evidence(
@@ -2999,7 +3183,17 @@ class EnochApplication:
             backlog=self._task_board_backlog(),
             quota_line=self._task_board_quota_line(),
             held_by=self._land_hold_label(),
+            usage_line=self._task_board_usage_line(),
         )
+
+    def _task_board_usage_line(self) -> str:
+        # Today's local token usage from the private ledger, rounded to 1M
+        # input steps and whole percentages so the change-only digest does not
+        # edit the board on every chat message. Any problem hides the line.
+        try:
+            return board_usage_line(load_usage_report(self.root, days=1))
+        except Exception:
+            return ""
 
     def _task_board_quota_line(self) -> str:
         # Read the snapshot the quota warning poller already cached for the
@@ -3694,7 +3888,9 @@ class EnochApplication:
             return _format_compact_task_queued(job.id, retry_of=task_id)
         position = self.workflow.inspect().pending_count
         retry_kind = (
-            "unpublished task"
+            "held task"
+            if original is not None and original.needs_attention
+            else "unpublished task"
             if original is not None and original.status == "completed"
             else "cancelled task"
             if original is not None and original.status == "cancelled"
@@ -3817,12 +4013,25 @@ class EnochApplication:
                         f"Use {self.command_prefix}task retry {task_id} to create a new "
                         "linked task while preserving its failure history."
                     )
+                if job is not None and job.needs_attention:
+                    return (f"Task #{task_id} needs operator attention. Use "
+                            f"{self.command_prefix}task retry {task_id} or "
+                            f"{self.command_prefix}task cancel {task_id}.")
                 return f"Task #{task_id} is not paused."
+            paused = self.workflow.inspect().paused
+            if any(job.needs_attention for job in paused):
+                return self._recovery_hold_message(paused)
             return "No tasks are paused for agent runtime access."
         self._continue_resumed_tasks(resumed)
         task_ids = ", ".join(f"#{job.id}" for job in resumed)
         noun = "task" if len(resumed) == 1 else "tasks"
         return f"Resumed {len(resumed)} {noun}: {task_ids}."
+
+    def _recovery_hold_message(self, jobs: tuple[TaskJob, ...]) -> str:
+        ids = ", ".join(f"#{job.id}" for job in jobs if job.needs_attention)
+        return (f"Tasks {ids} need operator attention after interrupted work. "
+                f"Use {self.command_prefix}task retry <id> or {self.command_prefix}task cancel <id>; "
+                "runtime access recovery will not resume them.")
 
     def _continue_resumed_tasks(
         self,
@@ -3906,7 +4115,7 @@ class EnochApplication:
     def _probe_runtime_access(self) -> None:
         """Smallest possible runtime turn; raises while access is still blocked."""
 
-        self.effect_fence.run_runtime_authorized(
+        result = self.effect_fence.run_runtime_authorized(
             "runtime.respond",
             ("runtime.respond",),
             lambda fenced_execution: invoke_runtime_respond(
@@ -3921,6 +4130,7 @@ class EnochApplication:
                 timeout_seconds=120,
             ),
         )
+        self._record_runtime_usage(result, CATEGORY_OTHER)
 
     def _capture_task_regression_signals(self, reply: str) -> str:
         # Every task reply passes through here, so CI fix results are captured
@@ -4873,36 +5083,65 @@ class EnochApplication:
 
     def _run_task_worker(self) -> None:
         try:
-            while not self._stopping:
-                if self.restarts.restart_if_idle():
-                    return
-                if self._auto_update_holds_work():
-                    return
-                if self._land_hold() is not None:
-                    # Land before next: only CI fix tasks run until the review
-                    # lands or its pending merge stops; the tick restarts us.
-                    job = self.workflow.start_next(triggers=CI_FIX_TRIGGERS)
-                    if job is None:
-                        return
-                else:
-                    job = self.workflow.start_next()
+            self._drain_pending_tasks(
+                max_tasks=None, promote_backlog=True, reconcile_schedules=True,
+            )
+        except StaleDaemonEpoch:
+            return
+
+    def _drain_pending_tasks(
+        self, *, max_tasks: int | None, promote_backlog: bool,
+        reconcile_schedules: bool,
+    ) -> PendingTaskExecutionResult:
+        task_ids: list[int] = []
+        reason: PendingTaskStopReason
+        while True:
+            self.effect_fence.require_current()
+            if self._stopping:
+                reason = "stopping"
+                break
+            if self.restarts.restart_if_idle():
+                reason = "restart"
+                break
+            if self._auto_update_holds_work():
+                reason = "update"
+                break
+            status = self.workflow.inspect()
+            if status.paused_count:
+                reason = "paused"
+                break
+            if status.running is not None:
+                reason = "busy"
+                break
+            if max_tasks is not None and len(task_ids) >= max_tasks:
+                reason = "limit"
+                break
+            if self._land_hold() is not None:
+                job = self.workflow.start_next(triggers=CI_FIX_TRIGGERS)
                 if job is None:
-                    if self._promote_next_backlog_if_idle() is None:
-                        return
+                    reason = "review"
+                    break
+            else:
+                job = self.workflow.start_next()
+            if job is None and promote_backlog:
+                if self._promote_next_backlog_if_idle() is not None:
                     job = self.workflow.start_next()
-                    if job is None:
-                        return
-                self._run_task_job(job)
+            if job is None:
+                reason = "idle"
+                break
+            self._run_task_job(job)
+            self.effect_fence.require_current()
+            task_ids.append(job.id)
+            if reconcile_schedules:
                 self._cron_scheduler_wake.set()
                 try:
                     self._enqueue_due_cron_jobs()
                     self._enqueue_due_extension_schedules()
+                except StaleDaemonEpoch:
+                    raise
                 except Exception as error:
                     print(f"Enoch scheduler error after task completion: {error}")
-                if self.workflow.inspect().paused_count:
-                    return
-        except StaleDaemonEpoch:
-            return
+        return PendingTaskExecutionResult(tuple(task_ids), reason)
 
     def _promote_next_backlog_if_idle(self) -> TaskJob | None:
         status = self.workflow.inspect()
@@ -5324,6 +5563,7 @@ class EnochApplication:
         token = _CURRENT_WORK_STATUS.set(task_status)
         task_token = _CURRENT_TASK_ID.set(job.id)
         worker_token = _CURRENT_TASK_WORKER_ID.set(worker_id)
+        usage_token = _CURRENT_USAGE_CATEGORY.set(_task_usage_category(job))
         regression_token = _CURRENT_REGRESSION_SIGNALS.set(())
         cancellation_event = threading.Event()
         self._task_cancellations[job.id] = cancellation_event
@@ -5440,6 +5680,7 @@ class EnochApplication:
             _CURRENT_WORK_STATUS.reset(token)
             _CURRENT_TASK_ID.reset(task_token)
             _CURRENT_TASK_WORKER_ID.reset(worker_token)
+            _CURRENT_USAGE_CATEGORY.reset(usage_token)
             self._task_cancellations.pop(job.id, None)
             try:
                 require_current_daemon_epoch(self.daemon_epoch, self.root)
@@ -7250,6 +7491,15 @@ def _replied_message_text(message: dict[str, Any]) -> str:
     return ""
 
 
+def _task_usage_category(job: TaskJob) -> str:
+    """Usage-ledger category for a task's worker calls; CI fix tasks stay separate."""
+
+    try:
+        return CATEGORY_CI_FIX if _is_ci_fix_task(job) else CATEGORY_TASK
+    except Exception:
+        return CATEGORY_TASK
+
+
 def _is_ci_fix_task(job: TaskJob) -> bool:
     """An automatic CI fix task; these still run while a review is landing."""
 
@@ -7680,6 +7930,7 @@ def _sync_session_activity(
     runtime: AgentRuntime | None = None,
     session_key: str = "",
     effect_fence: DaemonEffectFence | None = None,
+    on_result: Callable[[object], None] | None = None,
 ) -> None:
     runtime = runtime or FunctionAgentRuntime(
         respond_fn=respond,
@@ -7701,9 +7952,9 @@ def _sync_session_activity(
             execution=control,
         )
         if effect_fence is None:
-            invoke(execution)
+            result = invoke(execution)
         else:
-            effect_fence.run_runtime_authorized(
+            result = effect_fence.run_runtime_authorized(
                 "runtime.session-sync",
                 ("runtime.respond",),
                 invoke,
@@ -7711,6 +7962,8 @@ def _sync_session_activity(
             )
     except (AgentRuntimeError, CapabilityAuthorizationError, TypeError):
         return
+    if on_result is not None:
+        on_result(result)
 
 
 def _record_direct_action(message: str, result: str, root: Path) -> None:

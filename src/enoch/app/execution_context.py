@@ -15,6 +15,11 @@ CURRENT_TASK_WORKER_ID: ContextVar[str] = ContextVar(
     "enoch_task_worker_id",
     default="",
 )
+# Usage-ledger category for the running task's worker calls: "task" or "ci-fix".
+CURRENT_USAGE_CATEGORY: ContextVar[str] = ContextVar(
+    "enoch_usage_category",
+    default="",
+)
 CURRENT_REGRESSION_SIGNALS: ContextVar[tuple[TaskRegressionSignal, ...]] = ContextVar(
     "enoch_regression_signals",
     default=(),
