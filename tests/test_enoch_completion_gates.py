@@ -186,6 +186,25 @@ class CompletionGateTests(CompletionGateConformanceMixin, unittest.TestCase):
         with self.assertRaises(ValueError):
             CompletionGate("2030-01-02T00:00:00+00:00")
 
+    def test_gate_preserves_verified_reviews_without_attributing_mentions(self):
+        self.engine.cancel(self.parent.id)
+        parent = self.engine.enqueue(1, "review attribution", context_source="extension:fixture", mode="front")
+        self.engine.declare_completion_gate(parent.id, "fixture", CompletionGate(
+            "2030-01-02T00:00:00+00:00", evidence_keys=("review",),
+        ))
+        self.engine.start_next()
+        self.engine.claim(parent.id, "worker", os.getpid())
+        owned = "https://github.com/example/repo/pull/1"
+        mentioned = "https://github.com/example/repo/pull/2"
+        result = f"Published {owned}; also inspected {mentioned}."
+        self.engine.record_terminal_evidence(parent.id, "worker", TaskTerminalEvidence(
+            "completed", result, review_urls=(owned,),
+        ))
+        self.engine.finalize(parent.id, "completed", result=result, worker_id="worker")
+        self.assertEqual(self.engine.find(parent.id).review_urls, (owned,))
+        self.engine.record_completion_evidence(parent.id, "fixture", "review", "passed")
+        self.assertEqual(self.engine.find(parent.id).review_urls, (owned,))
+
     def test_migration_and_idempotency_preserve_waiting_task(self):
         with patch("enoch.private_state._pid_is_alive", return_value=False):
             migrate_private_state(self.root)

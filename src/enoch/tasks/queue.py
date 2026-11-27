@@ -1571,7 +1571,7 @@ def _finish_running_task(
         if worker_id and running.worker_id != worker_id:
             return None
         if status == "completed" and running.completion_gate is not None:
-            return _await_completion(data, running, root, result=result)
+            return _await_completion(data, running, root, result=result, review_urls=review_urls)
         history = _history_jobs(data)
         finished = _replace_job(
             running,
@@ -1747,7 +1747,7 @@ def apply_extension_recovery(
         if evidence is not None:
             if evidence.status == "completed" and held.completion_gate is not None:
                 data["paused"] = [_job_to_dict(job) for job in _paused_jobs(data) if job.id != held.id]
-                waiting = _await_completion(data, held, root, result=evidence.result)
+                waiting = _await_completion(data, held, root, result=evidence.result, review_urls=evidence.review_urls)
                 return TaskReconciliationResult(
                     outcome="extension_recovery", checked_at=checked_at, task_id=held.id,
                     previous_status="running", resulting_status=waiting.status,
@@ -2133,10 +2133,13 @@ def append_completion_evidence(task_id: int, owner: str, name: str, reference: s
         return updated
 
 
-def _await_completion(data: dict, job: TaskJob, root: Path | None, *, result: str) -> TaskJob:
+def _await_completion(
+    data: dict, job: TaskJob, root: Path | None, *, result: str,
+    review_urls: tuple[str, ...] = (),
+) -> TaskJob:
     waiting = _replace_job(
         job, status="awaiting_completion", completed_at="", result=result,
-        review_urls=_merge_review_urls(job.review_urls, _review_urls(result)),
+        review_urls=_merge_review_urls(job.review_urls, _parse_review_urls(review_urls)),
         worker_id="", worker_pid=None, worker_heartbeat_at="", worker_lease_id="",
         terminal_status="", terminal_evidence_source="", terminal_evidence_at="",
         failure_code="", failure_class="", pause_trigger="", retryable=False, next_attempt_at="",
