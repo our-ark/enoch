@@ -6,6 +6,7 @@ import re
 from typing import Callable, Literal
 
 from enoch.tasks.recovery import ExtensionRecoveryHook
+from enoch.tasks.completion import CompletionGate, CompletionHook
 
 from enoch.identity import Identity
 from enoch.providers.contracts import (
@@ -37,6 +38,7 @@ from enoch.tasks.payloads import (
 from enoch.workflows import (
     WORKFLOW_FEATURE_ARTIFACT_REFERENCES,
     WORKFLOW_FEATURE_EXECUTION_LANES,
+    WORKFLOW_FEATURE_COMPLETION_GATES,
     WORKFLOW_FEATURE_STRUCTURED_METADATA,
     WorkflowEngine,
     WorkflowEngineError,
@@ -56,6 +58,7 @@ ExtensionTaskState = Literal[
     "failed",
     "cancelled",
     "regressed",
+    "awaiting_completion",
 ]
 ExtensionTaskEventType = Literal[
     "queued",
@@ -63,6 +66,7 @@ ExtensionTaskEventType = Literal[
     "completed",
     "failed",
     "cancelled",
+    "awaiting_completion",
 ]
 
 
@@ -127,6 +131,8 @@ class ExtensionTaskStatus:
     metadata: dict[str, JsonValue] = field(default_factory=dict)
     artifact_refs: tuple[ExtensionArtifactReference, ...] = ()
     lane: str = ""
+    completion_gate: CompletionGate | None = None
+    completion_evidence: dict[str, str] = field(default_factory=dict)
 
     @property
     def terminal(self) -> bool:
@@ -284,6 +290,8 @@ class ExtensionWorkflow:
     )
     _task_options: dict[str, object] = field(default_factory=dict, repr=False)
     _features: frozenset[str] = field(default_factory=frozenset, repr=False)
+    _declare_completion_gate: Callable | None = field(default=None, repr=False)
+    _record_completion_evidence: Callable | None = field(default=None, repr=False)
 
     @classmethod
     def from_engine(
@@ -306,6 +314,8 @@ class ExtensionWorkflow:
             ),
             _task_options=dict(task_options or {}),
             _features=workflow_features(engine),
+            _declare_completion_gate=getattr(engine, "declare_completion_gate", None),
+            _record_completion_evidence=getattr(engine, "record_completion_evidence", None),
         )
 
     @property
@@ -377,6 +387,20 @@ class ExtensionWorkflow:
     def status(self, task_id: int) -> ExtensionTaskStatus:
         return self._status(self._owned_task(task_id, "status"))
 
+    def declare_completion_gate(self, task_id: int, gate: CompletionGate) -> ExtensionTaskStatus:
+        self._require_feature(WORKFLOW_FEATURE_COMPLETION_GATES)
+        self._owned_task(task_id, "status")
+        if self._declare_completion_gate is None:
+            raise ExtensionWorkflowCapabilityError(WORKFLOW_FEATURE_COMPLETION_GATES)
+        return self._status(self._declare_completion_gate(task_id, self.extension_name, gate))
+
+    def record_completion_evidence(self, task_id: int, name: str, reference: str) -> ExtensionTaskStatus:
+        self._require_feature(WORKFLOW_FEATURE_COMPLETION_GATES)
+        self._owned_task(task_id, "status")
+        if self._record_completion_evidence is None:
+            raise ExtensionWorkflowCapabilityError(WORKFLOW_FEATURE_COMPLETION_GATES)
+        return self._status(self._record_completion_evidence(task_id, self.extension_name, name, reference))
+
     def cancel(
         self,
         task_id: int,
@@ -386,7 +410,7 @@ class ExtensionWorkflow:
         job = self._owned_task(task_id, "cancel")
         if job.status == "cancelled":
             return self._status(job)
-        if job.status not in {"pending", "paused", "running"}:
+        if job.status not in {"pending", "paused", "running", "awaiting_completion"}:
             raise self._control_error(
                 "invalid_state",
                 "cancel",
@@ -572,6 +596,8 @@ class ExtensionWorkflow:
                 self.extension_name,
                 job.execution_lane,
             ),
+            completion_gate=job.completion_gate,
+            completion_evidence=dict(job.completion_evidence),
         )
 
     def _require_feature(self, feature: str) -> None:
@@ -727,6 +753,7 @@ class ExtensionLifecycleHooks:
     on_shutdown: ExtensionLifecycleHook | None = None
     on_peer_event: ExtensionPeerEventHook | None = None
     on_task_recovery: ExtensionRecoveryHook | None = None
+    on_task_completion: CompletionHook | None = None
 
 
 @dataclass(frozen=True)

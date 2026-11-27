@@ -12,6 +12,11 @@ profile suites from `enoch.conformance`.
 
 ## Extension recovery
 
+The separate optional `completion_gates` feature has a
+`CompletionGateConformanceMixin` covering admission, child execution,
+finalization, restart fencing, timeout, and cancellation. See
+[Task completion gates](completion-gates.md).
+
 `WorkflowEngineConformanceMixin` checks the optional `extension_recovery` feature
 when declared: requeue context, hold across restart, terminal finalization,
 hook exception/timeout fallback, explicit cancellation, and stale-epoch rejection.

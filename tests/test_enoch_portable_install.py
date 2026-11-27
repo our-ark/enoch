@@ -240,6 +240,8 @@ class EnochPortableInstallTests(unittest.TestCase):
         self.assertEqual(result["composition_api_version"], 1)
         self.assertEqual(result["embedding_api_version"], 1)
         self.assertTrue(result["embedding_reply"])
+        self.assertEqual(result["completion_before_evidence"], "awaiting_completion")
+        self.assertEqual(result["completion_after_evidence"], "completed")
         self.assertEqual(result["composition"], "portable-descendant")
         self.assertEqual(result["workflow_api_version"], 4)
         self.assertEqual(result["conformance_api_version"], 1)
@@ -657,6 +659,7 @@ def _write_extension_package(root: Path) -> None:
                 AgentExtension,
                 ExtensionCommandSpec,
                 ExtensionLifecycleHooks,
+                CompletionDecision,
             )
 
 
@@ -694,6 +697,7 @@ def _write_extension_package(root: Path) -> None:
                     ),
                     lifecycle=ExtensionLifecycleHooks(
                         on_task_event=task_event,
+                        on_task_completion=lambda snapshot: CompletionDecision("complete"),
                     ),
                 )
             """
@@ -720,7 +724,7 @@ _INSTALLED_TASK_SCRIPT = textwrap.dedent(
         ApplicationPresentation,
     )
     from enoch.conformance import CONFORMANCE_API_VERSION
-    from enoch.extensions import AGENT_EXTENSION_API_VERSION
+    from enoch.extensions import AGENT_EXTENSION_API_VERSION, ExtensionWorkflow, CompletionGate
     from enoch.embedding import EMBEDDING_API_VERSION, EvolveCommandResult
     from enoch.identity import load_identity
     from enoch.providers import (
@@ -875,6 +879,10 @@ _INSTALLED_TASK_SCRIPT = textwrap.dedent(
     )
     extension_job = workflow.inspect().pending[-1]
     extension_reply = chat.sent[-1][1]
+    extension_workflow = ExtensionWorkflow.from_engine("notes", workflow)
+    extension_workflow.declare_completion_gate(extension_job.id, CompletionGate(
+        "2099-01-01T00:00:00+00:00", evidence_keys=("review",),
+    ))
     extension_running = workflow.start_next()
     assert extension_running is not None and extension_running.id == extension_job.id
     workflow.finalize(
@@ -882,6 +890,10 @@ _INSTALLED_TASK_SCRIPT = textwrap.dedent(
         "completed",
         result="Portable notes completed.",
     )
+    completion_before_evidence = extension_workflow.status(extension_job.id).state
+    assert completion_before_evidence == "awaiting_completion"
+    extension_workflow.record_completion_evidence(extension_job.id, "review", "portable-review:passed")
+    completion_after_evidence = extension_workflow.status(extension_job.id).state
     app.run_once()
     app.handle_event(
         ChatEvent(
@@ -922,6 +934,8 @@ _INSTALLED_TASK_SCRIPT = textwrap.dedent(
         "composition_api_version": APPLICATION_COMPOSITION_API_VERSION,
         "embedding_api_version": EMBEDDING_API_VERSION,
         "embedding_reply": embedding_reply.reply,
+        "completion_before_evidence": completion_before_evidence,
+        "completion_after_evidence": completion_after_evidence,
         "composition": components.composition_name,
         "workflow_api_version": workflow.api_version,
         "conformance_api_version": CONFORMANCE_API_VERSION,

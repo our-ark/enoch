@@ -86,11 +86,12 @@ STATE_FILE_SCHEMAS = (
     StateFileSchema("conversation/*.json", 1, (("steps", []),), (("steps", (list,)),)),
     StateFileSchema(
         "task_queue.json",
-        16,
+        17,
         (
             ("next_id", 1),
             ("pending", []),
             ("paused", []),
+            ("awaiting", []),
             ("running", None),
             ("history", []),
             ("reconciliation", None),
@@ -99,6 +100,7 @@ STATE_FILE_SCHEMAS = (
             ("next_id", (int,)),
             ("pending", (list,)),
             ("paused", (list,)),
+            ("awaiting", (list,)),
             ("running", (dict, type(None))),
             ("history", (list,)),
             ("reconciliation", (dict, type(None))),
@@ -552,11 +554,13 @@ def _normalize_task_queue(path: Path, data: dict[str, Any]) -> dict[str, Any]:
     )
 
     parsed: dict[str, list[Any]] = {}
-    for key in ("pending", "paused", "history"):
+    for key in ("pending", "paused", "awaiting", "history"):
         jobs = [_parse_job(item) for item in data[key]]
         if any(job is None for job in jobs):
             raise StateCorruptionError(path, f"found an invalid task in {key}")
         parsed[key] = [job for job in jobs if job is not None]
+    if any(job.status != "awaiting_completion" or job.completion_gate is None for job in parsed["awaiting"]):
+        raise StateCorruptionError(path, "found an invalid completion gate hold")
     running = _parse_job(data.get("running"))
     if data.get("running") is not None and running is None:
         raise StateCorruptionError(path, "found an invalid running task")
@@ -574,6 +578,7 @@ def _normalize_task_queue(path: Path, data: dict[str, Any]) -> dict[str, Any]:
         "next_id": max(next_id, max(ids, default=0) + 1),
         "pending": [_job_to_dict(job) for job in parsed["pending"]],
         "paused": [_job_to_dict(job) for job in parsed["paused"]],
+        "awaiting": [_job_to_dict(job) for job in parsed["awaiting"]],
         "running": _job_to_dict(running) if running is not None else None,
         "history": [_job_to_dict(job) for job in parsed["history"]],
         "reconciliation": _reconciliation_to_dict(reconciliation),

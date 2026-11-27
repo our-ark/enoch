@@ -22,6 +22,7 @@ DELIVERED_TASK_EVENTS = {
     "completed",
     "failed",
     "cancelled",
+    "awaiting_completion",
 }
 _DELIVERY_THREAD_LOCK = threading.RLock()
 

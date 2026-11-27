@@ -265,6 +265,8 @@ def _render_body(
         _Section("Paused", [_task_item(job) for job in status.paused if not job.needs_attention]),
     ]
     held = [job for job in status.paused if job.needs_attention]
+    if status.awaiting:
+        sections.append(_Section("Awaiting completion", [_task_item(job) for job in status.awaiting]))
     if held:
         sections.append(_Section("Needs attention (retry or cancel)", [_task_item(job) for job in held]))
     if merging:

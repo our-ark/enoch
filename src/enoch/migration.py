@@ -749,7 +749,7 @@ def _require_quiescent_workflows(root: Path) -> None:
         raise AgentMigrationError(
             f"Task #{task_id} is still running. Quiesce or pause active work before export."
         )
-    for section in ("pending", "paused"):
+    for section in ("pending", "paused", "awaiting"):
         jobs = queue.get(section, [])
         if not isinstance(jobs, list):
             continue
@@ -903,10 +903,10 @@ def _bundle_manifest(
 def _task_snapshot(root: Path) -> dict[str, list[int]]:
     path = private_state_path("task_queue.json", root)
     if not path.exists():
-        return {key: [] for key in ("pending", "paused", "running", "history")}
+        return {key: [] for key in ("pending", "paused", "awaiting", "running", "history")}
     queue = load_json_object(path)
     result: dict[str, list[int]] = {}
-    for section in ("pending", "paused", "history"):
+    for section in ("pending", "paused", "awaiting", "history"):
         raw = queue.get(section, [])
         result[section] = [
             int(item["id"])

@@ -1327,7 +1327,7 @@ def task_by_id(
     workflow: WorkflowEngine | None = None,
 ) -> TaskJob | None:
     status = workflow.inspect() if workflow is not None else task_queue_status(root)
-    jobs = [*status.pending, *status.paused, *status.history]
+    jobs = [*status.pending, *status.paused, *status.awaiting, *status.history]
     if status.running is not None:
         jobs.append(status.running)
     return next((job for job in jobs if job.id == task_id), None)
