@@ -49,6 +49,25 @@ jobs:
           python -m unittest discover -s libraries/telegram/tests
           python -m unittest discover -s libraries/telegram-vision/tests
 
+  library-pins:
+    name: Library pins are on main
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      # On main this is main itself; on a pull request it is the merge result,
+      # so pins must already be in the history that would land.
+      - name: Fail when a pinned commit is not an ancestor of the checked commit
+        run: PYTHONPATH=src python -m enoch.library_pins check-ancestors --ref HEAD
+
   recursive-descent:
     name: Full-body depth-2 descent / Python 3.12
     runs-on: ubuntu-latest
@@ -57,6 +76,8 @@ jobs:
       - uses: actions/checkout@v7
         with:
           path: enoch
+          # Full history: pinned library trees are compared with the checkout.
+          fetch-depth: 0
           persist-credentials: false
 
       - uses: actions/checkout@v7
@@ -73,11 +94,26 @@ jobs:
       - name: Install locked test build backend
         run: python -m pip install --disable-pip-version-check --require-hashes -r enoch/.github/requirements/test-build.txt
 
+      # Pull requests never edit pins. When this checkout's libraries/ differ
+      # from the pinned commits, pins are rewritten to this checkout in a
+      # CI-only commit and Git resolves the pin URL to it, so depth-2 births
+      # and the fresh install below use the code under test. When they match
+      # (the post-merge re-pin PR), the real pins are installed unchanged.
+      - name: Resolve library pins from the checkout under test
+        working-directory: enoch
+        run: PYTHONPATH=src python -m enoch.library_pins ci-override --github-env "$GITHUB_ENV"
+
       - name: Create two full-body descendants with inherited dependencies
         run: >-
           python genesis/scripts/verify_enoch_descent.py
           --source enoch --ref HEAD --generations 2
           --report "${{ runner.temp }}/recursive-descent.json"
+
+      - name: Install the pinned reference set into a fresh environment
+        run: |
+          python -m venv "${{ runner.temp }}/fresh"
+          "${{ runner.temp }}/fresh/bin/python" -m pip install --disable-pip-version-check "./enoch[reference]"
+          "${{ runner.temp }}/fresh/bin/python" -m enoch.library_pins --root enoch verify-installed
 
       - name: Preserve validation evidence, including failures and skips
         if: always()

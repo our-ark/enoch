@@ -41,7 +41,13 @@ useful across agents or implementations.
    dependency release.
 6. Pin the full library commit in both package metadata and
    `[[runtime_dependencies]]`; set `local_source` so the owning repository can
-   validate its checkout without downloading itself.
+   validate its checkout without downloading itself. Only `genesis.toml` and
+   the root `pyproject.toml` pin commits: libraries depend on each other by
+   package name, never by commit. In a repository that hosts its libraries and
+   uses `python -m enoch.library_pins`, point the new pin lines at the
+   current main commit and never edit pin lines again by hand. CI installs
+   the checkout's own libraries, and Enoch re-pins every library to main after
+   a merge that changes `libraries/`.
 7. Record `library_owner`, `library_package`, `library_contract`, and
    `library_commit` in the skill metadata.
 8. Validate the library, adapter, runtime bootstrap, full agent suite, and a
@@ -65,6 +71,7 @@ knowledge, not permanent ownership of the descendant.
 - Preserve upstream provenance, license terms, and attribution.
 - Do not rewrite the library owner when transforming descendant identity.
 - Keep the library commit separate from the later adapter-and-pin commit so
-  the dependency can resolve immutably.
+  the dependency can resolve immutably, unless the repository re-pins
+  automatically after merge as described above.
 - Require human review before publishing, changing permission boundaries, or
   adopting externally sourced code.

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -12,6 +13,8 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT / "src") not in sys.path:
+    sys.path.insert(0, str(ROOT / "src"))
 
 
 @unittest.skipUnless(
@@ -66,13 +69,44 @@ class EnochPortableInstallTests(unittest.TestCase):
             if dependency["name"] == "provider-kit"
         ]
         self.assertEqual(runtime_contracts, [core_contract])
+        self.assertRegex(core_contract, r"@[0-9a-f]{40}#subdirectory=libraries/provider-kit$")
+        # Single pin layer: providers name the contract package and pip resolves
+        # it to the pinned URL listed next to them at the top level.
         for package in ("claude", "github", "launchd", "slack", "systemd", "telegram"):
             metadata = _project_metadata(ROOT / "libraries" / package / "pyproject.toml")
             provider_contract = _dependency(
                 metadata["project"]["dependencies"],
                 "our-ark-provider-kit",
             )
-            self.assertEqual(provider_contract, core_contract, package)
+            self.assertNotIn("@", provider_contract, package)
+            self.assertNotIn("git+", provider_contract, package)
+
+    def test_only_genesis_manifest_and_root_project_pin_library_commits(self) -> None:
+        for path in sorted((ROOT / "libraries").glob("*/pyproject.toml")):
+            with self.subTest(library=path.parent.name):
+                self.assertNotRegex(path.read_text(encoding="utf-8"), r"@[0-9a-fA-F]{40}")
+
+        from enoch.library_pins import read_pins
+
+        pins = read_pins(ROOT)
+        libraries = sorted(path.name for path in (ROOT / "libraries").iterdir() if path.is_dir())
+        self.assertEqual(sorted({pin.library for pin in pins}), libraries)
+        self.assertEqual(
+            {pin.path for pin in pins},
+            {"genesis.toml", "pyproject.toml"},
+        )
+        # Every library is re-pinned together, to one main commit.
+        self.assertEqual(len({pin.revision for pin in pins}), 1, pins)
+
+    def test_every_pinned_library_resolves_from_the_checkout(self) -> None:
+        manifest = _project_metadata(ROOT / "genesis.toml")
+        for dependency in manifest["runtime_dependencies"]:
+            if "#subdirectory=libraries/" not in dependency["requirement"]:
+                continue
+            with self.subTest(dependency=dependency["name"]):
+                library = dependency["requirement"].rsplit("libraries/", 1)[1]
+                self.assertEqual(dependency["local_source"], f"libraries/{library}/src")
+                self.assertTrue((ROOT / dependency["local_source"]).is_dir())
 
     def test_service_provider_install_and_descent_pins_match(self) -> None:
         project = _project_metadata(ROOT / "pyproject.toml")["project"]
@@ -295,7 +329,11 @@ def _project_metadata(path: Path) -> dict:
 
 
 def _dependency(dependencies: list[str], name: str) -> str:
-    matches = [dependency for dependency in dependencies if dependency.split()[0] == name]
+    matches = [
+        dependency
+        for dependency in dependencies
+        if re.match(r"[A-Za-z0-9][A-Za-z0-9._-]*", dependency).group(0) == name
+    ]
     if len(matches) != 1:
         raise AssertionError(f"Expected exactly one {name} dependency, found {matches}")
     return matches[0]

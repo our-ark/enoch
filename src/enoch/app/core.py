@@ -287,12 +287,15 @@ from enoch.providers.contracts import (
     OutboundAttachment,
     RepositoryProvider,
     RepositoryProviderError,
+    RepositoryRevision,
+    ReviewCloseRequest,
     ReviewIdentity,
     ReviewLandRequest,
     ReviewLandResult,
     ReviewProvider,
     ReviewProviderError,
     ReviewRecord,
+    ReviewSubmission,
     RuntimeExecutionControl,
     normalize_message_id,
 )
@@ -370,6 +373,19 @@ from enoch.app.auto_update import (
     mark_update_pending,
     take_restart_note,
     update_failed_alert,
+)
+from enoch.library_pins import resolve_commit
+from enoch.app.library_repin import (
+    REPIN,
+    clear_library_repin_pending,
+    failed_message as library_repin_failed_message,
+    is_repin_review_title,
+    load_library_repin_state,
+    mark_library_repin_pending,
+    opened_message as library_repin_opened_message,
+    plan_library_repin,
+    remote_branch_exists,
+    repin_workspace,
 )
 from enoch.app.restarts import (
     RESTART_MODES,
@@ -956,6 +972,9 @@ class EnochApplication:
             # Merges first: a landed or stopped merge releases the task queue
             # hold in the same cycle ("land before next").
             self.pending_merges.tick()
+            # A merge that changed libraries/ gets its re-pin PR before the
+            # automatic update restarts the daemon.
+            self._maybe_run_library_repin()
             # A merge that just landed updates the daemon before new work starts.
             self._maybe_run_auto_update()
             self._maybe_start_task_worker()
@@ -6365,6 +6384,182 @@ class EnochApplication:
         self._reconcile_lineage_adoptions()
         if landed is not None:
             self._mark_update_pending(landed)
+            self._mark_library_repin_pending(landed)
+
+    # Library re-pin after a requested merge ---------------------------------
+
+    def _mark_library_repin_pending(self, landed: LandedReview) -> None:
+        """Check the library pins once ``landed`` is on the authoritative branch.
+
+        Never raises: the merge already happened. Whether a re-pin is needed is
+        decided later from the branch itself, so a pin-only merge is harmless.
+        """
+
+        try:
+            if not self._lands_on_authoritative_branch(landed):
+                return
+            mark_library_repin_pending(
+                landed.label,
+                datetime.now().astimezone().isoformat(timespec="seconds"),
+                self.root,
+            )
+        except StaleDaemonEpoch:
+            raise
+        except Exception as error:  # noqa: BLE001 - the merge already happened
+            _record_system_event(
+                "library_repin_mark_failed",
+                self.root,
+                status="failed",
+                details={"review": landed.url or landed.label, "error": str(error)},
+            )
+
+    def _maybe_run_library_repin(self) -> None:
+        """Open the one library re-pin PR a landed merge needs. Never raises."""
+
+        try:
+            pending = load_library_repin_state(self.root).pending
+        except Exception:  # noqa: BLE001 - unreadable state never blocks work
+            return
+        if not pending or self._stopping:
+            return
+        try:
+            self._run_library_repin(pending)
+        except StaleDaemonEpoch:
+            # The daemon that owns the epoch now picks the flag up.
+            raise
+        except Exception as error:  # noqa: BLE001 - polling must continue
+            _record_system_event(
+                "library_repin_failed",
+                self.root,
+                status="failed",
+                details={"after": list(pending), "error": str(error)},
+            )
+        try:
+            clear_library_repin_pending(pending, self.root)
+        except Exception:  # noqa: BLE001 - the next merge marks it again
+            pass
+
+    def _run_library_repin(self, pending: tuple[str, ...]) -> None:
+        remote = self._authoritative_remote_name()
+        base_branch = self._authoritative_branch_name()
+        plan = plan_library_repin(
+            self.root,
+            remote=remote,
+            base_branch=base_branch,
+            repository=self._authoritative_repository(),
+        )
+        _record_system_event(
+            "library_repin_checked",
+            self.root,
+            details={
+                "after": list(pending),
+                "action": plan.action,
+                "revision": plan.revision,
+                "libraries": list(plan.libraries),
+                "reason": plan.reason,
+            },
+        )
+        if plan.action != REPIN:
+            return
+        if remote_branch_exists(self.root, remote, plan.branch):
+            _record_system_event(
+                "library_repin_skipped",
+                self.root,
+                details={"revision": plan.revision, "reason": "branch-exists", "branch": plan.branch},
+            )
+            return
+        try:
+            with repin_workspace(self.root, plan) as workspace:
+                commit = resolve_commit(workspace, "HEAD")
+                review = self.effect_fence.run_authorized(
+                    "forge.publish-review",
+                    ("forge.review",),
+                    self.review.publish_review,
+                    ReviewSubmission(
+                        title=plan.title,
+                        body=plan.review_body(),
+                        revision=RepositoryRevision(id=commit),
+                        base_revision=RepositoryRevision(id=plan.revision),
+                        metadata={"base_name": base_branch},
+                    ),
+                    root=workspace,
+                )
+        except StaleDaemonEpoch:
+            raise
+        except Exception as error:  # noqa: BLE001 - reported to the human below
+            _record_system_event(
+                "library_repin_failed",
+                self.root,
+                status="failed",
+                details={"revision": plan.revision, "error": str(error)},
+            )
+            self._send_auto_update_alert(library_repin_failed_message(self.display_name, error))
+            return
+        url = review.identity.url
+        if review.state != "open" or not url:
+            error = f"the forge did not open a review (state {review.state})"
+            _record_system_event(
+                "library_repin_failed",
+                self.root,
+                status="failed",
+                details={"revision": plan.revision, "error": error},
+            )
+            self._send_auto_update_alert(library_repin_failed_message(self.display_name, error))
+            return
+        _record_system_event(
+            "library_repin_opened",
+            self.root,
+            details={"revision": plan.revision, "review": url, "libraries": list(plan.libraries)},
+        )
+        self._close_superseded_repins(url)
+        message = library_repin_opened_message(self.display_name, plan, _review_label(url))
+        if pr_auto_merge_enabled(self.root):
+            message = f"{message}\n{self._auto_merge_url(_allowed_conversation_id(self.client), url)}"
+        else:
+            _repository, number = parse_review_url(url)
+            message = (
+                f"{message} Merge it with {self.command_prefix}pr merge {number or url}."
+            )
+        self._send_auto_update_alert(message)
+
+    def _close_superseded_repins(self, url: str) -> None:
+        """Close older open re-pin reviews; the new one pins a newer main commit."""
+
+        try:
+            self.authorization.require("forge.list", ("forge.inspect",))
+            reviews = self.review.list_open_reviews(self.root)
+        except Exception as error:  # noqa: BLE001 - superseding is best effort
+            _record_system_event(
+                "library_repin_supersede_failed",
+                self.root,
+                status="failed",
+                details={"review": url, "error": str(error)},
+            )
+            return
+        for record in reviews:
+            if record.identity.url == url or not is_repin_review_title(record.title):
+                continue
+            try:
+                self.effect_fence.run_authorized(
+                    "forge.close-review",
+                    ("forge.close",),
+                    self.review.close_review,
+                    ReviewCloseRequest(
+                        review=record.identity,
+                        note=f"Superseded by {url}, which re-pins to a newer main commit.",
+                    ),
+                    root=self.root,
+                )
+                self.pending_merges.discard(record)
+            except StaleDaemonEpoch:
+                raise
+            except Exception as error:  # noqa: BLE001 - superseding is best effort
+                _record_system_event(
+                    "library_repin_supersede_failed",
+                    self.root,
+                    status="failed",
+                    details={"review": record.identity.url or record.identity.id, "error": str(error)},
+                )
 
     # Automatic update after a requested merge ------------------------------
 
@@ -6653,12 +6848,20 @@ class EnochApplication:
         requested = f"{job.text}\n{job.context}"
         return tuple(url for url in job.review_urls if url not in requested)
 
+    def _authoritative_remote_name(self) -> str:
+        """Name of the authoritative Git remote; ``origin`` unless configured."""
+
+        try:
+            provider = load_provider("vcs", self.root)
+        except Exception:  # noqa: BLE001 - the default remote is the safe guess
+            return "origin"
+        return str(getattr(provider, "remote", "") or "origin")
+
     def _authoritative_repository(self) -> str:
         """``owner/name`` of the authoritative remote, or empty when unknown."""
 
         try:
-            provider = load_provider("vcs", self.root)
-            remote = str(getattr(provider, "remote", "") or "origin")
+            remote = self._authoritative_remote_name()
             result = run_git(["remote", "get-url", remote], self.root)
         except Exception:  # noqa: BLE001 - unknown means never auto-merge
             return ""
@@ -6735,9 +6938,31 @@ class EnochApplication:
     def _auto_merge_review(self, job: TaskJob, url: str) -> str:
         """Run /pr merge for ``url`` on behalf of the policy, pinned to its current head."""
 
+        return self._auto_merge_url(
+            job.chat_id,
+            url,
+            task_id=job.id,
+            policy=job.merge_policy or "setting",
+        )
+
+    def _auto_merge_url(
+        self,
+        chat_id: ConversationId | None,
+        url: str,
+        *,
+        task_id: int = 0,
+        policy: str = "setting",
+    ) -> str:
+        """Merge ``url`` for the auto-merge policy, or register it until it is ready.
+
+        ``task_id`` is the Enoch task that published the review, or 0 for a
+        review Enoch opened itself (the library re-pin); only a task's pending
+        merge holds the task queue.
+        """
+
         label = _review_label(url)
         allowed_chat_id = _allowed_conversation_id(self.client)
-        if allowed_chat_id is None or allowed_chat_id != job.chat_id:
+        if allowed_chat_id is None or chat_id is None or allowed_chat_id != chat_id:
             return (
                 f"Not merging {label} automatically: merges are only requested from "
                 f"{self.display_name}'s locked conversation."
@@ -6749,15 +6974,15 @@ class EnochApplication:
                 self.pending_merges.discard(current)
                 self._after_requested_merge()
                 return f"{label} is already merged."
-            plan = self.pending_merges.plan(job.chat_id, current, task_id=job.id)
+            plan = self.pending_merges.plan(chat_id, current, task_id=task_id)
             _record_system_event(
                 "pr_auto_merge_requested",
                 self.root,
                 details={
-                    "task_id": job.id,
+                    "task_id": task_id,
                     "review": url,
                     "head": current.versions[-1].revision.id if current.versions else "",
-                    "policy": job.merge_policy or "setting",
+                    "policy": policy,
                     "action": plan.action,
                 },
             )
@@ -6765,7 +6990,7 @@ class EnochApplication:
                 hold = self._land_hold()
                 waits = (
                     " The next queued task waits for it to land."
-                    if hold is not None and hold.task_id == job.id
+                    if task_id and hold is not None and hold.task_id == task_id
                     else ""
                 )
                 return f"Auto-merge: {plan.message}{waits}"

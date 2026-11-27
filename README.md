@@ -511,11 +511,18 @@ the inherited body. Enoch's Telegram, Telegram vision, and GitHub integrations
 use this model: descendants inherit provider contracts, configuration, and core
 behavior, while `genesis.toml` keeps immutable dependencies on selected provider
 commits instead of copying concrete integrations into every descendant body.
+`genesis.toml` and the root `pyproject.toml` are the only files that pin those
+commits; libraries depend on each other by name. Pull requests never edit pin
+lines. After a merge that changes `libraries/`, Enoch opens one PR that
+re-pins every library to that main commit. See
+[`docs/testing.md`](docs/testing.md#library-pins).
 
 Development CI also creates two full-body generations using an immutable
 Genesis revision. This catches dependency declarations that work with the
 checkout's local libraries but fail after those libraries are excluded from a
-descendant. The `recursive-descent-evidence` CI artifact records both birth
+descendant. When a PR changes `libraries/`, CI installs those libraries from
+the checkout under test. The follow-up re-pin PR then verifies descent from
+the real pins. The `recursive-descent-evidence` CI artifact records both birth
 gates per generation, exact revisions, raw validation output, and test skips.
 Passing the normal core suite alone is not this recursive compatibility check.
 
