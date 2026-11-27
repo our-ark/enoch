@@ -6184,6 +6184,7 @@ class EnochApplication:
         try:
             self._run_library_repin(pending)
         except StaleDaemonEpoch:
+            # The daemon that owns the epoch now picks the flag up.
             raise
         except Exception as error:  # noqa: BLE001 - polling must continue
             _record_system_event(
@@ -6192,11 +6193,10 @@ class EnochApplication:
                 status="failed",
                 details={"after": list(pending), "error": str(error)},
             )
-        finally:
-            try:
-                clear_library_repin_pending(pending, self.root)
-            except Exception:  # noqa: BLE001 - the next merge marks it again
-                pass
+        try:
+            clear_library_repin_pending(pending, self.root)
+        except Exception:  # noqa: BLE001 - the next merge marks it again
+            pass
 
     def _run_library_repin(self, pending: tuple[str, ...]) -> None:
         remote = self._authoritative_remote_name()
