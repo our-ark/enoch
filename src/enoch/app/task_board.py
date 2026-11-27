@@ -208,6 +208,7 @@ def render_task_board(
     backlog: Iterable[BacklogItem] = (),
     quota_line: str = "",
     held_by: str = "",
+    usage_line: str = "",
 ) -> RenderedTaskBoard:
     """Render the board text and a digest of everything except the footer.
 
@@ -219,7 +220,9 @@ def render_task_board(
     line lists them. ``backlog`` holds the pending backlog items; when there
     are any, one ``Up next:`` line previews them in promotion order.
     ``quota_line`` (see :func:`render_quota_line`) is shown last, just above
-    the footer, when it is non-empty. ``held_by`` names the review (``#91``)
+    the footer, when it is non-empty. ``usage_line`` (today's token usage,
+    already rounded by the caller so the digest stays stable) sits just
+    above the quota line. ``held_by`` names the review (``#91``)
     whose pending merge holds queued tasks; the Queued heading then says so.
     """
 
@@ -234,6 +237,7 @@ def render_task_board(
         backlog=promotion_order(backlog),
         quota_line=quota_line,
         held_by=held_by,
+        usage_line=usage_line,
     )
     digest = hashlib.sha256(body.encode("utf-8")).hexdigest()
     return RenderedTaskBoard(text=f"{body}\n\n{footer}", digest=digest)
@@ -250,6 +254,7 @@ def _render_body(
     backlog: tuple[BacklogItem, ...] = (),
     quota_line: str = "",
     held_by: str = "",
+    usage_line: str = "",
 ) -> str:
     queued = (
         f"Queued (waiting for {held_by} to land)"
@@ -276,16 +281,22 @@ def _render_body(
     backlog_forms = _backlog_line_forms(backlog) or [""]
     review_forms = _open_review_line_forms(open_reviews) or [""]
     # The one-line summaries give way before any task item: first the backlog
-    # preview shrinks to a bare count, then the quota line is dropped, then
-    # the open-review line shrinks to a count and finally disappears.
-    candidates = [(review_forms[0], line, quota_line) for line in backlog_forms]
+    # preview shrinks to a bare count, then the usage line and then the quota
+    # line are dropped, then the open-review line shrinks to a count and
+    # finally disappears.
+    candidates = [(review_forms[0], line, usage_line, quota_line) for line in backlog_forms]
+    if usage_line:
+        candidates.append((review_forms[0], backlog_forms[-1], "", quota_line))
     if quota_line:
-        candidates.append((review_forms[0], backlog_forms[-1], ""))
-    candidates += [(line, backlog_forms[-1], "") for line in review_forms[1:]]
+        candidates.append((review_forms[0], backlog_forms[-1], "", ""))
+    candidates += [(line, backlog_forms[-1], "", "") for line in review_forms[1:]]
     if review_forms[0]:
-        candidates.append(("", backlog_forms[-1], ""))
-    for review_line, backlog_line, quota_line in candidates:
-        text = _join(title, sections, queue_command, review_line, backlog_line, quota_line)
+        candidates.append(("", backlog_forms[-1], "", ""))
+    for review_line, backlog_line, usage_line, quota_line in candidates:
+        text = _join(
+            title, sections, queue_command, review_line, backlog_line, quota_line,
+            usage_line=usage_line,
+        )
         if len(text) <= max_chars:
             break
     # Drop items from the longest section until the board fits, noting how
@@ -296,7 +307,10 @@ def _render_body(
             break
         candidate.shown.pop()
         candidate.hidden += 1
-        text = _join(title, sections, queue_command, review_line, backlog_line, quota_line)
+        text = _join(
+            title, sections, queue_command, review_line, backlog_line, quota_line,
+            usage_line=usage_line,
+        )
     if len(text) > max_chars:
         text = text[: max(0, max_chars - 1)].rstrip() + "…"
     return text
@@ -316,6 +330,8 @@ def _join(
     review_line: str = "",
     backlog_line: str = "",
     quota_line: str = "",
+    *,
+    usage_line: str = "",
 ) -> str:
     lines = [title]
     for section in sections:
@@ -326,9 +342,11 @@ def _join(
         lines.extend(section.shown)
         if section.hidden:
             lines.append(f"- … {section.hidden} more (see {queue_command})")
-    # The open-review, backlog and quota lines share one trailing block above
-    # the footer.
-    trailing = [line for line in (review_line, backlog_line, quota_line) if line]
+    # The open-review, backlog, usage and quota lines share one trailing block
+    # above the footer.
+    trailing = [
+        line for line in (review_line, backlog_line, usage_line, quota_line) if line
+    ]
     if trailing:
         lines.extend(["", *trailing])
     return "\n".join(lines)

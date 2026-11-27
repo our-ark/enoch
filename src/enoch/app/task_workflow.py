@@ -11,6 +11,7 @@ from enoch.app.effects import DaemonEffectFence
 from enoch.app.execution_context import (
     CURRENT_TASK_ID,
     CURRENT_TASK_WORKER_ID,
+    CURRENT_USAGE_CATEGORY,
     CURRENT_WORK_STATUS,
 )
 from enoch.app.models import ForgeMaintenanceRequest, WorkOutcome, WorkStatusMessage
@@ -534,6 +535,9 @@ class TaskWorkflow:
         record_current_task_runtime_result(
             runtime_result, provider=app.runtime.name, root=app.root, workflow=app.workflow,
         )
+        record_usage = getattr(app, "_record_runtime_usage", None)
+        if callable(record_usage):
+            record_usage(runtime_result, CURRENT_USAGE_CATEGORY.get() or "task")
         app._capture_runtime_output(runtime_result)
         app._raise_if_current_task_cancelled()
         result = app._capture_task_regression_signals(runtime_result.final_text)
