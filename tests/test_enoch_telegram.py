@@ -1744,7 +1744,7 @@ class EnochTelegramTests(unittest.TestCase):
             "enoch.app.core._latest_direct_action_result_for_task",
             return_value="",
         ):
-            result = telegram._reconciled_retry_result(
+            result, reviews = telegram._reconciled_retry_result(
                 job,
                 ROOT,
                 review=review,
@@ -1752,6 +1752,7 @@ class EnochTelegramTests(unittest.TestCase):
 
         self.assertIn(f"Reconciled existing review {published.identity.id}", result)
         self.assertIn(published.identity.url, result)
+        self.assertEqual(reviews, (published.identity.url,))
 
     def test_task_retry_keeps_evolve_candidate_archived(self) -> None:
         with TemporaryDirectory() as temp:
@@ -1972,12 +1973,29 @@ class EnochTelegramTests(unittest.TestCase):
             _handle_update(bot, _message_update(chat_id=42, text="/task add queued work"))
             job = begin_next_task(root)
             assert job is not None
-            complete_task(job.id, root, result="Opened pull request: https://github.com/our-ark/enoch/pull/3")
+            complete_task(
+                job.id,
+                root,
+                result="Opened pull request: https://github.com/our-ark/enoch/pull/3",
+                review_urls=("https://github.com/our-ark/enoch/pull/3",),
+            )
+            _handle_update(bot, _message_update(chat_id=42, text="/task add check only"))
+            job = begin_next_task(root)
+            assert job is not None
+            complete_task(
+                job.id,
+                root,
+                result="Nothing to change; see https://github.com/our-ark/enoch/pull/3",
+            )
             _handle_update(bot, _message_update(update_id=2, chat_id=42, text="/queue"))
 
         reply = client.sent[-1][1]
-        self.assertIn("#1 [completed] add queued work", reply)
-        self.assertIn("Review: https://github.com/our-ark/enoch/pull/3", reply)
+        self.assertIn(
+            "#1 [completed] add queued work (Review: https://github.com/our-ark/enoch/pull/3)",
+            reply,
+        )
+        # A task that only mentions a PR gets no review.
+        self.assertIn("#2 [completed] add check only\n", reply)
 
     @patch("enoch.app.core.ensure_long_term_memory")
     @patch("enoch.app.core.log_conversation_turn")
@@ -4094,6 +4112,18 @@ class EnochTelegramTests(unittest.TestCase):
             _handle_update(bot, _message_update(chat_id=42, text="/task add queued work"))
             job = begin_next_task(root)
             assert job is not None
+            # An earlier worker, now gone, published the review before it stopped.
+            claim_running_task(job.id, "earlier-worker", 999_999, root)
+            record_task_publication(
+                job.id,
+                "earlier-worker",
+                TaskPublicationState(
+                    stage="review_published",
+                    review_url="https://github.com/our-ark/enoch/pull/3",
+                    review_published=True,
+                ),
+                root,
+            )
             result = "Opened pull request: https://github.com/our-ark/enoch/pull/3"
             record_task_result(job.id, result, root)
             job = task_queue_status(root).running

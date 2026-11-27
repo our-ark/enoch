@@ -5,6 +5,10 @@ registered with the pending-merge watcher (as if the human ran ``/pr merge``)
 when ``/pr auto-merge`` is on or the task says ``--merge=auto``. While such a
 merge is pending, only CI fix tasks start; the hold releases when the PR lands
 or its pending merge stops, is cancelled or times out.
+
+Only reviews a task published count: ones its publish stage recorded, or ones
+whose head is the tip of the task's own pushed branch. A review URL its result
+merely mentions is a reference and never starts any of this.
 """
 
 from __future__ import annotations
@@ -23,14 +27,16 @@ from enoch.app.core import (
     _repository_from_remote_url,
 )
 from enoch.app.auto_update import LandedReview
+from enoch.app.execution_context import CURRENT_TASK_WORKER_ID
 from enoch.app.merge_policy import (
     RequestOptionError,
     merge_policy_label,
     split_request_options,
     wants_auto_merge,
 )
-from enoch.app.pending_merges import load_pending_merges
+from enoch.app.pending_merges import load_ci_watches, load_pending_merges
 from enoch.app.presentation import format_compact_task_start, format_task_details
+from enoch.app.reporting import _format_task_list_item
 from enoch.app.task_board import render_task_board
 from enoch.commands import config_status, pr_usage
 from enoch.identity import load_identity
@@ -47,13 +53,27 @@ from enoch.tasks.queue import (
 )
 from our_ark_provider_kit import ReviewCheck
 from tests.test_enoch_application import _Chat, _Runtime
-from tests.test_enoch_pending_merges import START, URL, _Forge, _review
+from tests.test_enoch_pending_merges import START, URL, _Forge, _review, _status
 
 
 OTHER_URL = "https://github.com/our-ark/enoch/pull/92"
 FOREIGN_URL = "https://github.com/someone-else/project/pull/7"
+TASK_BRANCH = "enoch/example-task-branch"
 # The real worker starter, before setUp replaces it with a mock.
 _START_WORKER = EnochApplication._maybe_start_task_worker
+
+
+def _runs_on_branch(app: EnochApplication, task_id: int, reply: str, branch: str = TASK_BRANCH):
+    """A stand-in for ``_run_direct_work``: works on ``branch``, returns ``reply``."""
+
+    def run(*_args, **_kwargs):
+        recorded = app.workflow.record_workspace(
+            task_id, CURRENT_TASK_WORKER_ID.get(), app.root / "task-worktree", branch
+        )
+        assert recorded is not None
+        return reply
+
+    return run
 
 
 class RequestOptionTests(unittest.TestCase):
@@ -196,11 +216,21 @@ class LandBeforeNextTests(unittest.TestCase):
         app._compact_task_messages = lambda: True
         return app
 
-    def _completed(self, request: str, result: str, *, merge_policy: str = "", **options):
+    def _completed(
+        self,
+        request: str,
+        result: str,
+        *,
+        merge_policy: str = "",
+        published: tuple[str, ...] = (),
+        **options,
+    ):
+        """A finished task; ``published`` are the reviews it published itself."""
+
         job = enqueue_task("room-1", request, self.root, merge_policy=merge_policy, **options)
         started = begin_next_task(self.root)
         self.assertEqual(started.id, job.id)
-        return complete_task(job.id, self.root, result)
+        return complete_task(job.id, self.root, result, review_urls=published)
 
     def _pending_forge(self) -> _Forge:
         return _Forge(merge_state="UNSTABLE", checks=(ReviewCheck("CI / test", "pending"),))
@@ -211,7 +241,7 @@ class LandBeforeNextTests(unittest.TestCase):
         save_pr_auto_merge(True, self.root)
         forge = self._pending_forge()
         app = self._app(forge)
-        job = self._completed("build a feature", f"Opened {URL}")
+        job = self._completed("build a feature", f"Opened {URL}", published=(URL,))
 
         note = app._apply_merge_policy(job)
 
@@ -227,7 +257,7 @@ class LandBeforeNextTests(unittest.TestCase):
         save_pr_auto_merge(True, self.root)
         forge = _Forge(checks=(ReviewCheck("CI / test", "success"),))
         app = self._app(forge)
-        job = self._completed("build a feature", f"Opened {URL}")
+        job = self._completed("build a feature", f"Opened {URL}", published=(URL,))
 
         with patch.object(app, "_after_requested_merge") as after:
             note = app._apply_merge_policy(job)
@@ -242,7 +272,7 @@ class LandBeforeNextTests(unittest.TestCase):
     def test_policy_off_does_not_register(self) -> None:
         forge = self._pending_forge()
         app = self._app(forge)
-        job = self._completed("build a feature", f"Opened {URL}")
+        job = self._completed("build a feature", f"Opened {URL}", published=(URL,))
 
         self.assertEqual(app._apply_merge_policy(job), "")
         self.assertEqual(load_pending_merges(self.root), ())
@@ -250,7 +280,9 @@ class LandBeforeNextTests(unittest.TestCase):
     def test_merge_when_ready_override_merges_even_when_off(self) -> None:
         forge = self._pending_forge()
         app = self._app(forge)
-        job = self._completed("build a feature", f"Opened {URL}", merge_policy="auto")
+        job = self._completed(
+            "build a feature", f"Opened {URL}", published=(URL,), merge_policy="auto"
+        )
 
         app._apply_merge_policy(job)
 
@@ -261,7 +293,9 @@ class LandBeforeNextTests(unittest.TestCase):
         save_pr_auto_merge(True, self.root)
         forge = self._pending_forge()
         app = self._app(forge)
-        job = self._completed("build a feature", f"Opened {URL}", merge_policy="never")
+        job = self._completed(
+            "build a feature", f"Opened {URL}", published=(URL,), merge_policy="never"
+        )
 
         self.assertEqual(app._apply_merge_policy(job), "")
         self.assertEqual(load_pending_merges(self.root), ())
@@ -271,9 +305,14 @@ class LandBeforeNextTests(unittest.TestCase):
         forge = self._pending_forge()
         app = self._app(forge)
         none = self._completed("answer a question", "No changes needed.")
-        several = self._completed("split work", f"Opened {URL} and {OTHER_URL}")
-        foreign = self._completed("upstream fix", f"Opened {FOREIGN_URL}")
-        mentioned = self._completed(f"review {URL}", f"Looked at {URL}")
+        several = self._completed(
+            "split work", f"Opened {URL} and {OTHER_URL}", published=(URL, OTHER_URL)
+        )
+        foreign = self._completed(
+            "upstream fix", f"Opened {FOREIGN_URL}", published=(FOREIGN_URL,)
+        )
+        # Even an attributed review is skipped when the request named it.
+        mentioned = self._completed(f"review {URL}", f"Looked at {URL}", published=(URL,))
 
         self.assertIn("published no PR", app._apply_merge_policy(none))
         note = app._apply_merge_policy(several)
@@ -288,7 +327,11 @@ class LandBeforeNextTests(unittest.TestCase):
         save_pr_auto_merge(True, self.root)
         app = self._app(self._pending_forge())
         job = self._completed(
-            "fix CI", f"Pushed to {URL}", trigger=CI_REPAIR_TRIGGER, initiated_by="agent"
+            "fix CI",
+            f"Pushed to {URL}",
+            published=(URL,),
+            trigger=CI_REPAIR_TRIGGER,
+            initiated_by="agent",
         )
 
         self.assertEqual(app._apply_merge_policy(job), "")
@@ -301,13 +344,150 @@ class LandBeforeNextTests(unittest.TestCase):
         enqueue_task("room-1", "build a feature", self.root)
         job = begin_next_task(self.root)
 
-        with patch.object(app, "_run_direct_work", return_value=f"Opened {URL}"):
+        # The task opens PR #91 from its own branch, whose pushed tip is #91's head.
+        with patch.object(
+            app, "_run_direct_work", side_effect=_runs_on_branch(app, job.id, f"Opened {URL}")
+        ), patch.object(app, "_remote_branch_revision", return_value="head-91"):
             app._run_task_job(job)
 
         (entry,) = load_pending_merges(self.root)
         self.assertEqual(entry.task_id, job.id)
         final = chat.sent[-1][1]
         self.assertIn("Auto-merge: PR #91 isn't ready yet", final)
+
+    # Attribution: only reviews a task published are its reviews -----------
+
+    def _run(self, app: EnochApplication, reply: str, *, tip: str, merge_policy: str = ""):
+        """Run one queued task on its own branch, whose pushed tip is ``tip``."""
+
+        enqueue_task("room-1", "backlog step 2", self.root, merge_policy=merge_policy)
+        job = begin_next_task(self.root)
+        with patch.object(
+            app, "_run_direct_work", side_effect=_runs_on_branch(app, job.id, reply)
+        ), patch.object(app, "_remote_branch_revision", return_value=tip) as remote:
+            app._run_task_job(job)
+        if "/pull/" in reply:
+            remote.assert_called_with(TASK_BRANCH)
+        return app.workflow.find(job.id)
+
+    def _assert_not_attributed(self, app: EnochApplication, finished, forge: _Forge) -> None:
+        self.assertEqual(finished.status, "completed")
+        self.assertEqual(finished.review_urls, ())
+        self.assertEqual(load_pending_merges(self.root), ())
+        self.assertEqual(load_ci_watches(self.root), ())
+        self.assertIsNone(app._land_hold())
+        self.assertEqual(forge.merges, [])
+        self.assertNotIn("Review", _format_task_list_item(finished))
+        # A later human merge of that PR is not linked to this task either.
+        self.assertEqual(app._task_for_review(URL), 0)
+
+    def test_result_that_mentions_another_tasks_pr_is_not_attributed(self) -> None:
+        save_pr_auto_merge(True, self.root)
+        chat = _Chat()
+        forge = self._pending_forge()
+        app = self._app(forge, chat)
+
+        with patch("enoch.app.core._record_system_event") as events:
+            finished = self._run(
+                app,
+                f"Precondition not met; stopping without changes. See {URL}.",
+                tip="head-of-this-task",
+            )
+
+        self._assert_not_attributed(app, finished, forge)
+        final = chat.sent[-1][1]
+        self.assertIn(URL, final)  # still shown, as a plain reference
+        self.assertIn("Not merging automatically: task #1 published no PR", final)
+        self.assertNotIn("Auto-merge:", final)
+        recorded = [call.args[0] for call in events.call_args_list]
+        self.assertNotIn("pr_auto_merge_requested", recorded)
+        self.assertIn("task_review_references", recorded)
+
+    def test_mentioned_pr_is_not_attributed_when_ownership_cannot_be_checked(self) -> None:
+        save_pr_auto_merge(True, self.root)
+        for case in ("unknown remote tip", "no task branch"):
+            with self.subTest(case=case):
+                forge = self._pending_forge()
+                app = self._app(forge)
+                if case == "unknown remote tip":
+                    finished = self._run(app, f"See {URL}", tip="")
+                else:
+                    enqueue_task("room-1", "answer a question", self.root)
+                    job = begin_next_task(self.root)
+                    with patch.object(app, "_run_direct_work", return_value=f"See {URL}"):
+                        app._run_task_job(job)
+                    finished = app.workflow.find(job.id)
+
+                self._assert_not_attributed(app, finished, forge)
+                self.assertEqual(forge.inspect.call_count, 0)
+
+    def test_task_that_published_its_own_pr_is_still_auto_merged(self) -> None:
+        save_pr_auto_merge(True, self.root)
+        forge = self._pending_forge()
+        app = self._app(forge)
+
+        finished = self._run(app, f"Opened {URL}", tip="head-91")
+
+        self.assertEqual(finished.review_urls, (URL,))
+        (entry,) = load_pending_merges(self.root)
+        self.assertEqual((entry.number, entry.task_id), (91, finished.id))
+        self.assertEqual(entry.authorized_head_sha, "head-91")
+        self.assertEqual(app._land_hold().task_id, finished.id)
+        (watch,) = load_ci_watches(self.root)
+        self.assertEqual((watch.url, watch.task_id), (URL, finished.id))
+        self.assertIn(f"Review: {URL}", _format_task_list_item(finished))
+
+    def test_result_that_publishes_one_pr_and_mentions_another_counts_only_its_own(
+        self,
+    ) -> None:
+        save_pr_auto_merge(True, self.root)
+        forge = self._pending_forge()
+        other = _status(url=OTHER_URL, reference="92", number=92, head_sha="head-92")
+        forge.inspect.side_effect = lambda reference, root=None: (
+            other if reference == OTHER_URL else forge.status
+        )
+        app = self._app(forge)
+
+        finished = self._run(
+            app, f"Opened {URL}. It follows the approach of {OTHER_URL}.", tip="head-91"
+        )
+
+        self.assertEqual(finished.review_urls, (URL,))
+        (entry,) = load_pending_merges(self.root)
+        self.assertEqual((entry.number, entry.task_id), (91, finished.id))
+        self.assertEqual([watch.url for watch in load_ci_watches(self.root)], [URL])
+        self.assertEqual(app._task_for_review(OTHER_URL), 0)
+
+    def test_merge_auto_task_that_only_mentions_a_pr_does_not_merge(self) -> None:
+        # Policy off; only the task's own --merge=auto could merge, and it published nothing.
+        chat = _Chat()
+        forge = _Forge(checks=(ReviewCheck("CI / test", "success"),))
+        app = self._app(forge, chat)
+
+        finished = self._run(
+            app, f"Nothing to do; {URL} already covers it.", tip="head-of-this-task",
+            merge_policy="auto",
+        )
+
+        self._assert_not_attributed(app, finished, forge)
+        self.assertIn("published no PR", chat.sent[-1][1])
+
+    def test_remote_branch_revision_reads_only_the_exact_branch(self) -> None:
+        app = self._app(self._pending_forge())
+        listing = (
+            "1111111\trefs/heads/enoch/example-task-branch-2\n"
+            "2222222\trefs/heads/enoch/example-task-branch"
+        )
+        with patch("enoch.app.core.run_git") as run_git:
+            run_git.return_value = MagicMock(returncode=0, stdout=listing)
+            self.assertEqual(app._remote_branch_revision(TASK_BRANCH), "2222222")
+            command = run_git.call_args.args[0]
+            self.assertEqual(command[0], "ls-remote")
+            self.assertEqual(command[-1], f"refs/heads/{TASK_BRANCH}")
+            run_git.return_value = MagicMock(returncode=0, stdout="")
+            self.assertEqual(app._remote_branch_revision(TASK_BRANCH), "")
+            run_git.return_value = MagicMock(returncode=128, stdout="", stderr="no remote")
+            self.assertEqual(app._remote_branch_revision(TASK_BRANCH), "")
 
     # Overrides from typed commands ----------------------------------------
 
@@ -371,7 +551,9 @@ class LandBeforeNextTests(unittest.TestCase):
     def _held(self, chat: _Chat | None = None, forge: _Forge | None = None):
         forge = forge or self._pending_forge()
         app = self._app(forge, chat)
-        job = self._completed("build a feature", f"Opened {URL}", merge_policy="auto")
+        job = self._completed(
+            "build a feature", f"Opened {URL}", published=(URL,), merge_policy="auto"
+        )
         app._apply_merge_policy(job)
         self.assertIsNotNone(app._land_hold())
         return app, forge
@@ -423,7 +605,7 @@ class LandBeforeNextTests(unittest.TestCase):
 
     def test_no_hold_without_a_pending_merge(self) -> None:
         app = self._app(self._pending_forge())
-        job = self._completed("build a feature", f"Opened {URL}")
+        job = self._completed("build a feature", f"Opened {URL}", published=(URL,))
         app._watch_published_reviews(job)
         app._apply_merge_policy(job)  # policy off: no pending merge
         enqueue_task("room-1", "next feature", self.root)
@@ -434,7 +616,7 @@ class LandBeforeNextTests(unittest.TestCase):
 
     def test_human_pr_merge_of_a_task_pr_also_holds(self) -> None:
         app = self._app(self._pending_forge())
-        job = self._completed("build a feature", f"Opened {URL}")
+        job = self._completed("build a feature", f"Opened {URL}", published=(URL,))
 
         app._pr("room-1", "merge 91")
 

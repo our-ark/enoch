@@ -148,7 +148,7 @@ class MergeMarksUpdatePendingTests(_AutoUpdateTestCase):
         app = self.app()
         job = enqueue_task("room-1", "build it", self.root, merge_policy="auto")
         begin_next_task(self.root)
-        job = complete_task(job.id, self.root, f"Opened {URL}")
+        job = complete_task(job.id, self.root, f"Opened {URL}", review_urls=(URL,))
 
         app._apply_merge_policy(job)
 

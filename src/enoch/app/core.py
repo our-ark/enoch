@@ -363,6 +363,7 @@ from enoch.tasks.queue import (
     TaskQueueStatus,
     TaskAlreadyExists,
     TaskRetryError,
+    review_urls_in_text,
 )
 from enoch.app.auto_update import (
     LandedReview,
@@ -2546,6 +2547,7 @@ class EnochApplication:
         regression_signals: tuple[TaskRegressionSignal, ...] = ()
         pause_reason = ""
         pause_resets_at: datetime | None = None
+        published_reviews: tuple[str, ...] = ()
         try:
             self._authorize_task(job)
             outcome = _coerce_work_outcome(
@@ -2558,6 +2560,7 @@ class EnochApplication:
             )
             reply = outcome.message
             reply = self._capture_task_regression_signals(reply)
+            published_reviews = self._reviews_published_by(job, reply)
             if deadline.expired.is_set():
                 reply = _task_timeout_message(deadline.timeout_seconds)
                 completed_status = "failed"
@@ -2620,6 +2623,7 @@ class EnochApplication:
                     event_actor="agent",
                     trigger=trigger,
                     worker_id=worker_id,
+                    review_urls=published_reviews,
                 )
             elif completed_status == "failed":
                 failure = failure or classify_task_failure(reply)
@@ -2633,6 +2637,7 @@ class EnochApplication:
                     failure_code=failure.code,
                     failure_class=failure.failure_class,
                     retryable=False,
+                    review_urls=published_reviews,
                 )
             elif completed_status == "paused":
                 finished_job = self.workflow.pause(
@@ -2652,6 +2657,7 @@ class EnochApplication:
                     event_actor="agent",
                     trigger=trigger,
                     worker_id=worker_id,
+                    review_urls=published_reviews,
                 )
         authoritative_job = finished_job or self.workflow.find(job.id)
         if authoritative_job is None or authoritative_job.status != completed_status:
@@ -2857,6 +2863,7 @@ class EnochApplication:
         failure_code: str = "",
         failure_class: str = "",
         retryable: bool = False,
+        review_urls: tuple[str, ...] = (),
     ) -> TaskJob | None:
         recorded = self.workflow.record_terminal_evidence(
             task_id,
@@ -2867,6 +2874,7 @@ class EnochApplication:
                 failure_code=failure_code,
                 failure_class=failure_class,
                 retryable=retryable,
+                review_urls=review_urls,
             ),
         )
         if recorded is None:
@@ -3873,14 +3881,20 @@ class EnochApplication:
     def _retry_task(self, task_id: int) -> str:
         original = self.workflow.find(task_id)
         try:
-            reconciled_result = (
+            reconciled_result, reconciled_reviews = (
                 _reconciled_retry_result(original, self.root, review=self.review)
                 if original is not None
-                else ""
+                else ("", ())
             )
             job = self.workflow.retry_failed(
                 task_id,
                 reconciled_result=reconciled_result,
+                # Only when there are some, so engines without the option work.
+                **(
+                    {"reconciled_review_urls": reconciled_reviews}
+                    if reconciled_reviews
+                    else {}
+                ),
             )
         except (OSError, ReviewProviderError, TaskRetryError) as error:
             return f"{self.display_name} could not retry task #{task_id}: {error}"
@@ -4191,12 +4205,13 @@ class EnochApplication:
         return job.status if job is not None else None
 
     def _watch_published_reviews(self, job: TaskJob) -> None:
-        """Watch CI on reviews a completed task published (never merged without a request)."""
+        """Watch CI on reviews a completed task published (never merged without a request).
 
-        requested = f"{job.text}\n{job.context}"
-        for url in job.review_urls:
-            if url in requested:
-                continue  # a review the task was asked about, not one it published
+        Only reviews attributed to the task count: a review URL its result
+        merely mentions is never on ``job.review_urls``.
+        """
+
+        for url in self._published_reviews(job):
             try:
                 self.pending_merges.watch_review(job.chat_id, url, job.id)
             except Exception as error:  # noqa: BLE001 - watching must not fail the task
@@ -5592,6 +5607,9 @@ class EnochApplication:
         regression_signals: tuple[TaskRegressionSignal, ...] = ()
         pause_reason = ""
         pause_resets_at: datetime | None = None
+        # Reviews this run published itself; review URLs its result only
+        # mentions stay references (see _reviews_published_by).
+        published_reviews: tuple[str, ...] = ()
         try:
             self._authorize_task(job)
             if job.result and job.review_urls and job.review_published:
@@ -5627,6 +5645,7 @@ class EnochApplication:
                 )
             reply = outcome.message
             reply = self._capture_task_regression_signals(reply)
+            published_reviews = self._reviews_published_by(job, reply)
             if deadline.expired.is_set():
                 reply = _task_timeout_message(deadline.timeout_seconds)
                 completed_status = "failed"
@@ -5722,6 +5741,7 @@ class EnochApplication:
                     event_actor="system",
                     trigger="task-runner-cancelled",
                     worker_id=worker_id,
+                    review_urls=published_reviews,
                 )
             elif completed_status == "failed":
                 failure_actor = "system" if deadline.expired.is_set() or restart_failed else "agent"
@@ -5757,6 +5777,7 @@ class EnochApplication:
                         failure_code=failure.code,
                         failure_class=failure.failure_class,
                         retryable=restart_failed,
+                        review_urls=published_reviews,
                     )
             elif completed_status == "paused":
                 finished_job = self.workflow.pause(
@@ -5778,6 +5799,7 @@ class EnochApplication:
                     "completed",
                     result=reply,
                     worker_id=worker_id,
+                    review_urls=published_reviews,
                 )
         authoritative_job = finished_job or self.workflow.find(job.id)
         expected_status = "pending" if completed_status == "retrying" else completed_status
@@ -6848,6 +6870,90 @@ class EnochApplication:
         requested = f"{job.text}\n{job.context}"
         return tuple(url for url in job.review_urls if url not in requested)
 
+    def _reviews_published_by(self, job: TaskJob, result: str) -> tuple[str, ...]:
+        """Review URLs in a finished run's ``result`` that task ``job`` published.
+
+        Reviews from the task's publish stage are already on the job. A review
+        the task's runtime opened itself counts only when its head is the tip
+        of the task's own workspace branch on the authoritative remote. Any
+        other review URL in the result is only a reference: it is never stored
+        as the task's review, so it never starts the merge policy, CI watching,
+        CI fix tasks or the land-before-next hold. Never raises; a review that
+        cannot be verified stays a reference.
+        """
+
+        current = job
+        mentioned: tuple[str, ...] = ()
+        owned: tuple[str, ...] = ()
+        try:
+            current = self.workflow.find(job.id) or job
+            mentioned = tuple(
+                url for url in review_urls_in_text(result) if url not in current.review_urls
+            )
+            if mentioned:
+                owned = self._reviews_on_task_branch(current, mentioned)
+        except StaleDaemonEpoch:
+            raise
+        except Exception as error:  # noqa: BLE001 - unverified reviews stay references
+            _record_system_event(
+                "task_review_attribution_failed",
+                self.root,
+                status="failed",
+                details={"task_id": job.id, "error": str(error)},
+            )
+        references = [url for url in mentioned if url not in owned]
+        if references:
+            _record_system_event(
+                "task_review_references",
+                self.root,
+                details={
+                    "task_id": job.id,
+                    "workspace_id": current.workspace_id,
+                    "references": references,
+                },
+            )
+        return owned
+
+    def _reviews_on_task_branch(
+        self,
+        job: TaskJob,
+        urls: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        """The ``urls`` whose review head is the tip of ``job``'s pushed branch."""
+
+        if not job.workspace_id:
+            return ()
+        tip = self._remote_branch_revision(job.workspace_id)
+        if not tip:
+            return ()
+        self.authorization.require("forge.inspect", ("forge.inspect",))
+        owned = []
+        for url in urls:
+            try:
+                record = self.review.inspect_review(_review_identity(url), self.root)
+            except (ReviewProviderError, ForgeProviderError, ValueError):
+                continue
+            head = record.versions[-1].revision.id if record.versions else ""
+            if head == tip:
+                owned.append(url)
+        return tuple(owned)
+
+    def _remote_branch_revision(self, branch: str) -> str:
+        """Tip of ``branch`` on the authoritative remote, or empty when unknown."""
+
+        reference = f"refs/heads/{branch.strip()}"
+        result = run_git(
+            ["ls-remote", self._authoritative_remote_name(), reference],
+            self.root,
+        )
+        if result.returncode != 0:
+            return ""
+        for line in result.stdout.splitlines():
+            revision, _, name = line.partition("\t")
+            if name.strip() == reference:
+                return revision.strip()
+        return ""
+
     def _authoritative_remote_name(self) -> str:
         """Name of the authoritative Git remote; ``origin`` unless configured."""
 
@@ -7562,7 +7668,14 @@ def _reconciled_retry_result(
     root: Path,
     *,
     review: ReviewProvider,
-) -> str:
+) -> tuple[str, tuple[str, ...]]:
+    """Result text and confirmed reviews to carry into a retry of ``job``.
+
+    The reviews are ones the task published: its attributed reviews, or an
+    open review whose head is the task's own revision. Review URLs that the
+    prior result text merely mentions are not returned.
+    """
+
     logged_result = _latest_direct_action_result_for_task(job, root)
     prior_result = logged_result or job.result
     identities = []
@@ -7579,9 +7692,13 @@ def _reconciled_retry_result(
     for identity in identities:
         record = review.inspect_review(identity, root)
         if record.state in {"open", "published", "landed"}:
-            return prior_result or (
-                f"Reconciled existing review {record.identity.id}: "
-                f"{record.identity.url or record.identity.id}"
+            url = record.identity.url or identity.url
+            return (
+                prior_result or (
+                    f"Reconciled existing review {record.identity.id}: "
+                    f"{url or record.identity.id}"
+                ),
+                (url,) if url else (),
             )
     if job.revision_id:
         matching = [
@@ -7592,11 +7709,14 @@ def _reconciled_retry_result(
         if matching:
             record = matching[0]
             return (
-                f"Reconciled existing review {record.identity.id} for task "
-                f"revision {job.revision_id}: "
-                f"{record.identity.url or record.identity.id}"
+                (
+                    f"Reconciled existing review {record.identity.id} for task "
+                    f"revision {job.revision_id}: "
+                    f"{record.identity.url or record.identity.id}"
+                ),
+                (record.identity.url,) if record.identity.url else (),
             )
-    return ""
+    return "", ()
 
 
 def _workflow_reconciliation_details(
