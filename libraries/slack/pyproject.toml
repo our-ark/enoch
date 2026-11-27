@@ -5,7 +5,7 @@ description = "Agent-neutral Slack Socket Mode transport for Our Ark agents."
 license = "Apache-2.0"
 requires-python = ">=3.11"
 dependencies = [
-  "our-ark-provider-kit @ git+https://github.com/our-ark/enoch.git@0ca82e3e6de0365b337e450a0fae93b741c2f87f#subdirectory=libraries/provider-kit",
+  "our-ark-provider-kit>=0.9",
   "slack-sdk>=3.44,<4",
   "websocket-client>=1.8,<2",
 ]

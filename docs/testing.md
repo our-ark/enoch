@@ -48,6 +48,52 @@ multi-instance test runs two real Python processes with isolated local
 workflows and checks cross-instance state and epoch isolation. See
 [`multi-instance.md`](multi-instance.md) for deployment scope and limitations.
 
+## Library pins
+
+Enoch installs its `libraries/<name>` packages instead of inheriting them.
+`libraries/` is outside the Genesis `body_paths`, so descendants install
+pinned requirements of the form
+`our-ark-<name> @ git+https://github.com/our-ark/enoch.git@<commit>#subdirectory=libraries/<name>`.
+The pins make descent reproducible. The rules:
+
+- **One pin layer.** Only `genesis.toml` (`[[runtime_dependencies]].requirement`)
+  and the root `pyproject.toml` pin commits, and every library is pinned to the
+  same main commit. Libraries depend on each other by name only; the reference
+  providers declare `our-ark-provider-kit>=0.9`. pip resolves that name to the
+  pinned provider-kit URL listed next to them, both for `pip install
+  ".[reference]"` and for the `pip install --target` that Genesis and the
+  runtime use for descendants.
+- **Pull requests never edit pin lines**, including PRs that change a library.
+  The unit and library suites import the checkout's own `libraries/*/src`
+  (`local_source` wins in `enoch.runtime_dependencies`). The depth-2 descent
+  job runs `python -m enoch.library_pins ci-override` first. When any pinned
+  `libraries/<name>` tree differs from the checkout, it rewrites the pins to the
+  checkout's commit in a CI-only commit. It also exports `GIT_CONFIG_*`
+  variables that send the pin URL to the checkout, so descendants and the
+  fresh-environment install use the code under test. When every tree already
+  matches, as in the re-pin PR, CI installs the real pins unchanged. That job
+  then runs `verify-installed`, which checks that every library, provider-kit
+  included, was installed from exactly its pinned commit.
+- **Pins are re-pinned after merge.** When Enoch lands a review into main
+  (`/pr merge`, the pending-merge watcher, or `/pr auto-merge`), it checks the
+  pins at the new tip. If a `libraries/` tree changed, it opens one PR that
+  points every pin at that main commit, closes older re-pin PRs, and registers
+  the PR for merging when `/pr auto-merge` is on. A pin-only change leaves every
+  library tree unchanged, so landing the re-pin PR never opens another.
+  Repositories that do not host the pinned libraries, such as descendants,
+  never re-pin. This is an Enoch hook rather than a GitHub Actions job: PRs
+  opened with Actions' `GITHUB_TOKEN` trigger no CI, and Enoch's landing path
+  already keeps the branch current and applies `/pr auto-merge`.
+- **Pins stay on main.** The `Library pins are on main` job runs
+  `python -m enoch.library_pins check-ancestors`. It fails when a pinned commit
+  is not an ancestor of the checked commit: main itself on push, or the merge
+  result on a pull request.
+
+For a merge Enoch did not land, such as one made in the GitHub UI, the next
+merge Enoch lands catches up. To re-pin by hand, run
+`python -m enoch.library_pins rewrite <main commit>`, or `status` to compare
+the pins with the code.
+
 ## Hermetic evolution E2E tests
 
 `tests/test_enoch_e2e.py` exercises the reference evolution stack with real
