@@ -619,6 +619,7 @@ class EnochExtensionTests(unittest.TestCase):
                     WORKFLOW_FEATURE_EXECUTION_LANES,
                     WORKFLOW_FEATURE_STRUCTURED_METADATA,
                     WORKFLOW_FEATURE_EXTENSION_RECOVERY,
+                    "completion_gates",
                 }
             ),
         )

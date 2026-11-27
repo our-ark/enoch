@@ -4,6 +4,7 @@ from enoch.tasks.recovery import (
     ExtensionRecoveryHook,
     ExtensionRecoverySnapshot,
 )
+from enoch.tasks.completion import COMPLETION_GATE_API_VERSION, CompletionGate, CompletionSnapshot, CompletionDecision, CompletionHook
 from enoch.extensions.contracts import (
     AGENT_EXTENSION_API_VERSION,
     EXTENSION_COMMAND_RESULT_API_VERSION,
@@ -52,6 +53,7 @@ from enoch.extensions.schedules import (
 
 
 __all__ = [
+    "COMPLETION_GATE_API_VERSION", "CompletionGate", "CompletionSnapshot", "CompletionDecision", "CompletionHook",
     "EXTENSION_RECOVERY_API_VERSION",
     "ExtensionRecoveryDecision",
     "ExtensionRecoveryHook",

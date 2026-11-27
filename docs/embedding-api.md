@@ -77,6 +77,7 @@ allow eligible CI-fix tasks, just like the daemon worker.
 - `paused`: a paused task holds the queue;
 - `busy`: the application's worker slot or workflow already has an owner;
 - `stopping`, `restart`, `update`, or `review`: an existing lifecycle hold.
+- `completion`: a completion gate is waiting and no child is runnable.
 
 An embedded call reserves the same worker slot as the background daemon, and
 releases it even if execution raises. A busy call does not replace the owner.

@@ -23,7 +23,7 @@ class EvolveCommandResult:
 
 
 PendingTaskStopReason = Literal[
-    "idle", "limit", "paused", "busy", "stopping", "restart", "update", "review",
+    "idle", "limit", "paused", "busy", "stopping", "restart", "update", "review", "completion",
 ]
 
 
