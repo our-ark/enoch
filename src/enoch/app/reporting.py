@@ -48,6 +48,8 @@ def _task_status_message(
         lines.append(f"- running: #{status.running.id} {_clip_activity_text(status.running.text, limit=80)}")
     lines.append(f"- queued: {status.pending_count}")
     lines.append(f"- paused: {status.paused_count}")
+    if status.awaiting:
+        lines.append(f"- awaiting completion: {len(status.awaiting)}")
     held = [job for job in status.paused if job.needs_attention]
     if held:
         lines.append("- needs operator attention (retry or cancel): " + ", ".join(f"#{job.id}" for job in held))
@@ -85,6 +87,17 @@ def _format_tasks_report(
         lines.append("- none")
 
     lines.append("")
+    if status.awaiting:
+        lines.append("Awaiting completion:")
+        tasks = {job.id: job for job in (*status.pending, *status.paused, *status.awaiting, *status.history)}
+        if status.running is not None:
+            tasks[status.running.id] = status.running
+        for job in status.awaiting:
+            gate = job.completion_gate
+            children = ", ".join(f"#{child} ({tasks[child].status if child in tasks else 'missing'})" for child in gate.child_task_ids) or "none"
+            evidence = ", ".join(name for name in gate.evidence_keys if name not in job.completion_evidence) or "none"
+            lines.extend([f"- {_format_task_list_item(job)}", f"  Children: {children}; missing evidence: {evidence}; deadline: {gate.deadline_at}"])
+        lines.append("")
     lines.append("Recent history:")
     if status.history:
         lines.extend(f"- {_format_task_list_item(job)}" for job in status.history[-10:])

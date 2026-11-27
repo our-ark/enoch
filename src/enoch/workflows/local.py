@@ -48,7 +48,13 @@ from enoch.tasks.queue import (
     task_worker_is_active,
     prepare_extension_recovery,
     apply_extension_recovery,
+    declare_completion_gate,
+    append_completion_evidence,
+    completion_snapshots,
+    completion_gate_met,
+    apply_completion_decision,
 )
+from enoch.tasks.completion import CompletionGate, CompletionHook, CompletionDecision, gate_time, invoke_completion_hook
 from enoch.tasks.recovery import ExtensionRecoveryHook, ExtensionRecoverySnapshot, invoke_recovery_hook
 from enoch.tasks.payloads import ExtensionArtifactReference, JsonValue
 from enoch.workflows.contracts import (
@@ -57,6 +63,7 @@ from enoch.workflows.contracts import (
     WORKFLOW_FEATURE_EXECUTION_LANES,
     WORKFLOW_FEATURE_STRUCTURED_METADATA,
     WORKFLOW_FEATURE_EXTENSION_RECOVERY,
+    WORKFLOW_FEATURE_COMPLETION_GATES,
     EnqueueMode,
     FinalTaskStatus,
 )
@@ -72,6 +79,7 @@ class LocalWorkflowEngine:
             WORKFLOW_FEATURE_EXECUTION_LANES,
             WORKFLOW_FEATURE_STRUCTURED_METADATA,
             WORKFLOW_FEATURE_EXTENSION_RECOVERY,
+            WORKFLOW_FEATURE_COMPLETION_GATES,
         }
     )
 
@@ -91,6 +99,62 @@ class LocalWorkflowEngine:
         self._worker_threads_lock = threading.Lock()
         self._recovery_hooks: dict[str, ExtensionRecoveryHook] = {}
         self._recovery_timeout = 5.0
+        self._completion_hooks: dict[str, CompletionHook] = {}
+        self._completion_timeout = 5.0
+        self._completion_lock = threading.Lock()
+
+    def configure_completion_gates(self, hooks: dict[str, CompletionHook], *, timeout_seconds: float = 5.0) -> None:
+        if not math.isfinite(timeout_seconds) or timeout_seconds <= 0 or any(not callable(h) for h in hooks.values()):
+            raise ValueError("Completion hooks require callable handlers and a positive finite timeout.")
+        self._completion_hooks = dict(hooks)
+        self._completion_timeout = timeout_seconds
+
+    def declare_completion_gate(self, task_id: int, owner: str, gate: CompletionGate) -> TaskJob:
+        if owner not in self._completion_hooks:
+            raise ValueError("Extension must register a completion confirmation hook first.")
+        with self._mutation():
+            return declare_completion_gate(task_id, owner, gate, self.root)
+
+    def record_completion_evidence(self, task_id: int, owner: str, name: str, reference: str) -> TaskJob:
+        with self._mutation():
+            job = append_completion_evidence(task_id, owner, name, reference, self.root)
+        self._evaluate_completion_gates()
+        return self.find(task_id) or job
+
+    def _evaluate_completion_gates(self) -> None:
+        if not self._completion_lock.acquire(blocking=False):
+            return
+        try:
+            with self._mutation():
+                snapshots = completion_snapshots(self.root)
+            attempted: set[int] = set()
+            # Terminal child gates may release ancestors in the same tick. Each
+            # owner is consulted at most once per tick, even if it extends a gate.
+            while snapshots:
+                changed = False
+                for snapshot in snapshots:
+                    if snapshot.task.id in attempted:
+                        continue
+                    expired = gate_time(snapshot.task.completion_gate.deadline_at) <= gate_time(self._clock())
+                    if expired:
+                        decision = CompletionDecision("fail", "Completion gate timed out.")
+                    elif completion_gate_met(snapshot):
+                        hook = self._completion_hooks.get(snapshot.extension_name)
+                        if hook is None:
+                            continue  # Missing extension after restart holds until its deadline.
+                        decision = invoke_completion_hook(hook, snapshot, self._completion_timeout)
+                    else:
+                        continue
+                    attempted.add(snapshot.task.id)
+                    with self._mutation():
+                        updated = apply_completion_decision(snapshot, decision, self.root, checked_at=self._clock())
+                    changed = changed or updated is not None
+                if not changed:
+                    break
+                with self._mutation():
+                    snapshots = completion_snapshots(self.root)
+        finally:
+            self._completion_lock.release()
 
     def configure_extension_recovery(
         self, hooks: dict[str, ExtensionRecoveryHook], *, timeout_seconds: float = 5.0,
@@ -180,6 +244,7 @@ class LocalWorkflowEngine:
         *,
         triggers: frozenset[str] | None = None,
     ) -> TaskJob | None:
+        self._evaluate_completion_gates()
         with self._mutation():
             if triggers is None:
                 return begin_next_task(self.root)
@@ -212,6 +277,14 @@ class LocalWorkflowEngine:
             return heartbeat_task(task_id, worker_id, self.root)
 
     def cancel(
+        self, task_id: int | None, *, result: str = "", event_actor: str = "human",
+        trigger: str = "/task cancel", worker_id: str = "",
+    ) -> TaskJob | None:
+        job = self._cancel_task(task_id, result=result, event_actor=event_actor, trigger=trigger, worker_id=worker_id)
+        self._evaluate_completion_gates()
+        return job
+
+    def _cancel_task(
         self,
         task_id: int | None,
         *,
@@ -241,6 +314,17 @@ class LocalWorkflowEngine:
             )
 
     def finalize(
+        self, task_id: int, status: FinalTaskStatus, *, result: str = "",
+        event_actor: str = "agent", trigger: str = "task-runner", worker_id: str = "",
+        failure_code: str = "", failure_class: str = "", retryable: bool = False,
+    ) -> TaskJob | None:
+        job = self._finalize_task(task_id, status, result=result, event_actor=event_actor,
+                                  trigger=trigger, worker_id=worker_id, failure_code=failure_code,
+                                  failure_class=failure_class, retryable=retryable)
+        self._evaluate_completion_gates()
+        return self.find(task_id) if job is not None else None
+
+    def _finalize_task(
         self,
         task_id: int,
         status: FinalTaskStatus,
@@ -288,6 +372,7 @@ class LocalWorkflowEngine:
 
     def recover(self) -> TaskJob | None:
         result = self._reconcile_with_recovery()
+        self._evaluate_completion_gates()
         if result.outcome not in {
             "terminal_repair",
             "interrupted_worker_recovery",
@@ -300,7 +385,9 @@ class LocalWorkflowEngine:
         self,
         request: TaskReconciliationRequest | None = None,
     ) -> TaskReconciliationResult:
-        return self._reconcile_with_recovery(request)
+        result = self._reconcile_with_recovery(request)
+        self._evaluate_completion_gates()
+        return result
 
     def _reconcile_with_recovery(
         self, request: TaskReconciliationRequest | None = None,
@@ -361,6 +448,7 @@ class LocalWorkflowEngine:
                 for job in [
                     *status.pending,
                     *status.paused,
+                    *status.awaiting,
                     *([status.running] if status.running is not None else []),
                     *status.history,
                 ]

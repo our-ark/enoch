@@ -14,6 +14,7 @@ from enoch.tasks.queue import (
 )
 from enoch.tasks.payloads import ExtensionArtifactReference, JsonValue
 from enoch.tasks.recovery import ExtensionRecoveryHook
+from enoch.tasks.completion import CompletionGate, CompletionHook
 
 
 WORKFLOW_API_VERSION = 4
@@ -21,12 +22,22 @@ WORKFLOW_FEATURE_STRUCTURED_METADATA = "structured_task_metadata"
 WORKFLOW_FEATURE_ARTIFACT_REFERENCES = "artifact_references"
 WORKFLOW_FEATURE_EXECUTION_LANES = "execution_lanes"
 WORKFLOW_FEATURE_EXTENSION_RECOVERY = "extension_recovery"
+WORKFLOW_FEATURE_COMPLETION_GATES = "completion_gates"
 EnqueueMode = Literal["queued", "front", "direct"]
 FinalTaskStatus = Literal["completed", "failed", "cancelled"]
 
 
 class WorkflowEngineError(RuntimeError):
     pass
+
+
+@runtime_checkable
+class CompletionGateWorkflow(Protocol):
+    """Optional completion gate contract; base workflow API v4 is unchanged."""
+
+    def configure_completion_gates(self, hooks: dict[str, CompletionHook], *, timeout_seconds: float = 5.0) -> None: ...
+    def declare_completion_gate(self, task_id: int, owner: str, gate: CompletionGate) -> TaskJob: ...
+    def record_completion_evidence(self, task_id: int, owner: str, name: str, reference: str) -> TaskJob: ...
 
 
 @runtime_checkable

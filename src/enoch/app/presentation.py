@@ -286,6 +286,11 @@ def format_task_details(job: TaskJob, *, task_label: str = "Task") -> str:
     ]
     if job.parent_task_id is not None:
         lines.append(f"Retry of: #{job.parent_task_id}")
+    if job.completion_gate is not None:
+        gate = job.completion_gate
+        lines.append("Completion children: " + (", ".join(f"#{child}" for child in gate.child_task_ids) or "none"))
+        lines.append("Missing evidence: " + (", ".join(name for name in gate.evidence_keys if name not in job.completion_evidence) or "none"))
+        lines.append(f"Completion deadline: {gate.deadline_at}")
     merge = merge_policy_label(job.merge_policy)
     if merge:
         lines.append(f"Merge: {merge}")

@@ -97,6 +97,7 @@ from enoch.embedding import (
     PendingTaskExecutionResult,
     PendingTaskStopReason,
 )
+from enoch.workflows import WORKFLOW_FEATURE_COMPLETION_GATES
 from enoch.evolution.core import (
     MODE_AUTO_EVOLVE,
     MODE_DISABLED,
@@ -748,6 +749,16 @@ class EnochApplication:
             if not callable(configure) or WORKFLOW_FEATURE_EXTENSION_RECOVERY not in workflow_features(self.workflow):
                 raise ValueError("Selected workflow engine does not support extension recovery.")
             configure(recovery_hooks)
+        completion_hooks = {
+            extension.name: extension.lifecycle.on_task_completion
+            for extension in self.extensions if extension.lifecycle.on_task_completion is not None
+        }
+        if completion_hooks:
+            configure = getattr(self.workflow, "configure_completion_gates", None)
+            if not callable(configure) or WORKFLOW_FEATURE_COMPLETION_GATES not in workflow_features(self.workflow):
+                raise ValueError("Selected workflow engine does not support completion gates.")
+            configure(completion_hooks)
+        self._announced_completion_gates: set[int] = set()
         self.runtime_access = RuntimeAccessResumer(
             root,
             paused_tasks=lambda: tuple(job for job in self.workflow.inspect().paused
@@ -967,6 +978,7 @@ class EnochApplication:
         self._run_extension_hooks("before_run")
         try:
             recovered = self._reconcile_workflow()
+            self._announce_completed_gates()
             _cleanup_completed_task_worktree(recovered, self.root)
             self.effect_fence.authorize(
                 "chat.receive",
@@ -1059,10 +1071,13 @@ class EnochApplication:
             # Reserve the existing worker slot, not a second queue owner.
             self._task_worker = owner
         try:
-            return self._drain_pending_tasks(
+            result = self._drain_pending_tasks(
                 max_tasks=max_tasks, promote_backlog=promote_backlog,
                 reconcile_schedules=reconcile_schedules,
             )
+            self._announce_completed_gates()
+            self._drain_extension_task_events()
+            return result
         finally:
             with self._task_worker_lock:
                 if self._task_worker is owner:
@@ -2334,6 +2349,8 @@ class EnochApplication:
         queue_status = self.workflow.inspect()
         if any(job.needs_attention for job in queue_status.paused):
             return self._recovery_hold_message(queue_status.paused)
+        if queue_status.awaiting:
+            return "A task is awaiting completion; use /task to queue work while its declared children finish."
         if self.restarts.pending:
             return (
                 f"{self.display_name} is waiting to restart. "
@@ -2492,6 +2509,8 @@ class EnochApplication:
         paused_status = self.workflow.inspect()
         if any(job.needs_attention for job in paused_status.paused):
             return self._recovery_hold_message(paused_status.paused)
+        if paused_status.awaiting:
+            return "A task is awaiting completion; use /task to queue work while its declared children finish."
         if paused_status.paused_count:
             return (
                 f"{self.display_name} has tasks paused for agent runtime access; they resume "
@@ -5161,9 +5180,10 @@ class EnochApplication:
                 if self._promote_next_backlog_if_idle() is not None:
                     job = self.workflow.start_next()
             if job is None:
-                reason = "idle"
+                reason = "completion" if self.workflow.inspect().awaiting else "idle"
                 break
             self._run_task_job(job)
+            self._announce_completed_gates()
             self.effect_fence.require_current()
             task_ids.append(job.id)
             if reconcile_schedules:
@@ -5179,7 +5199,7 @@ class EnochApplication:
 
     def _promote_next_backlog_if_idle(self) -> TaskJob | None:
         status = self.workflow.inspect()
-        if status.running is not None or status.pending_count > 0 or status.paused_count > 0:
+        if status.running is not None or status.pending_count > 0 or status.paused_count > 0 or status.awaiting:
             return None
         item = next_backlog_item(self.root)
         if item is None:
@@ -5300,7 +5320,7 @@ class EnochApplication:
         if cron.last_task_id is None:
             return False
         task = self.workflow.find(cron.last_task_id)
-        return task is not None and task.status in {"pending", "running", "paused"}
+        return task is not None and task.status in {"pending", "running", "paused", "awaiting_completion"}
 
     def _enqueue_due_extension_schedules(self) -> tuple[TaskJob, ...]:
         claimed = tuple(
@@ -5408,7 +5428,7 @@ class EnochApplication:
         if schedule.last_task_id is None:
             return False
         task = self.workflow.find(schedule.last_task_id)
-        return task is not None and task.status in {"pending", "running", "paused"}
+        return task is not None and task.status in {"pending", "running", "paused", "awaiting_completion"}
 
     def _scan_evidence_sources(
         self,
@@ -5822,6 +5842,12 @@ class EnochApplication:
                 )
         authoritative_job = finished_job or self.workflow.find(job.id)
         expected_status = "pending" if completed_status == "retrying" else completed_status
+        if authoritative_job is not None and authoritative_job.status == "awaiting_completion":
+            self._safe_send_message_id(
+                job.chat_id, f"Task #{job.id}: awaiting completion.\n" + _format_task_details(authoritative_job),
+                notification_key=f"task:{job.id}:awaiting-completion", thread_id=job.thread_id,
+            )
+            return
         if authoritative_job is None or authoritative_job.status != expected_status:
             return
         self._apply_task_regression_signals(
@@ -5921,6 +5947,25 @@ class EnochApplication:
         )
         if command == "/do":
             self._maybe_start_task_worker()
+
+    def _announce_completed_gates(self) -> None:
+        for job in self.workflow.inspect().history:
+            if not job.terminal_evidence_source.startswith("completion-gate:") or job.id in self._announced_completion_gates:
+                continue
+            if job.result_message_id is not None:
+                self._announced_completion_gates.add(job.id)
+                continue
+            if job.status == "completed":
+                self.effect_fence.run(_cleanup_completed_task_worktree, job, self.root)
+                self._watch_published_reviews(job)
+                self._apply_merge_policy_safely(job)
+            message_id = self._safe_send_message_id(
+                job.chat_id, self._format_task_final(job, job.status, job.result, compact=self._compact_task_messages()),
+                notification_key=f"task:{job.id}:final", thread_id=job.thread_id,
+            )
+            if message_id is not None:
+                self.workflow.record_result_message(job.id, message_id)
+                self._announced_completion_gates.add(job.id)
 
     def _current_task_cancellation_event(self) -> threading.Event | None:
         task_id = _CURRENT_TASK_ID.get()
@@ -6225,6 +6270,7 @@ class EnochApplication:
                 status.running,
                 *status.pending,
                 *status.paused,
+                *status.awaiting,
                 *status.history,
             )
             if job is not None
@@ -8223,7 +8269,7 @@ def _tasks_for_worktree(
     state: TaskWorktreeState,
     status: TaskQueueStatus,
 ) -> tuple[TaskJob, ...]:
-    jobs = [*status.pending, *status.paused, *status.history]
+    jobs = [*status.pending, *status.paused, *status.awaiting, *status.history]
     if status.running is not None:
         jobs.append(status.running)
     state_path = state.path.resolve()
@@ -8247,7 +8293,7 @@ def _active_tasks_for_worktree(
     return tuple(
         job
         for job in _tasks_for_worktree(state, status)
-        if job.status in {"pending", "running", "paused", "retrying"}
+        if job.status in {"pending", "running", "paused", "retrying", "awaiting_completion"}
     )
 
 

@@ -390,6 +390,15 @@ Command names must be globally unique across Enoch core commands, the active
 profile, and every loaded extension. Invalid or conflicting selections fail at
 startup so `/help` remains authoritative.
 
+### Completion gates
+
+Register `on_task_completion` and use the namespaced workflow's
+`declare_completion_gate()` and `record_completion_evidence()` methods to keep
+a worker-finished task nonterminal until children and evidence are ready. The
+engine retains finalization authority and blocks unrelated admission while
+allowing declared children. See [Task completion gates](completion-gates.md)
+for public types, deadlines, restart behavior, and cancellation rules.
+
 ### Interrupted-task recovery
 
 `ExtensionLifecycleHooks.on_task_recovery(snapshot)` is an optional bounded

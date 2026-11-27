@@ -33,9 +33,12 @@ from enoch.tasks.payloads import (
 )
 from enoch.state import StateCorruptionError, file_transaction, load_json_object
 from enoch.tasks.recovery import RECOVERY_HOLD_TRIGGER, ExtensionRecoveryDecision
+from enoch.tasks.completion import (
+    CompletionGate, CompletionSnapshot, CompletionDecision, TERMINAL_CHILD_STATES, gate_time,
+)
 
 
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 17
 DEFAULT_MAX_ATTEMPTS = 3
 # Pause trigger for a task interrupted by a daemon restart. Such tasks resume
 # automatically once the daemon is back instead of waiting for runtime access.
@@ -123,6 +126,9 @@ class TaskJob:
     # ready), "never" (no merge), or empty to follow /pr auto-merge. Optional
     # so queues written before it existed still load unchanged.
     merge_policy: str = ""
+    completion_gate: CompletionGate | None = None
+    completion_evidence: dict[str, str] = field(default_factory=dict)
+    completion_revision: str = ""
 
     @property
     def needs_attention(self) -> bool:
@@ -167,6 +173,7 @@ class TaskQueueStatus:
     paused: tuple[TaskJob, ...] = ()
     history: tuple[TaskJob, ...] = ()
     reconciliation: TaskReconciliationResult | None = None
+    awaiting: tuple[TaskJob, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -642,6 +649,8 @@ def begin_direct_task(
             raise TaskAlreadyExists(existing)
         if _parse_job(data.get("running")) is not None:
             raise RuntimeError("A task is already running.")
+        if _section_jobs(data, "awaiting"):
+            raise RuntimeError("A completion gate holds direct work; enqueue declared children instead.")
         job = TaskJob(
             id=_next_id(data),
             chat_id=chat_id,
@@ -730,7 +739,7 @@ def record_task_result_message(
     with _queue_transaction(root):
         data = _load_queue(root)
         changed = False
-        for key in ("pending", "paused", "history"):
+        for key in ("pending", "paused", "awaiting", "history"):
             jobs = []
             for job in _section_jobs(data, key):
                 if job.id == task_id:
@@ -770,6 +779,7 @@ def find_task_by_message(
         *([status.running] if status.running is not None else []),
         *status.pending,
         *status.paused,
+        *status.awaiting,
         *reversed(status.history),
     ]
     for job in candidates:
@@ -802,6 +812,7 @@ def begin_next_task(
         pending = _pending_jobs(data)
         if not pending:
             return None
+        allowed = _completion_admission(data)
         blocked_lanes = {
             job.execution_lane
             for job in _paused_jobs(data)
@@ -812,10 +823,11 @@ def begin_next_task(
                 index
                 for index, candidate in enumerate(pending)
                 if _task_is_due(candidate)
+                and (allowed is None or candidate.id in allowed)
                 and (triggers is None or candidate.trigger in triggers)
                 and _lane_predecessors_finished(
                     candidate,
-                    pending[:index],
+                    [job for job in pending[:index] if allowed is None or job.id in allowed],
                     blocked_lanes,
                 )
             ),
@@ -1590,6 +1602,8 @@ def _finish_running_task(
             return None
         if worker_id and running.worker_id != worker_id:
             return None
+        if status == "completed" and running.completion_gate is not None:
+            return _await_completion(data, running, root, result=result, review_urls=review_urls)
         history = _history_jobs(data)
         finished = _replace_job(
             running,
@@ -1647,12 +1661,19 @@ def cancel_task(
                 cancelled = _replace_job(job, status="cancelled", completed_at=current_time())
             else:
                 paused_kept.append(job)
+        awaiting_kept = []
+        for job in _section_jobs(data, "awaiting"):
+            if job.id == task_id and cancelled is None:
+                cancelled = _replace_job(job, status="cancelled", completed_at=current_time())
+            else:
+                awaiting_kept.append(job)
         if cancelled is None:
             return None
         history = _history_jobs(data)
         history.append(cancelled)
         data["pending"] = [_job_to_dict(job) for job in kept]
         data["paused"] = [_job_to_dict(job) for job in paused_kept]
+        data["awaiting"] = [_job_to_dict(job) for job in awaiting_kept]
         data["history"] = [_job_to_dict(job) for job in history]
         _write_queue(data, root)
         _record_task_event_safely(
@@ -1756,6 +1777,14 @@ def apply_extension_recovery(
             )
         updates = dict(worker_id="", worker_pid=None, worker_heartbeat_at="", worker_lease_id="")
         if evidence is not None:
+            if evidence.status == "completed" and held.completion_gate is not None:
+                data["paused"] = [_job_to_dict(job) for job in _paused_jobs(data) if job.id != held.id]
+                waiting = _await_completion(data, held, root, result=evidence.result, review_urls=evidence.review_urls)
+                return TaskReconciliationResult(
+                    outcome="extension_recovery", checked_at=checked_at, task_id=held.id,
+                    previous_status="running", resulting_status=waiting.status,
+                    evidence=(source,), reason="Recovered worker result still requires completion confirmation.",
+                )
             finished = _replace_job(
                 held, **updates, status=evidence.status, completed_at=checked_at,
                 result=evidence.result, terminal_status=evidence.status,
@@ -1880,6 +1909,13 @@ def reconcile_running_task(
                 _write_queue(data, root)
             return result
         if terminal_status:
+            if terminal_status == "completed" and running.completion_gate is not None:
+                waiting = _await_completion(data, running, root, result=running.result)
+                return TaskReconciliationResult(
+                    outcome="no_op", checked_at=checked_at, task_id=running.id,
+                    previous_status="running", resulting_status=waiting.status,
+                    reason="Worker finished; completion gate remains live.",
+                )
             history = _history_jobs(data)
             if any(job.id == running.id for job in history):
                 result = _store_reconciliation(
@@ -2053,6 +2089,163 @@ def reconcile_running_task(
         return result
 
 
+def _completion_admission(data: dict) -> set[int] | None:
+    waiting = _section_jobs(data, "awaiting")
+    if not waiting:
+        return None
+    return {child for job in waiting if job.completion_gate for child in job.completion_gate.child_task_ids}
+
+
+def _validate_completion_gate(data: dict, job: TaskJob, gate: CompletionGate) -> None:
+    if not isinstance(gate, CompletionGate):
+        raise ValueError("A typed completion gate is required.")
+    for child_id in gate.child_task_ids:
+        child = _find_task(data, child_id)
+        if child is None or child.context_source != job.context_source or child.chat_id != job.chat_id:
+            raise ValueError("Completion children must exist in the same extension and conversation.")
+    # A declaration may refer to another gated task, but never form a cycle.
+    todo = list(gate.child_task_ids)
+    seen: set[int] = set()
+    while todo:
+        task_id = todo.pop()
+        if task_id == job.id:
+            raise ValueError("Completion gates cannot contain dependency cycles.")
+        if task_id in seen:
+            continue
+        seen.add(task_id)
+        child = _find_task(data, task_id)
+        if child is not None and child.completion_gate is not None:
+            todo.extend(child.completion_gate.child_task_ids)
+
+
+def _replace_stored_task(data: dict, updated: TaskJob) -> None:
+    running = _parse_job(data.get("running"))
+    if running is not None and running.id == updated.id:
+        data["running"] = _job_to_dict(updated)
+        return
+    for key in ("pending", "paused", "awaiting"):
+        data[key] = [_job_to_dict(updated if job.id == updated.id else job) for job in _section_jobs(data, key)]
+
+
+def declare_completion_gate(task_id: int, owner: str, gate: CompletionGate, root: Path) -> TaskJob:
+    with _queue_transaction(root):
+        data = _load_queue(root)
+        job = _find_task(data, task_id)
+        if job is None or job.context_source != f"extension:{owner}":
+            raise ValueError("Completion task is not owned by this extension.")
+        if job.status not in {"pending", "running"}:
+            raise ValueError("Declare completion gates before the worker finishes.")
+        _validate_completion_gate(data, job, gate)
+        updated = _replace_job(job, completion_gate=gate, completion_revision=uuid4().hex)
+        _replace_stored_task(data, updated)
+        _write_queue(data, root)
+        return updated
+
+
+def append_completion_evidence(task_id: int, owner: str, name: str, reference: str, root: Path) -> TaskJob:
+    if not isinstance(reference, str) or not reference.strip():
+        raise ValueError("Completion evidence requires a nonempty reference.")
+    with _queue_transaction(root):
+        data = _load_queue(root)
+        job = _find_task(data, task_id)
+        if job is None or job.context_source != f"extension:{owner}":
+            raise ValueError("Completion task is not owned by this extension.")
+        if job.status not in {"pending", "running", "awaiting_completion"} or job.completion_gate is None:
+            raise ValueError("Task has no live completion gate.")
+        if name not in job.completion_gate.evidence_keys:
+            raise ValueError("Evidence name is not declared in the gate.")
+        if name in job.completion_evidence:
+            if job.completion_evidence[name] != reference.strip():
+                raise ValueError("Completion evidence is append-only.")
+            return job
+        updated = _replace_job(job, completion_evidence={**job.completion_evidence, name: reference.strip()},
+                               completion_revision=uuid4().hex)
+        _replace_stored_task(data, updated)
+        _write_queue(data, root)
+        return updated
+
+
+def _await_completion(
+    data: dict, job: TaskJob, root: Path | None, *, result: str,
+    review_urls: tuple[str, ...] = (),
+) -> TaskJob:
+    waiting = _replace_job(
+        job, status="awaiting_completion", completed_at="", result=result,
+        review_urls=_merge_review_urls(job.review_urls, _parse_review_urls(review_urls)),
+        worker_id="", worker_pid=None, worker_heartbeat_at="", worker_lease_id="",
+        terminal_status="", terminal_evidence_source="", terminal_evidence_at="",
+        failure_code="", failure_class="", pause_trigger="", retryable=False, next_attempt_at="",
+        completion_revision=uuid4().hex,
+    )
+    running = _parse_job(data.get("running"))
+    if running is not None and running.id == job.id:
+        data["running"] = None
+    data["awaiting"] = [*data.get("awaiting", []), _job_to_dict(waiting)]
+    _write_queue(data, root)
+    _record_task_event_safely(waiting, "awaiting_completion", root, event_actor="system",
+                              trigger="completion-gate", result=result)
+    return waiting
+
+
+def completion_snapshots(root: Path) -> tuple[CompletionSnapshot, ...]:
+    with _queue_transaction(root):
+        data = _load_queue(root)
+        return tuple(CompletionSnapshot(
+            job.context_source.removeprefix("extension:"), job,
+            tuple(child for task_id in job.completion_gate.child_task_ids
+                  if (child := _find_task(data, task_id)) is not None),
+        ) for job in _section_jobs(data, "awaiting") if job.completion_gate)
+
+
+def completion_gate_met(snapshot: CompletionSnapshot) -> bool:
+    gate = snapshot.task.completion_gate
+    return bool(gate and len(snapshot.children) == len(gate.child_task_ids)
+                and all(child.status in TERMINAL_CHILD_STATES for child in snapshot.children)
+                and all(name in snapshot.task.completion_evidence for name in gate.evidence_keys))
+
+
+def apply_completion_decision(
+    snapshot: CompletionSnapshot, decision: CompletionDecision, root: Path, *, checked_at: str,
+) -> TaskJob | None:
+    with _queue_transaction(root):
+        data = _load_queue(root)
+        job = _find_task(data, snapshot.task.id)
+        if job != snapshot.task or job.status != "awaiting_completion":
+            return None
+        if any(_find_task(data, child.id) != child for child in snapshot.children):
+            return None
+        expired = gate_time(job.completion_gate.deadline_at) <= gate_time(checked_at)
+        if not expired and not completion_gate_met(snapshot):
+            return None
+        if decision.action == "extend" and not expired:
+            try:
+                _validate_completion_gate(data, job, decision.gate)
+                if decision.gate == job.completion_gate or gate_time(decision.gate.deadline_at) <= gate_time(checked_at):
+                    raise ValueError("A replacement gate must change the conditions and have a future deadline.")
+            except ValueError as error:
+                decision = CompletionDecision("fail", str(error))
+            else:
+                updated = _replace_job(job, completion_gate=decision.gate, completion_revision=uuid4().hex)
+                _replace_stored_task(data, updated)
+                _write_queue(data, root)
+                return updated
+        status = "completed" if decision.action == "complete" and not expired else "failed"
+        note = "Completion gate timed out." if expired else decision.note
+        finished = _replace_job(
+            job, status=status, completed_at=checked_at,
+            result="\n\n".join(part for part in (job.result, note) if part),
+            terminal_status=status, terminal_evidence_source=f"completion-gate:{snapshot.extension_name}",
+            terminal_evidence_at=checked_at,
+            failure_code=("completion_gate_timeout" if expired else "completion_gate_failed") if status == "failed" else "",
+            failure_class="permanent" if status == "failed" else "", retryable=False,
+        )
+        data["awaiting"] = [_job_to_dict(item) for item in _section_jobs(data, "awaiting") if item.id != job.id]
+        data["history"] = [*data.get("history", []), _job_to_dict(finished)]
+        _write_queue(data, root)
+        _record_task_event_safely(finished, status, root, event_actor="system", trigger="completion-gate", result=finished.result)
+        return finished
+
+
 def task_queue_status(root: Path | None = None) -> TaskQueueStatus:
     with _queue_transaction(root):
         data = _load_queue(root)
@@ -2065,6 +2258,7 @@ def task_queue_status(root: Path | None = None) -> TaskQueueStatus:
             pending=pending,
             paused=paused,
             history=tuple(_history_jobs(data)),
+            awaiting=tuple(_section_jobs(data, "awaiting")),
             reconciliation=_parse_reconciliation(data.get("reconciliation")),
         )
 
@@ -2258,7 +2452,7 @@ def _same_reconciliation(
 def _load_queue(root: Path | None = None) -> dict:
     path = task_queue_path(root)
     raw = load_json_object(path, default_factory=_empty_queue)
-    for key in ("pending", "paused", "history"):
+    for key in ("pending", "paused", "awaiting", "history"):
         if key in raw and not isinstance(raw[key], list):
             raise StateCorruptionError(path, f"expected {key} to be a list")
         if any(_parse_job(item) is None for item in raw.get(key, [])):
@@ -2282,6 +2476,11 @@ def _load_queue(root: Path | None = None) -> dict:
     if paused_jobs:
         max_id = max(max_id, max(job.id for job in paused_jobs))
     history_jobs = _history_jobs(raw)
+    awaiting_jobs = _section_jobs(raw, "awaiting")
+    if any(job.status != "awaiting_completion" or job.completion_gate is None for job in awaiting_jobs):
+        raise StateCorruptionError(path, "invalid completion gate hold")
+    if awaiting_jobs:
+        max_id = max(max_id, max(job.id for job in awaiting_jobs))
     history = [_job_to_dict(job) for job in history_jobs]
     if history_jobs:
         max_id = max(max_id, max(job.id for job in history_jobs))
@@ -2290,6 +2489,7 @@ def _load_queue(root: Path | None = None) -> dict:
         "next_id": max(next_id, max_id + 1),
         "pending": pending,
         "paused": paused,
+        "awaiting": [_job_to_dict(job) for job in awaiting_jobs],
         "running": _job_to_dict(running) if running is not None else None,
         "history": history,
         "reconciliation": _reconciliation_to_dict(
@@ -2304,6 +2504,7 @@ def _write_queue(data: dict, root: Path | None = None) -> None:
         "next_id": _next_id(data),
         "pending": [_job_to_dict(job) for job in _pending_jobs(data)],
         "paused": [_job_to_dict(job) for job in _paused_jobs(data)],
+        "awaiting": [_job_to_dict(job) for job in _section_jobs(data, "awaiting")],
         "running": _job_to_dict(_parse_job(data.get("running"))) if _parse_job(data.get("running")) else None,
         "history": [_job_to_dict(job) for job in _history_jobs(data)],
         "reconciliation": _reconciliation_to_dict(
@@ -2356,6 +2557,7 @@ def _find_task(data: dict, task_id: int | None) -> TaskJob | None:
     for job in [
         *(_pending_jobs(data)),
         *(_paused_jobs(data)),
+        *_section_jobs(data, "awaiting"),
         *([running] if running is not None else []),
         *(_history_jobs(data)),
     ]:
@@ -2375,6 +2577,7 @@ def _find_task_by_idempotency_key(data: dict, key: str) -> TaskJob | None:
             for job in [
                 *_pending_jobs(data),
                 *_paused_jobs(data),
+                *_section_jobs(data, "awaiting"),
                 *([running] if running is not None else []),
                 *_history_jobs(data),
             ]
@@ -2556,6 +2759,23 @@ def _parse_job(raw: object) -> TaskJob | None:
     pause_trigger = str(raw.get("pause_trigger") or "").strip()
     result_message_id = normalize_message_id(raw.get("result_message_id"))
     merge_policy = _merge_policy(raw.get("merge_policy"))
+    try:
+        gate_raw = raw.get("completion_gate")
+        completion_gate = None if gate_raw is None else CompletionGate(
+            deadline_at=gate_raw["deadline_at"],
+            child_task_ids=tuple(gate_raw.get("child_task_ids", ())),
+            evidence_keys=tuple(gate_raw.get("evidence_keys", ())),
+        )
+        completion_evidence = raw.get("completion_evidence", {})
+        if not isinstance(completion_evidence, dict) or any(
+            not isinstance(key, str) or not key or not isinstance(value, str) or not value.strip()
+            for key, value in completion_evidence.items()
+        ):
+            return None
+        if completion_gate is not None and not context_source.startswith("extension:"):
+            return None
+    except (ValueError, TypeError, KeyError, AttributeError):
+        return None
     if terminal_status and terminal_status not in {
         "completed",
         "failed",
@@ -2630,6 +2850,9 @@ def _parse_job(raw: object) -> TaskJob | None:
         pause_trigger=pause_trigger,
         result_message_id=result_message_id,
         merge_policy=merge_policy,
+        completion_gate=completion_gate,
+        completion_evidence=dict(completion_evidence),
+        completion_revision=str(raw.get("completion_revision") or ""),
     )
 
 
@@ -2705,11 +2928,21 @@ def _job_to_dict(job: TaskJob | None) -> dict:
             else {}
         ),
         **({"merge_policy": job.merge_policy} if job.merge_policy else {}),
+        "completion_gate": ({
+            "deadline_at": job.completion_gate.deadline_at,
+            "child_task_ids": list(job.completion_gate.child_task_ids),
+            "evidence_keys": list(job.completion_gate.evidence_keys),
+        } if job.completion_gate else None),
+        "completion_evidence": dict(job.completion_evidence),
+        "completion_revision": job.completion_revision,
     }
 
 
 def _replace_job(job: TaskJob, **changes: object) -> TaskJob:
     values = {
+        "completion_gate": job.completion_gate,
+        "completion_evidence": dict(job.completion_evidence),
+        "completion_revision": job.completion_revision,
         "id": job.id,
         "chat_id": job.chat_id,
         "text": job.text,
@@ -2973,6 +3206,7 @@ def _empty_queue() -> dict:
         "next_id": 1,
         "pending": [],
         "paused": [],
+        "awaiting": [],
         "running": None,
         "history": [],
         "reconciliation": None,

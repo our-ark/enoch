@@ -65,7 +65,7 @@ operation. Durable `TaskJob` state now exposes `workspace_path`,
 `workspace_id`, `revision_id`, `review_id`, `review_url`, `review_urls`, and
 `review_published`.
 
-Queue schema 16 reads schema 11's `worktree_path`, `branch_name`,
+Queue schema 17 reads schema 11's `worktree_path`, `branch_name`,
 `commit_sha`, `remote_branch`, `pr_url`, `pr_urls`, and
 `published_remotely` keys, then writes only the provider-neutral names. It also
 adds extension request metadata, typed artifact references, and canonical
@@ -94,8 +94,10 @@ Workflow API v4 engines may advertise optional behavior through a `features`
 iterable. `workflow_features()` normalizes discovery, and extension workflows
 expose it through `features` and `supports()`. The local engine currently
 advertises `structured_task_metadata`, `artifact_references`, `execution_lanes`,
-and `extension_recovery`. The last feature implements the optional
+`completion_gates`, and `extension_recovery`. The last feature implements the optional
 `ExtensionRecoveryWorkflow` protocol; it does not change base API v4 methods.
+`CompletionGateWorkflow` lets extension-owned tasks wait for child tasks and
+evidence after worker return. See [task completion gates](completion-gates.md).
 See [interrupted-task recovery](extensions.md#interrupted-task-recovery) for its
 typed snapshot, decisions, deadline, and operator-only hold semantics.
 The local scheduler still retains one global running task;
