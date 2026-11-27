@@ -486,6 +486,7 @@ class LocalWorkflowEngine:
         task_id: int,
         *,
         reconciled_result: str = "",
+        reconciled_review_urls: tuple[str, ...] = (),
         event_actor: str = "human",
         trigger: str = "/task retry",
     ) -> TaskJob:
@@ -494,6 +495,7 @@ class LocalWorkflowEngine:
                 task_id,
                 self.root,
                 reconciled_result=reconciled_result,
+                reconciled_review_urls=reconciled_review_urls,
                 event_actor=event_actor,
                 trigger=trigger,
             )

@@ -162,6 +162,9 @@ class WorkflowEngine(Protocol):
         task_id: int,
         *,
         reconciled_result: str = "",
+        # Optional: reviews confirmed to belong to the original task. Enoch
+        # passes it only when there are some, so engines without it still work.
+        reconciled_review_urls: tuple[str, ...] = (),
         event_actor: str = "human",
         trigger: str = "/task retry",
     ) -> TaskJob: ...

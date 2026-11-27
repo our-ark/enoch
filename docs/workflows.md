@@ -118,6 +118,13 @@ URLs found in free-form result text are never reconciliation evidence. Queue
 inspection preserves the last material reconciliation outcome, evidence kinds,
 transition, and reason without replaying provider calls or terminal delivery.
 
+`review_urls` holds only reviews attributed to the task: those its publish
+stage recorded through `record_publication`, those the worker verified and
+passed as `TaskTerminalEvidence.review_urls`, and, for a retry, those the
+caller confirmed as `retry_failed(reconciled_review_urls=...)`. Review URLs
+that only appear in result text are references and never become the task's
+reviews.
+
 Profiles do not receive or own the concrete engine. Their
 `CommandContext.enqueue_task()` method routes through the engine selected by
 the application, preserving one queue owner and keeping profile packages

@@ -184,6 +184,10 @@ class TaskTerminalEvidence:
     failure_code: str = ""
     failure_class: str = ""
     retryable: bool = False
+    # Reviews the task itself published during this run, as verified by the
+    # caller. Review URLs that only appear in ``result`` are references and
+    # are never attributed to the task.
+    review_urls: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.status not in {"completed", "failed", "cancelled"}:
@@ -195,6 +199,7 @@ class TaskTerminalEvidence:
         object.__setattr__(self, "result", self.result.strip())
         object.__setattr__(self, "failure_code", self.failure_code.strip())
         object.__setattr__(self, "failure_class", self.failure_class.strip())
+        object.__setattr__(self, "review_urls", _parse_review_urls(self.review_urls))
 
 
 @dataclass(frozen=True)
@@ -355,9 +360,18 @@ def retry_failed_task(
     root: Path | None = None,
     *,
     reconciled_result: str = "",
+    reconciled_review_urls: tuple[str, ...] = (),
     event_actor: str = "human",
     trigger: str = "/task retry",
 ) -> TaskJob:
+    """Queue a retry of a failed, cancelled or unpublished task.
+
+    ``reconciled_review_urls`` are reviews the caller confirmed belong to the
+    original task. Review URLs that only appear in ``reconciled_result`` are
+    references and are never attributed to the retry.
+    """
+
+    reconciled_reviews = _parse_review_urls(reconciled_review_urls)
     with _queue_transaction(root):
         data = _load_queue(root)
         held = next((job for job in _paused_jobs(data)
@@ -420,7 +434,7 @@ def retry_failed_task(
                 "\n\nOperator-requested retry after an extension recovery hold:\n"
                 + held.result
             )
-        publication_only = _job_has_unpublished_revision(original) and not task_result_has_review(artifact_result)
+        publication_only = _job_has_unpublished_revision(original) and not reconciled_reviews
         job = TaskJob(
             id=_next_id(data),
             chat_id=original.chat_id,
@@ -442,7 +456,7 @@ def retry_failed_task(
             result=artifact_result,
             review_urls=_merge_review_urls(
                 original.review_urls,
-                _review_urls(artifact_result),
+                reconciled_reviews,
                 (original.review_url,) if original.review_url else (),
             ),
             workspace_path=original.workspace_path,
@@ -852,7 +866,14 @@ def complete_task(
     event_actor: str = "agent",
     trigger: str = "task-runner",
     worker_id: str = "",
+    review_urls: tuple[str, ...] = (),
 ) -> TaskJob | None:
+    """Finish the running task as completed.
+
+    ``review_urls`` are reviews the task published; review URLs that only
+    appear in ``result`` are never attributed to it.
+    """
+
     return _finish_running_task(
         task_id,
         "completed",
@@ -861,6 +882,7 @@ def complete_task(
         event_actor=event_actor,
         trigger=trigger,
         worker_id=worker_id,
+        review_urls=review_urls,
     )
 
 
@@ -875,6 +897,7 @@ def fail_task(
     failure_code: str = "",
     failure_class: str = "",
     retryable: bool = False,
+    review_urls: tuple[str, ...] = (),
 ) -> TaskJob | None:
     return _finish_running_task(
         task_id,
@@ -887,6 +910,7 @@ def fail_task(
         failure_code=failure_code,
         failure_class=failure_class,
         retryable=retryable,
+        review_urls=review_urls,
     )
 
 
@@ -919,10 +943,6 @@ def retry_running_task(
             started_at="",
             completed_at="",
             result=result,
-            review_urls=_merge_review_urls(
-                running.review_urls,
-                _review_urls(result),
-            ),
             worker_id="",
             worker_pid=None,
             worker_heartbeat_at="",
@@ -1325,32 +1345,24 @@ def revert_task(
 
 
 def record_task_result(task_id: int, result: str, root: Path | None = None) -> None:
+    """Store a task's interim result text.
+
+    Review URLs in the text are not attributed to the task; only the publish
+    stage and terminal evidence attribute reviews.
+    """
+
     with _queue_transaction(root):
         data = _load_queue(root)
         pending = []
         changed = False
         for job in _pending_jobs(data):
             if job.id == task_id:
-                job = _replace_job(
-                    job,
-                    result=result,
-                    review_urls=_merge_review_urls(
-                        job.review_urls,
-                        _review_urls(result),
-                    ),
-                )
+                job = _replace_job(job, result=result)
                 changed = True
             pending.append(_job_to_dict(job))
         running = _parse_job(data.get("running"))
         if running is not None and running.id == task_id:
-            running = _replace_job(
-                running,
-                result=result,
-                review_urls=_merge_review_urls(
-                    running.review_urls,
-                    _review_urls(result),
-                ),
-            )
+            running = _replace_job(running, result=result)
             changed = True
         if not changed:
             return
@@ -1523,7 +1535,7 @@ def record_task_terminal_evidence(
             result=evidence.result,
             review_urls=_merge_review_urls(
                 running.review_urls,
-                _review_urls(evidence.result),
+                evidence.review_urls,
             ),
             failure_code=evidence.failure_code,
             failure_class=evidence.failure_class,
@@ -1549,6 +1561,7 @@ def _finish_running_task(
     failure_code: str = "",
     failure_class: str = "",
     retryable: bool = False,
+    review_urls: tuple[str, ...] = (),
 ) -> TaskJob | None:
     with _queue_transaction(root):
         data = _load_queue(root)
@@ -1567,7 +1580,7 @@ def _finish_running_task(
             result=result,
             review_urls=_merge_review_urls(
                 running.review_urls,
-                _review_urls(result),
+                _parse_review_urls(review_urls),
             ),
             worker_id="",
             worker_pid=None,
@@ -1664,10 +1677,6 @@ def cancel_running_task(
             status="cancelled",
             completed_at=current_time(),
             result=result,
-            review_urls=_merge_review_urls(
-                running.review_urls,
-                _review_urls(result),
-            ),
             worker_id="",
             worker_pid=None,
             worker_heartbeat_at="",
@@ -2231,8 +2240,14 @@ def task_result_has_pull_request(result: str) -> bool:
     return task_result_has_review(result)
 
 
-def _job_has_review(job: TaskJob) -> bool:
-    return bool(job.review_urls) or task_result_has_review(job.result)
+def review_urls_in_text(text: str) -> tuple[str, ...]:
+    """Forge review URLs mentioned in ``text``, in order and without repeats.
+
+    A mention is only a reference: the caller must confirm a task published a
+    review before attributing it to that task.
+    """
+
+    return _merge_review_urls(tuple(LEGACY_REVIEW_URL_PATTERN.findall(text)))
 
 
 def _job_has_confirmed_published_review(job: TaskJob) -> bool:
@@ -2580,10 +2595,11 @@ def _parse_job(raw: object) -> TaskJob | None:
     status_message_id = normalize_message_id(raw.get("status_message_id"))
     thread_id = normalize_message_id(raw.get("thread_id"))
     result = str(raw.get("result") or "").strip()
+    # Only stored attributions load; review URLs in the result text are
+    # references, never the task's own reviews.
     review_urls = _parse_review_urls(
         raw.get("review_urls", raw.get("pr_urls"))
     )
-    review_urls = _merge_review_urls(review_urls, _review_urls(result))
     context = str(raw.get("context") or "").strip()
     context_source = str(raw.get("context_source") or "").strip()
     try:
@@ -3077,10 +3093,6 @@ def _lane_predecessors_finished(
             for predecessor in predecessors
         )
     )
-
-
-def _review_urls(result: str) -> tuple[str, ...]:
-    return tuple(LEGACY_REVIEW_URL_PATTERN.findall(result))
 
 
 def _record_task_event_safely(

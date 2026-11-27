@@ -288,12 +288,15 @@ from enoch.providers.contracts import (
     OutboundAttachment,
     RepositoryProvider,
     RepositoryProviderError,
+    RepositoryRevision,
+    ReviewCloseRequest,
     ReviewIdentity,
     ReviewLandRequest,
     ReviewLandResult,
     ReviewProvider,
     ReviewProviderError,
     ReviewRecord,
+    ReviewSubmission,
     RuntimeExecutionControl,
     normalize_message_id,
 )
@@ -361,6 +364,7 @@ from enoch.tasks.queue import (
     TaskQueueStatus,
     TaskAlreadyExists,
     TaskRetryError,
+    review_urls_in_text,
 )
 from enoch.app.auto_update import (
     LandedReview,
@@ -371,6 +375,19 @@ from enoch.app.auto_update import (
     mark_update_pending,
     take_restart_note,
     update_failed_alert,
+)
+from enoch.library_pins import resolve_commit
+from enoch.app.library_repin import (
+    REPIN,
+    clear_library_repin_pending,
+    failed_message as library_repin_failed_message,
+    is_repin_review_title,
+    load_library_repin_state,
+    mark_library_repin_pending,
+    opened_message as library_repin_opened_message,
+    plan_library_repin,
+    remote_branch_exists,
+    repin_workspace,
 )
 from enoch.app.restarts import (
     RESTART_MODES,
@@ -968,6 +985,9 @@ class EnochApplication:
             # Merges first: a landed or stopped merge releases the task queue
             # hold in the same cycle ("land before next").
             self.pending_merges.tick()
+            # A merge that changed libraries/ gets its re-pin PR before the
+            # automatic update restarts the daemon.
+            self._maybe_run_library_repin()
             # A merge that just landed updates the daemon before new work starts.
             self._maybe_run_auto_update()
             self._maybe_start_task_worker()
@@ -2546,6 +2566,7 @@ class EnochApplication:
         regression_signals: tuple[TaskRegressionSignal, ...] = ()
         pause_reason = ""
         pause_resets_at: datetime | None = None
+        published_reviews: tuple[str, ...] = ()
         try:
             self._authorize_task(job)
             outcome = _coerce_work_outcome(
@@ -2558,6 +2579,7 @@ class EnochApplication:
             )
             reply = outcome.message
             reply = self._capture_task_regression_signals(reply)
+            published_reviews = self._reviews_published_by(job, reply)
             if deadline.expired.is_set():
                 reply = _task_timeout_message(deadline.timeout_seconds)
                 completed_status = "failed"
@@ -2620,6 +2642,7 @@ class EnochApplication:
                     event_actor="agent",
                     trigger=trigger,
                     worker_id=worker_id,
+                    review_urls=published_reviews,
                 )
             elif completed_status == "failed":
                 failure = failure or classify_task_failure(reply)
@@ -2633,6 +2656,7 @@ class EnochApplication:
                     failure_code=failure.code,
                     failure_class=failure.failure_class,
                     retryable=False,
+                    review_urls=published_reviews,
                 )
             elif completed_status == "paused":
                 finished_job = self.workflow.pause(
@@ -2652,6 +2676,7 @@ class EnochApplication:
                     event_actor="agent",
                     trigger=trigger,
                     worker_id=worker_id,
+                    review_urls=published_reviews,
                 )
         authoritative_job = finished_job or self.workflow.find(job.id)
         if authoritative_job is None or authoritative_job.status != completed_status:
@@ -2857,6 +2882,7 @@ class EnochApplication:
         failure_code: str = "",
         failure_class: str = "",
         retryable: bool = False,
+        review_urls: tuple[str, ...] = (),
     ) -> TaskJob | None:
         recorded = self.workflow.record_terminal_evidence(
             task_id,
@@ -2867,6 +2893,7 @@ class EnochApplication:
                 failure_code=failure_code,
                 failure_class=failure_class,
                 retryable=retryable,
+                review_urls=review_urls,
             ),
         )
         if recorded is None:
@@ -3873,14 +3900,20 @@ class EnochApplication:
     def _retry_task(self, task_id: int) -> str:
         original = self.workflow.find(task_id)
         try:
-            reconciled_result = (
+            reconciled_result, reconciled_reviews = (
                 _reconciled_retry_result(original, self.root, review=self.review)
                 if original is not None
-                else ""
+                else ("", ())
             )
             job = self.workflow.retry_failed(
                 task_id,
                 reconciled_result=reconciled_result,
+                # Only when there are some, so engines without the option work.
+                **(
+                    {"reconciled_review_urls": reconciled_reviews}
+                    if reconciled_reviews
+                    else {}
+                ),
             )
         except (OSError, ReviewProviderError, TaskRetryError) as error:
             return f"{self.display_name} could not retry task #{task_id}: {error}"
@@ -4191,12 +4224,13 @@ class EnochApplication:
         return job.status if job is not None else None
 
     def _watch_published_reviews(self, job: TaskJob) -> None:
-        """Watch CI on reviews a completed task published (never merged without a request)."""
+        """Watch CI on reviews a completed task published (never merged without a request).
 
-        requested = f"{job.text}\n{job.context}"
-        for url in job.review_urls:
-            if url in requested:
-                continue  # a review the task was asked about, not one it published
+        Only reviews attributed to the task count: a review URL its result
+        merely mentions is never on ``job.review_urls``.
+        """
+
+        for url in self._published_reviews(job):
             try:
                 self.pending_merges.watch_review(job.chat_id, url, job.id)
             except Exception as error:  # noqa: BLE001 - watching must not fail the task
@@ -5593,6 +5627,9 @@ class EnochApplication:
         regression_signals: tuple[TaskRegressionSignal, ...] = ()
         pause_reason = ""
         pause_resets_at: datetime | None = None
+        # Reviews this run published itself; review URLs its result only
+        # mentions stay references (see _reviews_published_by).
+        published_reviews: tuple[str, ...] = ()
         try:
             self._authorize_task(job)
             if job.result and job.review_urls and job.review_published:
@@ -5628,6 +5665,7 @@ class EnochApplication:
                 )
             reply = outcome.message
             reply = self._capture_task_regression_signals(reply)
+            published_reviews = self._reviews_published_by(job, reply)
             if deadline.expired.is_set():
                 reply = _task_timeout_message(deadline.timeout_seconds)
                 completed_status = "failed"
@@ -5723,6 +5761,7 @@ class EnochApplication:
                     event_actor="system",
                     trigger="task-runner-cancelled",
                     worker_id=worker_id,
+                    review_urls=published_reviews,
                 )
             elif completed_status == "failed":
                 failure_actor = "system" if deadline.expired.is_set() or restart_failed else "agent"
@@ -5758,6 +5797,7 @@ class EnochApplication:
                         failure_code=failure.code,
                         failure_class=failure.failure_class,
                         retryable=restart_failed,
+                        review_urls=published_reviews,
                     )
             elif completed_status == "paused":
                 finished_job = self.workflow.pause(
@@ -5779,6 +5819,7 @@ class EnochApplication:
                     "completed",
                     result=reply,
                     worker_id=worker_id,
+                    review_urls=published_reviews,
                 )
         authoritative_job = finished_job or self.workflow.find(job.id)
         expected_status = "pending" if completed_status == "retrying" else completed_status
@@ -6411,6 +6452,182 @@ class EnochApplication:
         self._reconcile_lineage_adoptions()
         if landed is not None:
             self._mark_update_pending(landed)
+            self._mark_library_repin_pending(landed)
+
+    # Library re-pin after a requested merge ---------------------------------
+
+    def _mark_library_repin_pending(self, landed: LandedReview) -> None:
+        """Check the library pins once ``landed`` is on the authoritative branch.
+
+        Never raises: the merge already happened. Whether a re-pin is needed is
+        decided later from the branch itself, so a pin-only merge is harmless.
+        """
+
+        try:
+            if not self._lands_on_authoritative_branch(landed):
+                return
+            mark_library_repin_pending(
+                landed.label,
+                datetime.now().astimezone().isoformat(timespec="seconds"),
+                self.root,
+            )
+        except StaleDaemonEpoch:
+            raise
+        except Exception as error:  # noqa: BLE001 - the merge already happened
+            _record_system_event(
+                "library_repin_mark_failed",
+                self.root,
+                status="failed",
+                details={"review": landed.url or landed.label, "error": str(error)},
+            )
+
+    def _maybe_run_library_repin(self) -> None:
+        """Open the one library re-pin PR a landed merge needs. Never raises."""
+
+        try:
+            pending = load_library_repin_state(self.root).pending
+        except Exception:  # noqa: BLE001 - unreadable state never blocks work
+            return
+        if not pending or self._stopping:
+            return
+        try:
+            self._run_library_repin(pending)
+        except StaleDaemonEpoch:
+            # The daemon that owns the epoch now picks the flag up.
+            raise
+        except Exception as error:  # noqa: BLE001 - polling must continue
+            _record_system_event(
+                "library_repin_failed",
+                self.root,
+                status="failed",
+                details={"after": list(pending), "error": str(error)},
+            )
+        try:
+            clear_library_repin_pending(pending, self.root)
+        except Exception:  # noqa: BLE001 - the next merge marks it again
+            pass
+
+    def _run_library_repin(self, pending: tuple[str, ...]) -> None:
+        remote = self._authoritative_remote_name()
+        base_branch = self._authoritative_branch_name()
+        plan = plan_library_repin(
+            self.root,
+            remote=remote,
+            base_branch=base_branch,
+            repository=self._authoritative_repository(),
+        )
+        _record_system_event(
+            "library_repin_checked",
+            self.root,
+            details={
+                "after": list(pending),
+                "action": plan.action,
+                "revision": plan.revision,
+                "libraries": list(plan.libraries),
+                "reason": plan.reason,
+            },
+        )
+        if plan.action != REPIN:
+            return
+        if remote_branch_exists(self.root, remote, plan.branch):
+            _record_system_event(
+                "library_repin_skipped",
+                self.root,
+                details={"revision": plan.revision, "reason": "branch-exists", "branch": plan.branch},
+            )
+            return
+        try:
+            with repin_workspace(self.root, plan) as workspace:
+                commit = resolve_commit(workspace, "HEAD")
+                review = self.effect_fence.run_authorized(
+                    "forge.publish-review",
+                    ("forge.review",),
+                    self.review.publish_review,
+                    ReviewSubmission(
+                        title=plan.title,
+                        body=plan.review_body(),
+                        revision=RepositoryRevision(id=commit),
+                        base_revision=RepositoryRevision(id=plan.revision),
+                        metadata={"base_name": base_branch},
+                    ),
+                    root=workspace,
+                )
+        except StaleDaemonEpoch:
+            raise
+        except Exception as error:  # noqa: BLE001 - reported to the human below
+            _record_system_event(
+                "library_repin_failed",
+                self.root,
+                status="failed",
+                details={"revision": plan.revision, "error": str(error)},
+            )
+            self._send_auto_update_alert(library_repin_failed_message(self.display_name, error))
+            return
+        url = review.identity.url
+        if review.state != "open" or not url:
+            error = f"the forge did not open a review (state {review.state})"
+            _record_system_event(
+                "library_repin_failed",
+                self.root,
+                status="failed",
+                details={"revision": plan.revision, "error": error},
+            )
+            self._send_auto_update_alert(library_repin_failed_message(self.display_name, error))
+            return
+        _record_system_event(
+            "library_repin_opened",
+            self.root,
+            details={"revision": plan.revision, "review": url, "libraries": list(plan.libraries)},
+        )
+        self._close_superseded_repins(url)
+        message = library_repin_opened_message(self.display_name, plan, _review_label(url))
+        if pr_auto_merge_enabled(self.root):
+            message = f"{message}\n{self._auto_merge_url(_allowed_conversation_id(self.client), url)}"
+        else:
+            _repository, number = parse_review_url(url)
+            message = (
+                f"{message} Merge it with {self.command_prefix}pr merge {number or url}."
+            )
+        self._send_auto_update_alert(message)
+
+    def _close_superseded_repins(self, url: str) -> None:
+        """Close older open re-pin reviews; the new one pins a newer main commit."""
+
+        try:
+            self.authorization.require("forge.list", ("forge.inspect",))
+            reviews = self.review.list_open_reviews(self.root)
+        except Exception as error:  # noqa: BLE001 - superseding is best effort
+            _record_system_event(
+                "library_repin_supersede_failed",
+                self.root,
+                status="failed",
+                details={"review": url, "error": str(error)},
+            )
+            return
+        for record in reviews:
+            if record.identity.url == url or not is_repin_review_title(record.title):
+                continue
+            try:
+                self.effect_fence.run_authorized(
+                    "forge.close-review",
+                    ("forge.close",),
+                    self.review.close_review,
+                    ReviewCloseRequest(
+                        review=record.identity,
+                        note=f"Superseded by {url}, which re-pins to a newer main commit.",
+                    ),
+                    root=self.root,
+                )
+                self.pending_merges.discard(record)
+            except StaleDaemonEpoch:
+                raise
+            except Exception as error:  # noqa: BLE001 - superseding is best effort
+                _record_system_event(
+                    "library_repin_supersede_failed",
+                    self.root,
+                    status="failed",
+                    details={"review": record.identity.url or record.identity.id, "error": str(error)},
+                )
 
     # Automatic update after a requested merge ------------------------------
 
@@ -6699,12 +6916,104 @@ class EnochApplication:
         requested = f"{job.text}\n{job.context}"
         return tuple(url for url in job.review_urls if url not in requested)
 
+    def _reviews_published_by(self, job: TaskJob, result: str) -> tuple[str, ...]:
+        """Review URLs in a finished run's ``result`` that task ``job`` published.
+
+        Reviews from the task's publish stage are already on the job. A review
+        the task's runtime opened itself counts only when its head is the tip
+        of the task's own workspace branch on the authoritative remote. Any
+        other review URL in the result is only a reference: it is never stored
+        as the task's review, so it never starts the merge policy, CI watching,
+        CI fix tasks or the land-before-next hold. Never raises; a review that
+        cannot be verified stays a reference.
+        """
+
+        current = job
+        mentioned: tuple[str, ...] = ()
+        owned: tuple[str, ...] = ()
+        try:
+            current = self.workflow.find(job.id) or job
+            mentioned = tuple(
+                url for url in review_urls_in_text(result) if url not in current.review_urls
+            )
+            if mentioned:
+                owned = self._reviews_on_task_branch(current, mentioned)
+        except StaleDaemonEpoch:
+            raise
+        except Exception as error:  # noqa: BLE001 - unverified reviews stay references
+            _record_system_event(
+                "task_review_attribution_failed",
+                self.root,
+                status="failed",
+                details={"task_id": job.id, "error": str(error)},
+            )
+        references = [url for url in mentioned if url not in owned]
+        if references:
+            _record_system_event(
+                "task_review_references",
+                self.root,
+                details={
+                    "task_id": job.id,
+                    "workspace_id": current.workspace_id,
+                    "references": references,
+                },
+            )
+        return owned
+
+    def _reviews_on_task_branch(
+        self,
+        job: TaskJob,
+        urls: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        """The ``urls`` whose review head is the tip of ``job``'s pushed branch."""
+
+        if not job.workspace_id:
+            return ()
+        tip = self._remote_branch_revision(job.workspace_id)
+        if not tip:
+            return ()
+        self.authorization.require("forge.inspect", ("forge.inspect",))
+        owned = []
+        for url in urls:
+            try:
+                record = self.review.inspect_review(_review_identity(url), self.root)
+            except (ReviewProviderError, ForgeProviderError, ValueError):
+                continue
+            head = record.versions[-1].revision.id if record.versions else ""
+            if head == tip:
+                owned.append(url)
+        return tuple(owned)
+
+    def _remote_branch_revision(self, branch: str) -> str:
+        """Tip of ``branch`` on the authoritative remote, or empty when unknown."""
+
+        reference = f"refs/heads/{branch.strip()}"
+        result = run_git(
+            ["ls-remote", self._authoritative_remote_name(), reference],
+            self.root,
+        )
+        if result.returncode != 0:
+            return ""
+        for line in result.stdout.splitlines():
+            revision, _, name = line.partition("\t")
+            if name.strip() == reference:
+                return revision.strip()
+        return ""
+
+    def _authoritative_remote_name(self) -> str:
+        """Name of the authoritative Git remote; ``origin`` unless configured."""
+
+        try:
+            provider = load_provider("vcs", self.root)
+        except Exception:  # noqa: BLE001 - the default remote is the safe guess
+            return "origin"
+        return str(getattr(provider, "remote", "") or "origin")
+
     def _authoritative_repository(self) -> str:
         """``owner/name`` of the authoritative remote, or empty when unknown."""
 
         try:
-            provider = load_provider("vcs", self.root)
-            remote = str(getattr(provider, "remote", "") or "origin")
+            remote = self._authoritative_remote_name()
             result = run_git(["remote", "get-url", remote], self.root)
         except Exception:  # noqa: BLE001 - unknown means never auto-merge
             return ""
@@ -6781,9 +7090,31 @@ class EnochApplication:
     def _auto_merge_review(self, job: TaskJob, url: str) -> str:
         """Run /pr merge for ``url`` on behalf of the policy, pinned to its current head."""
 
+        return self._auto_merge_url(
+            job.chat_id,
+            url,
+            task_id=job.id,
+            policy=job.merge_policy or "setting",
+        )
+
+    def _auto_merge_url(
+        self,
+        chat_id: ConversationId | None,
+        url: str,
+        *,
+        task_id: int = 0,
+        policy: str = "setting",
+    ) -> str:
+        """Merge ``url`` for the auto-merge policy, or register it until it is ready.
+
+        ``task_id`` is the Enoch task that published the review, or 0 for a
+        review Enoch opened itself (the library re-pin); only a task's pending
+        merge holds the task queue.
+        """
+
         label = _review_label(url)
         allowed_chat_id = _allowed_conversation_id(self.client)
-        if allowed_chat_id is None or allowed_chat_id != job.chat_id:
+        if allowed_chat_id is None or chat_id is None or allowed_chat_id != chat_id:
             return (
                 f"Not merging {label} automatically: merges are only requested from "
                 f"{self.display_name}'s locked conversation."
@@ -6795,15 +7126,15 @@ class EnochApplication:
                 self.pending_merges.discard(current)
                 self._after_requested_merge()
                 return f"{label} is already merged."
-            plan = self.pending_merges.plan(job.chat_id, current, task_id=job.id)
+            plan = self.pending_merges.plan(chat_id, current, task_id=task_id)
             _record_system_event(
                 "pr_auto_merge_requested",
                 self.root,
                 details={
-                    "task_id": job.id,
+                    "task_id": task_id,
                     "review": url,
                     "head": current.versions[-1].revision.id if current.versions else "",
-                    "policy": job.merge_policy or "setting",
+                    "policy": policy,
                     "action": plan.action,
                 },
             )
@@ -6811,7 +7142,7 @@ class EnochApplication:
                 hold = self._land_hold()
                 waits = (
                     " The next queued task waits for it to land."
-                    if hold is not None and hold.task_id == job.id
+                    if task_id and hold is not None and hold.task_id == task_id
                     else ""
                 )
                 return f"Auto-merge: {plan.message}{waits}"
@@ -7383,7 +7714,14 @@ def _reconciled_retry_result(
     root: Path,
     *,
     review: ReviewProvider,
-) -> str:
+) -> tuple[str, tuple[str, ...]]:
+    """Result text and confirmed reviews to carry into a retry of ``job``.
+
+    The reviews are ones the task published: its attributed reviews, or an
+    open review whose head is the task's own revision. Review URLs that the
+    prior result text merely mentions are not returned.
+    """
+
     logged_result = _latest_direct_action_result_for_task(job, root)
     prior_result = logged_result or job.result
     identities = []
@@ -7400,9 +7738,13 @@ def _reconciled_retry_result(
     for identity in identities:
         record = review.inspect_review(identity, root)
         if record.state in {"open", "published", "landed"}:
-            return prior_result or (
-                f"Reconciled existing review {record.identity.id}: "
-                f"{record.identity.url or record.identity.id}"
+            url = record.identity.url or identity.url
+            return (
+                prior_result or (
+                    f"Reconciled existing review {record.identity.id}: "
+                    f"{url or record.identity.id}"
+                ),
+                (url,) if url else (),
             )
     if job.revision_id:
         matching = [
@@ -7413,11 +7755,14 @@ def _reconciled_retry_result(
         if matching:
             record = matching[0]
             return (
-                f"Reconciled existing review {record.identity.id} for task "
-                f"revision {job.revision_id}: "
-                f"{record.identity.url or record.identity.id}"
+                (
+                    f"Reconciled existing review {record.identity.id} for task "
+                    f"revision {job.revision_id}: "
+                    f"{record.identity.url or record.identity.id}"
+                ),
+                (record.identity.url,) if record.identity.url else (),
             )
-    return ""
+    return "", ()
 
 
 def _workflow_reconciliation_details(

@@ -512,6 +512,14 @@ Reviews that tasks publish are watched the same way for up to 6 hours: one
 line when CI passes, one re-run or one fix task when it fails, and never a
 merge without a request.
 
+A review counts as published by a task only when the task's publish stage
+recorded it, or when the review's head is the tip of the task's own workspace
+branch on the authoritative remote. Review URLs that a task's result merely
+mentions are references: they stay visible in the result, but they are never
+stored as the task's review, never watched for that task, never merged by the
+PR auto-merge policy or a `--merge=auto` override, and never hold the task
+queue.
+
 Ordinary queued tasks require `runtime.execute`, `vcs.inspect`,
 `vcs.authoritative`, `vcs.workspace`, `vcs.capture`, and `forge.review`.
 Enoch verifies those grants and the required repository features before

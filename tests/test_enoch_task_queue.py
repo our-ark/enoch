@@ -41,6 +41,7 @@ from enoch.tasks.queue import (
     retry_running_task,
     resume_paused_tasks,
     revert_task,
+    review_urls_in_text,
     task_result_has_pull_request,
     task_queue_path,
     task_queue_status,
@@ -403,8 +404,10 @@ class EnochTaskQueueTests(unittest.TestCase):
                 root,
                 reconciled_result=(
                     "Existing work is available at "
-                    "https://github.com/our-ark/enoch/pull/13"
+                    "https://github.com/our-ark/enoch/pull/13 (see also "
+                    "https://github.com/our-ark/enoch/pull/12)"
                 ),
+                reconciled_review_urls=("https://github.com/our-ark/enoch/pull/13",),
             )
 
         self.assertEqual(retried.branch_name, "enoch/task-1")
@@ -781,20 +784,78 @@ class EnochTaskQueueTests(unittest.TestCase):
         self.assertEqual(status.history[-1].context, running.context)
         self.assertEqual(status.history[-1].context_source, "chat-snapshot")
 
-    def test_complete_running_task_records_pr_urls_in_history(self) -> None:
+    def test_complete_running_task_records_published_pr_urls_in_history(self) -> None:
+        own = "https://github.com/our-ark/enoch/pull/3"
+        other = "https://github.com/our-ark/enoch/pull/2"
         with TemporaryDirectory() as temp:
             root = Path(temp)
             queued = enqueue_task(42, "ship it", root)
             running = begin_next_task(root)
-            result = "Opened pull request: https://github.com/our-ark/enoch/pull/3"
+            result = f"Opened pull request: {own}. It builds on {other}."
 
-            complete_task(running.id, root, result=result)
+            complete_task(running.id, root, result=result, review_urls=(own,))
             status = task_queue_status(root)
 
         self.assertIsNone(status.running)
         self.assertEqual(status.history[-1].id, queued.id)
         self.assertEqual(status.history[-1].status, "completed")
-        self.assertEqual(status.history[-1].pr_urls, ("https://github.com/our-ark/enoch/pull/3",))
+        self.assertEqual(status.history[-1].pr_urls, (own,))
+        self.assertIn(other, status.history[-1].result)
+
+    def test_review_urls_in_result_text_are_never_attributed(self) -> None:
+        mentioned = "https://github.com/our-ark/enoch/pull/57"
+        result = f"Precondition not met; stopping without changes. See {mentioned}."
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            finished = enqueue_task(42, "step 2", root)
+            begin_next_task(root)
+            record_task_result(finished.id, result, root)
+            complete_task(finished.id, root, result=result)
+            failed = enqueue_task(42, "step 3", root)
+            begin_next_task(root)
+            fail_task(failed.id, root, result=result)
+            evidence = enqueue_task(42, "step 4", root)
+            running = begin_next_task(root)
+            claim_running_task(running.id, "worker-one", os.getpid(), root)
+            record_task_terminal_evidence(
+                running.id,
+                "worker-one",
+                TaskTerminalEvidence(status="completed", result=result),
+                root,
+            )
+            complete_task(running.id, root, result=result, worker_id="worker-one")
+            # A stored record keeps only its stored attributions when it loads.
+            history = task_queue_status(root).history
+            raw = {**task_queue._job_to_dict(history[0]), "review_urls": []}
+
+        self.assertEqual([job.review_urls for job in history], [(), (), ()])
+        self.assertTrue(all(mentioned in job.result for job in history))
+        self.assertEqual(task_queue._parse_job(raw).review_urls, ())
+        self.assertEqual(review_urls_in_text(f"{result} {mentioned}"), (mentioned,))
+
+    def test_terminal_evidence_attributes_only_its_review_urls(self) -> None:
+        own = "https://github.com/our-ark/enoch/pull/3"
+        other = "https://github.com/our-ark/enoch/pull/2"
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            running = begin_direct_task(42, "ship it", root)
+            claim_running_task(running.id, "worker-one", os.getpid(), root)
+            recorded = record_task_terminal_evidence(
+                running.id,
+                "worker-one",
+                TaskTerminalEvidence(
+                    status="completed",
+                    result=f"Opened {own}; see also {other}.",
+                    review_urls=(own, "not a url", own),
+                ),
+                root,
+            )
+            finished = complete_task(
+                running.id, root, result=recorded.result, worker_id="worker-one"
+            )
+
+        self.assertEqual(recorded.review_urls, (own,))
+        self.assertEqual(finished.review_urls, (own,))
 
     def test_enqueue_during_completion_preserves_both_updates(self) -> None:
         with TemporaryDirectory() as temp:
@@ -1018,10 +1079,8 @@ class EnochTaskQueueTests(unittest.TestCase):
         self.assertEqual(status.pending[0].id, queued.id)
         self.assertEqual(status.history, ())
         self.assertTrue(task_result_has_pull_request(status.pending[0].result))
-        self.assertEqual(
-            status.pending[0].pr_urls,
-            ("https://github.com/our-ark/enoch/pull/3",),
-        )
+        # A URL in an interim result is a reference, not the task's review.
+        self.assertEqual(status.pending[0].pr_urls, ())
 
     def test_reconciliation_accepts_structured_published_review_identity(self) -> None:
         with TemporaryDirectory() as temp:
