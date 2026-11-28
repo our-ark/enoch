@@ -1,11 +1,10 @@
 from datetime import datetime, timedelta, timezone
+import importlib.util
 import json
-import os
 from pathlib import Path
-import subprocess
 import sys
 from tempfile import TemporaryDirectory
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 import unittest
 from unittest.mock import MagicMock, Mock, patch
 
@@ -1916,34 +1915,31 @@ class TaskBoardSelfHealingTests(unittest.TestCase):
 
     def test_unpin_contract_falls_back_for_an_older_provider_kit(self) -> None:
         # Descendants may install a provider-kit without the unpin contract.
-        script = "\n".join(
-            [
-                "import sys",
-                "import our_ark_provider_kit",
-                "del our_ark_provider_kit.MessageUnpinProvider",
-                "from enoch.providers import MessageUnpinProvider",
-                "class Chat:",
-                "    def unpin_message(self, conversation_id, message_id): pass",
-                "assert isinstance(Chat(), MessageUnpinProvider)",
-                "assert not isinstance(object(), MessageUnpinProvider)",
-                "print(MessageUnpinProvider.__module__)",
-            ]
-        )
-        result = subprocess.run(
-            [sys.executable, "-c", script],
-            capture_output=True,
-            text=True,
-            timeout=60,
-            env={
-                **os.environ,
-                "PYTHONPATH": os.pathsep.join(
-                    [str(ROOT / "src"), str(ROOT / "libraries" / "provider-kit" / "src")]
-                ),
-            },
-        )
+        # Load a separate copy of the contracts module against a provider-kit
+        # that lacks it; the real module and its classes stay untouched.
+        import our_ark_provider_kit
+        from enoch.providers import _message_unpin_compat, contracts
 
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.strip(), "enoch.providers._message_unpin_compat")
+        older_kit = ModuleType(our_ark_provider_kit.__name__)
+        older_kit.__dict__.update(
+            (name, value)
+            for name, value in vars(our_ark_provider_kit).items()
+            if name != "MessageUnpinProvider"
+        )
+        spec = importlib.util.spec_from_file_location(
+            "_contracts_with_an_older_provider_kit", contracts.__file__,
+        )
+        loaded = importlib.util.module_from_spec(spec)
+        with patch.dict(
+            sys.modules, {our_ark_provider_kit.__name__: older_kit, spec.name: loaded},
+        ):
+            spec.loader.exec_module(loaded)
+
+        fallback = loaded.MessageUnpinProvider
+        self.assertIs(fallback, _message_unpin_compat.MessageUnpinProvider)
+        self.assertIsNot(fallback, our_ark_provider_kit.MessageUnpinProvider)
+        self.assertIsInstance(_UnpinningChat(), fallback)
+        self.assertNotIsInstance(_DeletingChat(), fallback)
 
     def test_provider_without_unpin_falls_back_to_delete(self) -> None:
         chat = _DeletingChat()
