@@ -1295,6 +1295,23 @@ class MessagePinProvider(Protocol):
 
 
 @runtime_checkable
+class MessageUnpinProvider(Protocol):
+    """Optional chat capability: unpin one pinned message in a conversation.
+
+    Agents use it to retire a message they pinned earlier, for example when a
+    fresh copy replaces it. Unlike deletion, platforms usually allow it for
+    old messages too. Failures raise ``ChatProviderError``. Providers without
+    native unpinning simply do not implement this protocol.
+    """
+
+    def unpin_message(
+        self,
+        conversation_id: ConversationId,
+        message_id: MessageId,
+    ) -> None: ...
+
+
+@runtime_checkable
 class MessageDeleteProvider(Protocol):
     """Optional chat capability: delete one message the agent sent.
 

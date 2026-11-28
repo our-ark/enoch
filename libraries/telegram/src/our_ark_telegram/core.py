@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 import re
 from typing import Any
-from urllib import parse, request
+from urllib import error as urlerror, parse, request
 
 from our_ark_provider_kit import (
     Attachment,
@@ -26,12 +26,38 @@ MAX_TELEGRAM_MESSAGE = 4096
 DEFAULT_TELEGRAM_POLL_TIMEOUT = 30
 READ_ACK_EMOJI = "👀"
 SUPPORTED_IMAGE_MIME_TYPES = {"image/jpeg", "image/png", "image/webp"}
+# Bot API error bodies are small JSON objects; never read more than this.
+MAX_ERROR_BODY = 64 * 1024
+MAX_ERROR_DESCRIPTION = 300
+_URL = re.compile(r"\b[a-z][a-z0-9+.-]*://\S+", re.IGNORECASE)
 _PEER_ALIAS = re.compile(r"[a-z][a-z0-9_-]{0,63}")
 _BOT_USERNAME = re.compile(r"[A-Za-z0-9_]{5,32}")
 
 
 class TelegramError(ChatProviderError):
-    pass
+    """A Telegram failure; Bot API rejections keep their code and description.
+
+    ``error_code`` and ``description`` come from the Bot API error body (for
+    example ``400`` and ``Bad Request: message to edit not found``), and
+    ``retry_after`` from its flood-control parameters. They are ``None`` or
+    empty for local and network failures. The message never contains the bot
+    token or the request URL.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        method: str = "",
+        error_code: int | None = None,
+        description: str = "",
+        retry_after: int | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.method = method
+        self.error_code = error_code
+        self.description = description
+        self.retry_after = retry_after
 
 
 @dataclass(frozen=True)
@@ -240,6 +266,21 @@ class TelegramClient:
             },
         )
 
+    def unpin_message(
+        self,
+        conversation_id: ConversationId,
+        message_id: MessageId,
+    ) -> None:
+        """Unpin one message; this works even where deleting it does not."""
+
+        self._call(
+            "unpinChatMessage",
+            {
+                "chat_id": conversation_id,
+                "message_id": message_id,
+            },
+        )
+
     def delete_message(
         self,
         conversation_id: ConversationId,
@@ -277,14 +318,93 @@ class TelegramClient:
         url = f"{TELEGRAM_API}/bot{self.config.token}/{method}"
         body = parse.urlencode(payload).encode("utf-8")
         req = request.Request(url, data=body, method="POST")
+        # Errors are raised after the handlers below, never inside them: the
+        # urllib exceptions can carry the request URL, which contains the bot
+        # token, so they are neither chained nor attached as context.
+        rejection: tuple[int, str, dict[str, Any] | None] | None = None
+        failure_detail = ""
+        data: Any = None
         try:
             with request.urlopen(req, timeout=self.config.poll_timeout + 10) as response:
                 data = json.loads(response.read().decode("utf-8"))
-        except (OSError, ValueError, json.JSONDecodeError) as error:
-            raise TelegramError(f"Telegram API call {method} failed.") from error
+        except urlerror.HTTPError as failure:
+            # The Bot API answers rejections (400, 403, 429, 5xx) with an HTTP
+            # error whose JSON body says why. HTTPError is an OSError, so it
+            # must be caught first.
+            reason = failure.reason if isinstance(failure.reason, str) else ""
+            rejection = (failure.code, reason, _http_error_body(failure))
+        except OSError as failure:
+            failure_detail = f"network error ({self._redact(_failure_detail(failure))})"
+        except ValueError as failure:
+            failure_detail = f"unreadable response ({type(failure).__name__})"
+        if rejection is not None:
+            status, reason, error_body = rejection
+            raise self._api_error(method, error_body, status=status, reason=reason)
+        if failure_detail:
+            raise TelegramError(
+                f"Telegram API call {method} failed: {failure_detail}.", method=method,
+            )
+        if not isinstance(data, dict):
+            raise TelegramError(
+                f"Telegram API call {method} failed: unreadable response.",
+                method=method,
+            )
         if not data.get("ok"):
-            raise TelegramError(str(data))
+            raise self._api_error(method, data, status=None)
         return data
+
+    def _api_error(
+        self,
+        method: str,
+        data: dict[str, Any] | None,
+        *,
+        status: int | None,
+        reason: str = "",
+    ) -> TelegramError:
+        """Build an error from a Bot API rejection body, keeping its detail."""
+
+        data = data or {}
+        code = data.get("error_code")
+        error_code = code if isinstance(code, int) and not isinstance(code, bool) else status
+        raw_description = data.get("description")
+        description = (
+            self._redact(" ".join(raw_description.split()))[:MAX_ERROR_DESCRIPTION]
+            if isinstance(raw_description, str)
+            else ""
+        )
+        if not description:
+            # No JSON body, for example a proxy's 502 page: use the status line.
+            reason = self._redact(" ".join(reason.split()))[:MAX_ERROR_DESCRIPTION]
+            if status is not None:
+                description = f"HTTP {status} {reason}".rstrip()
+            else:
+                description = reason or "no description"
+        parameters = data.get("parameters")
+        raw_retry = parameters.get("retry_after") if isinstance(parameters, dict) else None
+        retry_after = (
+            raw_retry
+            if isinstance(raw_retry, int) and not isinstance(raw_retry, bool) and raw_retry > 0
+            else None
+        )
+        status_part = f" ({error_code})" if error_code is not None else ""
+        message = f"Telegram API call {method} failed{status_part}: {description}"
+        if retry_after is not None and "retry after" not in description.lower():
+            message += f" (retry after {retry_after})"
+        return TelegramError(
+            message,
+            method=method,
+            error_code=error_code,
+            description=description,
+            retry_after=retry_after,
+        )
+
+    def _redact(self, text: str) -> str:
+        """Drop the bot token and any URL from text that goes into an error."""
+
+        token = self.config.token
+        if token:
+            text = text.replace(token, "<redacted>")
+        return _URL.sub("<url>", text)
 
     def _call_with_plain_fallback(
         self,
@@ -397,6 +517,31 @@ def _attachments(message: dict[str, Any]) -> tuple[Attachment, ...]:
                 )
             )
     return tuple(attachments)
+
+
+def _http_error_body(failure: urlerror.HTTPError) -> dict[str, Any] | None:
+    """Read and close a Bot API error response; None when it is not JSON."""
+
+    try:
+        raw = failure.read(MAX_ERROR_BODY)
+    except (OSError, ValueError):
+        raw = b""
+    finally:
+        failure.close()
+    try:
+        data = json.loads(raw.decode("utf-8")) if raw else None
+    except ValueError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _failure_detail(failure: OSError) -> str:
+    """Name a network failure without the request URL (and so the token)."""
+
+    reason: object = failure.reason if isinstance(failure, urlerror.URLError) else failure
+    name = type(reason if isinstance(reason, BaseException) else failure).__name__
+    text = " ".join(str(reason).split())
+    return f"{name}: {text}" if text else name
 
 
 def _message_id(data: dict[str, Any]) -> int | None:

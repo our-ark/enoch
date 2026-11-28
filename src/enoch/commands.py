@@ -1093,7 +1093,10 @@ def _board_usage(prefix: str) -> str:
                 f"{command} - post a task board, pin it when the chat supports pinning, "
                 "and keep it updated as tasks change"
             ),
-            f"{command} off - stop updating the current task board",
+            (
+                f"{command} off - stop updating the current task board; no board is posted "
+                f"again until you run {command}"
+            ),
             (
                 f"{command} repost <interval> <count> - every <interval>, post the board "
                 "again when more than <count> chat messages appeared after it "
@@ -1101,11 +1104,12 @@ def _board_usage(prefix: str) -> str:
             ),
             f"{command} repost off|on|default - turn re-posting off or on, or restore 1h 10",
             (
-                f"Running {command} again posts a fresh board and stops updating the old one. "
-                "The board is edited silently. A re-posted board is sent and pinned silently, "
-                "and the old one is deleted where the chat allows it. While the board is "
-                "active, each task posts only a start line and a final result; use "
-                f"{prefix}task show <id> for full details."
+                f"Running {command} again posts a fresh board. The board is edited silently; "
+                "a failed edit is retried, and a board that was deleted or can no longer be "
+                "edited is replaced by a fresh one automatically. A re-posted board is sent "
+                "and pinned silently, and the old one is unpinned and deleted where the chat "
+                "allows it. While the board is active, each task posts only a start line and "
+                f"a final result; use {prefix}task show <id> for full details."
             ),
         ]
     )

@@ -1,9 +1,10 @@
 from datetime import datetime, timedelta, timezone
+import importlib.util
 import json
 from pathlib import Path
 import sys
 from tempfile import TemporaryDirectory
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 import unittest
 from unittest.mock import MagicMock, Mock, patch
 
@@ -21,7 +22,13 @@ from enoch.app.pending_merges import (
     save_pending_merges,
 )
 from enoch.app.task_board import (
+    EDIT_FAILED,
+    EDIT_GONE,
+    EDIT_TRANSIENT,
+    EDIT_UNCHANGED,
+    BoardEditFailure,
     TaskBoardState,
+    classify_board_edit_error,
     count_task_board_message,
     load_task_board_state,
     render_quota_line,
@@ -49,6 +56,7 @@ from enoch.providers import (
     ChatProviderError,
     MessageDeleteProvider,
     MessagePinProvider,
+    MessageUnpinProvider,
     SilentMessageProvider,
 )
 from enoch.tasks.config import board_repost_settings
@@ -526,6 +534,10 @@ class TaskBoardRenderTests(unittest.TestCase):
                 "last_digest": "abc",
                 "messages_since_board": 0,
                 "last_reposted_at": "",
+                "stopped_by_human": False,
+                "stale_since": "",
+                "edit_failures": 0,
+                "last_recovery_at": "",
             },
         )
         self.assertEqual(loaded, TaskBoardState(True, 42, 9, "abc"))
@@ -939,22 +951,25 @@ class TaskBoardRefreshTests(unittest.TestCase):
         self.assertIn("Queued:\n- none", self.chat.edits[1][2])
         self.assertTrue(load_task_board_state(self.root).active)
 
-    def test_failed_edit_marks_board_stale_without_reposting(self) -> None:
+    def test_gone_board_is_replaced_and_edits_continue_on_the_new_one(self) -> None:
         self.app._task_board_command("")
         self.chat.edit_error = "Bad Request: message to edit not found"
         self.status = _status(pending=(_job(4, "New work"),))
 
         self.app._refresh_task_board()
-        self.status = _status(pending=(_job(4, "New work"), _job(5, "More")))
-        self.app._refresh_task_board()
-        self.app._refresh_task_board()
         state = load_task_board_state(self.root)
 
+        # A provider without pin, unpin, delete or silent send still heals.
         self.assertEqual(self.chat.edit_attempts, 1)
-        self.assertEqual(len(self.chat.sent), 1)
-        self.assertFalse(state.enabled)
-        self.assertFalse(state.active)
-        self.assertEqual(state.message_id, 1)
+        self.assertEqual(len(self.chat.sent), 2)
+        self.assertIn("Queued:\n- #4 New work", self.chat.sent[1][1])
+        self.assertTrue(state.active)
+        self.assertEqual((state.message_id, state.stale_since), (2, ""))
+
+        self.chat.edit_error = ""
+        self.status = _status(pending=(_job(4, "New work"), _job(5, "More")))
+        self.app._refresh_task_board()
+        self.assertEqual([edit[1] for edit in self.chat.edits], [2])
 
     def test_board_off_stops_updates(self) -> None:
         self.app._task_board_command("")
@@ -965,7 +980,9 @@ class TaskBoardRefreshTests(unittest.TestCase):
 
         self.assertIn("updates stopped", reply)
         self.assertEqual(self.chat.edits, [])
-        self.assertFalse(load_task_board_state(self.root).enabled)
+        state = load_task_board_state(self.root)
+        self.assertFalse(state.enabled)
+        self.assertTrue(state.stopped_by_human)
         self.assertIn("already off", self.app._task_board_command("off"))
 
     def test_running_board_again_replaces_the_tracked_message(self) -> None:
@@ -1500,6 +1517,482 @@ class TaskBoardRepostTests(unittest.TestCase):
         )
 
 
+NOT_MODIFIED = (
+    "Telegram API call editMessageText failed (400): Bad Request: message is not "
+    "modified: specified new message content and reply markup are exactly the same "
+    "as a current content and reply markup of the message"
+)
+NOT_FOUND = "Telegram API call editMessageText failed (400): Bad Request: message to edit not found"
+TIMEOUT = "Telegram API call editMessageText failed: network error (TimeoutError: timed out)."
+BAD_GATEWAY = "Telegram API call editMessageText failed (502): HTTP 502 Bad Gateway"
+FLOOD = "Telegram API call editMessageText failed (429): Too Many Requests: retry after 30"
+# What the Telegram provider reported before it kept the Bot API detail.
+BARE_FAILURE = "Telegram API call editMessageText failed."
+
+
+class TaskBoardEditClassificationTests(unittest.TestCase):
+    def test_edit_errors_are_classified(self) -> None:
+        cases = {
+            NOT_MODIFIED: (EDIT_UNCHANGED, None),
+            NOT_FOUND: (EDIT_GONE, None),
+            "Telegram API call editMessageText failed (400): Bad Request: message can't be edited": (
+                EDIT_GONE, None,
+            ),
+            "Bad Request: MESSAGE_ID_INVALID": (EDIT_GONE, None),
+            FLOOD: (EDIT_TRANSIENT, 30),
+            "Telegram API call editMessageText failed (429): Flood control (retry after 7)": (
+                EDIT_TRANSIENT, 7,
+            ),
+            BAD_GATEWAY: (EDIT_TRANSIENT, None),
+            "Telegram API call editMessageText failed (500): Internal Server Error": (
+                EDIT_TRANSIENT, None,
+            ),
+            TIMEOUT: (EDIT_TRANSIENT, None),
+            "Telegram API call editMessageText failed: network error "
+            "(ConnectionResetError: [Errno 54] Connection reset by peer).": (EDIT_TRANSIENT, None),
+            BARE_FAILURE: (EDIT_FAILED, None),
+            "Telegram API call editMessageText failed (403): Forbidden: bot was kicked": (
+                EDIT_FAILED, None,
+            ),
+            "Authorization denied for notification.edit: denied.": (EDIT_FAILED, None),
+            "": (EDIT_FAILED, None),
+        }
+        for error, (kind, retry_after) in cases.items():
+            with self.subTest(error=error):
+                self.assertEqual(
+                    classify_board_edit_error(error), BoardEditFailure(kind, retry_after),
+                )
+
+
+class TaskBoardSelfHealingTests(unittest.TestCase):
+    """A failed edit never freezes the board; replaced boards leave the pins."""
+
+    def setUp(self) -> None:
+        directory = TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name)
+        self.status = _status()
+        self.changes = 0
+        self.chat = _UnpinningChat()
+        self.app = self._app(self.chat)
+        worker = patch.object(EnochApplication, "_maybe_start_task_worker")
+        worker.start()
+        self.addCleanup(worker.stop)
+        self.now = datetime.now(timezone.utc)
+
+    def _app(self, chat) -> EnochApplication:
+        app = EnochApplication(load_identity(), self.root, chat)
+        inspect = patch.object(app.workflow, "inspect", side_effect=lambda: self.status)
+        inspect.start()
+        self.addCleanup(inspect.stop)
+        return app
+
+    def _change(self) -> None:
+        """Change the board content so the next refresh edits it."""
+
+        self.changes += 1
+        self.status = _status(pending=(_job(100 + self.changes, f"Work {self.changes}"),))
+
+    def _refresh(self, **delta) -> None:
+        self.app._refresh_task_board(self.now + timedelta(**delta))
+
+    def _events(self, record: MagicMock) -> list[str]:
+        return [call.args[0] for call in record.call_args_list]
+
+    def test_not_modified_counts_as_success(self) -> None:
+        self.app._task_board_command("")
+        self.chat.edit_error = NOT_MODIFIED
+        self._change()
+
+        with patch("enoch.app.core._record_system_event") as record:
+            self._refresh()
+            self._refresh(seconds=30)
+        state = load_task_board_state(self.root)
+
+        record.assert_not_called()
+        self.assertEqual(self.chat.edit_attempts, 1)  # not retried
+        self.assertEqual(state.last_digest, self.app._render_task_board().digest)
+        self.assertEqual((state.message_id, state.edit_failures, state.stale_since), (1, 0, ""))
+        self.assertEqual(len(self.chat.sent), 1)
+
+    def test_transient_errors_keep_the_board_and_retry_on_later_cycles(self) -> None:
+        self.app._task_board_command("")
+        self._change()
+
+        with patch("enoch.app.core._record_system_event") as record:
+            self.chat.edit_error = TIMEOUT
+            for second in range(4):
+                self._refresh(seconds=second)
+            self.chat.edit_error = BAD_GATEWAY
+            for second in range(4, 8):
+                self._refresh(seconds=second)
+            state = load_task_board_state(self.root)
+            self.chat.edit_error = ""
+            self._refresh(seconds=8)
+
+        self.assertEqual(self.chat.edit_attempts, 9)
+        self.assertTrue(state.active)
+        self.assertEqual((state.message_id, state.edit_failures, state.stale_since), (1, 0, ""))
+        self.assertEqual(len(self.chat.sent), 1)  # no fresh board
+        # Each distinct error is logged once.
+        self.assertEqual(self._events(record), ["task_board_edit_failed"] * 2)
+        self.assertEqual(
+            [call.kwargs["details"]["kind"] for call in record.call_args_list],
+            ["transient", "transient"],
+        )
+        self.assertEqual([edit[1] for edit in self.chat.edits], [1])
+        self.assertIn("Work 1", self.chat.edits[0][2])
+        self.assertEqual(
+            load_task_board_state(self.root).last_digest, self.app._render_task_board().digest,
+        )
+
+    def test_rate_limit_waits_for_retry_after(self) -> None:
+        self.app._task_board_command("")
+        self._change()
+        self.chat.edit_error = FLOOD
+
+        with patch("enoch.app.core._record_system_event") as record:
+            self._refresh()
+            self._refresh(seconds=10)
+            self._refresh(seconds=29)
+            self.assertEqual(self.chat.edit_attempts, 1)
+            self.chat.edit_error = FLOOD.replace("30", "12")
+            self._refresh(seconds=31)
+            self.assertEqual(self.chat.edit_attempts, 2)
+            self._refresh(seconds=40)
+            self.assertEqual(self.chat.edit_attempts, 2)
+            self.chat.edit_error = ""
+            self._refresh(seconds=44)
+
+        self.assertEqual(self.chat.edit_attempts, 3)
+        self.assertEqual(len(self.chat.edits), 1)
+        # A different countdown is the same error.
+        self.assertEqual(self._events(record), ["task_board_edit_failed"])
+        self.assertEqual(record.call_args.kwargs["details"]["retry_after"], 30)
+        self.assertTrue(load_task_board_state(self.root).active)
+
+    def test_message_not_found_posts_one_rate_limited_fresh_board(self) -> None:
+        self.app._task_board_command("")
+        self.chat.edit_error = NOT_FOUND
+        self._change()
+
+        with patch("enoch.app.core._record_system_event") as record:
+            self._refresh()
+        state = load_task_board_state(self.root)
+
+        self.assertEqual(self._events(record), ["task_board_stale", "task_board_reposted"])
+        self.assertEqual(record.call_args_list[0].kwargs["details"]["reason"], "gone")
+        details = record.call_args.kwargs["details"]
+        self.assertEqual(details["reason"], "stale")
+        self.assertTrue(details["old_board_unpinned"] and details["old_board_deleted"])
+        self.assertEqual(len(self.chat.sent), 2)
+        self.assertEqual(self.chat.silent, [2])
+        self.assertIn("Work 1", self.chat.sent[1][1])
+        self.assertEqual(self.chat.pins, [(42, 1), (42, 2)])
+        self.assertEqual(self.chat.calls, [("unpin", 42, 1), ("delete", 42, 1)])
+        self.assertTrue(state.active)
+        self.assertEqual(
+            (state.message_id, state.stale_since, state.edit_failures, state.messages_since_board),
+            (2, "", 0, 0),
+        )
+        self.assertEqual(state.last_recovery_at, self.now.isoformat())
+
+        # The fresh board disappears too: no second board inside the interval.
+        self._change()
+        with patch("enoch.app.core._record_system_event") as record:
+            self._refresh(minutes=1)
+            self._change()
+            self._refresh(minutes=5)
+            self._refresh(minutes=9)
+        state = load_task_board_state(self.root)
+
+        self.assertEqual(self._events(record), ["task_board_stale"])
+        self.assertEqual(len(self.chat.sent), 2)
+        self.assertEqual(self.chat.edit_attempts, 2)  # a stale board is not edited
+        self.assertTrue(state.active)
+        self.assertEqual(state.message_id, 2)
+        self.assertTrue(state.stale_since)
+
+        self._refresh(minutes=11)
+        state = load_task_board_state(self.root)
+        self.assertEqual(len(self.chat.sent), 3)
+        self.assertIn("Work 3", self.chat.sent[2][1])
+        self.assertEqual((state.message_id, state.stale_since), (3, ""))
+        self.assertEqual(self.chat.calls[-2:], [("unpin", 42, 2), ("delete", 42, 2)])
+
+    def test_repeated_unclassified_failures_replace_the_board_past_the_bound(self) -> None:
+        self.app._task_board_command("")
+        self.chat.edit_error = BARE_FAILURE
+        self._change()
+
+        with patch("enoch.app.core._record_system_event") as record:
+            self._refresh()
+            self._refresh(seconds=30)
+            state = load_task_board_state(self.root)
+            self.assertEqual((state.message_id, state.edit_failures, state.stale_since), (1, 2, ""))
+            self.assertEqual(len(self.chat.sent), 1)
+            self._refresh(seconds=60)
+        state = load_task_board_state(self.root)
+
+        self.assertEqual(
+            self._events(record),
+            ["task_board_edit_failed", "task_board_stale", "task_board_reposted"],
+        )
+        self.assertEqual(record.call_args_list[1].kwargs["details"]["edit_failures"], 3)
+        self.assertEqual(len(self.chat.sent), 2)
+        self.assertEqual((state.message_id, state.edit_failures, state.stale_since), (2, 0, ""))
+
+    def test_failed_recovery_keeps_the_stale_board_and_retries_after_the_interval(self) -> None:
+        self.app._task_board_command("")
+        self.chat.edit_error = NOT_FOUND
+        self.chat.send_error = "Telegram API call sendMessage failed: network error (TimeoutError: timed out)."
+        self._change()
+
+        with patch("enoch.app.core._record_system_event") as record:
+            self._refresh()
+            self._refresh(minutes=5)
+            self._refresh(minutes=11)
+        state = load_task_board_state(self.root)
+
+        self.assertEqual(
+            self._events(record), ["task_board_stale", "task_board_recovery_failed"],
+        )
+        self.assertEqual(self.chat.send_attempts, 3)  # /board, then two recoveries
+        self.assertTrue(state.active and state.stale_since)
+        self.assertEqual(state.message_id, 1)
+
+        self.chat.send_error = ""
+        self._refresh(minutes=15)
+        self.assertEqual(len(self.chat.sent), 1)
+        self._refresh(minutes=22)
+        state = load_task_board_state(self.root)
+        self.assertEqual(len(self.chat.sent), 2)
+        self.assertEqual((state.message_id, state.stale_since), (2, ""))
+
+    def test_board_off_is_never_revived(self) -> None:
+        self.app._task_board_command("")
+        self.app._task_board_command("off")
+        self.chat.edit_error = NOT_FOUND
+        update_task_board_state(self.root, messages_since_board=50)
+
+        for hours in range(4):
+            self._change()
+            self._refresh(hours=hours)
+            self.app._maybe_repost_task_board(self.now + timedelta(hours=hours, minutes=1))
+        state = load_task_board_state(self.root)
+
+        self.assertEqual(self.chat.edit_attempts, 0)
+        self.assertEqual(len(self.chat.sent), 1)
+        self.assertEqual((state.enabled, state.stopped_by_human, state.message_id), (False, True, 1))
+
+        # Only the human brings it back.
+        self.chat.edit_error = ""
+        self.app._task_board_command("")
+        state = load_task_board_state(self.root)
+        self.assertTrue(state.active)
+        self.assertFalse(state.stopped_by_human)
+        self.assertEqual(state.message_id, 2)
+
+    def test_stale_board_stopped_by_the_human_is_not_replaced(self) -> None:
+        self.app._task_board_command("")
+        self.chat.edit_error = NOT_FOUND
+        self.chat.send_error = "Telegram API call sendMessage failed (500): Internal Server Error"
+        self._change()
+        self._refresh()
+        self.assertTrue(load_task_board_state(self.root).stale_since)
+
+        self.app._task_board_command("off")
+        self.chat.send_error = ""
+        self._refresh(minutes=20)
+        self._refresh(hours=3)
+        state = load_task_board_state(self.root)
+
+        self.assertEqual(len(self.chat.sent), 1)
+        self.assertFalse(state.active)
+        self.assertTrue(state.stopped_by_human)
+
+    def test_board_stopped_while_a_fresh_board_is_sent_stays_stopped(self) -> None:
+        self.app._task_board_command("")
+        self.chat.edit_error = NOT_FOUND
+        self.chat.on_silent_send = lambda: self.app._task_board_command("off")
+        self._change()
+
+        with patch("enoch.app.core._record_system_event") as record:
+            self._refresh()
+        state = load_task_board_state(self.root)
+
+        self.assertEqual(
+            self._events(record), ["task_board_stale", "task_board_repost_superseded"],
+        )
+        self.assertEqual((state.enabled, state.stopped_by_human, state.message_id), (False, True, 1))
+        # The unused fresh board is removed and never pinned.
+        self.assertEqual(self.chat.pins, [(42, 1)])
+        self.assertEqual(self.chat.calls, [("delete", 42, 2)])
+
+    def test_legacy_disabled_board_is_not_revived(self) -> None:
+        path = task_board_path(self.root)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {"schema_version": 1, "enabled": False, "chat_id": 42, "message_id": 7,
+                 "last_digest": "abc"}
+            ),
+            encoding="utf-8",
+        )
+
+        self._refresh(hours=1)
+        self.app._maybe_repost_task_board(self.now + timedelta(hours=2))
+
+        self.assertEqual((self.chat.sent, self.chat.edit_attempts), ([], 0))
+        self.assertFalse(load_task_board_state(self.root).active)
+
+    def test_board_command_unpins_then_deletes_the_previous_board(self) -> None:
+        self.app._task_board_command("")
+
+        with patch.object(
+            self.app.effect_fence, "run_authorized", wraps=self.app.effect_fence.run_authorized,
+        ) as fenced:
+            reply = self.app._task_board_command("")
+
+        self.assertIn("The previous board was removed.", reply)
+        self.assertEqual(self.chat.pins, [(42, 1), (42, 2)])
+        self.assertEqual(self.chat.calls, [("unpin", 42, 1), ("delete", 42, 1)])
+        self.assertEqual(
+            [(call.args[0], call.args[1]) for call in fenced.call_args_list],
+            [("chat.pin", ("chat.pin",)), ("chat.unpin", ("chat.pin",)), ("chat.delete", ("chat.delete",))],
+        )
+
+    def test_repost_unpins_then_deletes_the_old_board(self) -> None:
+        self.app._task_board_command("")
+        update_task_board_state(self.root, messages_since_board=11)
+
+        with patch("enoch.app.core._record_system_event") as record:
+            self.app._maybe_repost_task_board(self.now + timedelta(hours=2))
+
+        self.assertEqual(self.chat.calls, [("unpin", 42, 1), ("delete", 42, 1)])
+        details = record.call_args.kwargs["details"]
+        self.assertEqual(details["reason"], "drift")
+        self.assertTrue(details["old_board_unpinned"] and details["old_board_deleted"])
+
+    def test_delete_failure_still_unpins_the_old_board(self) -> None:
+        self.app._task_board_command("")
+        update_task_board_state(self.root, messages_since_board=11)
+        self.chat.delete_error = "Bad Request: message can't be deleted for everyone"
+
+        with patch("enoch.app.core._record_system_event") as record:
+            self.app._maybe_repost_task_board(self.now + timedelta(hours=2))
+            reply = self.app._task_board_command("")
+
+        self.assertEqual(
+            self._events(record),
+            ["task_board_delete_failed", "task_board_reposted", "task_board_delete_failed"],
+        )
+        details = record.call_args_list[1].kwargs["details"]
+        self.assertTrue(details["old_board_unpinned"])
+        self.assertFalse(details["old_board_deleted"])
+        self.assertEqual(self.chat.unpinned, [(42, 1), (42, 2)])
+        self.assertEqual(self.chat.deleted, [])
+        self.assertIn("previous board was unpinned; the chat did not allow deleting it", reply)
+        self.assertTrue(load_task_board_state(self.root).active)
+
+    def test_unpin_failure_is_logged_once_and_never_raised(self) -> None:
+        for error in (ChatProviderError("Bad Request: message to unpin not found"), RuntimeError("boom")):
+            with self.subTest(error=type(error).__name__):
+                self.chat.unpin_failure = error
+                self.app._task_board_command("")
+                old = load_task_board_state(self.root).message_id
+                update_task_board_state(self.root, messages_since_board=11)
+                self.app._task_board_repost_checked_at = None
+
+                with patch("enoch.app.core._record_system_event") as record:
+                    self.app._maybe_repost_task_board(self.now + timedelta(hours=2))
+
+                self.assertEqual(
+                    self._events(record), ["task_board_unpin_failed", "task_board_reposted"],
+                )
+                self.assertEqual(self.chat.calls[-1], ("delete", 42, old))
+                self.assertNotEqual(load_task_board_state(self.root).message_id, old)
+
+    def test_unpin_contract_falls_back_for_an_older_provider_kit(self) -> None:
+        # Descendants may install a provider-kit without the unpin contract.
+        # Load a separate copy of the contracts module against a provider-kit
+        # that lacks it; the real module and its classes stay untouched.
+        import our_ark_provider_kit
+        from enoch.providers import _message_unpin_compat, contracts
+
+        older_kit = ModuleType(our_ark_provider_kit.__name__)
+        older_kit.__dict__.update(
+            (name, value)
+            for name, value in vars(our_ark_provider_kit).items()
+            if name != "MessageUnpinProvider"
+        )
+        spec = importlib.util.spec_from_file_location(
+            "_contracts_with_an_older_provider_kit", contracts.__file__,
+        )
+        loaded = importlib.util.module_from_spec(spec)
+        with patch.dict(
+            sys.modules, {our_ark_provider_kit.__name__: older_kit, spec.name: loaded},
+        ):
+            spec.loader.exec_module(loaded)
+
+        fallback = loaded.MessageUnpinProvider
+        self.assertIs(fallback, _message_unpin_compat.MessageUnpinProvider)
+        self.assertIsNot(fallback, our_ark_provider_kit.MessageUnpinProvider)
+        self.assertIsInstance(_UnpinningChat(), fallback)
+        self.assertNotIsInstance(_DeletingChat(), fallback)
+
+    def test_provider_without_unpin_falls_back_to_delete(self) -> None:
+        chat = _DeletingChat()
+        self.app = self._app(chat)
+        self.assertNotIsInstance(chat, MessageUnpinProvider)
+        self.app._task_board_command("")
+
+        with patch("enoch.app.core._record_system_event") as record, patch.object(
+            self.app.effect_fence, "run_authorized", wraps=self.app.effect_fence.run_authorized,
+        ) as fenced:
+            reply = self.app._task_board_command("")
+
+        record.assert_not_called()
+        self.assertIn("The previous board was removed.", reply)
+        self.assertEqual(chat.deleted, [(42, 1)])
+        self.assertEqual([call.args[0] for call in fenced.call_args_list], ["chat.pin", "chat.delete"])
+
+    def test_failed_board_edits_are_not_replayed_after_a_restart(self) -> None:
+        self.app._task_board_command("")
+        self.chat.edit_error = TIMEOUT
+        self._change()
+        self._refresh()
+        self.chat.edit_error = ""
+        self._change()
+        self._refresh(seconds=30)
+        self.assertEqual(len(self.chat.edits), 1)
+
+        restarted = self._app(self.chat)
+
+        self.assertEqual(len(self.chat.edits), 1)
+        self.assertIn("Work 2", self.chat.edits[0][2])
+        restarted._refresh_task_board(self.now + timedelta(minutes=1))
+        self.assertEqual(len(self.chat.edits), 1)
+
+    def test_failed_fresh_boards_are_not_replayed_after_a_restart(self) -> None:
+        self.app._task_board_command("")
+        self.chat.edit_error = NOT_FOUND
+        self.chat.send_error = "Telegram API call sendMessage failed (500): Internal Server Error"
+        self._change()
+        self._refresh()
+        self._refresh(minutes=11)
+        self.assertEqual((self.chat.send_attempts, len(self.chat.sent)), (3, 1))
+
+        self.chat.send_error = ""
+        self._app(self.chat)
+
+        # A replayed send would leave untracked, unpinned boards in the chat.
+        self.assertEqual((self.chat.send_attempts, len(self.chat.sent)), (3, 1))
+        state = load_task_board_state(self.root)
+        self.assertTrue(state.active and state.stale_since)
+        self.assertEqual(state.message_id, 1)
+
+
 class SilentNotificationTests(unittest.TestCase):
     def test_silent_send_is_journaled_and_uses_the_silent_capability(self) -> None:
         with TemporaryDirectory() as directory:
@@ -1540,11 +2033,13 @@ class _LegacyChat:
         self.edits: list[tuple[int, int, str]] = []
         self.edit_attempts = 0
         self.edit_error = ""
+        self.send_attempts = 0
 
     def receive(self, cursor=None):
         return []
 
     def send_message(self, conversation_id, text):
+        self.send_attempts += 1
         if getattr(self, "send_error", ""):
             raise ChatProviderError(self.send_error)
         self.sent.append((conversation_id, text))
@@ -1592,6 +2087,33 @@ class _DeletingChat(_PinningChat):
         if self.delete_error:
             raise ChatProviderError(self.delete_error)
         self.deleted.append((conversation_id, message_id))
+
+
+class _UnpinningChat(_DeletingChat):
+    """Also unpins, like the Telegram provider; records unpin/delete order."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.unpinned: list[tuple[int, int]] = []
+        self.unpin_failure: BaseException | None = None
+        self.calls: list[tuple[str, int, int]] = []
+        self.on_silent_send = None
+
+    def send_silent_message(self, conversation_id, text):
+        message_id = super().send_silent_message(conversation_id, text)
+        if self.on_silent_send is not None:
+            self.on_silent_send()
+        return message_id
+
+    def unpin_message(self, conversation_id, message_id):
+        self.calls.append(("unpin", conversation_id, message_id))
+        if self.unpin_failure is not None:
+            raise self.unpin_failure
+        self.unpinned.append((conversation_id, message_id))
+
+    def delete_message(self, conversation_id, message_id):
+        self.calls.append(("delete", conversation_id, message_id))
+        super().delete_message(conversation_id, message_id)
 
 
 if __name__ == "__main__":
