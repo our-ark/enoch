@@ -10,6 +10,12 @@ notification journal and the daemon effect fence.
 The state also counts the chat messages that appeared after the board message
 (inbound and outbound, never edits) so the shell can post a fresh board once
 the old one has drifted up the conversation.
+
+A board stopped by the human (``/board off``) is never revived on its own.
+A board whose message can no longer be edited is instead marked stale and
+replaced by a fresh one; :func:`classify_board_edit_error` decides which edit
+failures are harmless, which are worth retrying, and which mean the message
+is gone.
 """
 
 from __future__ import annotations
@@ -76,9 +82,50 @@ QUOTA_WINDOW_LABEL_LIMIT = 16
 QUOTA_RESET_HORIZON = timedelta(hours=24)
 _SENTENCE_BREAK = re.compile(r"(?<=[.!?])\s+|(?<=[。！？])")
 
+# Edit failures that are neither transient nor a sign the message is gone
+# make the board stale after this many consecutive attempts.
+TASK_BOARD_EDIT_FAILURE_LIMIT = 3
+# A stale board is replaced at most once per interval, so a board that keeps
+# disappearing never floods the chat with fresh copies.
+TASK_BOARD_RECOVERY_INTERVAL = timedelta(minutes=10)
+# Upper bound for a provider's "retry after" request.
+TASK_BOARD_MAX_RETRY_AFTER = timedelta(hours=1)
+
+# Outcomes of classify_board_edit_error.
+EDIT_UNCHANGED = "unchanged"  # The message already shows this text: success.
+EDIT_TRANSIENT = "transient"  # Network, timeout, 5xx or rate limit: retry later.
+EDIT_GONE = "gone"  # Deleted or no longer editable: post a fresh board.
+EDIT_FAILED = "failed"  # Anything else: retry, then a fresh board past the limit.
+
+_EDIT_UNCHANGED_MARKERS = ("message is not modified",)
+_EDIT_GONE_MARKERS = (
+    "message to edit not found",
+    "message can't be edited",
+    "message cant be edited",
+    "message_id_invalid",
+)
+_EDIT_TRANSIENT_MARKERS = (
+    "too many requests",
+    "network error",
+    "timed out",
+    "timeout",
+    "temporarily unavailable",
+    "connection reset",
+    "connection refused",
+    "connection aborted",
+    "remote end closed",
+    "internal server error",
+    "bad gateway",
+    "service unavailable",
+)
+# "(429)" and "(5xx)" as the Telegram provider reports Bot API error codes.
+_EDIT_TRANSIENT_STATUS = re.compile(r"\((?:429|5\d\d)\)")
+_RETRY_AFTER = re.compile(r"retry after (\d+)")
+
 
 @dataclass(frozen=True)
 class TaskBoardState:
+    # True while the board should be kept up to date.
     enabled: bool = False
     chat_id: ConversationId | None = None
     message_id: MessageId | None = None
@@ -87,12 +134,60 @@ class TaskBoardState:
     messages_since_board: int = 0
     # ISO time the current board message was posted, by /board or a re-post.
     last_reposted_at: str = ""
+    # Set by /board off and cleared by /board: a stopped board is never
+    # revived automatically, unlike a stale one.
+    stopped_by_human: bool = False
+    # ISO time the board message was found gone or uneditable; a fresh board
+    # replaces it. Empty while the board is healthy.
+    stale_since: str = ""
+    # Consecutive failed edits that were neither transient nor "gone".
+    edit_failures: int = 0
+    # ISO time of the last automatic attempt to replace a stale board.
+    last_recovery_at: str = ""
 
     @property
     def active(self) -> bool:
-        """True when the board should be kept up to date."""
+        """True when the board should be kept up to date (stale or not)."""
 
-        return self.enabled and self.chat_id is not None and self.message_id is not None
+        return (
+            self.enabled
+            and not self.stopped_by_human
+            and self.chat_id is not None
+            and self.message_id is not None
+        )
+
+
+@dataclass(frozen=True)
+class BoardEditFailure:
+    kind: str
+    # Seconds the provider asked to wait before the next attempt, if any.
+    retry_after: int | None = None
+
+
+def classify_board_edit_error(error: str) -> BoardEditFailure:
+    """Classify the error text of a failed board edit.
+
+    The notification journal keeps only the error text, so this matches the
+    wording chat APIs use (Telegram's included): "message is not modified"
+    is success; network errors, timeouts, 5xx and 429 (with any
+    "retry after N") are transient; "message to edit not found" and
+    "message can't be edited" mean the message is gone. Anything else,
+    including a bare "call failed" from an older provider, is a plain failure.
+    """
+
+    text = " ".join(str(error).split()).lower()
+    if any(marker in text for marker in _EDIT_UNCHANGED_MARKERS):
+        return BoardEditFailure(EDIT_UNCHANGED)
+    if any(marker in text for marker in _EDIT_GONE_MARKERS):
+        return BoardEditFailure(EDIT_GONE)
+    retry = _RETRY_AFTER.search(text)
+    if retry is not None:
+        return BoardEditFailure(EDIT_TRANSIENT, retry_after=int(retry.group(1)))
+    if _EDIT_TRANSIENT_STATUS.search(text) or any(
+        marker in text for marker in _EDIT_TRANSIENT_MARKERS
+    ):
+        return BoardEditFailure(EDIT_TRANSIENT)
+    return BoardEditFailure(EDIT_FAILED)
 
 
 @dataclass(frozen=True)
@@ -120,20 +215,25 @@ def update_task_board_state(
     root: Path | None = None,
     *,
     expected_message_id: MessageId | None = None,
+    require_active: bool = False,
     **changes: object,
 ) -> TaskBoardState | None:
     """Apply ``changes`` to the stored state under the state file lock.
 
     When ``expected_message_id`` is given, the update applies only while that message
     is still the board, so a slow edit never overwrites a newer board, and a
-    concurrent message count is never lost. Returns the saved state, or None
-    when the board moved on.
+    concurrent message count is never lost. With ``require_active``, it also
+    applies only while the board is still active, so automatic bookkeeping
+    never revives a board the human stopped meanwhile. Returns the saved
+    state, or None when the board moved on or was stopped.
     """
 
     path = task_board_path(root)
     with file_transaction(path):
         state = _parse_state(load_json_object(path))
         if expected_message_id is not None and state.message_id != expected_message_id:
+            return None
+        if require_active and not state.active:
             return None
         updated = replace(state, **changes)
         _write_state(path, updated)
@@ -171,6 +271,10 @@ def _parse_state(data: Mapping) -> TaskBoardState:
         last_digest=str(data.get("last_digest") or ""),
         messages_since_board=_count(data.get("messages_since_board")),
         last_reposted_at=str(data.get("last_reposted_at") or ""),
+        stopped_by_human=data.get("stopped_by_human") is True,
+        stale_since=str(data.get("stale_since") or ""),
+        edit_failures=_count(data.get("edit_failures")),
+        last_recovery_at=str(data.get("last_recovery_at") or ""),
     )
 
 
@@ -183,6 +287,10 @@ def _write_state(path: Path, state: TaskBoardState) -> None:
         "last_digest": state.last_digest,
         "messages_since_board": state.messages_since_board,
         "last_reposted_at": state.last_reposted_at,
+        "stopped_by_human": state.stopped_by_human,
+        "stale_since": state.stale_since,
+        "edit_failures": state.edit_failures,
+        "last_recovery_at": state.last_recovery_at,
     }
     atomic_write(path, json.dumps(payload, indent=2, sort_keys=True) + "\n")
 

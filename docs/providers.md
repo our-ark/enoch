@@ -403,6 +403,31 @@ def delete_message(self, conversation_id, message_id):
     ...
 ```
 
+`MessageUnpinProvider` unpins one message. Whenever a fresh board replaces an
+old one (a re-post, a replacement for a stale board, or `/board`), Enoch first
+unpins the old board and then tries to delete it, so the old board leaves the
+pinned bar even when deletion is refused (Telegram does not delete messages
+older than 48 hours). Unpinning reverses Enoch's own pin, so it is authorized
+with the `chat.pin` capability. Without the contract Enoch only tries the
+delete; unpin and delete failures are logged once and never stop the board:
+
+```python
+def unpin_message(self, conversation_id, message_id):
+    ...
+```
+
+Board edits are classified by their error text. "Message is not modified"
+counts as success. Network errors, timeouts, 5xx and 429 responses are
+transient: the board is kept and edited again on a later cycle, after any
+"retry after N" the chat asked for. "Message to edit not found" and "message
+can't be edited", or three other failures in a row, mark the board stale;
+Enoch then posts a fresh board through the re-post path, at most once every
+10 minutes. A board stopped with `/board off` is never revived on its own.
+Chat providers should therefore keep the platform's error code and
+description in the `ChatProviderError` message; the Telegram provider reports
+Bot API errors as `Telegram API call <method> failed (<code>): <description>`
+and never includes the bot token or request URL.
+
 ### Capabilities and authorization
 
 Providers may explicitly declare their supported operations with the versioned

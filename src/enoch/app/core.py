@@ -285,6 +285,7 @@ from enoch.providers.contracts import (
     MessageDeleteProvider,
     MessageId,
     MessagePinProvider,
+    MessageUnpinProvider,
     OutboundAttachment,
     RepositoryProvider,
     RepositoryProviderError,
@@ -530,8 +531,16 @@ from enoch.app.pending_merges import (
     parse_review_url,
 )
 from enoch.app.task_board import (
+    EDIT_GONE,
+    EDIT_TRANSIENT,
+    EDIT_UNCHANGED,
+    TASK_BOARD_EDIT_FAILURE_LIMIT,
+    TASK_BOARD_MAX_RETRY_AFTER,
+    TASK_BOARD_RECOVERY_INTERVAL,
+    BoardEditFailure,
     RenderedTaskBoard,
     TaskBoardState,
+    classify_board_edit_error,
     count_task_board_message,
     load_task_board_state,
     render_quota_line,
@@ -804,6 +813,8 @@ class EnochApplication:
         self._task_cancellations: dict[int, threading.Event] = {}
         self._stopping = False
         self._task_board_error = ""
+        # Earliest next board edit after the chat asked Enoch to slow down.
+        self._task_board_retry_at: datetime | None = None
         # When the board re-post check last ran in this daemon (UTC).
         self._task_board_repost_checked_at: datetime | None = None
         self._task_board_repost_error = ""
@@ -870,7 +881,18 @@ class EnochApplication:
             self.workflow
         )
         # Quota alerts are retried only after the monitor checks fresh account data.
-        self.notifications.recover(exclude_key_prefixes=(QUOTA_NOTIFICATION_PREFIX,))
+        # Board edits are never replayed: an old edit would roll the board back
+        # while its digest says it is current, and the next refresh renders the
+        # current board anyway. Automatic board posts are not replayed either:
+        # only the re-post itself tracks, pins and retires boards, so a replayed
+        # one would leave an untracked copy in the chat.
+        self.notifications.recover(
+            exclude_key_prefixes=(
+                QUOTA_NOTIFICATION_PREFIX,
+                TASK_BOARD_EDIT_KEY_PREFIX,
+                TASK_BOARD_REPOST_KEY_PREFIX,
+            ),
+        )
         self._run_profile_hook("on_initialize")
         self._run_extension_hooks("on_initialize")
         self.restarts.complete_startup()
@@ -3275,7 +3297,11 @@ class EnochApplication:
                 state = TaskBoardState()
             if not state.enabled:
                 return f"The task board is already off. Use {command} to post one."
-            save_task_board_state(replace(state, enabled=False), self.root)
+            # Recorded as the human's choice: unlike a stale board, a stopped
+            # one is never replaced automatically.
+            save_task_board_state(
+                replace(state, enabled=False, stopped_by_human=True), self.root,
+            )
             return (
                 "Task board updates stopped. The last board stays in the chat as it is. "
                 f"Use {command} to post a fresh one."
@@ -3328,14 +3354,29 @@ class EnochApplication:
             self.root,
         )
         self._task_board_error = ""
+        self._task_board_retry_at = None
         pin_note = self._pin_task_board(chat_id, message_id)
         lines = [
             f"Task board posted{pin_note}. {self.display_name} edits it as tasks change; "
             "edits do not send notifications. While it is active, each task posts only a "
             "start line and a final result.",
         ]
-        if previous.message_id is not None and previous.message_id != message_id:
-            lines.append("The previous board is no longer updated.")
+        if (
+            previous.chat_id is not None
+            and previous.message_id is not None
+            and (previous.chat_id, previous.message_id) != (chat_id, message_id)
+        ):
+            unpinned, deleted = self._retire_task_board_message(
+                previous.chat_id, previous.message_id,
+            )
+            if deleted:
+                lines.append("The previous board was removed.")
+            elif unpinned:
+                lines.append(
+                    "The previous board was unpinned; the chat did not allow deleting it."
+                )
+            else:
+                lines.append("The previous board is no longer updated.")
         repost = board_repost_settings(self.root)
         if repost.enabled:
             lines.append(
@@ -3422,11 +3463,11 @@ class EnochApplication:
             return f" but could not be pinned ({_clip_activity_text(str(error), limit=160)})"
         return " and pinned"
 
-    def _refresh_task_board(self) -> None:
+    def _refresh_task_board(self, now: datetime | None = None) -> None:
         """Edit the board when its content changed; never raise into run_once."""
 
         try:
-            self._refresh_task_board_once()
+            self._refresh_task_board_once(now or _utc_now())
         except StaleDaemonEpoch:
             raise
         except Exception as error:
@@ -3441,11 +3482,19 @@ class EnochApplication:
                     details={"error": message},
                 )
 
-    def _refresh_task_board_once(self) -> None:
+    def _refresh_task_board_once(self, now: datetime) -> None:
         state = load_task_board_state(self.root)
         if not state.active:
+            # Off, never posted, or stopped by the human: nothing to heal.
             return
         assert state.chat_id is not None and state.message_id is not None
+        if self._task_board_retry_at is not None and now < self._task_board_retry_at:
+            # The chat asked Enoch to slow down; edit on a later cycle.
+            return
+        self._task_board_retry_at = None
+        if state.stale_since:
+            self._recover_stale_task_board(state, now)
+            return
         rendered = self._render_task_board()
         if rendered.digest == state.last_digest:
             return
@@ -3456,22 +3505,62 @@ class EnochApplication:
             # Unique per attempt: the footer time and a repeated body must
             # never collide with an earlier journal entry for this message.
             notification_key=(
-                f"task-board:{state.message_id}:{rendered.digest[:16]}:{uuid4().hex}"
+                f"{TASK_BOARD_EDIT_KEY_PREFIX}{state.message_id}:"
+                f"{rendered.digest[:16]}:{uuid4().hex}"
             ),
         )
-        # Locked updates keyed to this message: the message counter may have
-        # moved on while the edit was in flight.
-        if result.delivered:
+        failure = None if result.delivered else classify_board_edit_error(result.error)
+        if failure is None or failure.kind == EDIT_UNCHANGED:
+            # "Not modified" means the message already shows this board, for
+            # example after an edit whose reply was lost.
+            # Locked updates keyed to this message: the message counter may
+            # have moved on while the edit was in flight.
             update_task_board_state(
-                self.root, expected_message_id=state.message_id, last_digest=rendered.digest,
+                self.root,
+                expected_message_id=state.message_id,
+                last_digest=rendered.digest,
+                edit_failures=0,
             )
             self._task_board_error = ""
             return
-        # The message may have been deleted or become uneditable. Stop here so
-        # the board never retries every cycle or posts a replacement on its own.
-        update_task_board_state(
-            self.root, expected_message_id=state.message_id, enabled=False,
+        self._task_board_edit_failed(state, failure, result.error, now)
+
+    def _task_board_edit_failed(
+        self,
+        state: TaskBoardState,
+        failure: BoardEditFailure,
+        error: str,
+        now: datetime,
+    ) -> None:
+        """Keep and retry a board after a failed edit, or replace a gone one."""
+
+        if failure.kind == EDIT_TRANSIENT:
+            # Network trouble, a timeout, a 5xx or a rate limit: the board is
+            # fine. last_digest is unchanged, so a later cycle edits again.
+            if failure.retry_after:
+                wait = min(timedelta(seconds=failure.retry_after), TASK_BOARD_MAX_RETRY_AFTER)
+                self._task_board_retry_at = now + wait
+            self._log_task_board_edit_failure(state, failure, error, state.edit_failures)
+            return
+        failures = state.edit_failures + 1
+        stale = failure.kind == EDIT_GONE or failures >= TASK_BOARD_EDIT_FAILURE_LIMIT
+        changes: dict[str, object] = {"edit_failures": failures}
+        if stale:
+            changes["stale_since"] = now.isoformat()
+        updated = update_task_board_state(
+            self.root,
+            expected_message_id=state.message_id,
+            require_active=True,
+            **changes,
         )
+        if updated is None:
+            # A new board was posted, or the human stopped it, meanwhile.
+            return
+        if not stale:
+            self._log_task_board_edit_failure(state, failure, error, failures)
+            return
+        # Marked once per board, so this is logged once.
+        self._task_board_error = ""
         _record_system_event(
             "task_board_stale",
             self.root,
@@ -3480,9 +3569,79 @@ class EnochApplication:
                 "provider": self.channel_name,
                 "chat_id": state.chat_id,
                 "message_id": state.message_id,
-                "error": result.error,
+                "error": error,
+                "reason": failure.kind,
+                "edit_failures": failures,
             },
         )
+        self._recover_stale_task_board(updated, now)
+
+    def _log_task_board_edit_failure(
+        self,
+        state: TaskBoardState,
+        failure: BoardEditFailure,
+        error: str,
+        failures: int,
+    ) -> None:
+        # Once per distinct error rather than every cycle; numbers such as a
+        # "retry after" countdown do not make an error distinct.
+        key = f"edit:{failure.kind}:{_TASK_BOARD_ERROR_NUMBERS.sub('#', error)}"
+        if key == self._task_board_error:
+            return
+        self._task_board_error = key
+        _record_system_event(
+            "task_board_edit_failed",
+            self.root,
+            status="failed",
+            details={
+                "provider": self.channel_name,
+                "chat_id": state.chat_id,
+                "message_id": state.message_id,
+                "error": error,
+                "kind": failure.kind,
+                "retry_after": failure.retry_after,
+                "edit_failures": failures,
+            },
+        )
+
+    def _recover_stale_task_board(self, state: TaskBoardState, now: datetime) -> None:
+        """Replace a board that can no longer be edited, at most once per interval."""
+
+        last_attempt = _parse_utc(state.last_recovery_at)
+        if (
+            last_attempt is not None
+            and timedelta(0) <= now - last_attempt < TASK_BOARD_RECOVERY_INTERVAL
+        ):
+            return
+        # Stamp the attempt first, so a failing send is not retried every cycle.
+        marked = update_task_board_state(
+            self.root,
+            expected_message_id=state.message_id,
+            require_active=True,
+            last_recovery_at=now.isoformat(),
+        )
+        if marked is None:
+            return
+        try:
+            self._repost_task_board(marked, now, reason="stale")
+        except ChatProviderError as error:
+            # The stale board stays tracked; the next attempt waits an interval.
+            message = f"recovery:{_TASK_BOARD_ERROR_NUMBERS.sub('#', str(error))}"
+            if message != self._task_board_error:
+                self._task_board_error = message
+                _record_system_event(
+                    "task_board_recovery_failed",
+                    self.root,
+                    status="failed",
+                    details={
+                        "provider": self.channel_name,
+                        "chat_id": state.chat_id,
+                        "message_id": state.message_id,
+                        "error": str(error),
+                    },
+                )
+            return
+        self._task_board_error = ""
 
     def _count_task_board_message(self, conversation_id: ConversationId | None) -> None:
         """Count one chat message below the board; never raise into the caller."""
@@ -3538,8 +3697,18 @@ class EnochApplication:
         self._repost_task_board(state, now)
         self._task_board_repost_error = ""
 
-    def _repost_task_board(self, state: TaskBoardState, now: datetime) -> None:
-        """Post the board again below newer messages and retire the old one."""
+    def _repost_task_board(
+        self,
+        state: TaskBoardState,
+        now: datetime,
+        *,
+        reason: str = "drift",
+    ) -> None:
+        """Post the board again below newer messages and retire the old one.
+
+        ``reason`` is "drift" for the throttled re-post and "stale" when the
+        old board can no longer be edited.
+        """
 
         assert state.chat_id is not None and state.message_id is not None
         old_message_id = state.message_id
@@ -3547,11 +3716,11 @@ class EnochApplication:
         delivery = self._deliver_message(
             state.chat_id,
             rendered.text,
-            notification_key=f"task-board-repost:{old_message_id}:{uuid4().hex}",
+            notification_key=f"{TASK_BOARD_REPOST_KEY_PREFIX}{old_message_id}:{uuid4().hex}",
             silent=True,
         )
         if not delivery.delivered:
-            # Keep editing the old board; the next check tries again.
+            # Keep the old board; the next check tries again.
             raise ChatProviderError(f"could not post a fresh task board: {delivery.error}")
         message_id = normalize_message_id(delivery.message_id)
         if message_id is None:
@@ -3559,28 +3728,36 @@ class EnochApplication:
                 "the chat provider did not return an id for the fresh task board"
             )
         # Switch first, so a crash below never leaves the state pointing at a
-        # message that is about to be deleted.
+        # message that is about to be deleted. Never revive a stopped board.
         switched = update_task_board_state(
             self.root,
             expected_message_id=old_message_id,
+            require_active=True,
             message_id=message_id,
             chat_id=state.chat_id,
             enabled=True,
             last_digest=rendered.digest,
             messages_since_board=0,
             last_reposted_at=now.isoformat(),
+            stale_since="",
+            edit_failures=0,
         )
         if switched is None:
             # /board posted or stopped the board meanwhile; this one is unused.
+            deleted = self._delete_task_board_message(state.chat_id, message_id)
             _record_system_event(
                 "task_board_repost_superseded",
                 self.root,
-                details={"chat_id": state.chat_id, "message_id": message_id},
+                details={
+                    "chat_id": state.chat_id,
+                    "message_id": message_id,
+                    "unused_board_deleted": deleted,
+                },
             )
             return
         self._task_board_error = ""
         self._pin_task_board(state.chat_id, message_id)
-        deleted = self._delete_task_board_message(state.chat_id, old_message_id)
+        unpinned, deleted = self._retire_task_board_message(state.chat_id, old_message_id)
         _record_system_event(
             "task_board_reposted",
             self.root,
@@ -3589,10 +3766,61 @@ class EnochApplication:
                 "chat_id": state.chat_id,
                 "old_message_id": old_message_id,
                 "message_id": message_id,
+                "reason": reason,
                 "messages_since_board": state.messages_since_board,
+                "old_board_unpinned": unpinned,
                 "old_board_deleted": deleted,
             },
         )
+
+    def _retire_task_board_message(
+        self, chat_id: ConversationId, message_id: MessageId,
+    ) -> tuple[bool, bool]:
+        """Unpin, then delete, a board a fresh one replaced; never raise.
+
+        Unpinning first takes the old board out of the pinned bar even when
+        the chat refuses to delete it (Telegram, for messages older than 48
+        hours). Returns whether it was unpinned and whether it was deleted.
+        """
+
+        unpinned = self._unpin_task_board_message(chat_id, message_id)
+        deleted = self._delete_task_board_message(chat_id, message_id)
+        return unpinned, deleted
+
+    def _unpin_task_board_message(
+        self, chat_id: ConversationId, message_id: MessageId,
+    ) -> bool:
+        """Unpin a retired board where the provider can; never raise."""
+
+        if not isinstance(self.client, MessageUnpinProvider):
+            # Older providers: deleting the board is the only clean-up.
+            return False
+        try:
+            # Undoing Enoch's own pin needs the same grant as pinning.
+            self.effect_fence.run_authorized(
+                "chat.unpin",
+                ("chat.pin",),
+                self.client.unpin_message,
+                chat_id,
+                message_id,
+            )
+        except StaleDaemonEpoch:
+            raise
+        except Exception as error:
+            # Each retired board is tried once, so this is logged once.
+            _record_system_event(
+                "task_board_unpin_failed",
+                self.root,
+                status="failed",
+                details={
+                    "provider": self.channel_name,
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                    "error": str(error),
+                },
+            )
+            return False
+        return True
 
     def _delete_task_board_message(
         self, chat_id: ConversationId, message_id: MessageId,
@@ -3609,7 +3837,9 @@ class EnochApplication:
                 chat_id,
                 message_id,
             )
-        except (OSError, ChatProviderError, CapabilityAuthorizationError) as error:
+        except StaleDaemonEpoch:
+            raise
+        except Exception as error:
             # For example, the message is too old to delete. Each retired
             # board is tried once, so this is logged once; it stays in place.
             _record_system_event(
@@ -7657,6 +7887,15 @@ def _parse_utc(value: str) -> datetime | None:
     except ValueError:
         return None
     return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
+
+
+# Journal keys of board edits and automatic board posts; neither is replayed
+# after a restart (see EnochApplication.__init__).
+TASK_BOARD_EDIT_KEY_PREFIX = "task-board:"
+TASK_BOARD_REPOST_KEY_PREFIX = "task-board-repost:"
+# Digits in board errors (message ids, "retry after" countdowns) that do not
+# make an error distinct for log-once purposes.
+_TASK_BOARD_ERROR_NUMBERS = re.compile(r"\d+")
 
 
 def _is_task_board_notification(key: str) -> bool:

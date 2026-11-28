@@ -133,6 +133,11 @@ except ImportError:  # provider-kit compatibility during message-delete rollout
         SilentMessageProvider,
     )
 
+try:
+    from our_ark_provider_kit import MessageUnpinProvider
+except ImportError:  # provider-kit compatibility during message-unpin rollout
+    from enoch.providers._message_unpin_compat import MessageUnpinProvider
+
 from our_ark_provider_kit import (  # noqa: E402
     REPOSITORY_CONTRACT_VERSION,
     REVIEW_CONTRACT_VERSION,
@@ -198,6 +203,7 @@ __all__ = [
     "MessageId",
     "MessageDeleteProvider",
     "MessagePinProvider",
+    "MessageUnpinProvider",
     "SilentMessageProvider",
     "OutboundAttachment",
     "NOTIFICATION_CONTRACT_VERSION",

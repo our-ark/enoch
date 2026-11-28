@@ -23,6 +23,7 @@ from our_ark_provider_kit import (
     DurableNotificationProvider,
     MessageDeleteProvider,
     MessagePinProvider,
+    MessageUnpinProvider,
     NotificationCapabilities,
     NotificationIntent,
     NotificationReceipt,
@@ -198,6 +199,15 @@ class ProviderKitTests(unittest.TestCase):
         self.assertNotIsInstance(FakeChatProvider(), MessagePinProvider)
         self.assertIsInstance(PinningChatProvider(), MessagePinProvider)
         self.assertIsInstance(PinningChatProvider(), ChatProvider)
+
+    def test_message_unpin_contract_is_optional_and_runtime_checkable(self) -> None:
+        class UnpinningChatProvider(FakeChatProvider):
+            def unpin_message(self, conversation_id, message_id):
+                return None
+
+        self.assertNotIsInstance(FakeChatProvider(), MessageUnpinProvider)
+        self.assertIsInstance(UnpinningChatProvider(), MessageUnpinProvider)
+        self.assertIsInstance(UnpinningChatProvider(), ChatProvider)
 
     def test_message_delete_contract_is_optional_and_runtime_checkable(self) -> None:
         class DeletingChatProvider(FakeChatProvider):
