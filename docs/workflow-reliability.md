@@ -120,9 +120,11 @@ The daemon loop runs the `/update` flow once no task is running and no direct
 worker is alive: update from the authoritative repository, run doctor, and
 restart through the same restart coordinator only when doctor passed. While the
 update is pending, new tasks wait for it. While another merge on the repository
-is still pending, the update waits for it as well, without holding the queue,
-so CI fix tasks can still run. All merges that land before the update runs
-share it. The flag survives restarts and is cleared when the update completes,
+is still pending, the update waits for it as well. Meanwhile only CI fix tasks
+start, because that merge may need one, and nothing is promoted from backlog,
+as with land before next. Any other task would run on the old code and delay
+the update until it finished. The other merge lands or stops within its bounded
+wait. All merges that land before the update runs share it. The flag survives restarts and is cleared when the update completes,
 whatever the outcome. A manual `/update` clears it too.
 
 If doctor fails, the update is rolled back, the daemon keeps running the

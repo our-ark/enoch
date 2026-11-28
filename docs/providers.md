@@ -545,6 +545,13 @@ stored as the task's review, never watched for that task, never merged by the
 PR auto-merge policy or a `--merge=auto` override, and never hold the task
 queue.
 
+A task that completes after opening its review from its own branch keeps that
+review even when its final message gives no link ("opened PR #125"). Enoch
+finds the review whose head is the branch tip. It first checks a "PR #N"
+reference in the result against the authoritative repository, then falls back
+to one listing of open reviews. The review is then watched, merged by the
+policy and allowed to hold the queue like any published review.
+
 A task that times out, fails or is stopped after it opened its review from
 its own branch still has that review recorded, mentioned in its final message
 and watched for CI like any published review (re-runs and fix tasks

@@ -596,6 +596,9 @@ TASK_CONTEXT_SOURCE_CHAT = "chat-snapshot"
 # Trigger of the automatic CI fix tasks the pending-merge watcher queues.
 CI_REPAIR_TRIGGER = "ci-repair"
 CI_FIX_TRIGGERS = frozenset({CI_REPAIR_TRIGGER})
+# "PR #N" references in a completed task's result that are inspected to find
+# the task's own PR before falling back to one listing of open reviews.
+MAX_REVIEW_REFERENCE_CHECKS = 3
 NEEDS_CLARIFICATION_PREFIX = "NEEDS_CLARIFICATION:"
 NO_EXTRA_TASK_CONTEXT = "No extra context needed."
 _CURRENT_EVENT_KEY: ContextVar[str] = ContextVar("enoch_event_key", default="")
@@ -2688,7 +2691,7 @@ class EnochApplication:
             )
             reply = outcome.message
             reply = self._capture_task_regression_signals(reply)
-            published_reviews = self._reviews_published_by(job, reply)
+            run_result = reply
             if deadline.expired.is_set():
                 reply = _task_timeout_message(deadline.timeout_seconds)
                 completed_status = "failed"
@@ -2700,6 +2703,10 @@ class EnochApplication:
                     failure_class=outcome.failure_class or "permanent",
                     retryable=outcome.retryable,
                 )
+            # Verified against the run's own result, even when it timed out.
+            published_reviews = self._reviews_published_by(
+                job, run_result, completed=completed_status == "completed"
+            )
         except CapabilityAuthorizationError as error:
             reply = str(error)
             completed_status = "failed"
@@ -5467,7 +5474,8 @@ class EnochApplication:
                 return
             # Land before next: while a task's review is still merging, only
             # its CI fix tasks may start, and nothing is promoted from backlog.
-            if self._land_hold() is not None:
+            # The same holds while an update waits for another merge to land.
+            if self._land_hold() is not None or self._auto_update_admits_only_ci_fixes():
                 if not any(_is_ci_fix_task(job) for job in status.pending):
                     return
             elif status.pending_count == 0 and self._promote_next_backlog_if_idle() is None:
@@ -5518,6 +5526,11 @@ class EnochApplication:
                 job = self.workflow.start_next(triggers=CI_FIX_TRIGGERS)
                 if job is None:
                     reason = "review"
+                    break
+            elif self._auto_update_admits_only_ci_fixes():
+                job = self.workflow.start_next(triggers=CI_FIX_TRIGGERS)
+                if job is None:
+                    reason = "update"
                     break
             else:
                 job = self.workflow.start_next()
@@ -6029,7 +6042,7 @@ class EnochApplication:
                 )
             reply = outcome.message
             reply = self._capture_task_regression_signals(reply)
-            published_reviews = self._reviews_published_by(job, reply)
+            run_result = reply
             if deadline.expired.is_set():
                 reply = _task_timeout_message(deadline.timeout_seconds)
                 completed_status = "failed"
@@ -6041,6 +6054,12 @@ class EnochApplication:
                     failure_class=outcome.failure_class or "permanent",
                     retryable=outcome.retryable,
                 )
+            # Verified against the run's own result, even when it timed out. A
+            # completed run without a review looks on its own branch too, so
+            # the merge policy, CI watch and land hold apply to its PR.
+            published_reviews = self._reviews_published_by(
+                job, run_result, completed=completed_status == "completed"
+            )
         except CapabilityAuthorizationError as error:
             reply = str(error)
             completed_status = "failed"
@@ -7105,6 +7124,20 @@ class EnochApplication:
             return True
         return bool(self._auto_update_pending()) and not self._auto_update_waits_for_merges()
 
+    def _auto_update_admits_only_ci_fixes(self) -> bool:
+        """An update is pending but waits for another merge on this repository.
+
+        Meanwhile only CI fix tasks start, since that merge may need one, and
+        nothing is promoted from backlog, as with the land-before-next hold.
+        Any other task would start on the old code and delay the update until
+        it finished. The other merge lands or stops within its bounded wait,
+        and the update then runs before new work. Never raises.
+        """
+
+        if self._auto_update_running:
+            return False  # _auto_update_holds_work already holds everything
+        return bool(self._auto_update_pending()) and self._auto_update_waits_for_merges()
+
     def _maybe_run_auto_update(self) -> None:
         """Run a pending automatic update once no task is running. Never raises."""
 
@@ -7297,19 +7330,31 @@ class EnochApplication:
     def _published_reviews(self, job: TaskJob) -> tuple[str, ...]:
         """Reviews ``job`` published, not ones its request only mentioned."""
 
-        requested = f"{job.text}\n{job.context}"
-        return tuple(url for url in job.review_urls if url not in requested)
+        return tuple(url for url in job.review_urls if not _named_in_request(job, url))
 
-    def _reviews_published_by(self, job: TaskJob, result: str) -> tuple[str, ...]:
-        """Review URLs in a finished run's ``result`` that task ``job`` published.
+    def _reviews_published_by(
+        self,
+        job: TaskJob,
+        result: str,
+        *,
+        completed: bool = False,
+    ) -> tuple[str, ...]:
+        """Reviews that task ``job`` published in a finished run with ``result``.
 
         Reviews from the task's publish stage are already on the job. A review
         the task's runtime opened itself counts only when its head is the tip
-        of the task's own workspace branch on the authoritative remote. Any
-        other review URL in the result is only a reference: it is never stored
-        as the task's review, so it never starts the merge policy, CI watching,
-        CI fix tasks or the land-before-next hold. Never raises; a review that
-        cannot be verified stays a reference.
+        of the task's own workspace branch on the authoritative remote:
+
+        - a review URL in ``result`` with that head; or
+        - for a run that ``completed`` with no review either way, the review
+          ``_completed_task_review`` finds on that branch, so a final message
+          without a link ("opened PR #125") does not lose the task its PR.
+
+        Any other review URL in the result is only a reference: it is never
+        stored as the task's review, so it never starts the merge policy, CI
+        watching, CI fix tasks or the land-before-next hold. The branch tip is
+        read once. Never raises; a lookup error is recorded once and a review
+        that cannot be verified stays a reference.
         """
 
         current = job
@@ -7320,8 +7365,15 @@ class EnochApplication:
             mentioned = tuple(
                 url for url in review_urls_in_text(result) if url not in current.review_urls
             )
-            if mentioned:
-                owned = self._reviews_on_task_branch(current, mentioned)
+            look_up = completed and self._completed_task_needs_review_lookup(current)
+            if mentioned or look_up:
+                tip = self._task_branch_tip(current)
+                if mentioned:
+                    owned = self._reviews_on_task_branch(current, mentioned, tip=tip)
+                if look_up and not owned:
+                    owned = self._completed_task_review(
+                        current, result, tip=tip, checked=mentioned
+                    )
         except StaleDaemonEpoch:
             raise
         except Exception as error:  # noqa: BLE001 - unverified reviews stay references
@@ -7348,10 +7400,15 @@ class EnochApplication:
         self,
         job: TaskJob,
         urls: tuple[str, ...],
+        *,
+        tip: str | None = None,
     ) -> tuple[str, ...]:
-        """The ``urls`` whose review head is the tip of ``job``'s pushed branch."""
+        """The ``urls`` whose review head is the tip of ``job``'s pushed branch.
 
-        tip = self._task_branch_tip(job)
+        ``tip`` is that branch tip when the caller already read it.
+        """
+
+        tip = self._task_branch_tip(job) if tip is None else tip
         if not tip:
             return ()
         self.authorization.require("forge.inspect", ("forge.inspect",))
@@ -7365,22 +7422,121 @@ class EnochApplication:
                 owned.append(url)
         return tuple(owned)
 
-    def _open_review_on_task_branch(self, job: TaskJob) -> str:
+    def _open_review_on_task_branch(self, job: TaskJob, *, tip: str | None = None) -> str:
         """URL of the open review opened from ``job``'s own branch, or "".
 
         The same ownership rule as ``_reviews_on_task_branch``: the review's
         head is the tip of the task's workspace branch on the authoritative
-        remote. Costs one ``ls-remote`` and, only when the branch was pushed,
-        one forge listing. Raises on forge or authorization errors.
+        remote. A review the task's request itself names is not the task's
+        own. Costs one ``ls-remote`` (none when the caller passes ``tip``)
+        and, only when the branch was pushed, one forge listing. Shared by
+        tasks that ended unfinished and tasks that completed without linking
+        their PR. Raises on forge or authorization errors.
         """
 
-        tip = self._task_branch_tip(job)
+        tip = self._task_branch_tip(job) if tip is None else tip
         if not tip:
             return ""
         self.authorization.require("forge.list", ("forge.inspect",))
         for record in self.review.list_open_reviews(self.root, limit=OPEN_REVIEW_LIST_LIMIT):
-            if record.identity.url and _is_task_branch_review(record, tip):
-                return record.identity.url
+            url = record.identity.url
+            if url and _is_task_branch_review(record, tip) and not _named_in_request(job, url):
+                return url
+        return ""
+
+    def _completed_task_needs_review_lookup(self, job: TaskJob) -> bool:
+        """Whether a completed ``job`` should look for a PR on its own branch.
+
+        Only when nothing gave it a review: neither its publish stage nor an
+        earlier attempt (a retry that carries its parent's PR keeps exactly
+        that PR, as before). Enoch's own CI fix tasks are skipped: they push
+        to the PR they repair, which another task owns.
+        """
+
+        return (
+            bool(job.workspace_id)
+            and not job.review_urls
+            and not job.review_url
+            and job.trigger != CI_REPAIR_TRIGGER
+        )
+
+    def _completed_task_review(
+        self,
+        job: TaskJob,
+        result: str,
+        *,
+        tip: str,
+        checked: tuple[str, ...] = (),
+    ) -> tuple[str, ...]:
+        """The PR a completed task opened from its own branch but did not link.
+
+        ``tip`` is the pushed tip of the task's workspace branch; without one
+        the branch was never pushed and there is nothing to look up (no forge
+        call). Otherwise a "PR #N" or "#N" in ``result`` counts once PR N on
+        the authoritative repository has ``tip`` as its head; failing that,
+        one forge listing finds the open review whose head is ``tip``.
+        ``checked`` are review URLs already verified (and rejected), so their
+        numbers are not inspected again. Unverified references never count.
+        Raises on forge or authorization errors.
+        """
+
+        if not tip:
+            return ()
+        source = "result-reference"
+        url = self._referenced_review_on_task_branch(job, result, tip=tip, checked=checked)
+        if not url:
+            source = "task-branch"
+            url = self._open_review_on_task_branch(job, tip=tip)
+        if not url:
+            return ()
+        _record_system_event(
+            "task_review_found_on_branch",
+            self.root,
+            details={
+                "task_id": job.id,
+                "workspace_id": job.workspace_id,
+                "review": url,
+                "source": source,
+            },
+        )
+        return (url,)
+
+    def _referenced_review_on_task_branch(
+        self,
+        job: TaskJob,
+        result: str,
+        *,
+        tip: str,
+        checked: tuple[str, ...] = (),
+    ) -> str:
+        """URL of a review ``result`` names by number whose head is ``tip``, or "".
+
+        At most ``MAX_REVIEW_REFERENCE_CHECKS`` numbers are inspected, explicit
+        "PR #N" first. A reference that cannot be inspected, is on another
+        repository, or whose head is another branch does not count.
+        """
+
+        skip = {parse_review_url(url)[1] for url in checked}
+        numbers = [
+            number for number in _review_numbers_in_text(result) if number not in skip
+        ][:MAX_REVIEW_REFERENCE_CHECKS]
+        if not numbers:
+            return ""
+        self.authorization.require("forge.inspect", ("forge.inspect",))
+        for number in numbers:
+            try:
+                record = self.review.inspect_review(_review_identity(str(number)), self.root)
+            except (ReviewProviderError, ForgeProviderError, ValueError):
+                continue
+            url = record.identity.url
+            if (
+                url
+                and _is_task_branch_review(record, tip)
+                and self._is_authoritative_review(url)
+                and parse_review_url(url)[1] == number
+                and not _named_in_request(job, url)
+            ):
+                return url
         return ""
 
     def _task_branch_tip(self, job: TaskJob) -> str:
@@ -7414,8 +7570,7 @@ class EnochApplication:
             reviews = self._published_reviews(job)
             if not reviews:
                 url = self._open_review_on_task_branch(job)
-                # A review the request itself named is not the task's own.
-                if not url or url in f"{job.text}\n{job.context}":
+                if not url:
                     return job, ""
                 job = self._record_ended_task_reviews(job, (url,))
                 reviews = (url,)
@@ -8236,6 +8391,44 @@ def _is_task_branch_review(record: ReviewRecord, tip: str) -> bool:
 
     head = record.versions[-1].revision.id if record.versions else ""
     return bool(tip) and head == tip
+
+
+def _named_in_request(job: TaskJob, url: str) -> bool:
+    """Whether ``job``'s own request names review ``url``; then it is not the task's."""
+
+    return url in f"{job.text}\n{job.context}"
+
+
+# "#N" in a task result; "PR#N" too. Not in a URL fragment or "&#N;".
+_REVIEW_NUMBER_REFERENCE = re.compile(r"(?:(?<=\bPR)|(?<![\w/&#]))#(\d+)\b", re.IGNORECASE)
+# Words before "#N" that make it a review reference ("PR #125", "pull request #125").
+_REVIEW_REFERENCE_WORDS = frozenset({"pr", "prs", "request", "requests", "mr"})
+# Words before "#N" that name something else ("task #83", "backlog #25").
+_NON_REVIEW_REFERENCE_WORDS = frozenset(
+    {"task", "tasks", "backlog", "item", "items", "issue", "issues", "step"}
+)
+
+
+def _review_numbers_in_text(text: str) -> tuple[int, ...]:
+    """Review numbers ``text`` names as "PR #N" or a bare "#N", without repeats.
+
+    Explicit "PR #N" and "pull request #N" come first, then bare "#N". A "#N"
+    after "task", "backlog" or "issue" names something else and is skipped.
+    These are only candidates: the caller must verify each one before it
+    counts as a task's review.
+    """
+
+    explicit: list[int] = []
+    bare: list[int] = []
+    for match in _REVIEW_NUMBER_REFERENCE.finditer(text):
+        before = text[max(0, match.start() - 32) : match.start()].split()
+        word = before[-1].strip("([{\"'`*_:,").casefold() if before else ""
+        number = int(match.group(1))
+        if word in _REVIEW_REFERENCE_WORDS:
+            explicit.append(number)
+        elif word not in _NON_REVIEW_REFERENCE_WORDS:
+            bare.append(number)
+    return tuple(dict.fromkeys((*explicit, *bare)))
 
 
 def _ended_task_review_note(

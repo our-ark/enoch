@@ -67,8 +67,9 @@ status for task outcomes.
 
 Despite its name, `resume_pending_tasks` **does not unpause tasks**. Runtime
 access pauses and extension recovery holds remain in force. It also respects
-restart, automatic-update, and review-merge holds. The latter continues to
-allow eligible CI-fix tasks, just like the daemon worker.
+restart, automatic-update, and review-merge holds. A review-merge hold, and an
+automatic update that waits for another merge to land, still allow eligible
+CI-fix tasks, just like the daemon worker.
 
 `stop_reason` is one of:
 
