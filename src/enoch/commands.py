@@ -82,6 +82,9 @@ class CoreCommand:
     synopsis: str
     summary: str
     usage: CommandUsageFn | None = None
+    # One short line for the model's command index: "<syntax> - <summary>".
+    # Empty means the help summary line is already enough.
+    index: str = ""
 
     @property
     def command(self) -> str:
@@ -90,6 +93,11 @@ class CoreCommand:
     def summary_line(self, prefix: str = "/") -> str:
         synopsis = f" {self.synopsis}" if self.synopsis else ""
         return f"{prefix}{self.name}{synopsis} - {self.summary}"
+
+    def index_line(self, prefix: str = "/") -> str:
+        if not self.index:
+            return self.summary_line(prefix)
+        return f"{prefix}{self.name} {self.index.replace('{prefix}', prefix)}"
 
     def usage_message(self, prefix: str = "/") -> str:
         if self.usage is not None:
@@ -938,6 +946,67 @@ def runtime_command_reference(*, command_prefix: str = "/") -> str:
     )
 
 
+COMMAND_INDEX_HEADER = "Active chat command index:"
+
+
+def runtime_command_index(*, command_prefix: str = "/") -> str:
+    """Compact per-session command list for the model; help gives full usage.
+
+    Review merge rules are always included in full, because leaving them out
+    could lead to a wrong or unauthorized merge.
+    """
+
+    return "\n".join(
+        [
+            COMMAND_INDEX_HEADER,
+            (
+                "Use these exact commands when they directly perform the human's request; do not "
+                "route configuration or inspection through a work task. One line per operation: "
+                "before using a subcommand or option you are unsure of, run the help operation for "
+                'its full usage, for example {"command": "help", "argument": "pr"}. '
+                "Never invent commands or options."
+            ),
+            *(command.index_line(command_prefix) for command in CORE_COMMANDS),
+            "",
+            review_merge_rules(command_prefix),
+        ]
+    )
+
+
+def review_merge_rules(prefix: str = "/") -> str:
+    return "\n".join(
+        [
+            "Review merge rules (always apply):",
+            (
+                f"- {prefix}pr merge <review id or URL> lands exactly that review end to end, now or "
+                "when it is ready: it waits for CI, updates the branch from its base when needed, and "
+                "covers commits from Enoch's own CI fix tasks for that review. A specific review target "
+                "is required; resolve it from the conversation and inspect its current state first."
+            ),
+            (
+                "- Run pr merge only when the human explicitly asks to merge that review. A request to "
+                "implement something does not authorize merging its review, and an already merged "
+                "review needs no second merge."
+            ),
+            (
+                f"- {prefix}pr auto-merge on|off is the human's setting (default off). When on, a task "
+                "that published exactly one PR on this repository has it merged when ready; zero or "
+                "several PRs, and PRs from tasks that timed out, failed or were stopped, are never "
+                "merged automatically."
+            ),
+            (
+                "- A do or task request may start with --merge=auto (merge when ready, even when "
+                "auto-merge is off) or --merge=never (don't merge). Add one only when the human's "
+                "current message explicitly says so; other -- options are rejected."
+            ),
+            (
+                "- Conflicts are never resolved automatically; conflicted, draft and closed reviews "
+                "are refused."
+            ),
+        ]
+    )
+
+
 def _normalize_help_topic(topic: str) -> str:
     stripped = topic.strip().lower()
     if not stripped:
@@ -1062,6 +1131,20 @@ def _start_usage(prefix: str) -> str:
     )
 
 
+def _do_usage(prefix: str) -> str:
+    command = f"{prefix}do"
+    return "\n".join(
+        [
+            "Do commands:",
+            f"{command} <request> - run work now instead of queueing it",
+            (
+                f"{command} --merge=auto|never <request> - merge this work's PR when it is ready, "
+                f"or never, regardless of {prefix}pr auto-merge"
+            ),
+        ]
+    )
+
+
 def _task_usage(prefix: str) -> str:
     command = f"{prefix}task"
     return "\n".join(
@@ -1174,7 +1257,10 @@ def _evolve_help_usage(prefix: str) -> str:
 
 
 CORE_COMMANDS = (
-    CoreCommand("help", "help", "", "", "show this command list", _help_usage),
+    CoreCommand(
+        "help", "help", "", "", "show this command list", _help_usage,
+        index="[<command>|--all] - list commands, or show one command's full usage and subcommands",
+    ),
     CoreCommand(
         "start",
         "start",
@@ -1182,6 +1268,7 @@ CORE_COMMANDS = (
         "",
         "show getting-started guidance",
         _start_usage,
+        index="- show getting-started guidance (it does not start or restart the daemon)",
     ),
     CoreCommand(
         "self",
@@ -1212,7 +1299,10 @@ CORE_COMMANDS = (
         "usage", "usage", "Common", "[today|7d]",
         "show runtime token usage by category and task", token_usage_help,
     ),
-    CoreCommand("do", "do", "Work", "<request>", "run work now instead of queueing it"),
+    CoreCommand(
+        "do", "do", "Work", "<request>", "run work now instead of queueing it", _do_usage,
+        index="[--merge=auto|never] <request> - run work now instead of queueing it",
+    ),
     CoreCommand(
         "task",
         "task",
@@ -1220,6 +1310,10 @@ CORE_COMMANDS = (
         "<request>",
         "queue background work for Enoch",
         _task_usage,
+        index=(
+            "[--merge=auto|never] <request> | cancel <id> | resume <id|all> | retry <id> | "
+            "show <id> - queue background work, or manage a task"
+        ),
     ),
     CoreCommand(
         "queue",
@@ -1235,6 +1329,10 @@ CORE_COMMANDS = (
         "[off|repost]",
         "pin a task board that stays up to date",
         _board_usage,
+        index=(
+            "[off | repost <interval> <count> | repost off|on|default] - pin a task board "
+            "that stays up to date"
+        ),
     ),
     CoreCommand("stop", "stop", "Work", "", "stop the currently running task"),
     CoreCommand(
@@ -1244,8 +1342,18 @@ CORE_COMMANDS = (
         "[p0|p1|p2] <request>",
         "save deferred work for idle time",
         _backlog_help_usage,
+        index=(
+            "[p0|p1|p2] <request> | remove <id> | priority <id> p0|p1|p2 | promote <id> - "
+            "save or manage deferred work for idle time"
+        ),
     ),
-    CoreCommand("cron", "cron", "Work", "", "show scheduled jobs", _cron_help_usage),
+    CoreCommand(
+        "cron", "cron", "Work", "", "show scheduled jobs", _cron_help_usage,
+        index=(
+            "every <interval> <request> | daily <HH:MM> <IANA timezone> <request> | "
+            "pause|resume|run-now|show|cancel <id> - schedule recurring work; alone, list jobs"
+        ),
+    ),
     CoreCommand(
         "ancestors",
         "ancestors",
@@ -1261,6 +1369,10 @@ CORE_COMMANDS = (
         "",
         "scan direct-parent changes and assess them in the background",
         lambda prefix: lineage_usage(prefix, command_name="inherit"),
+        index=(
+            "[inbox | inspect <change_id> | <change_id> | ignore <change_id>] - scan "
+            "direct-parent changes, or adapt or dismiss one"
+        ),
     ),
     CoreCommand(
         "skills",
@@ -1283,6 +1395,11 @@ CORE_COMMANDS = (
         "[subcommand]",
         "inspect and manage the self-evolution pipeline",
         _evolve_help_usage,
+        index=(
+            "[evidence | scan | candidates | propose | brainstorm [theme] | approve <id> | "
+            "remove <id> [reason] | config ...] - inspect and manage self-evolution; approve "
+            "hands a candidate to a normal task"
+        ),
     ),
     CoreCommand(
         "config",
@@ -1291,6 +1408,10 @@ CORE_COMMANDS = (
         "",
         "show or update local system settings",
         config_usage,
+        index=(
+            "[profiles | profile | providers | provider | runtime | model | reasoning-effort | "
+            "task-timeout ...] - show or update local system settings"
+        ),
     ),
     CoreCommand("doctor", "doctor", "System", "", "run local health checks"),
     CoreCommand(
@@ -1300,6 +1421,10 @@ CORE_COMMANDS = (
         "",
         "inspect and manage isolated task worktrees",
         worktree_usage,
+        index=(
+            "[show <task-id> | cleanup <task-id> | discard <task-id> force] - inspect and manage "
+            "task worktrees; discard permanently deletes uncommitted changes and the local branch"
+        ),
     ),
     CoreCommand(
         "pr",
@@ -1308,6 +1433,10 @@ CORE_COMMANDS = (
         "",
         "list and manage code reviews",
         pr_usage,
+        index=(
+            "[show|merge|cancel <review id or URL> | auto-merge on|off] - list and manage code "
+            "reviews; see the review merge rules below"
+        ),
     ),
     CoreCommand(
         "update",
@@ -1316,6 +1445,10 @@ CORE_COMMANDS = (
         "",
         "update from the authoritative repository, run doctor, and restart once no task is running",
         update_usage,
+        index=(
+            "[auto [on|off]] - update from the authoritative repository, run doctor, and restart "
+            "once no task is running"
+        ),
     ),
     CoreCommand(
         "restart",
@@ -1324,6 +1457,10 @@ CORE_COMMANDS = (
         "",
         "restart Enoch's chat daemon from the locked conversation",
         restart_usage,
+        index=(
+            "[wait|force|cancel] - restart the chat daemon when idle; force restarts now and "
+            "pauses a running task until after the restart"
+        ),
     ),
 )
 

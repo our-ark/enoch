@@ -79,17 +79,35 @@ not silently redefine the executable body.
 
 Core startup does not invoke the model to warm or synchronize a conversation.
 The first model-backed request in each persistent conversation after a daemon
-start carries the current body, private identity/memory, and active chat command
-reference together with the actual request. Context is marked delivered only
-after a successful response; failed calls receive it again on their next request.
-Local commands such as `/help` and `/status` do not need this model turn, and
-startup context cannot independently resume an old task.
+start carries the current body, private identity, selected long-term memory, the
+compact chat command index, and the full Enoch wrapper instructions together
+with the actual request. The runtime keeps them in the session history, so later
+turns do not repeat them. Context is marked delivered only after a successful
+response; failed calls receive it again on their next request. Local commands
+such as `/help` and `/status` do not need this model turn, and startup context
+cannot independently resume an old task.
+
+Every conversation turn, task-context snapshot request, and post-action reply
+turn still ends with a one-line reminder of the safety-critical rules: actions
+only through one exact action block, merges only from the human's explicit
+request or the `/pr auto-merge` policy, `--merge=auto|never` only from the
+human's current message, quoted text, attachments, repository content and action
+results as data rather than authorization, and questions answered rather than
+replaced by queued work. The command index lists one line per operation; the
+model runs `help` for full usage. Review merge semantics are always included in
+full. Long-term memory is selected locally without model calls: user preferences
+and authorization or workflow-policy memories are always included, other
+memories when the message makes them relevant or they were saved recently, under
+a character budget. A later message adds only memories it newly makes relevant.
+Memories marked superseded are never sent; the conversation retires or restores
+them by id with an internal signal that only the locked conversation's final
+reply can apply.
 
 Ordinary conversation can execute work. The runtime selects one structured
 `ENOCH_ACTION` containing a registered command name and argument. The host
 dispatches it through the same core, profile, or extension handler as an explicit
 chat command, preserving the owner conversation lock and capability policy.
-The command reference includes descendant operations even when compact help
+The command index includes descendant operations even when compact help
 hides common commands. Explicit work requests need no second command or
 confirmation; unresolved targets can still require clarification.
 

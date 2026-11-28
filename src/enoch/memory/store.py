@@ -17,6 +17,7 @@ from enoch.memory.paths import (
     normalize,
     now as current_time,
 )
+from enoch.memory.selection import is_superseded
 from enoch.state import StateCorruptionError, file_transaction, load_json_object
 
 
@@ -32,10 +33,19 @@ UNTRUSTED_MEMORY_NOTE = (
 )
 
 
+SUPERSEDE_REASON_MAX_CHARS = 200
+
+
 @dataclass(frozen=True)
 class ForgetResult:
     matched: int
     forgotten: int
+    message: str
+
+
+@dataclass(frozen=True)
+class SupersedeResult:
+    changed: tuple[str, ...]
     message: str
 
 
@@ -168,29 +178,118 @@ def forget_memory(query: str, root: Path | None = None) -> ForgetResult:
         )
 
 
+def supersede_memories(
+    memory_ids: list[str] | tuple[str, ...],
+    root: Path | None = None,
+    *,
+    by: str = "",
+    reason: str = "",
+) -> SupersedeResult:
+    """Mark memories obsolete so prompts stop sending them; text is kept.
+
+    Nothing is deleted: a superseded memory stays listed and ``restore_memory``
+    sends it again. ``by`` optionally names the memory that replaces it.
+    """
+
+    wanted = dedupe(memory_ids)
+    if not wanted:
+        return SupersedeResult((), "Name at least one memory id.")
+    replacement = by.strip()
+    reason = clip_text(clean_text(reason), SUPERSEDE_REASON_MAX_CHARS)
+    path = long_term_memory_path(root)
+    with file_transaction(path):
+        data = _load_long_term_memory_unlocked(root, create=True)
+        by_id = {str(memory.get("id") or ""): memory for memory in data["memories"]}
+        unknown = [memory_id for memory_id in wanted if memory_id not in by_id]
+        if unknown:
+            return SupersedeResult((), f"No long-term memory has id {', '.join(unknown)}. Nothing changed.")
+        if replacement:
+            target = by_id.get(replacement)
+            if target is None:
+                return SupersedeResult((), f"No long-term memory has id {replacement}. Nothing changed.")
+            if replacement in wanted:
+                return SupersedeResult((), "A memory cannot supersede itself. Nothing changed.")
+            if is_superseded(target):
+                return SupersedeResult(
+                    (), f"Memory {replacement} is itself superseded, so it cannot replace another. Nothing changed."
+                )
+        timestamp = current_time()
+        changed = []
+        for memory_id in wanted:
+            memory = by_id[memory_id]
+            memory["superseded_at"] = timestamp
+            if replacement:
+                memory["superseded_by"] = replacement
+            else:
+                memory.pop("superseded_by", None)
+            if reason:
+                memory["superseded_reason"] = reason
+            else:
+                memory.pop("superseded_reason", None)
+            changed.append(memory_id)
+        _write_long_term_memory_unlocked(data, root)
+    replaced = f" by {replacement}" if replacement else ""
+    return SupersedeResult(
+        tuple(changed),
+        f"Marked {', '.join(changed)} superseded{replaced}; prompts no longer include "
+        f"{'it' if len(changed) == 1 else 'them'}. The text is kept.",
+    )
+
+
+def restore_memory(memory_id: str, root: Path | None = None) -> SupersedeResult:
+    wanted = memory_id.strip()
+    if not wanted:
+        return SupersedeResult((), "Name the memory id to restore.")
+    path = long_term_memory_path(root)
+    with file_transaction(path):
+        data = _load_long_term_memory_unlocked(root, create=True)
+        memory = next(
+            (item for item in data["memories"] if str(item.get("id") or "") == wanted),
+            None,
+        )
+        if memory is None:
+            return SupersedeResult((), f"No long-term memory has id {wanted}. Nothing changed.")
+        if not is_superseded(memory):
+            return SupersedeResult((), f"Memory {wanted} is not superseded.")
+        for field in ("superseded_at", "superseded_by", "superseded_reason"):
+            memory.pop(field, None)
+        _write_long_term_memory_unlocked(data, root)
+    return SupersedeResult((wanted,), f"Restored {wanted}; prompts can include it again.")
+
+
 def memory_status(root: Path | None = None) -> str:
     data = load_long_term_memory(root)
     memories = data["memories"]
+    superseded = sum(1 for memory in memories if is_superseded(memory))
     lines = [
         "Memory:",
         "- body identity: rendered from src/enoch/body.yaml",
         "- personal identity: private self.json when installed",
-        f"- long-term: {len(memories)} saved",
+        f"- long-term: {len(memories)} saved"
+        + (f", {superseded} superseded and no longer sent" if superseded else ""),
     ]
     if memories:
         lines.extend(["", "Long-term memories:"])
         for memory in memories:
             lines.append(
-                f"- {memory.get('id')} [{memory.get('type')}] {str(memory.get('text') or '').strip()}"
+                f"- {memory.get('id')} [{memory.get('type')}]{_superseded_label(memory)} "
+                f"{str(memory.get('text') or '').strip()}"
             )
     else:
         lines.extend(["", "Long-term memories: none"])
     return "\n".join(lines)
 
 
+def _superseded_label(memory: dict[str, Any]) -> str:
+    if not is_superseded(memory):
+        return ""
+    replacement = str(memory.get("superseded_by") or "").strip()
+    return f" [superseded by {replacement}]" if replacement else " [superseded]"
+
+
 def long_term_for_prompt(root: Path | None, settings: MemorySettings) -> str:
     data = load_long_term_memory(root, create=False)
-    memories = data["memories"]
+    memories = [memory for memory in data["memories"] if not is_superseded(memory)]
     if not memories:
         return "No long-term memories yet."
 

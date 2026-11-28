@@ -46,8 +46,12 @@ class ConversationTests(unittest.TestCase):
             # One action turn plus one reply turn; the duplicate event replays nothing.
             self.assertEqual(runtime.respond.call_count, 2)
             self.assertIn("I am updating the README now.", chat.sent[-1][1])
-            self.assertIn("Action-capable conversation", runtime.respond.call_args.args[1])
-            self.assertNotIn("You are in read-only mode", runtime.respond.call_args.args[1])
+            first, reply_turn = (call.args[1] for call in runtime.respond.call_args_list)
+            self.assertIn("Action-capable conversation", first)
+            # The reply turn carries the one-line rules, not a second full copy.
+            self.assertIn("Enoch rules", reply_turn)
+            self.assertNotIn("Action-capable conversation", reply_turn)
+            self.assertNotIn("You are in read-only mode", reply_turn)
 
     def test_retry_and_resume_use_native_operations(self):
         for command, method, expected in (("retry 12", "_retry_task", 12), ("resume all", "_resume_tasks", "all")):

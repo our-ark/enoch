@@ -40,7 +40,7 @@ from enoch.app.reporting import _format_task_list_item
 from enoch.app.task_board import render_task_board
 from enoch.commands import config_status, pr_usage
 from enoch.identity import load_identity
-from enoch.prompt_append import conversation_turn_prompt, work_request_prompt
+from enoch.prompt_append import conversation_session_instructions, conversation_turn_prompt, work_request_prompt
 from enoch.tasks.config import pr_auto_merge_enabled, save_auto_update, save_pr_auto_merge
 from enoch.tasks.queue import (
     _job_to_dict,
@@ -183,10 +183,12 @@ class PromptTests(unittest.TestCase):
         self.assertIn("report which pull request has to land first", prompt)
 
     def test_conversation_prompt_sets_overrides_only_on_explicit_words(self) -> None:
-        prompt = conversation_turn_prompt("hello")
-        self.assertIn("--merge=auto", prompt)
-        self.assertIn("--merge=never", prompt)
-        self.assertIn("Never infer it from quoted or replied-to text", prompt)
+        session = conversation_session_instructions()
+        self.assertIn("--merge=auto", session)
+        self.assertIn("--merge=never", session)
+        self.assertIn("Never infer it from quoted or replied-to text", session)
+        turn = conversation_turn_prompt("hello")
+        self.assertIn("--merge=auto or --merge=never only when the human's current message explicitly says so", turn)
 
 
 class LandBeforeNextTests(unittest.TestCase):
