@@ -21,14 +21,21 @@ from enoch.app.auto_update import (
     load_auto_update_state,
     mark_update_pending,
 )
-from enoch.app.core import EnochApplication, TaskContextSnapshot
+from enoch.app.core import CI_REPAIR_TRIGGER, EnochApplication, TaskContextSnapshot
+from enoch.backlog import add_backlog_item, next_backlog_item
 from enoch.commands import config_status, help_message
 from enoch.identity import load_identity
 from enoch.immune import DoctorCheckResult, DoctorDiagnosis, ImmuneResult
 from enoch.operations import updater
 from enoch.operations.updater import UpdateResult
 from enoch.tasks.config import auto_update_enabled, save_auto_update
-from enoch.tasks.queue import begin_next_task, complete_task, enqueue_task
+from enoch.tasks.queue import (
+    begin_next_task,
+    complete_task,
+    enqueue_task,
+    enqueue_task_front,
+    task_queue_status,
+)
 from our_ark_provider_kit import RepositoryRevision, ReviewCheck, WorkingCopyState
 from tests.test_enoch_application import _Chat, _Runtime
 from tests.test_enoch_pending_merges import START, URL, _Forge, _review
@@ -317,9 +324,9 @@ class CoalescingTests(_AutoUpdateTestCase):
 
         app._maybe_run_auto_update()
         self.update.assert_not_called()
-        # Waiting for the merge never holds the queue (CI fix tasks must run).
-        enqueue_task("room-1", "fix", self.root)
+        # Waiting for the merge only admits CI fix tasks (that merge may need one).
         self.assertFalse(app._auto_update_holds_work())
+        self.assertTrue(app._auto_update_admits_only_ci_fixes())
 
         forge.set(merge_state_status="CLEAN", checks=(ReviewCheck("CI / test", "success"),))
         app.pending_merges.tick()
@@ -327,6 +334,84 @@ class CoalescingTests(_AutoUpdateTestCase):
 
         self.update.assert_called_once()
         self.assertEqual(load_auto_update_state(self.root).restarted_for, ("#105", "#91"))
+
+    def _waiting_for_another_merge(self):
+        """An update is pending for #105 while #91 (not a task's PR) still merges."""
+
+        forge = _Forge(merge_state="UNSTABLE", checks=(ReviewCheck("CI / test", "pending"),))
+        app = self.app(forge)
+        app._after_requested_merge(LandedReview("#105", URL, "our-ark/enoch", "main"))
+        app._pr("room-1", "merge 91")
+        self.assertIsNone(app._land_hold())
+        return app, forge
+
+    def test_waiting_for_another_merge_admits_only_ci_fix_tasks(self) -> None:
+        app, _forge = self._waiting_for_another_merge()
+        add_backlog_item("room-1", "backlog work", self.root)
+
+        # Nothing is promoted from backlog, and an ordinary queued task waits.
+        self.assertFalse(self.worker_starts(app))
+        self.assertIsNotNone(next_backlog_item(self.root))
+        self.assertEqual(task_queue_status(self.root).pending, ())
+        enqueue_task("room-1", "next feature", self.root)
+        self.assertFalse(self.worker_starts(app))
+
+        # A CI fix task still starts, and the embedding API reports the hold.
+        fix = enqueue_task_front(
+            "room-1", "fix CI", self.root, trigger=CI_REPAIR_TRIGGER, initiated_by="agent"
+        )
+        self.assertTrue(self.worker_starts(app))
+        ran: list[int] = []
+
+        def run(job):
+            ran.append(job.id)
+            complete_task(job.id, self.root, "fixed")
+
+        app._run_task_job = run
+        result = app.resume_pending_tasks(max_tasks=5, promote_backlog=True)
+        self.assertEqual((result.task_ids, result.stop_reason), ((fix.id,), "update"))
+        self.assertEqual(ran, [fix.id])
+        self.assertEqual(
+            [job.text for job in task_queue_status(self.root).pending], ["next feature"]
+        )
+        self.assertIsNotNone(next_backlog_item(self.root))
+
+    def test_backlog_task_does_not_start_while_the_update_waits_for_a_repin(self) -> None:
+        # A task's PR lands at completion (auto-merge) and Enoch opens a follow-up
+        # PR that is still merging (like the library re-pin). The worker loop
+        # must not promote the next backlog item onto the old code; the update
+        # runs first, as soon as that merge lands.
+        forge = _Forge(merge_state="UNSTABLE", checks=(ReviewCheck("CI / test", "pending"),))
+        app = self.app(forge)
+        add_backlog_item("room-1", "next backlog item", self.root)
+        enqueue_task("room-1", "task whose PR auto-merges", self.root)
+        ran: list[str] = []
+
+        def run(job):
+            ran.append(job.text)
+            app._after_requested_merge(LandedReview("#105", URL, "our-ark/enoch", "main"))
+            app._pr("room-1", "merge 91")  # the follow-up PR, still merging
+            complete_task(job.id, self.root, "done")
+
+        app._run_task_job = run
+        result = app._drain_pending_tasks(
+            max_tasks=None, promote_backlog=True, reconcile_schedules=False
+        )
+
+        self.assertEqual(ran, ["task whose PR auto-merges"])
+        self.assertEqual(result.stop_reason, "update")
+        self.assertIsNotNone(next_backlog_item(self.root))
+        status = task_queue_status(self.root)
+        self.assertEqual((status.running, status.pending), (None, ()))
+
+        forge.set(merge_state_status="CLEAN", checks=(ReviewCheck("CI / test", "success"),))
+        app.pending_merges.tick()
+        app._maybe_run_auto_update()
+
+        self.update.assert_called_once()
+        self.schedule_restart.assert_called_once_with(self.root)
+        self.assertEqual(load_auto_update_state(self.root).restarted_for, ("#105", "#91"))
+        self.assertIsNotNone(next_backlog_item(self.root))
 
     def test_merge_landing_during_the_update_stays_pending(self) -> None:
         app = self.app()

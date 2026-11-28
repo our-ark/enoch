@@ -125,6 +125,22 @@ caller confirmed as `retry_failed(reconciled_review_urls=...)`. Review URLs
 that only appear in result text are references and never become the task's
 reviews.
 
+A task's worker can open its review itself and finish with a message that has
+no full review URL, for example "opened PR #125". When a task completes and
+neither its publish stage nor a verified URL in its result gives it a review,
+the worker makes the same cheap own-branch lookup that ended tasks use (below).
+It reads the tip of the task's workspace branch with one `ls-remote`; a branch
+that was never pushed costs no forge call. A "PR #N" or "#N" in the result
+counts only after review N on the authoritative repository is confirmed to
+have that tip as its head. Otherwise one forge listing finds the open review
+whose head is that tip. The found review is passed as
+`TaskTerminalEvidence.review_urls`, so it is the task's review exactly like
+one from the publish stage: it is watched for CI, merged under the normal
+policy for completed tasks, and holds the queue until it lands. A retry that
+already carries its parent's review, and Enoch's own CI fix tasks, skip the
+lookup. A lookup error is recorded once as `task_review_attribution_failed`,
+and the task completes as before.
+
 A task can time out, fail or be stopped after its run already pushed its
 branch and opened a review. When a task ends as failed or cancelled (paused
 tasks have not ended and are skipped), Enoch makes one cheap lookup for an
