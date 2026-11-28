@@ -310,6 +310,18 @@ per category, the top tasks by input tokens, and the average conversation turn.
 Each task's final message ends with a `Tokens: … in (…% cached) · … out` line,
 and the task board shows a rounded `Today:` line just above the quota line.
 
+Conversation turns stay small. Identity, a compact command index, and the full
+conversation instructions go to each runtime session once; every later turn
+carries only the message, any memories it newly makes relevant, and a one-line
+reminder of the safety rules. Long-term
+memory is selected without model calls: preferences and authorization or
+workflow policies always, other memories when relevant to the message or saved
+recently. Ask Enoch in the locked conversation to retire an obsolete memory by
+id; it is marked superseded, kept on disk, and no longer sent. The
+`memory.conversation_relevant_max_chars` (default 2000),
+`memory.conversation_recent_count` (3), and `memory.conversation_turn_max_chars`
+(1500) values in `.enoch/config.yaml` tune the selection.
+
 While the daemon runs, it also checks quota once a minute and sends a warning
 to its configured owner conversation at 10%, 5%, and 1% remaining. Each warning
 includes the affected window, actual remaining percentage, reset time, and

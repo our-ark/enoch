@@ -19,7 +19,7 @@ from enoch.application import (
 from enoch.extensions import AgentExtension, ExtensionCommandSpec, ExtensionLifecycleHooks
 from enoch.evolution.core import EvolveCandidate, EvolveProposal, EvolveReport, EvolveState
 from enoch.identity import load_identity, update_mission
-from enoch.memory.prompt import memory_for_prompt
+from enoch.memory.prompt import PromptMemory, memory_for_prompt
 from enoch.profiles import AgentProfile, CommandSpec
 from enoch.providers import AgentRuntimeError, ChatEvent, ProviderHealth
 from enoch.workflows import LocalWorkflowEngine
@@ -61,7 +61,10 @@ class ApplicationCompositionTests(unittest.TestCase):
             runtime = _Runtime()
             app = EnochApplication(load_identity(), Path(temp), chat, runtime=runtime)
             with patch.object(runtime, "respond", return_value="response") as respond, \
-                 patch("enoch.app.core.memory_for_prompt", return_value="Private identity and memory") as memory:
+                 patch(
+                     "enoch.app.core.conversation_memory_for_prompt",
+                     return_value=PromptMemory("Private identity and memory"),
+                 ) as memory:
                 app.notify_startup()
                 memory.assert_not_called()
                 respond.assert_not_called()
@@ -72,10 +75,12 @@ class ApplicationCompositionTests(unittest.TestCase):
             for index in (0, 2):
                 self.assertIn("Private identity and memory", prompts[index])
                 self.assertIn("Do not resume previous tasks", prompts[index])
-                self.assertIn("Active chat command reference:", prompts[index])
-                self.assertIn(".evolve config mode", prompts[index])
-                self.assertIn(".evolve config schedule off", prompts[index])
+                self.assertIn("Active chat command index:", prompts[index])
+                self.assertIn(".evolve [evidence | scan", prompts[index])
+                # Full usage stays behind the help operation.
+                self.assertNotIn(".evolve config schedule off", prompts[index])
                 self.assertIn("Current request:", prompts[index])
+            self.assertEqual(memory.call_args_list[0].kwargs["query"], "First question")
             self.assertIn("First question", prompts[0])
             self.assertNotIn("Enoch startup context:", prompts[1])
             self.assertIn("Next question", prompts[1])

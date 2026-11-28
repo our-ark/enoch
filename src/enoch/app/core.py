@@ -252,14 +252,23 @@ from enoch.lineage.lifecycle import (
 )
 from enoch.logs import log_conversation_turn, log_system_event, system_log_dirs
 from enoch.memory.paths import clean_text
-from enoch.memory.prompt import memory_for_prompt
-from enoch.memory.store import ensure_long_term_memory, remember_memory
+from enoch.memory.prompt import PromptMemory, conversation_memory_for_prompt, turn_memory_for_prompt
+from enoch.memory.store import (
+    ensure_long_term_memory,
+    remember_memory,
+    restore_memory,
+    supersede_memories,
+)
 from enoch.paths import repo_root, storage_layout
 from enoch.prompt_append import (
+    MemoryUpdates,
     TaskRegressionSignal,
+    conversation_session_instructions,
     conversation_turn_prompt,
+    conversation_turn_reminder,
     extract_edit_request,
     extract_memory_requests,
+    extract_memory_updates,
     extract_task_regression_signals,
     read_only_turn_prompt,
     startup_context_note,
@@ -421,7 +430,7 @@ from enoch.commands import (
     mission_command,
     pr_auto_merge_status,
     pr_usage,
-    runtime_command_reference,
+    runtime_command_index,
     skills_command,
     status_message,
     update_usage,
@@ -797,7 +806,12 @@ class EnochApplication:
             ),
         )
         self._pending_session_syncs: list[tuple[int, str]] = []
+        # Per runtime session, in this process: whether the session context
+        # (identity, selected memory, command index) and the full wrapper
+        # instructions were delivered, and which memory ids it has been shown.
         self._contextualized_sessions: set[str] = set()
+        self._instructed_sessions: set[str] = set()
+        self._session_memory_ids: dict[str, set[str]] = {}
         self._task_worker: threading.Thread | None = None
         self._task_worker_lock = threading.Lock()
         self._direct_workers: dict[int, threading.Thread] = {}
@@ -1985,25 +1999,45 @@ class EnochApplication:
         execution: RuntimeExecutionControl,
         image_paths: tuple[Path, ...] = (),
         usage_category: str = CATEGORY_OTHER,
+        memory_query: str = "",
+        session_instructions: bool = False,
+        turn_memories: bool = False,
     ):
+        """Run one runtime turn, adding session context the session still lacks.
+
+        A persistent session gets identity, selected memory and the command
+        index once, and, when ``session_instructions`` is set, the full wrapper
+        instructions once; the runtime keeps both in its history. Later turns
+        with ``turn_memories`` get only memories ``memory_query`` newly makes
+        relevant. Delivery counts only after a successful response.
+        """
+
         session_key = execution.session_key
         needs_context = bool(session_key) and session_key not in self._contextualized_sessions
-        if needs_context:
+        needs_instructions = (
+            session_instructions and bool(session_key) and session_key not in self._instructed_sessions
+        )
+        shown_memory_ids: tuple[str, ...] = ()
+        if needs_context or needs_instructions:
             # Context belongs to a real request, never a standalone startup model turn.
-            prompt = "\n\n".join(
-                [
-                    startup_context_note(
-                        memory_for_prompt(
-                            self.root,
-                            identity=self.identity,
-                            identity_path=self.identity_path,
-                        )
-                    ),
-                    self._conversation_command_reference(),
-                    "Current request:",
-                    prompt,
-                ]
-            )
+            parts = []
+            if needs_context:
+                memory = conversation_memory_for_prompt(
+                    self.root,
+                    query=memory_query,
+                    identity=self.identity,
+                    identity_path=self.identity_path,
+                )
+                shown_memory_ids = memory.memory_ids
+                parts.extend([startup_context_note(memory.text), self._conversation_command_reference()])
+            if needs_instructions:
+                parts.append(conversation_session_instructions(command_prefix=self.command_prefix))
+            prompt = "\n\n".join([*parts, "Current request:", prompt])
+        elif turn_memories and session_key:
+            memory = self._turn_memory_context(session_key, memory_query)
+            if memory.text:
+                shown_memory_ids = memory.memory_ids
+                prompt = "\n\n".join([memory.text, "Current request:", prompt])
         result = self.effect_fence.run_runtime_authorized(
             "runtime.respond",
             ("runtime.respond",),
@@ -2020,9 +2054,32 @@ class EnochApplication:
         )
         if needs_context:
             self._contextualized_sessions.add(session_key)
+            self._session_memory_ids[session_key] = set(shown_memory_ids)
+        elif shown_memory_ids:
+            self._session_memory_ids.setdefault(session_key, set()).update(shown_memory_ids)
+        if needs_instructions:
+            self._instructed_sessions.add(session_key)
         self._record_runtime_usage(result, usage_category)
         self._capture_runtime_output(result)
         return result
+
+    def _turn_memory_context(self, session_key: str, query: str) -> PromptMemory:
+        """Memories newly relevant to this message; never raises."""
+
+        try:
+            return turn_memory_for_prompt(
+                self.root,
+                query,
+                exclude_ids=self._session_memory_ids.get(session_key, set()),
+            )
+        except Exception as error:  # noqa: BLE001 - memory selection must not break a turn
+            _record_system_event(
+                "conversation_memory_selection_failed",
+                self.root,
+                status="failed",
+                details={"error_type": type(error).__name__},
+            )
+            return PromptMemory("")
 
     def _record_runtime_usage(
         self,
@@ -2103,6 +2160,7 @@ class EnochApplication:
                     session_key=resolved_session_key,
                 ),
                 usage_category=CATEGORY_CONVERSATION,
+                memory_query=text,
             ).final_text
         except (
             AgentRuntimeError,
@@ -2188,17 +2246,19 @@ class EnochApplication:
             )
 
     def _conversation_command_reference(self) -> str:
+        """Compact command index, one line per operation; help has full usage."""
+
         domain = [
-            spec.usage or f"{self.command_prefix}{spec.name} - {spec.summary}"
+            _command_index_line(spec, self.command_prefix)
             for spec in self.profile.commands
         ]
         domain.extend(
-            spec.usage or f"{self.command_prefix}{spec.name} - {spec.summary}"
+            _command_index_line(spec, self.command_prefix)
             for extension in self.extensions for spec in extension.commands
         )
         return "\n\n".join([
-            runtime_command_reference(command_prefix=self.command_prefix),
-            *(["Active profile and extension operations:", *domain] if domain else []),
+            runtime_command_index(command_prefix=self.command_prefix),
+            *(["\n".join(["Active profile and extension operations:", *domain])] if domain else []),
         ])
 
     def _natural(self, chat_id: ConversationId, text: str, *, event: ChatEvent | None = None) -> str:
@@ -2241,6 +2301,9 @@ class EnochApplication:
                         request_id=f"conversation:{request_id}", session_key=session_key,
                     ),
                     usage_category=CATEGORY_CONVERSATION,
+                    memory_query=request,
+                    session_instructions=True,
+                    turn_memories=True,
                 ).final_text
             except (AgentRuntimeError, CapabilityAuthorizationError, TypeError) as error:
                 raise ConversationTurnError(
@@ -2257,7 +2320,10 @@ class EnochApplication:
             respond=respond_to_actions,
             execute=lambda action, index: self._execute_conversation_action(event, action, index),
             persist=self.effect_fence.run,
-            finalize=self._finish_conversation_reply,
+            finalize=lambda reply: self._finish_conversation_reply(
+                reply,
+                memory_updates_allowed=_allowed_conversation_id(self.client) == event.conversation_id,
+            ),
             record_event=record_event,
         )
 
@@ -2283,7 +2349,7 @@ class EnochApplication:
         except (OSError, ValueError, StateCorruptionError):
             return None
 
-    def _finish_conversation_reply(self, reply: str) -> str:
+    def _finish_conversation_reply(self, reply: str, *, memory_updates_allowed: bool = False) -> str:
         # Only the runtime's final reply may request memory/regression updates.
         # Raw operation receipts can contain quoted documents or other untrusted data.
         regression_result = extract_task_regression_signals(reply)
@@ -2291,10 +2357,19 @@ class EnochApplication:
         reply = regression_result.visible_reply
         memory_result = extract_memory_requests(reply)
         reply = memory_result.visible_reply
+        updates = extract_memory_updates(reply)
+        reply = updates.visible_reply
         edit_request = extract_edit_request(reply)
         if edit_request is not None:
             reply = edit_request.visible_reply
-        memory_note = self._save_memory_requests(memory_result.requests)
+        memory_note = "\n".join(
+            part
+            for part in (
+                self._save_memory_requests(memory_result.requests),
+                self._apply_memory_updates(updates, allowed=memory_updates_allowed),
+            )
+            if part
+        )
         attachment_note = ""
         rejected = _CURRENT_OUTPUT_REJECTIONS.get()
         if rejected:
@@ -2427,7 +2502,11 @@ class EnochApplication:
         try:
             reply = self._invoke_runtime_response(
                 self._profile_prompt(
-                    _task_context_snapshot_prompt(request, provider=self.channel_name),
+                    _task_context_snapshot_prompt(
+                        request,
+                        provider=self.channel_name,
+                        command_prefix=self.command_prefix,
+                    ),
                     purpose="task-context",
                     chat_id=chat_id,
                 ),
@@ -2436,6 +2515,8 @@ class EnochApplication:
                     session_key=self._session_key(chat_id),
                 ),
                 usage_category=CATEGORY_SNAPSHOT,
+                memory_query=request,
+                session_instructions=True,
             ).final_text
         except AgentRuntimeAccessUnavailable as error:
             return TaskContextSnapshot(codex_unavailable_reason=str(error))
@@ -2965,6 +3046,40 @@ class EnochApplication:
 
     def _prepare_existing_branch_task_worktree(self, branch: str) -> TaskWorktree:
         return self._task_workflow.prepare_existing_branch_task_worktree(branch)
+
+    def _apply_memory_updates(self, updates: MemoryUpdates, *, allowed: bool) -> str:
+        """Retire or restore memories the final reply names; never raises.
+
+        Only the locked conversation may change which memories are sent.
+        """
+
+        if not updates.supersede and not updates.restore:
+            return ""
+        if not allowed:
+            return "Long-term memory changes are accepted only from the locked conversation."
+        notes = []
+        try:
+            for item in updates.supersede:
+                result = supersede_memories(item.ids, self.root, by=item.by, reason=item.reason)
+                notes.append(result.message)
+                if result.changed:
+                    _record_system_event(
+                        "long_term_memory_superseded",
+                        self.root,
+                        details={"ids": list(result.changed), "by": item.by},
+                    )
+            for memory_id in updates.restore:
+                result = restore_memory(memory_id, self.root)
+                notes.append(result.message)
+                if result.changed:
+                    _record_system_event(
+                        "long_term_memory_restored",
+                        self.root,
+                        details={"ids": list(result.changed)},
+                    )
+        except Exception as error:  # noqa: BLE001 - a memory update must not break the reply
+            notes.append(f"{self.display_name} could not update long-term memory: {type(error).__name__}.")
+        return "\n".join(notes)
 
     def _save_memory_requests(self, requests: tuple[str, ...]) -> str:
         if not requests:
@@ -8011,7 +8126,20 @@ def _with_replied_text_context(
     )
 
 
-def _task_context_snapshot_prompt(request: str, *, provider: str = "chat") -> str:
+# A profile or extension usage line short enough to serve as its index entry.
+_COMMAND_INDEX_LINE_MAX_CHARS = 160
+
+
+def _command_index_line(spec: object, prefix: str) -> str:
+    """One index line for a profile or extension command."""
+
+    usage = str(getattr(spec, "usage", "") or "").strip()
+    if usage and "\n" not in usage and len(usage) <= _COMMAND_INDEX_LINE_MAX_CHARS:
+        return usage
+    return f"{prefix}{getattr(spec, 'name', '')} - {getattr(spec, 'summary', '')}"
+
+
+def _task_context_snapshot_prompt(request: str, *, provider: str = "chat", command_prefix: str = "/") -> str:
     return "\n".join(
         [
             "Task context snapshot request:",
@@ -8023,13 +8151,15 @@ def _task_context_snapshot_prompt(request: str, *, provider: str = "chat") -> st
             "Return only the task brief.",
             f"If the request is self-contained and no prior context is needed, return exactly: {NO_EXTRA_TASK_CONTEXT}",
             f"If the prior conversation still does not make the work clear, return only: {NEEDS_CLARIFICATION_PREFIX} <one short question>",
+            "",
+            conversation_turn_reminder(command_prefix=command_prefix),
         ]
     )
 
 
 def _parse_task_context_snapshot(reply: str) -> TaskContextSnapshot:
     memory_result = extract_memory_requests(reply)
-    text = memory_result.visible_reply.strip()
+    text = extract_memory_updates(memory_result.visible_reply).visible_reply.strip()
     edit_request = extract_edit_request(text)
     if edit_request is not None:
         text = (edit_request.visible_reply or edit_request.request).strip()
